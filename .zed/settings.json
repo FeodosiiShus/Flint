@@ -1,8 +1,5 @@
 {
   "languages": {
-    "Docker Compose": {
-      "tab_size": 2,
-    },
     "Markdown": {
       "tab_size": 2,
       "formatter": "prettier",
@@ -55,9 +52,7 @@
     },
   },
   "file_types": {
-    "Dockerfile": ["Dockerfile*[!dockerignore]"],
-    "JSONC": ["**/assets/**/*.json", "renovate.json"],
-    "Git Ignore": ["dockerignore"],
+    "JSONC": ["**/assets/**/*.json"],
   },
   "hard_tabs": false,
   "formatter": "auto",

@@ -16,12 +16,10 @@ members = [
     "crates/assets",
     "crates/audio",
     "crates/auto_update",
-    "crates/auto_update_helper",
     "crates/auto_update_ui",
     "crates/aws_http_client",
     "crates/bedrock",
     "crates/bench_metrics",
-    "crates/benchmarks",
     "crates/breadcrumbs",
     "crates/buffer_diff",
     "crates/call",
@@ -34,7 +32,6 @@ members = [
     "crates/cloud_api_types",
     "crates/cloud_llm_client",
     "crates/codestral",
-    "crates/collab",
     "crates/collab_ui",
     "crates/collections",
     "crates/command_palette",
@@ -55,24 +52,18 @@ members = [
     "crates/deepseek",
     "crates/dev_container",
     "crates/diagnostics",
-    "crates/docs_preprocessor",
     "crates/edit_prediction",
-    "crates/edit_prediction_cli",
     "crates/edit_prediction_context",
     "crates/edit_prediction_metrics",
     "crates/edit_prediction_types",
     "crates/edit_prediction_ui",
     "crates/editor",
-    "crates/editor_benchmarks",
     "crates/encoding_selector",
     "crates/env_var",
     "crates/etw_tracing",
-    "crates/eval_cli",
     "crates/eval_utils",
-    "crates/explorer_command_injector",
     "crates/extension",
     "crates/extension_api",
-    "crates/extension_cli",
     "crates/extension_host",
     "crates/extension_suggest",
     "crates/extensions_ui",
@@ -83,7 +74,6 @@ members = [
     "crates/file_finder",
     "crates/file_icons",
     "crates/fs",
-    "crates/fs_benchmarks",
     "crates/fuzzy",
     "crates/fuzzy_nucleo",
     "crates/git",
@@ -166,7 +156,6 @@ members = [
     "crates/platform_title_bar",
     "crates/prettier",
     "crates/project",
-    "crates/project_benchmarks",
     "crates/project_panel",
     "crates/project_symbols",
     "crates/prompt_store",
@@ -185,7 +174,6 @@ members = [
     "crates/rpc",
     "crates/sandbox",
     "crates/scheduler",
-    "crates/schema_generator",
     "crates/search",
     "crates/session",
     "crates/settings",
@@ -217,7 +205,6 @@ members = [
     "crates/text",
     "crates/theme",
     "crates/theme_extension",
-    "crates/theme_importer",
     "crates/theme_selector",
     "crates/theme_settings",
     "crates/time_format",
@@ -238,7 +225,6 @@ members = [
     "crates/windows_resources",
     "crates/workspace",
     "crates/worktree",
-    "crates/worktree_benchmarks",
     "crates/x_ai",
     "crates/x_ai_subscribed",
     "crates/zed",
@@ -255,18 +241,13 @@ members = [
     # Extensions
     #
 
-    "extensions/glsl",
-    "extensions/html",
-    "extensions/proto",
     "extensions/test-extension",
 
     #
     # Tooling
     #
 
-    "tooling/compliance",
     "tooling/perf",
-    "tooling/xtask",
 ]
 default-members = ["crates/zed"]
 
@@ -311,12 +292,10 @@ cloud_api_client = { path = "crates/cloud_api_client" }
 cloud_api_types = { path = "crates/cloud_api_types" }
 cloud_llm_client = { path = "crates/cloud_llm_client" }
 codestral = { path = "crates/codestral" }
-collab = { path = "crates/collab" }
 collab_ui = { path = "crates/collab_ui" }
 collections = { path = "crates/collections", version = "0.1.0" }
 command_palette = { path = "crates/command_palette" }
 command_palette_hooks = { path = "crates/command_palette_hooks" }
-compliance = { path = "tooling/compliance" }
 component = { path = "crates/component" }
 component_preview = { path = "crates/component_preview" }
 context_server = { path = "crates/context_server" }
@@ -581,7 +560,6 @@ bitflags = "2.6.0"
 block2 = "0.6"
 brush-parser = "0.3"
 bytes = "1.0"
-cargo_metadata = "0.19"
 cargo_toml = "0.21"
 cbindgen = { version = "0.28.0", default-features = false }
 chardetng = "0.1"
@@ -608,7 +586,6 @@ perf-event = { package = "perf-event2", version = "0.7.4" }
 crossbeam-queue = "0.3.12"
 ctor = "1.0.12"
 dap-types = { git = "https://github.com/zed-industries/dap-types", rev = "1b461b310481d01e02b2603c16d7144b926339f8" }
-dashmap = "6.0"
 derive_more = { version = "2.1.1", features = [
     "add",
     "add_assign",
@@ -641,7 +618,6 @@ fork = "0.4.0"
 futures = "0.3.34"
 futures-concurrency = "7.7.1"
 futures-lite = "2"
-gh-workflow = { git = "https://github.com/zed-industries/gh-workflow", rev = "37f3c0575d379c218a9c455ee67585184e40d43f" }
 globset = "0.4"
 handlebars = "4.3"
 hdrhistogram = { version = "7", default-features = false }
@@ -876,12 +852,6 @@ tiny_http = "0.12"
 tokio = { version = "1" }
 tokio-rustls = { version = "0.26", default-features = false }
 toml = "0.8"
-toml_edit = { version = "0.22", default-features = false, features = [
-    "display",
-    "parse",
-    "serde",
-] }
-tower-http = "0.4.4"
 tree-sitter = { git = "https://github.com/tree-sitter/tree-sitter", rev = "43623ec9bf0eaaf7113285c46e8a09018f181b18" }
 tracing = "0.1.40"
 tree-sitter-bash = "0.25.1"

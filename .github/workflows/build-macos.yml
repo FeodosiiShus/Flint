@@ -1,0 +1,136 @@
+name: Build macOS
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  CARGO_INCREMENTAL: "0"
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: "1"
+  CARGO_PROFILE_RELEASE_DEBUG: none
+
+jobs:
+  build:
+    name: Build aarch64-apple-darwin
+    runs-on: macos-26
+    timeout-minutes: 360
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Free disk space
+        run: |
+          df -h /
+          active_xcode="$(cd "$(xcode-select -p)/../.." && pwd -P)"
+          echo "Active Xcode: ${active_xcode}"
+          for xcode_app in /Applications/Xcode_*.app; do
+            if [[ -L "${xcode_app}" || ! -d "${xcode_app}" ]]; then
+              continue
+            fi
+            if [[ "$(cd "${xcode_app}" && pwd -P)" != "${active_xcode}" ]]; then
+              echo "Removing ${xcode_app}"
+              sudo rm -rf "${xcode_app}" || echo "Could not fully remove ${xcode_app}"
+            fi
+          done
+          if [[ -n "${ANDROID_HOME:-}" && -d "${ANDROID_HOME}" ]]; then
+            echo "Removing ${ANDROID_HOME}"
+            sudo rm -rf "${ANDROID_HOME}" || echo "Could not fully remove ${ANDROID_HOME}"
+          fi
+          df -h /
+
+      - name: Check Xcode and Metal toolchain
+        run: |
+          xcode-select -p
+          xcodebuild -version
+          xcrun --sdk macosx --show-sdk-version
+          probe_metal() {
+            printf 'kernel void probe(device float *out [[buffer(0)]]) { out[0] = 1.0; }\n' > "${RUNNER_TEMP}/probe.metal"
+            xcrun -sdk macosx metal -c "${RUNNER_TEMP}/probe.metal" -o "${RUNNER_TEMP}/probe.air" &&
+              xcrun -sdk macosx metallib "${RUNNER_TEMP}/probe.air" -o "${RUNNER_TEMP}/probe.metallib"
+          }
+          if ! probe_metal; then
+            xcodebuild -downloadComponent metalToolchain
+            probe_metal
+          fi
+
+      - name: Install Rust toolchain from rust-toolchain.toml
+        run: |
+          rustup toolchain install
+          rustup show active-toolchain
+          rustc --version
+          cargo --version
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Bundle app
+        run: script/bundle-mac
+
+      - name: Verify document icon
+        run: |
+          shopt -s nullglob
+          apps=(target/aarch64-apple-darwin/release/dmg/*.app)
+          if [[ ${#apps[@]} -ne 1 ]]; then
+            echo "Expected exactly one app bundle in target/aarch64-apple-darwin/release/dmg, found ${#apps[@]}" >&2
+            exit 1
+          fi
+          script/verify-macos-document-icon "${apps[0]}"
+
+      - name: Show disk usage
+        if: always()
+        run: df -h /
+
+      - name: Upload DMG
+        uses: actions/upload-artifact@v7
+        with:
+          name: flint-macos-aarch64
+          path: target/aarch64-apple-darwin/release/Zed-aarch64.dmg
+          if-no-files-found: error
+          compression-level: 0
+
+  release:
+    name: Publish GitHub Release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - name: Download DMG
+        uses: actions/download-artifact@v8
+        with:
+          name: flint-macos-aarch64
+          path: dist
+
+      - name: Create or update release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          if gh release view "${TAG}" > /dev/null 2>&1; then
+            gh release upload "${TAG}" dist/Zed-aarch64.dmg --clobber
+          else
+            gh release create "${TAG}" dist/Zed-aarch64.dmg --verify-tag --generate-notes --title "Flint ${TAG}"
+          fi
