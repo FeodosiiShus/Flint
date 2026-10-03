@@ -7,8 +7,8 @@ use git::{
     repository::{InitialGraphCommitData, LogSource, RepoPath},
 };
 use gpui::{
-    AnyWindowHandle, Empty, Entity, InputEvent as _, KeyDownEvent, Keystroke, Size, TestAppContext,
-    VisualTestContext,
+    AnyWindowHandle, Background, Empty, Entity, InputEvent as _, KeyDownEvent, Keystroke, Quad,
+    Size, TestAppContext, VisualTestContext,
 };
 use language::{
     Diagnostic, DiagnosticEntry, DiagnosticMessage, DiagnosticSourceKind, LanguageServerId,
@@ -12874,4 +12874,349 @@ fn entry_row_bounds(panel: &ProjectPanel, entry_id: ProjectEntryId) -> Bounds<Pi
         point(viewport.left(), row_top),
         size(viewport.size.width, row_height),
     )
+}
+
+#[test]
+fn rounded_selection_pill_colors_follow_entry_state() {
+    let selection: Hsla = gpui::rgba(0x3e5889ff).into();
+    let item_colors = ItemColors {
+        default: gpui::black(),
+        hover: gpui::green(),
+        drag_over: gpui::yellow(),
+        marked: selection,
+        focused: gpui::white(),
+    };
+    let focused_border = Some(gpui::white());
+
+    assert_eq!(
+        selection_pill_colors(&item_colors, true, false, true, focused_border),
+        SelectionPillColors {
+            background: selection,
+            hover_background: selection,
+            border: gpui::white(),
+        },
+        "a marked entry of the focused panel is filled with the active selection color and keeps the focus border"
+    );
+
+    let inactive = selection_pill_colors(&item_colors, true, false, false, None);
+    assert_eq!(
+        inactive.background.s, 0.,
+        "the selection of an unfocused panel is a neutral grey"
+    );
+    assert_eq!(
+        inactive.background.l, selection.l,
+        "the inactive selection keeps the lightness of the active selection"
+    );
+    assert!(
+        inactive.background.a < selection.a,
+        "the inactive selection is more subdued than the active selection"
+    );
+    assert_eq!(
+        inactive.hover_background, inactive.background,
+        "hovering a selected entry keeps its selection color"
+    );
+    assert!(
+        inactive.border.is_transparent(),
+        "an unfocused panel shows no focus border"
+    );
+
+    assert_eq!(
+        selection_pill_colors(&item_colors, false, false, true, focused_border),
+        SelectionPillColors {
+            background: gpui::transparent_black(),
+            hover_background: gpui::green(),
+            border: gpui::white(),
+        },
+        "an unmarked keyboard-focused entry is outlined and only filled while hovered"
+    );
+
+    assert_eq!(
+        selection_pill_colors(&item_colors, true, true, true, focused_border),
+        SelectionPillColors {
+            background: gpui::yellow(),
+            hover_background: gpui::yellow(),
+            border: gpui::transparent_black(),
+        },
+        "a drop target overrides the selection and hides the focus border"
+    );
+}
+
+#[gpui::test]
+async fn rounded_selection_paints_inset_pill_behind_selected_entry(cx: &mut gpui::TestAppContext) {
+    init_test(cx);
+    set_rounded_selection(true, cx);
+    let (panel, mut cx) = open_panel_with_files(3, DockSide::Left, cx).await;
+    let cx = &mut cx;
+    select_path_with_mark(&panel, "root/file_1.txt", cx);
+    panel.update_in(cx, |panel, window, cx| panel.focus_handle.focus(window, cx));
+    cx.run_until_parked();
+
+    let (selection_color, focus_border_color) = cx.update(|_, cx| {
+        let colors = cx.theme().colors();
+        (colors.element_selected, colors.panel_focused_border)
+    });
+    let (row_bounds, quads) = painted_quads_in_entry_row(&panel, "root/file_1.txt", cx);
+
+    let selection_quads = quads
+        .iter()
+        .filter(|(_, quad)| quad.background == Background::from(selection_color))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        selection_quads.len(),
+        1,
+        "only the pill paints the selection color, the row itself stays unselected: {selection_quads:?}"
+    );
+    let (pill_bounds, pill) = selection_quads[0];
+    assert!(
+        has_rounded_corners(pill),
+        "the selection is a rounded pill: {pill:?}"
+    );
+    assert!(
+        pill_bounds.left() >= row_bounds.left() + SELECTION_PILL_INSET - px(0.5)
+            && pill_bounds.right() <= row_bounds.right() - SELECTION_PILL_INSET + px(0.5),
+        "the pill is inset from both edges of the row: {pill_bounds:?} in {row_bounds:?}"
+    );
+
+    let focus_border_quads = quads
+        .iter()
+        .filter(|(_, quad)| quad.border_color == focus_border_color)
+        .collect::<Vec<_>>();
+    assert!(
+        !focus_border_quads.is_empty(),
+        "the keyboard-focused entry keeps a visible focus border"
+    );
+    for (border_bounds, border_quad) in focus_border_quads {
+        assert_eq!(
+            border_bounds, pill_bounds,
+            "the focus border outlines the pill instead of the full-width row"
+        );
+        assert!(
+            has_rounded_corners(border_quad),
+            "the focus border follows the rounded pill: {border_quad:?}"
+        );
+    }
+}
+
+#[gpui::test]
+async fn rounded_selection_disabled_keeps_full_width_square_selection(
+    cx: &mut gpui::TestAppContext,
+) {
+    init_test(cx);
+    set_rounded_selection(false, cx);
+    let (panel, mut cx) = open_panel_with_files(3, DockSide::Left, cx).await;
+    let cx = &mut cx;
+    select_path_with_mark(&panel, "root/file_1.txt", cx);
+    panel.update_in(cx, |panel, window, cx| panel.focus_handle.focus(window, cx));
+    cx.run_until_parked();
+
+    let (selection_color, focus_border_color) = cx.update(|_, cx| {
+        let colors = cx.theme().colors();
+        (colors.element_selected, colors.panel_focused_border)
+    });
+    let (row_bounds, quads) = painted_quads_in_entry_row(&panel, "root/file_1.txt", cx);
+
+    assert!(
+        quads.iter().all(|(_, quad)| !has_rounded_corners(quad)),
+        "no rounded pill is painted while the setting is off: {quads:?}"
+    );
+    let selection_quads = quads
+        .iter()
+        .filter(|(_, quad)| quad.background == Background::from(selection_color))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        selection_quads.len(),
+        1,
+        "the row paints the selection color: {selection_quads:?}"
+    );
+    let (selection_bounds, selection) = selection_quads[0];
+    assert_eq!(
+        selection.corner_radii,
+        gpui::Corners::default(),
+        "the selection has square corners while the setting is off"
+    );
+    assert!(
+        (selection_bounds.left() - row_bounds.left()).abs() <= px(0.5)
+            && (selection_bounds.right() - row_bounds.right()).abs() <= px(0.5),
+        "the selection spans the whole row: {selection_bounds:?} vs {row_bounds:?}"
+    );
+
+    let focus_border_quads = quads
+        .iter()
+        .filter(|(_, quad)| quad.border_color == focus_border_color)
+        .collect::<Vec<_>>();
+    assert!(
+        !focus_border_quads.is_empty(),
+        "the keyboard-focused entry keeps a visible focus border"
+    );
+    for (border_bounds, _) in focus_border_quads {
+        assert_eq!(
+            border_bounds, selection_bounds,
+            "the focus border outlines the whole row while the setting is off"
+        );
+    }
+}
+
+#[gpui::test]
+async fn rounded_selection_uses_inactive_color_when_panel_loses_focus(
+    cx: &mut gpui::TestAppContext,
+) {
+    init_test(cx);
+    set_rounded_selection(true, cx);
+    let (panel, mut cx) = open_panel_with_files(3, DockSide::Left, cx).await;
+    let cx = &mut cx;
+    select_path_with_mark(&panel, "root/file_1.txt", cx);
+
+    panel.update_in(cx, |panel, window, cx| panel.focus_handle.focus(window, cx));
+    cx.run_until_parked();
+    let focused_color = painted_pill_color(&panel, "root/file_1.txt", cx);
+
+    panel.update_in(cx, |panel, window, cx| {
+        let workspace = panel
+            .workspace
+            .upgrade()
+            .expect("workspace should be alive for this test");
+        let pane = workspace.read(cx).active_pane().clone();
+        window.focus(&pane.focus_handle(cx), cx);
+    });
+    cx.run_until_parked();
+    panel.update_in(cx, |panel, window, cx| {
+        assert!(
+            !panel.contains_focus(window, cx),
+            "focus should have moved to the center pane"
+        );
+    });
+    let unfocused_color = painted_pill_color(&panel, "root/file_1.txt", cx);
+
+    let element_selected = cx.update(|_, cx| cx.theme().colors().element_selected);
+    assert_eq!(
+        focused_color, element_selected,
+        "the focused panel fills the selection with the active selection color"
+    );
+    assert_ne!(
+        unfocused_color, focused_color,
+        "the selection color changes when the panel loses focus"
+    );
+    assert_eq!(
+        unfocused_color.s, 0.,
+        "the selection of an unfocused panel is a neutral grey"
+    );
+    assert!(
+        unfocused_color.a < focused_color.a,
+        "the selection of an unfocused panel is more subdued"
+    );
+}
+
+#[gpui::test]
+async fn rounded_selection_highlights_hovered_entry_with_pill(cx: &mut gpui::TestAppContext) {
+    init_test(cx);
+    set_rounded_selection(true, cx);
+    let (panel, mut cx) = open_panel_with_files(3, DockSide::Left, cx).await;
+    let cx = &mut cx;
+    let hover_color = cx.update(|_, cx| cx.theme().colors().element_hover);
+
+    let (row_bounds, quads) = painted_quads_in_entry_row(&panel, "root/file_2.txt", cx);
+    assert!(
+        quads
+            .iter()
+            .all(|(_, quad)| quad.background != Background::from(hover_color)),
+        "nothing is highlighted before the mouse enters the row: {quads:?}"
+    );
+
+    cx.simulate_mouse_move(row_bounds.center(), None, Modifiers::default());
+    cx.run_until_parked();
+
+    let (row_bounds, quads) = painted_quads_in_entry_row(&panel, "root/file_2.txt", cx);
+    let hover_quads = quads
+        .iter()
+        .filter(|(_, quad)| quad.background == Background::from(hover_color))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        hover_quads.len(),
+        1,
+        "only the pill paints the hover color: {hover_quads:?}"
+    );
+    let (hover_bounds, hover_quad) = hover_quads[0];
+    assert!(
+        has_rounded_corners(hover_quad),
+        "the hovered row is highlighted with a rounded pill: {hover_quad:?}"
+    );
+    assert!(
+        hover_bounds.left() >= row_bounds.left() + SELECTION_PILL_INSET - px(0.5)
+            && hover_bounds.right() <= row_bounds.right() - SELECTION_PILL_INSET + px(0.5),
+        "the hover pill is inset from both edges of the row: {hover_bounds:?} in {row_bounds:?}"
+    );
+}
+
+fn set_rounded_selection(rounded_selection: bool, cx: &mut TestAppContext) {
+    cx.update(|cx| {
+        cx.update_global::<SettingsStore, _>(|store, cx| {
+            store.update_user_settings(cx, |settings| {
+                settings
+                    .project_panel
+                    .get_or_insert_default()
+                    .rounded_selection = Some(rounded_selection);
+            });
+        });
+    });
+}
+
+fn painted_quads_in_entry_row(
+    panel: &Entity<ProjectPanel>,
+    path: &str,
+    cx: &mut VisualTestContext,
+) -> (Bounds<Pixels>, Vec<(Bounds<Pixels>, Quad)>) {
+    let entry_id = find_project_entry(panel, path, cx).expect("entry should exist for this test");
+    let row_bounds = panel.read_with(cx, |panel, _| entry_row_bounds(panel, entry_id));
+    let quads = cx.update(|window, _| {
+        let scale_factor = window.scale_factor();
+        window
+            .painted_quads()
+            .into_iter()
+            .map(|quad| {
+                let bounds = quad.bounds.map(|value| px(value.as_f32() / scale_factor));
+                (bounds, quad)
+            })
+            .filter(|(bounds, _)| {
+                bounds.top() >= row_bounds.top() - px(1.)
+                    && bounds.bottom() <= row_bounds.bottom() + px(1.)
+                    && bounds.left() >= row_bounds.left() - px(1.)
+                    && bounds.right() <= row_bounds.right() + px(1.)
+            })
+            .collect::<Vec<_>>()
+    });
+    (row_bounds, quads)
+}
+
+fn has_rounded_corners(quad: &Quad) -> bool {
+    let radii = &quad.corner_radii;
+    [
+        radii.top_left,
+        radii.top_right,
+        radii.bottom_right,
+        radii.bottom_left,
+    ]
+    .into_iter()
+    .all(|radius| radius.as_f32() > 0.)
+}
+
+fn painted_pill_color(
+    panel: &Entity<ProjectPanel>,
+    path: &str,
+    cx: &mut VisualTestContext,
+) -> Hsla {
+    let (_, quads) = painted_quads_in_entry_row(panel, path, cx);
+    let pills = quads
+        .iter()
+        .filter(|(_, quad)| has_rounded_corners(quad) && !quad.background.is_transparent())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        pills.len(),
+        1,
+        "exactly one filled pill is painted in the row: {pills:?}"
+    );
+    pills[0]
+        .1
+        .background
+        .as_solid()
+        .expect("the selection pill has a solid background")
 }

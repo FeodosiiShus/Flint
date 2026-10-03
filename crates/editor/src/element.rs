@@ -6046,6 +6046,7 @@ impl EditorElement {
             return;
         };
         let any_scrollbar_dragged = self.editor.read(cx).scroll_manager.any_scrollbar_dragged();
+        let rounded_thumb = EditorSettings::get_global(cx).scrollbar.rounded_thumb;
 
         for (scrollbar_layout, axis) in scrollbars_layout.iter_scrollbars() {
             let hitbox = &scrollbar_layout.hitbox;
@@ -6102,11 +6103,18 @@ impl EditorElement {
                                 cx.theme().colors().scrollbar_thumb_background
                             }
                         };
+                        let (painted_thumb_bounds, thumb_corners, thumb_border_widths) =
+                            if rounded_thumb {
+                                let (bounds, corners) = rounded_thumb_bounds(thumb_bounds, axis);
+                                (bounds, corners, Edges::default())
+                            } else {
+                                (thumb_bounds, Corners::default(), scrollbar_edges)
+                            };
                         window.paint_quad(quad(
-                            thumb_bounds,
-                            Corners::default(),
+                            painted_thumb_bounds,
+                            thumb_corners,
                             scrollbar_thumb_color,
-                            scrollbar_edges,
+                            thumb_border_widths,
                             cx.theme().colors().scrollbar_thumb_border,
                             BorderStyle::Solid,
                         ));
@@ -10586,6 +10594,27 @@ impl ScrollbarLayout {
     }
 }
 
+const ROUNDED_THUMB_INSET: Pixels = px(3.0);
+const ROUNDED_THUMB_MIN_THICKNESS: Pixels = px(4.0);
+
+fn rounded_thumb_bounds(
+    thumb: Bounds<Pixels>,
+    axis: ScrollbarAxis,
+) -> (Bounds<Pixels>, Corners<Pixels>) {
+    let cross_axis = axis.invert();
+    let track_thickness = thumb.size.along(cross_axis);
+    let thickness = (track_thickness - ROUNDED_THUMB_INSET * 2.0)
+        .max(ROUNDED_THUMB_MIN_THICKNESS.min(track_thickness));
+    let inset = (track_thickness - thickness) / 2.0;
+    let bounds = Bounds::new(
+        thumb
+            .origin
+            .apply_along(cross_axis, |origin| origin + inset),
+        thumb.size.apply_along(cross_axis, |_| thickness),
+    );
+    (bounds, Corners::all(thickness / 2.0))
+}
+
 struct MinimapLayout {
     pub minimap: AnyElement,
     pub thumb_layout: ScrollbarLayout,
@@ -14055,5 +14084,77 @@ mod tests {
         expected.sort_by_key(|(row, x, _)| (*row, *x));
 
         assert_eq!(actual, expected, "scale: {scale}, x offset: {x_offset:?}");
+    }
+
+    #[test]
+    fn rounded_thumb_vertical_is_inset_horizontally_with_unchanged_length() {
+        let thumb = Bounds::new(point(px(100.), px(40.)), size(px(15.), px(60.)));
+
+        let (bounds, corners) = rounded_thumb_bounds(thumb, ScrollbarAxis::Vertical);
+
+        assert_eq!(
+            bounds,
+            Bounds::new(point(px(103.), px(40.)), size(px(9.), px(60.))),
+            "the pill is inset 3px on the left and right while keeping the thumb's vertical extent"
+        );
+        assert_eq!(
+            corners,
+            Corners::all(px(4.5)),
+            "the corner radius is half the pill's width so the ends are fully rounded"
+        );
+    }
+
+    #[test]
+    fn rounded_thumb_horizontal_is_inset_vertically_with_unchanged_length() {
+        let thumb = Bounds::new(point(px(20.), px(200.)), size(px(80.), px(15.)));
+
+        let (bounds, corners) = rounded_thumb_bounds(thumb, ScrollbarAxis::Horizontal);
+
+        assert_eq!(
+            bounds,
+            Bounds::new(point(px(20.), px(203.)), size(px(80.), px(9.))),
+            "the pill is inset 3px on the top and bottom while keeping the thumb's horizontal extent"
+        );
+        assert_eq!(
+            corners,
+            Corners::all(px(4.5)),
+            "the corner radius is half the pill's height so the ends are fully rounded"
+        );
+    }
+
+    #[test]
+    fn rounded_thumb_never_gets_thinner_than_the_minimum_thickness() {
+        let vertical_thumb = Bounds::new(point(px(50.), px(10.)), size(px(8.), px(30.)));
+        let (vertical_bounds, vertical_corners) =
+            rounded_thumb_bounds(vertical_thumb, ScrollbarAxis::Vertical);
+        assert_eq!(
+            vertical_bounds,
+            Bounds::new(point(px(52.), px(10.)), size(px(4.), px(30.))),
+            "a narrow track keeps a centered 4px pill instead of a 2px sliver"
+        );
+        assert_eq!(vertical_corners, Corners::all(px(2.)));
+
+        let horizontal_thumb = Bounds::new(point(px(10.), px(50.)), size(px(30.), px(6.)));
+        let (horizontal_bounds, horizontal_corners) =
+            rounded_thumb_bounds(horizontal_thumb, ScrollbarAxis::Horizontal);
+        assert_eq!(
+            horizontal_bounds,
+            Bounds::new(point(px(10.), px(51.)), size(px(30.), px(4.))),
+            "a short track keeps a centered 4px pill instead of collapsing to nothing"
+        );
+        assert_eq!(horizontal_corners, Corners::all(px(2.)));
+    }
+
+    #[test]
+    fn rounded_thumb_never_exceeds_a_track_thinner_than_the_minimum() {
+        let thumb = Bounds::new(point(px(50.), px(10.)), size(px(3.), px(30.)));
+
+        let (bounds, corners) = rounded_thumb_bounds(thumb, ScrollbarAxis::Vertical);
+
+        assert_eq!(
+            bounds, thumb,
+            "the pill stays inside the track when the track itself is thinner than the minimum"
+        );
+        assert_eq!(corners, Corners::all(px(1.5)));
     }
 }

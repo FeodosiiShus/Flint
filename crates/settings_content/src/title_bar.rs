@@ -121,4 +121,5 @@ pub struct TitleBarSettingsContent {
     pub show_run_widget: Option<bool>,
     pub show_search_button: Option<bool>,
     pub show_settings_button: Option<bool>,
+    pub show_project_gradient: Option<bool>,
 }

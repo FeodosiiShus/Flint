@@ -24,6 +24,7 @@ pub mod tasks;
 mod theme_preview;
 mod toast_layer;
 mod tool_window_bar;
+mod tool_window_header;
 mod toolbar;
 pub mod welcome;
 pub mod workspace_error;
@@ -162,9 +163,10 @@ use util::{
 use uuid::Uuid;
 pub use workspace_settings::{
     AccessibleMode, AutosaveSetting, BackgroundImageLayerSettings, BackgroundImageSettings,
-    BottomDockLayout, EncodingDisplayOptions, FocusFollowsMouse, IslandsSettings,
-    RestoreOnStartupBehavior, StatusBarSettings, TabBarSettings, ToolWindowBarsSettings,
-    WorkspaceSettings, closing_last_window_quits_app, observe_accessible_mode,
+    BottomDockLayout, EncodingDisplayOptions, FocusFollowsMouse, INACTIVE_FRAME_CONTENT_OPACITY,
+    IslandsSettings, RestoreOnStartupBehavior, StatusBarSettings, TabBarSettings,
+    ToolWindowBarsSettings, ToolWindowHeadersSettings, WorkspaceSettings,
+    closing_last_window_quits_app, observe_accessible_mode,
 };
 use zed_actions::{Spawn, theme::ToggleMode};
 
@@ -14619,6 +14621,41 @@ mod tests {
     }
 
     #[gpui::test]
+    async fn test_right_tool_window_bar_is_hidden_without_right_dock_buttons(
+        cx: &mut TestAppContext,
+    ) {
+        let (workspace, [_, _, right_panel], cx) = tool_window_bar_test_workspace(cx).await;
+        assert!(
+            cx.debug_bounds("tool_window_bar_right").is_some(),
+            "the right bar is shown while the right dock has a panel button"
+        );
+
+        workspace.update_in(cx, |workspace, window, cx| {
+            workspace.remove_panel(&right_panel, window, cx);
+        });
+        cx.run_until_parked();
+
+        assert_eq!(
+            cx.debug_bounds("tool_window_bar_right"),
+            None,
+            "an empty right bar takes no space"
+        );
+        assert!(
+            cx.debug_bounds("tool_window_bar_left").is_some(),
+            "the left bar keeps its More tool windows button"
+        );
+        let center = cx
+            .debug_bounds("center_island")
+            .expect("islands are enabled by default");
+        let window_width = cx.update(|window, _| window.viewport_size().width);
+        assert_eq!(
+            window_width - center.right(),
+            px(4.),
+            "without the right bar the editor island keeps only the islands gap to the window edge"
+        );
+    }
+
+    #[gpui::test]
     async fn test_tool_window_bar_click_toggles_panel(cx: &mut TestAppContext) {
         let (workspace, [left_panel, _, _], cx) = tool_window_bar_test_workspace(cx).await;
 
@@ -14736,6 +14773,475 @@ mod tests {
             cx.debug_bounds("center_island"),
             None,
             "the classic layout has no center island"
+        );
+    }
+
+    fn open_dock_with_center_focus(
+        workspace: &Entity<Workspace>,
+        position: DockPosition,
+        cx: &mut VisualTestContext,
+    ) {
+        workspace.update_in(cx, |workspace, window, cx| {
+            workspace.toggle_dock(position, window, cx);
+            let center_focus = workspace.active_pane().focus_handle(cx);
+            window.focus(&center_focus, cx);
+        });
+        cx.run_until_parked();
+    }
+
+    fn innermost_painted_background(position: Point<Pixels>, cx: &mut VisualTestContext) -> Hsla {
+        cx.update(|window, _| {
+            let position = position.scale(window.scale_factor());
+            window
+                .painted_quads()
+                .into_iter()
+                .filter(|quad| !quad.background.is_transparent() && quad.bounds.contains(&position))
+                .min_by(|first, second| {
+                    let first_area = first.bounds.size.width.0 * first.bounds.size.height.0;
+                    let second_area = second.bounds.size.width.0 * second.bounds.size.height.0;
+                    first_area.total_cmp(&second_area)
+                })
+                .and_then(|quad| quad.background.as_solid())
+                .expect("a solid background is painted at the position")
+        })
+    }
+
+    fn painted_alphas_of(
+        color: Hsla,
+        region: Bounds<Pixels>,
+        cx: &mut VisualTestContext,
+    ) -> Vec<f32> {
+        cx.update(|window, _| {
+            let region = region.scale(window.scale_factor());
+            window
+                .painted_quads()
+                .into_iter()
+                .filter(|quad| quad.bounds.intersects(&region))
+                .filter_map(|quad| quad.background.as_solid())
+                .filter(|painted| (painted.h, painted.s, painted.l) == (color.h, color.s, color.l))
+                .map(|painted| painted.a)
+                .collect()
+        })
+    }
+
+    #[test]
+    fn tool_window_header_title_drops_the_panel_suffix() {
+        use crate::tool_window_header::tool_window_title;
+
+        assert_eq!(tool_window_title("Project Panel"), "Project");
+        assert_eq!(tool_window_title("Terminal Panel"), "Terminal");
+        assert_eq!(
+            tool_window_title("Git"),
+            "Git",
+            "a name without the suffix is shown as is"
+        );
+        assert_eq!(
+            tool_window_title("Panel"),
+            "Panel",
+            "a bare word is not treated as the suffix"
+        );
+        assert_eq!(
+            tool_window_title("Panel Panel"),
+            "Panel",
+            "only the trailing suffix is dropped"
+        );
+    }
+
+    #[gpui::test]
+    async fn tool_window_header_tops_every_open_dock(cx: &mut TestAppContext) {
+        let (workspace, _panels, cx) = tool_window_bar_test_workspace(cx).await;
+        assert_eq!(
+            cx.debug_bounds("tool_window_header_left"),
+            None,
+            "a closed dock has no header"
+        );
+
+        workspace.update_in(cx, |workspace, window, cx| {
+            workspace.toggle_dock(DockPosition::Left, window, cx);
+            workspace.toggle_dock(DockPosition::Bottom, window, cx);
+        });
+        cx.run_until_parked();
+
+        for (header_selector, island_selector, content_selector) in [
+            (
+                "tool_window_header_left",
+                "tool_window_left",
+                "tool_window_content_left",
+            ),
+            (
+                "tool_window_header_bottom",
+                "tool_window_bottom",
+                "tool_window_content_bottom",
+            ),
+        ] {
+            let header = cx
+                .debug_bounds(header_selector)
+                .expect("an open dock shows its header");
+            let island = cx
+                .debug_bounds(island_selector)
+                .expect("an open dock renders its island");
+            let content = cx
+                .debug_bounds(content_selector)
+                .expect("an open dock renders its panel");
+            assert_eq!(
+                header.origin, island.origin,
+                "{header_selector} starts at the top left corner of its island"
+            );
+            assert_eq!(
+                header.size.width, island.size.width,
+                "{header_selector} spans its island"
+            );
+            assert!(
+                header.size.height > px(0.),
+                "{header_selector} takes vertical space"
+            );
+            assert_eq!(
+                content.top(),
+                header.bottom(),
+                "the panel starts right below {header_selector}"
+            );
+            assert_eq!(
+                content.bottom(),
+                island.bottom(),
+                "the panel fills the rest of the island under {header_selector}"
+            );
+        }
+        assert_eq!(
+            cx.debug_bounds("tool_window_header_right"),
+            None,
+            "the closed right dock has no header"
+        );
+
+        cx.update(|_, cx| {
+            SettingsStore::update_global(cx, |store, cx| {
+                store.update_user_settings(cx, |settings| {
+                    settings.workspace.islands.get_or_insert_default().enabled = Some(false);
+                });
+            });
+        });
+        cx.run_until_parked();
+
+        let header = cx
+            .debug_bounds("tool_window_header_left")
+            .expect("the classic layout keeps the header");
+        let panel = cx
+            .debug_bounds("tool_window_left")
+            .expect("the classic layout renders the left panel");
+        let content = cx
+            .debug_bounds("tool_window_content_left")
+            .expect("the classic layout renders the panel content");
+        assert_eq!(
+            header.top(),
+            panel.top(),
+            "the classic header sits at the top of its panel"
+        );
+        assert_eq!(
+            content.top(),
+            header.bottom(),
+            "the classic panel content starts right below the header"
+        );
+
+        cx.update(|_, cx| {
+            SettingsStore::update_global(cx, |store, cx| {
+                store.update_user_settings(cx, |settings| {
+                    settings
+                        .workspace
+                        .tool_window_headers
+                        .get_or_insert_default()
+                        .show = Some(false);
+                });
+            });
+        });
+        cx.run_until_parked();
+
+        for selector in ["tool_window_header_left", "tool_window_header_bottom"] {
+            assert_eq!(
+                cx.debug_bounds(selector),
+                None,
+                "{selector} disappears when tool window headers are turned off"
+            );
+        }
+        let panel = cx
+            .debug_bounds("tool_window_left")
+            .expect("the left panel stays open without a header");
+        let content = cx
+            .debug_bounds("tool_window_content_left")
+            .expect("the left panel content stays rendered without a header");
+        assert_eq!(
+            content.top(),
+            panel.top(),
+            "without a header the panel content starts at the top"
+        );
+    }
+
+    #[gpui::test]
+    async fn tool_window_header_actions_show_on_hover_focus_or_setting(cx: &mut TestAppContext) {
+        let (workspace, _panels, cx) = tool_window_bar_test_workspace(cx).await;
+        open_dock_with_center_focus(&workspace, DockPosition::Left, cx);
+
+        let header = cx
+            .debug_bounds("tool_window_header_left")
+            .expect("the open left dock has a header");
+        let center = cx
+            .debug_bounds("center_island")
+            .expect("islands are enabled by default");
+        assert_eq!(
+            cx.debug_bounds("tool_window_header_hide_left"),
+            None,
+            "the actions stay hidden while the dock is neither hovered nor focused"
+        );
+
+        cx.simulate_mouse_move(header.center(), None, gpui::Modifiers::none());
+        let options = cx
+            .debug_bounds("tool_window_header_options_left")
+            .expect("hovering the dock reveals the options button");
+        let hide = cx
+            .debug_bounds("tool_window_header_hide_left")
+            .expect("hovering the dock reveals the hide button");
+        assert!(
+            header.contains(&options.center()) && header.contains(&hide.center()),
+            "the actions sit in the header: header {header:?}, options {options:?}, hide {hide:?}"
+        );
+        assert!(
+            options.right() <= hide.left(),
+            "the hide button is the last header action"
+        );
+
+        cx.simulate_mouse_move(center.center(), None, gpui::Modifiers::none());
+        assert_eq!(
+            cx.debug_bounds("tool_window_header_hide_left"),
+            None,
+            "leaving the dock hides the actions again"
+        );
+
+        cx.simulate_click(header.center(), gpui::Modifiers::none());
+        cx.simulate_mouse_move(center.center(), None, gpui::Modifiers::none());
+        assert!(
+            cx.debug_bounds("tool_window_header_hide_left").is_some(),
+            "a focused dock keeps its actions visible without hover"
+        );
+
+        workspace.update_in(cx, |workspace, window, cx| {
+            let center_focus = workspace.active_pane().focus_handle(cx);
+            window.focus(&center_focus, cx);
+        });
+        cx.run_until_parked();
+        assert_eq!(
+            cx.debug_bounds("tool_window_header_hide_left"),
+            None,
+            "moving focus out of the dock hides the actions"
+        );
+
+        cx.update(|_, cx| {
+            SettingsStore::update_global(cx, |store, cx| {
+                store.update_user_settings(cx, |settings| {
+                    settings
+                        .workspace
+                        .tool_window_headers
+                        .get_or_insert_default()
+                        .always_show_actions = Some(true);
+                });
+            });
+        });
+        cx.run_until_parked();
+        assert!(
+            cx.debug_bounds("tool_window_header_options_left").is_some()
+                && cx.debug_bounds("tool_window_header_hide_left").is_some(),
+            "always_show_actions shows the actions without hover or focus"
+        );
+    }
+
+    #[gpui::test]
+    async fn tool_window_header_hide_button_closes_its_dock_only_when_shown(
+        cx: &mut TestAppContext,
+    ) {
+        let (workspace, _panels, cx) = tool_window_bar_test_workspace(cx).await;
+        open_dock_with_center_focus(&workspace, DockPosition::Right, cx);
+
+        let header = cx
+            .debug_bounds("tool_window_header_right")
+            .expect("the open right dock has a header");
+        let center = cx
+            .debug_bounds("center_island")
+            .expect("islands are enabled by default");
+        cx.simulate_mouse_move(header.center(), None, gpui::Modifiers::none());
+        let hide = cx
+            .debug_bounds("tool_window_header_hide_right")
+            .expect("hovering the dock reveals the hide button");
+        cx.simulate_mouse_move(center.center(), None, gpui::Modifiers::none());
+
+        cx.simulate_click(hide.center(), gpui::Modifiers::none());
+        cx.run_until_parked();
+        workspace.read_with(cx, |workspace, cx| {
+            assert!(
+                workspace.right_dock().read(cx).is_open(),
+                "a click where the hidden hide button sits does not close the dock"
+            );
+        });
+
+        cx.simulate_click(hide.center(), gpui::Modifiers::none());
+        cx.run_until_parked();
+        workspace.read_with(cx, |workspace, cx| {
+            assert!(
+                !workspace.right_dock().read(cx).is_open(),
+                "the shown hide button closes its dock"
+            );
+        });
+        assert_eq!(
+            cx.debug_bounds("tool_window_header_right"),
+            None,
+            "a closed dock has no header"
+        );
+    }
+
+    #[gpui::test]
+    async fn tool_window_header_options_button_opens_the_panel_menu(cx: &mut TestAppContext) {
+        let (workspace, _panels, cx) = tool_window_bar_test_workspace(cx).await;
+        open_dock_with_center_focus(&workspace, DockPosition::Left, cx);
+        assert_eq!(
+            cx.debug_bounds("MENU_ITEM-Dock Right"),
+            None,
+            "no panel menu is open yet"
+        );
+
+        let header = cx
+            .debug_bounds("tool_window_header_left")
+            .expect("the open left dock has a header");
+        cx.simulate_mouse_move(header.center(), None, gpui::Modifiers::none());
+        let options = cx
+            .debug_bounds("tool_window_header_options_left")
+            .expect("hovering the dock reveals the options button");
+        cx.simulate_click(options.center(), gpui::Modifiers::none());
+        cx.run_until_parked();
+
+        assert!(
+            cx.debug_bounds("MENU_ITEM-Dock Right").is_some(),
+            "the options button opens the panel menu with the dock positions"
+        );
+    }
+
+    #[gpui::test]
+    async fn tool_window_header_right_click_opens_the_panel_menu(cx: &mut TestAppContext) {
+        let (workspace, _panels, cx) = tool_window_bar_test_workspace(cx).await;
+        open_dock_with_center_focus(&workspace, DockPosition::Bottom, cx);
+        assert_eq!(
+            cx.debug_bounds("MENU_ITEM-Dock Left"),
+            None,
+            "no panel menu is open yet"
+        );
+
+        let header = cx
+            .debug_bounds("tool_window_header_bottom")
+            .expect("the open bottom dock has a header");
+        cx.simulate_mouse_down(header.center(), MouseButton::Right, gpui::Modifiers::none());
+        cx.simulate_mouse_up(header.center(), MouseButton::Right, gpui::Modifiers::none());
+        cx.run_until_parked();
+
+        assert!(
+            cx.debug_bounds("MENU_ITEM-Dock Left").is_some(),
+            "right-clicking the header opens the panel menu with the dock positions"
+        );
+    }
+
+    #[gpui::test]
+    async fn inactive_window_dims_tool_window_bar_content_only(cx: &mut TestAppContext) {
+        let (workspace, _panels, cx) = tool_window_bar_test_workspace(cx).await;
+        open_dock_with_center_focus(&workspace, DockPosition::Left, cx);
+        cx.update(|window, _| window.activate_window());
+        cx.run_until_parked();
+
+        let bar = cx
+            .debug_bounds("tool_window_bar_left")
+            .expect("the left tool window bar is shown by default");
+        let button = cx
+            .debug_bounds("tool_window_button_left_0")
+            .expect("the open left panel has a bar button");
+        let active_button = innermost_painted_background(button.center(), cx);
+        let active_bar = innermost_painted_background(bar.center(), cx);
+
+        cx.deactivate_window();
+        let inactive_button = innermost_painted_background(button.center(), cx);
+        assert!(
+            (inactive_button.a - active_button.a * INACTIVE_FRAME_CONTENT_OPACITY).abs() < 1e-6,
+            "an inactive window dims the open panel button: active {active_button:?}, inactive {inactive_button:?}"
+        );
+        assert_eq!(
+            innermost_painted_background(bar.center(), cx),
+            active_bar,
+            "the tool window bar background is never dimmed"
+        );
+
+        cx.update(|window, _| window.activate_window());
+        cx.run_until_parked();
+        assert_eq!(
+            innermost_painted_background(button.center(), cx),
+            active_button,
+            "activating the window restores the button"
+        );
+
+        cx.update(|_, cx| {
+            SettingsStore::update_global(cx, |store, cx| {
+                store.update_user_settings(cx, |settings| {
+                    settings
+                        .workspace
+                        .islands
+                        .get_or_insert_default()
+                        .dim_inactive_window = Some(false);
+                });
+            });
+        });
+        cx.run_until_parked();
+        cx.deactivate_window();
+        assert_eq!(
+            innermost_painted_background(button.center(), cx),
+            active_button,
+            "an inactive window keeps its frame content when dimming is turned off"
+        );
+    }
+
+    #[gpui::test]
+    async fn inactive_window_dims_status_bar_content_only(cx: &mut TestAppContext) {
+        let (_workspace, _panels, cx) = tool_window_bar_test_workspace(cx).await;
+        cx.update(|window, cx| {
+            SettingsStore::update_global(cx, |store, cx| {
+                store.update_user_settings(cx, |settings| {
+                    settings
+                        .workspace
+                        .tool_window_bars
+                        .get_or_insert_default()
+                        .show = Some(false);
+                });
+            });
+            window.activate_window();
+        });
+        cx.run_until_parked();
+
+        let panel_buttons = cx
+            .debug_bounds("panel_buttons_Left")
+            .expect("the panel buttons return to the status bar without tool window bars");
+        let border = cx.update(|_, cx| cx.theme().colors().border);
+        let window_width = cx.update(|window, _| window.viewport_size().width);
+        let status_bar_middle = point(window_width / 2., panel_buttons.center().y);
+        let active_dividers = painted_alphas_of(border, panel_buttons, cx);
+        assert!(
+            !active_dividers.is_empty(),
+            "the status bar paints a divider next to the left panel buttons"
+        );
+        let active_background = innermost_painted_background(status_bar_middle, cx);
+
+        cx.deactivate_window();
+        let inactive_dividers = painted_alphas_of(border, panel_buttons, cx);
+        assert_eq!(inactive_dividers.len(), active_dividers.len());
+        for (active, inactive) in active_dividers.into_iter().zip(inactive_dividers) {
+            assert!(
+                (inactive - active * INACTIVE_FRAME_CONTENT_OPACITY).abs() < 1e-6,
+                "an inactive window dims the status bar items: active {active}, inactive {inactive}"
+            );
+        }
+        assert_eq!(
+            innermost_painted_background(status_bar_middle, cx),
+            active_background,
+            "the status bar background is never dimmed"
         );
     }
 

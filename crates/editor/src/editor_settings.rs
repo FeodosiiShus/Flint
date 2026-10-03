@@ -118,6 +118,7 @@ pub struct Scrollbar {
     pub diagnostics: ScrollbarDiagnostics,
     pub cursors: bool,
     pub axes: ScrollbarAxes,
+    pub rounded_thumb: bool,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq)]
@@ -265,6 +266,7 @@ impl Settings for EditorSettings {
                     horizontal: axes.horizontal.unwrap(),
                     vertical: axes.vertical.unwrap(),
                 },
+                rounded_thumb: scrollbar.rounded_thumb.unwrap_or(true),
             },
             minimap: Minimap {
                 show: minimap.show.unwrap(),

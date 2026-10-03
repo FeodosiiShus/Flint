@@ -47,18 +47,21 @@ pub struct WorkspaceSettings {
     pub focus_follows_mouse: FocusFollowsMouse,
     pub islands: IslandsSettings,
     pub tool_window_bars: ToolWindowBarsSettings,
+    pub tool_window_headers: ToolWindowHeadersSettings,
 }
 
 const ISLANDS_GAP_RANGE: (u32, u32) = (0, 16);
 const ISLANDS_CORNER_RADIUS_RANGE: (u32, u32) = (0, 24);
 const TOOL_WINDOW_BAR_ICON_SIZE_RANGE: (u32, u32) = (12, 32);
 const TOOL_WINDOW_BAR_BUTTON_PADDING: Pixels = px(20.);
+pub const INACTIVE_FRAME_CONTENT_OPACITY: f32 = 0.56;
 
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct IslandsSettings {
     pub enabled: bool,
     pub gap: Pixels,
     pub corner_radius: Pixels,
+    pub dim_inactive_window: bool,
 }
 
 impl IslandsSettings {
@@ -81,11 +84,22 @@ impl IslandsSettings {
                 default_corner_radius,
                 ISLANDS_CORNER_RADIUS_RANGE,
             ),
+            dim_inactive_window: content
+                .and_then(|islands| islands.dim_inactive_window)
+                .unwrap_or(true),
         }
     }
 
     pub fn half_gap(&self) -> Pixels {
         self.gap / 2.
+    }
+
+    pub fn frame_content_opacity(&self, window_active: bool) -> f32 {
+        if self.enabled && self.dim_inactive_window && !window_active {
+            INACTIVE_FRAME_CONTENT_OPACITY
+        } else {
+            1.0
+        }
     }
 }
 
@@ -115,6 +129,23 @@ impl ToolWindowBarsSettings {
 
     pub fn bar_width(&self) -> Pixels {
         self.icon_size + TOOL_WINDOW_BAR_BUTTON_PADDING
+    }
+}
+
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct ToolWindowHeadersSettings {
+    pub show: bool,
+    pub always_show_actions: bool,
+}
+
+impl ToolWindowHeadersSettings {
+    fn from_content(content: Option<&settings::ToolWindowHeadersSettingsContent>) -> Self {
+        Self {
+            show: content.and_then(|headers| headers.show).unwrap_or(true),
+            always_show_actions: content
+                .and_then(|headers| headers.always_show_actions)
+                .unwrap_or(false),
+        }
     }
 }
 
@@ -169,6 +200,7 @@ pub struct TabBarSettings {
     pub show_nav_history_buttons: bool,
     pub show_tab_bar_buttons: bool,
     pub show_pinned_tabs_in_separate_row: bool,
+    pub show_hidden_tabs_button: bool,
 }
 
 impl Settings for WorkspaceSettings {
@@ -249,6 +281,9 @@ impl Settings for WorkspaceSettings {
                 workspace.tool_window_bars.as_ref(),
                 content.theme.ui_density,
             ),
+            tool_window_headers: ToolWindowHeadersSettings::from_content(
+                workspace.tool_window_headers.as_ref(),
+            ),
         }
     }
 }
@@ -294,6 +329,7 @@ impl Settings for TabBarSettings {
             show_nav_history_buttons: tab_bar.show_nav_history_buttons.unwrap(),
             show_tab_bar_buttons: tab_bar.show_tab_bar_buttons.unwrap(),
             show_pinned_tabs_in_separate_row: tab_bar.show_pinned_tabs_in_separate_row.unwrap(),
+            show_hidden_tabs_button: tab_bar.show_hidden_tabs_button.unwrap_or(true),
         }
     }
 }
@@ -382,7 +418,10 @@ impl Settings for BackgroundImageSettings {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use settings::{IslandsSettingsContent, ToolWindowBarsSettingsContent, UiDensity};
+    use settings::{
+        IslandsSettingsContent, ToolWindowBarsSettingsContent, ToolWindowHeadersSettingsContent,
+        UiDensity,
+    };
 
     #[test]
     fn islands_use_webstorm_metrics_when_unset() {
@@ -393,6 +432,7 @@ mod tests {
                 enabled: true,
                 gap: px(4.),
                 corner_radius: px(10.),
+                dim_inactive_window: true,
             }
         );
         assert_eq!(islands.half_gap(), px(2.));
@@ -424,6 +464,7 @@ mod tests {
             enabled: Some(false),
             gap: Some(6),
             corner_radius: Some(12),
+            dim_inactive_window: Some(false),
         };
         let islands = IslandsSettings::from_content(Some(&content), Some(UiDensity::Compact));
         assert_eq!(
@@ -432,6 +473,7 @@ mod tests {
                 enabled: false,
                 gap: px(6.),
                 corner_radius: px(12.),
+                dim_inactive_window: false,
             }
         );
     }
@@ -442,6 +484,7 @@ mod tests {
             enabled: None,
             gap: Some(17),
             corner_radius: Some(25),
+            dim_inactive_window: None,
         };
         let islands = IslandsSettings::from_content(Some(&too_large), None);
         assert_eq!(islands.gap, px(16.));
@@ -451,6 +494,7 @@ mod tests {
             enabled: None,
             gap: Some(0),
             corner_radius: Some(0),
+            dim_inactive_window: None,
         };
         let islands = IslandsSettings::from_content(Some(&at_bounds), None);
         assert_eq!(islands.gap, px(0.));
@@ -499,5 +543,66 @@ mod tests {
         let bars = ToolWindowBarsSettings::from_content(Some(&too_large), Some(UiDensity::Compact));
         assert_eq!(bars.icon_size, px(32.));
         assert_eq!(bars.bar_width(), px(52.));
+    }
+
+    #[test]
+    fn island_frame_content_is_dimmed_only_while_the_window_is_inactive() {
+        let islands = IslandsSettings::from_content(None, None);
+        assert_eq!(islands.frame_content_opacity(true), 1.0);
+        assert_eq!(islands.frame_content_opacity(false), 0.56);
+    }
+
+    #[test]
+    fn island_frame_content_is_never_dimmed_when_islands_are_disabled() {
+        let content = IslandsSettingsContent {
+            enabled: Some(false),
+            ..IslandsSettingsContent::default()
+        };
+        let islands = IslandsSettings::from_content(Some(&content), None);
+        assert!(islands.dim_inactive_window);
+        assert_eq!(islands.frame_content_opacity(false), 1.0);
+        assert_eq!(islands.frame_content_opacity(true), 1.0);
+    }
+
+    #[test]
+    fn island_frame_content_is_never_dimmed_when_dimming_is_turned_off() {
+        let content = IslandsSettingsContent {
+            dim_inactive_window: Some(false),
+            ..IslandsSettingsContent::default()
+        };
+        let islands = IslandsSettings::from_content(Some(&content), None);
+        assert!(islands.enabled);
+        assert_eq!(islands.frame_content_opacity(false), 1.0);
+        assert_eq!(islands.frame_content_opacity(true), 1.0);
+    }
+
+    #[test]
+    fn tool_window_headers_show_with_hover_only_actions_when_unset() {
+        let expected = ToolWindowHeadersSettings {
+            show: true,
+            always_show_actions: false,
+        };
+        assert_eq!(ToolWindowHeadersSettings::from_content(None), expected);
+
+        let unset = ToolWindowHeadersSettingsContent::default();
+        assert_eq!(
+            ToolWindowHeadersSettings::from_content(Some(&unset)),
+            expected
+        );
+    }
+
+    #[test]
+    fn explicit_tool_window_header_values_override_defaults() {
+        let content = ToolWindowHeadersSettingsContent {
+            show: Some(false),
+            always_show_actions: Some(true),
+        };
+        assert_eq!(
+            ToolWindowHeadersSettings::from_content(Some(&content)),
+            ToolWindowHeadersSettings {
+                show: false,
+                always_show_actions: true,
+            }
+        );
     }
 }

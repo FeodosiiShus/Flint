@@ -2721,7 +2721,7 @@ fn editor_page() -> SettingsPage {
         ]
     }
 
-    fn scrollbar_section() -> [SettingsPageItem; 10] {
+    fn scrollbar_section() -> [SettingsPageItem; 11] {
         [
             SettingsPageItem::SectionHeader("Scrollbar"),
             SettingsPageItem::SettingItem(SettingItem {
@@ -2933,6 +2933,30 @@ fn editor_page() -> SettingsPage {
                             .axes
                             .get_or_insert_default()
                             .vertical = value;
+                    },
+                }),
+                metadata: None,
+                files: USER,
+            }),
+            SettingsPageItem::SettingItem(SettingItem {
+                title: "Rounded Thumb",
+                description: "Draw the scrollbar thumb as a thin, rounded pill instead of a full-width rectangle.",
+                field: Box::new(SettingField {
+                    json_path: Some("scrollbar.rounded_thumb"),
+                    pick: |settings_content| {
+                        settings_content
+                            .editor
+                            .scrollbar
+                            .as_ref()?
+                            .rounded_thumb
+                            .as_ref()
+                    },
+                    write: |settings_content, value, _| {
+                        settings_content
+                            .editor
+                            .scrollbar
+                            .get_or_insert_default()
+                            .rounded_thumb = value;
                     },
                 }),
                 metadata: None,
@@ -4530,7 +4554,7 @@ fn window_and_layout_page() -> SettingsPage {
         ]
     }
 
-    fn title_bar_section() -> [SettingsPageItem; 14] {
+    fn title_bar_section() -> [SettingsPageItem; 15] {
         [
             SettingsPageItem::SectionHeader("Title Bar"),
             SettingsPageItem::SettingItem(SettingItem {
@@ -4824,6 +4848,28 @@ fn window_and_layout_page() -> SettingsPage {
                 files: USER,
             }),
             SettingsPageItem::SettingItem(SettingItem {
+                title: "Show Project Gradient",
+                description: "Tint the main toolbar with the project color, like WebStorm's project gradient.",
+                field: Box::new(SettingField {
+                    json_path: Some("title_bar.show_project_gradient"),
+                    pick: |settings_content| {
+                        settings_content
+                            .title_bar
+                            .as_ref()?
+                            .show_project_gradient
+                            .as_ref()
+                    },
+                    write: |settings_content, value, _| {
+                        settings_content
+                            .title_bar
+                            .get_or_insert_default()
+                            .show_project_gradient = value;
+                    },
+                }),
+                metadata: None,
+                files: USER,
+            }),
+            SettingsPageItem::SettingItem(SettingItem {
                 title: "Show Run Widget",
                 description: "Show the task picker, rerun and debug buttons in the titlebar.",
                 field: Box::new(SettingField {
@@ -4892,7 +4938,7 @@ fn window_and_layout_page() -> SettingsPage {
         ]
     }
 
-    fn tab_bar_section() -> [SettingsPageItem; 11] {
+    fn tab_bar_section() -> [SettingsPageItem; 12] {
         [
             SettingsPageItem::SectionHeader("Tab Bar"),
             SettingsPageItem::SettingItem(SettingItem {
@@ -5028,6 +5074,28 @@ fn window_and_layout_page() -> SettingsPage {
                             .tab_bar
                             .get_or_insert_default()
                             .show_pinned_tabs_in_separate_row = value;
+                    },
+                }),
+                metadata: None,
+                files: USER,
+            }),
+            SettingsPageItem::SettingItem(SettingItem {
+                title: "Show Hidden Tabs Button",
+                description: "Show a button in the tab bar that lists the tabs that do not fit, like WebStorm's Show Hidden Tabs.",
+                field: Box::new(SettingField {
+                    json_path: Some("tab_bar.show_hidden_tabs_button"),
+                    pick: |settings_content| {
+                        settings_content
+                            .tab_bar
+                            .as_ref()?
+                            .show_hidden_tabs_button
+                            .as_ref()
+                    },
+                    write: |settings_content, value, _| {
+                        settings_content
+                            .tab_bar
+                            .get_or_insert_default()
+                            .show_hidden_tabs_button = value;
                     },
                 }),
                 metadata: None,
@@ -5391,7 +5459,7 @@ fn window_and_layout_page() -> SettingsPage {
         ]
     }
 
-    fn islands_section() -> [SettingsPageItem; 4] {
+    fn islands_section() -> [SettingsPageItem; 5] {
         [
             SettingsPageItem::SectionHeader("Islands"),
             SettingsPageItem::SettingItem(SettingItem {
@@ -5456,6 +5524,30 @@ fn window_and_layout_page() -> SettingsPage {
                             .islands
                             .get_or_insert_default()
                             .corner_radius = value;
+                    },
+                }),
+                metadata: None,
+                files: USER,
+            }),
+            SettingsPageItem::SettingItem(SettingItem {
+                title: "Dim Inactive Window",
+                description: "Dim the contents of the title bar, tool window bars and status bar while the window is inactive. Backgrounds are not dimmed.",
+                field: Box::new(SettingField {
+                    json_path: Some("islands.dim_inactive_window"),
+                    pick: |settings_content| {
+                        settings_content
+                            .workspace
+                            .islands
+                            .as_ref()?
+                            .dim_inactive_window
+                            .as_ref()
+                    },
+                    write: |settings_content, value, _| {
+                        settings_content
+                            .workspace
+                            .islands
+                            .get_or_insert_default()
+                            .dim_inactive_window = value;
                     },
                 }),
                 metadata: None,
@@ -5534,6 +5626,60 @@ fn window_and_layout_page() -> SettingsPage {
                             .tool_window_bars
                             .get_or_insert_default()
                             .show_names = value;
+                    },
+                }),
+                metadata: None,
+                files: USER,
+            }),
+        ]
+    }
+
+    fn tool_window_headers_section() -> [SettingsPageItem; 3] {
+        [
+            SettingsPageItem::SectionHeader("Tool Window Headers"),
+            SettingsPageItem::SettingItem(SettingItem {
+                title: "Show Headers",
+                description: "Show a header with the tool window name and its actions at the top of each docked panel.",
+                field: Box::new(SettingField {
+                    json_path: Some("tool_window_headers.show"),
+                    pick: |settings_content| {
+                        settings_content
+                            .workspace
+                            .tool_window_headers
+                            .as_ref()?
+                            .show
+                            .as_ref()
+                    },
+                    write: |settings_content, value, _| {
+                        settings_content
+                            .workspace
+                            .tool_window_headers
+                            .get_or_insert_default()
+                            .show = value;
+                    },
+                }),
+                metadata: None,
+                files: USER,
+            }),
+            SettingsPageItem::SettingItem(SettingItem {
+                title: "Always Show Header Actions",
+                description: "Always show the tool window header actions. Otherwise they appear only while the tool window is hovered or focused.",
+                field: Box::new(SettingField {
+                    json_path: Some("tool_window_headers.always_show_actions"),
+                    pick: |settings_content| {
+                        settings_content
+                            .workspace
+                            .tool_window_headers
+                            .as_ref()?
+                            .always_show_actions
+                            .as_ref()
+                    },
+                    write: |settings_content, value, _| {
+                        settings_content
+                            .workspace
+                            .tool_window_headers
+                            .get_or_insert_default()
+                            .always_show_actions = value;
                     },
                 }),
                 metadata: None,
@@ -5762,6 +5908,7 @@ fn window_and_layout_page() -> SettingsPage {
             layout_section(),
             islands_section(),
             tool_window_bars_section(),
+            tool_window_headers_section(),
             window_section(),
             pane_modifiers_section(),
             pane_split_direction_section(),
@@ -5770,7 +5917,7 @@ fn window_and_layout_page() -> SettingsPage {
 }
 
 fn panels_page() -> SettingsPage {
-    fn project_panel_section() -> [SettingsPageItem; 30] {
+    fn project_panel_section() -> [SettingsPageItem; 31] {
         [
             SettingsPageItem::SectionHeader("Project Panel"),
             SettingsPageItem::SettingItem(SettingItem {
@@ -5944,6 +6091,28 @@ fn panels_page() -> SettingsPage {
                             .project_panel
                             .get_or_insert_default()
                             .entry_spacing = value;
+                    },
+                }),
+                metadata: None,
+                files: USER,
+            }),
+            SettingsPageItem::SettingItem(SettingItem {
+                title: "Rounded Selection",
+                description: "Draw the project panel selection as a rounded, inset highlight instead of a full-width row.",
+                field: Box::new(SettingField {
+                    json_path: Some("project_panel.rounded_selection"),
+                    pick: |settings_content| {
+                        settings_content
+                            .project_panel
+                            .as_ref()?
+                            .rounded_selection
+                            .as_ref()
+                    },
+                    write: |settings_content, value, _| {
+                        settings_content
+                            .project_panel
+                            .get_or_insert_default()
+                            .rounded_selection = value;
                     },
                 }),
                 metadata: None,

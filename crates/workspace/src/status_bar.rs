@@ -126,6 +126,9 @@ impl Render for StatusBar {
         } else {
             cx.theme().colors().status_bar_background
         };
+        let content_opacity = workspace_settings
+            .islands
+            .frame_content_opacity(window.is_window_active());
 
         h_flex()
             .id("status-bar")
@@ -200,8 +203,8 @@ impl Render for StatusBar {
                 false,
                 gpui::Corners::default(),
             ))
-            .child(self.render_left_tools(&sidebar, hide_panel_buttons, cx))
-            .child(self.render_right_tools(&sidebar, hide_panel_buttons, cx))
+            .child(self.render_left_tools(&sidebar, hide_panel_buttons, content_opacity, cx))
+            .child(self.render_right_tools(&sidebar, hide_panel_buttons, content_opacity, cx))
     }
 }
 
@@ -214,12 +217,14 @@ impl StatusBar {
         &self,
         sidebar: &SidebarStatus,
         hide_panel_buttons: bool,
+        content_opacity: f32,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         h_flex()
             .gap_1()
             .min_w_0()
             .overflow_x_hidden()
+            .opacity(content_opacity)
             .when(
                 sidebar.show_toggle && !sidebar.open && sidebar.side == SidebarSide::Left,
                 |this| this.child(self.render_sidebar_toggle(sidebar, cx)),
@@ -239,12 +244,14 @@ impl StatusBar {
         &self,
         sidebar: &SidebarStatus,
         hide_panel_buttons: bool,
+        content_opacity: f32,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         h_flex()
             .flex_shrink_0()
             .gap_1()
             .overflow_x_hidden()
+            .opacity(content_opacity)
             .children(
                 self.right_items
                     .iter()

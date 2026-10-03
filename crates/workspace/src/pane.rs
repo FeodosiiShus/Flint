@@ -19,11 +19,11 @@ use collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use futures::{StreamExt, stream::FuturesUnordered};
 use git::{CopyFilePermalink, OpenFilePermalink};
 use gpui::{
-    Action, Anchor, AnyElement, App, AsyncWindowContext, ClickEvent, ClipboardItem, Context, Div,
-    DragMoveEvent, Entity, EntityId, EventEmitter, ExternalPaths, FocusHandle, FocusOutEvent,
-    Focusable, KeyContext, MouseButton, NavigationDirection, Pixels, Point, PromptLevel, Render,
-    ScrollHandle, Subscription, Task, TaskExt, WeakEntity, WeakFocusHandle, Window, actions,
-    anchored, deferred, prelude::*,
+    Action, Anchor, AnyElement, App, AsyncWindowContext, Bounds, ClickEvent, ClipboardItem,
+    Context, Div, DragMoveEvent, Entity, EntityId, EventEmitter, ExternalPaths, FocusHandle,
+    FocusOutEvent, Focusable, KeyContext, MouseButton, NavigationDirection, Pixels, Point,
+    PromptLevel, Render, ScrollHandle, Subscription, Task, TaskExt, WeakEntity, WeakFocusHandle,
+    Window, actions, anchored, deferred, prelude::*,
 };
 use itertools::Itertools;
 use language::{Capability, DiagnosticSeverity};
@@ -322,6 +322,7 @@ actions!(
 );
 
 const MAX_NAVIGATION_HISTORY_LEN: usize = 1024;
+const HIDDEN_TAB_VISIBILITY_TOLERANCE: Pixels = px(1.);
 
 pub enum Event {
     AddItem {
@@ -446,6 +447,8 @@ pub struct Pane {
     close_pane_if_empty: bool,
     pub new_item_context_menu_handle: PopoverMenuHandle<ContextMenu>,
     pub split_item_context_menu_handle: PopoverMenuHandle<ContextMenu>,
+    hidden_tabs_menu_handle: PopoverMenuHandle<ContextMenu>,
+    hidden_tabs_button_visible: bool,
     pinned_tab_count: usize,
     diagnostics: HashMap<ProjectPath, DiagnosticSeverity>,
     zoom_out_on_close: bool,
@@ -619,6 +622,8 @@ impl Pane {
             close_pane_if_empty: true,
             split_item_context_menu_handle: Default::default(),
             new_item_context_menu_handle: Default::default(),
+            hidden_tabs_menu_handle: Default::default(),
+            hidden_tabs_button_visible: false,
             pinned_tab_count: 0,
             diagnostics: Default::default(),
             zoom_out_on_close: true,
@@ -725,6 +730,7 @@ impl Pane {
     pub fn context_menu_focused(&self, window: &mut Window, cx: &mut Context<Self>) -> bool {
         self.new_item_context_menu_handle.is_focused(window, cx)
             || self.split_item_context_menu_handle.is_focused(window, cx)
+            || self.hidden_tabs_menu_handle.is_focused(window, cx)
     }
 
     fn focus_out(&mut self, _event: FocusOutEvent, window: &mut Window, cx: &mut Context<Self>) {
@@ -3543,6 +3549,8 @@ impl Pane {
         }
         let unpinned_tabs = tab_items.split_off(self.pinned_tab_count);
         let pinned_tabs = tab_items;
+        let hidden_tabs_overflow =
+            self.update_hidden_tabs_button_visibility(unpinned_tabs.len(), cx);
 
         let tab_bar_settings = TabBarSettings::get_global(cx);
         let use_separate_rows = tab_bar_settings.show_pinned_tabs_in_separate_row;
@@ -3552,6 +3560,7 @@ impl Pane {
                 pinned_tabs,
                 unpinned_tabs,
                 tab_count,
+                hidden_tabs_overflow,
                 navigate_backward,
                 navigate_forward,
                 window,
@@ -3562,6 +3571,7 @@ impl Pane {
                 pinned_tabs,
                 unpinned_tabs,
                 tab_count,
+                hidden_tabs_overflow,
                 navigate_backward,
                 navigate_forward,
                 window,
@@ -3588,6 +3598,9 @@ impl Pane {
                         .start_child(navigate_forward)
                 },
             )
+            .when(self.hidden_tabs_button_visible, |tab_bar| {
+                tab_bar.end_child(self.render_hidden_tabs_button(cx))
+            })
             .map(|tab_bar| {
                 if self.show_tab_bar_buttons {
                     let render_tab_buttons = self.render_tab_bar_buttons.clone();
@@ -3606,6 +3619,7 @@ impl Pane {
         pinned_tabs: Vec<AnyElement>,
         unpinned_tabs: Vec<AnyElement>,
         tab_count: usize,
+        hidden_tabs_overflow: Option<HiddenTabsOverflow>,
         navigate_backward: IconButton,
         navigate_forward: IconButton,
         window: &mut Window,
@@ -3635,7 +3649,12 @@ impl Pane {
                             .border_color(cx.theme().colors().border)
                     })
             }))
-            .child(self.render_unpinned_tabs_container(unpinned_tabs, tab_count, cx));
+            .child(self.render_unpinned_tabs_container(
+                unpinned_tabs,
+                tab_count,
+                hidden_tabs_overflow,
+                cx,
+            ));
         tab_bar.into_any_element()
     }
 
@@ -3644,6 +3663,7 @@ impl Pane {
         pinned_tabs: Vec<AnyElement>,
         unpinned_tabs: Vec<AnyElement>,
         tab_count: usize,
+        hidden_tabs_overflow: Option<HiddenTabsOverflow>,
         navigate_backward: IconButton,
         navigate_forward: IconButton,
         window: &mut Window,
@@ -3673,7 +3693,12 @@ impl Pane {
             .child(
                 TabBar::new("unpinned_tab_bar")
                     .islands(WorkspaceSettings::get_global(cx).islands.enabled)
-                    .child(self.render_unpinned_tabs_container(unpinned_tabs, tab_count, cx)),
+                    .child(self.render_unpinned_tabs_container(
+                        unpinned_tabs,
+                        tab_count,
+                        hidden_tabs_overflow,
+                        cx,
+                    )),
             )
             .into_any_element()
     }
@@ -3682,9 +3707,19 @@ impl Pane {
         &mut self,
         unpinned_tabs: Vec<AnyElement>,
         tab_count: usize,
+        hidden_tabs_overflow: Option<HiddenTabsOverflow>,
         cx: &mut Context<Pane>,
     ) -> impl IntoElement {
+        let unpinned_tab_count = unpinned_tabs.len();
         h_flex()
+            .when_some(hidden_tabs_overflow, |this, overflow| {
+                this.on_children_prepainted(hidden_tabs_overflow_listener(
+                    self.tab_bar_scroll_handle.clone(),
+                    unpinned_tab_count,
+                    overflow,
+                    cx.entity_id(),
+                ))
+            })
             .id("unpinned tabs")
             .overflow_x_scroll()
             .w_full()
@@ -3694,6 +3729,66 @@ impl Pane {
             }))
             .children(unpinned_tabs)
             .child(self.render_tab_bar_drop_target(tab_count, cx))
+    }
+
+    fn update_hidden_tabs_button_visibility(
+        &mut self,
+        unpinned_tab_count: usize,
+        cx: &App,
+    ) -> Option<HiddenTabsOverflow> {
+        let was_visible = mem::take(&mut self.hidden_tabs_button_visible);
+        if !TabBarSettings::get_global(cx).show_hidden_tabs_button {
+            return None;
+        }
+        let has_hidden_tabs =
+            hidden_unpinned_tab_indices(&self.tab_bar_scroll_handle, unpinned_tab_count)
+                .next()
+                .is_some();
+        self.hidden_tabs_button_visible =
+            has_hidden_tabs || self.hidden_tabs_menu_handle.is_deployed();
+        let button_appeared = self.hidden_tabs_button_visible && !was_visible;
+        let active_tab_to_reveal = if button_appeared && !self.suppress_scroll {
+            self.active_item_index.checked_sub(self.pinned_tab_count)
+        } else {
+            None
+        };
+        Some(HiddenTabsOverflow {
+            rendered_with_hidden_tabs: has_hidden_tabs,
+            active_tab_to_reveal,
+        })
+    }
+
+    fn hidden_tabs(&self, window: &Window, cx: &App) -> Vec<HiddenTab> {
+        let unpinned_tab_count = self.items.len().saturating_sub(self.pinned_tab_count);
+        let details = tab_details(&self.items, window, cx);
+        hidden_unpinned_tab_indices(&self.tab_bar_scroll_handle, unpinned_tab_count)
+            .filter_map(|unpinned_index| {
+                let index = self.pinned_tab_count + unpinned_index;
+                let item = self.items.get(index)?;
+                let detail = details.get(index).copied().unwrap_or_default();
+                Some(HiddenTab {
+                    item_id: item.item_id(),
+                    label: item.tab_content_text(detail, cx),
+                    is_active: index == self.active_item_index,
+                })
+            })
+            .collect()
+    }
+
+    fn render_hidden_tabs_button(&self, cx: &Context<Pane>) -> impl IntoElement {
+        let weak_pane = cx.weak_entity();
+        div().debug_selector(|| "hidden_tabs_button".into()).child(
+            PopoverMenu::new("hidden_tabs_menu")
+                .trigger_with_tooltip(
+                    IconButton::new("hidden_tabs_button", IconName::ChevronDown)
+                        .icon_size(IconSize::Small)
+                        .chrome_region(ui::ChromeRegion::TabBar),
+                    Tooltip::text("Show Hidden Tabs"),
+                )
+                .anchor(Anchor::TopRight)
+                .with_handle(self.hidden_tabs_menu_handle.clone())
+                .menu(move |window, cx| build_hidden_tabs_menu(&weak_pane, window, cx)),
+        )
     }
 
     fn render_tab_bar_drop_target(
@@ -4308,6 +4403,109 @@ impl Pane {
     pub fn set_zoom_out_on_close(&mut self, zoom_out_on_close: bool) {
         self.zoom_out_on_close = zoom_out_on_close;
     }
+}
+
+#[derive(Clone, Copy)]
+struct HiddenTabsOverflow {
+    rendered_with_hidden_tabs: bool,
+    active_tab_to_reveal: Option<usize>,
+}
+
+struct HiddenTab {
+    item_id: EntityId,
+    label: SharedString,
+    is_active: bool,
+}
+
+fn hidden_tab_indices(
+    viewport: Bounds<Pixels>,
+    scroll_offset: Point<Pixels>,
+    tab_bounds: impl IntoIterator<Item = Bounds<Pixels>>,
+) -> impl Iterator<Item = usize> {
+    let visible_left = viewport.left() - HIDDEN_TAB_VISIBILITY_TOLERANCE;
+    let visible_right = viewport.right() + HIDDEN_TAB_VISIBILITY_TOLERANCE;
+    tab_bounds
+        .into_iter()
+        .enumerate()
+        .filter(move |(_, bounds)| {
+            bounds.left() + scroll_offset.x < visible_left
+                || bounds.right() + scroll_offset.x > visible_right
+        })
+        .map(|(index, _)| index)
+}
+
+fn hidden_unpinned_tab_indices(
+    scroll_handle: &ScrollHandle,
+    unpinned_tab_count: usize,
+) -> impl Iterator<Item = usize> {
+    let laid_out_tab_count = scroll_handle
+        .children_count()
+        .saturating_sub(1)
+        .min(unpinned_tab_count);
+    hidden_tab_indices(
+        scroll_handle.bounds(),
+        scroll_handle.offset(),
+        (0..laid_out_tab_count).filter_map(move |index| scroll_handle.bounds_for_item(index)),
+    )
+}
+
+fn hidden_tabs_overflow_listener(
+    scroll_handle: ScrollHandle,
+    unpinned_tab_count: usize,
+    overflow: HiddenTabsOverflow,
+    pane_id: EntityId,
+) -> impl Fn(Vec<Bounds<Pixels>>, &mut Window, &mut App) + 'static {
+    move |_, _, cx| {
+        let has_hidden_tabs = hidden_unpinned_tab_indices(&scroll_handle, unpinned_tab_count)
+            .next()
+            .is_some();
+        let active_tab_to_reveal = overflow.active_tab_to_reveal.filter(|active_tab_index| {
+            hidden_unpinned_tab_indices(&scroll_handle, unpinned_tab_count)
+                .any(|index| index == *active_tab_index)
+        });
+        if let Some(active_tab_index) = active_tab_to_reveal {
+            scroll_handle.scroll_to_item(active_tab_index);
+        }
+        let needs_render =
+            has_hidden_tabs != overflow.rendered_with_hidden_tabs || active_tab_to_reveal.is_some();
+        if needs_render {
+            cx.defer(move |cx| cx.notify(pane_id));
+        }
+    }
+}
+
+fn build_hidden_tabs_menu(
+    weak_pane: &WeakEntity<Pane>,
+    window: &mut Window,
+    cx: &mut App,
+) -> Option<Entity<ContextMenu>> {
+    let hidden_tabs = weak_pane.upgrade()?.read(cx).hidden_tabs(window, cx);
+    if hidden_tabs.is_empty() {
+        return None;
+    }
+    let weak_pane = weak_pane.clone();
+    Some(ContextMenu::build(window, cx, move |mut menu, _, _| {
+        for hidden_tab in hidden_tabs {
+            let weak_pane = weak_pane.clone();
+            let item_id = hidden_tab.item_id;
+            menu = menu.toggleable_entry(
+                hidden_tab.label,
+                hidden_tab.is_active,
+                IconPosition::Start,
+                None,
+                move |window, cx| {
+                    weak_pane
+                        .update(cx, |pane, cx| {
+                            if let Some(index) = pane.index_for_item_id(item_id) {
+                                pane.activate_item(index, true, true, window, cx);
+                            }
+                        })
+                        .log_err();
+                },
+            );
+        }
+        menu
+    }))
 }
 
 fn default_render_tab_bar_buttons(
@@ -5114,7 +5312,7 @@ mod tests {
     };
     use gpui::{
         AppContext, Axis, Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
-        TestAppContext, VisualTestContext, size,
+        TestAppContext, VisualTestContext, point, size,
     };
     use project::FakeFs;
     use settings::SettingsStore;
@@ -8620,6 +8818,364 @@ mod tests {
     }
 
     #[gpui::test]
+    async fn hidden_tabs_button_appears_when_tabs_overflow(cx: &mut TestAppContext) {
+        init_test(cx);
+        let fs = FakeFs::new(cx.executor());
+        let project = Project::test(fs, None, cx).await;
+        let (workspace, cx) =
+            cx.add_window_view(|window, cx| Workspace::test_new(project, window, cx));
+        let pane = workspace.read_with(cx, |workspace, _| workspace.active_pane().clone());
+        cx.simulate_resize(size(px(500.), px(600.)));
+
+        add_described_items(&pane, &HIDDEN_TABS_LABELS, cx);
+
+        let hidden_indices = painted_hidden_tab_indices(&pane, HIDDEN_TABS_LABELS.len(), cx);
+        assert!(
+            !hidden_indices.is_empty(),
+            "ten tabs should overflow a 500px wide tab bar"
+        );
+        let button_bounds = cx
+            .debug_bounds("hidden_tabs_button")
+            .expect("the hidden tabs button should be shown while tabs overflow");
+        let new_item_button_bounds = cx
+            .debug_bounds("ICON-Plus")
+            .expect("the focused pane should show its tab bar buttons");
+        let viewport = pane.read_with(cx, |pane, _| pane.tab_bar_scroll_handle.bounds());
+        assert!(
+            button_bounds.left() >= viewport.right(),
+            "the hidden tabs button should sit outside the scrolling tabs"
+        );
+        assert!(
+            button_bounds.right() <= new_item_button_bounds.left(),
+            "the hidden tabs button should sit before the existing tab bar buttons"
+        );
+    }
+
+    #[gpui::test]
+    async fn hidden_tabs_button_absent_when_all_tabs_fit(cx: &mut TestAppContext) {
+        init_test(cx);
+        let fs = FakeFs::new(cx.executor());
+        let project = Project::test(fs, None, cx).await;
+        let (workspace, cx) =
+            cx.add_window_view(|window, cx| Workspace::test_new(project, window, cx));
+        let pane = workspace.read_with(cx, |workspace, _| workspace.active_pane().clone());
+        cx.simulate_resize(size(px(1200.), px(600.)));
+
+        add_described_items(&pane, &HIDDEN_TABS_LABELS[..2], cx);
+
+        assert!(
+            painted_hidden_tab_indices(&pane, 2, cx).is_empty(),
+            "two tabs should fit a 1200px wide tab bar"
+        );
+        assert!(
+            cx.debug_bounds("hidden_tabs_button").is_none(),
+            "the hidden tabs button should not be shown while every tab is visible"
+        );
+    }
+
+    #[gpui::test]
+    async fn hidden_tabs_button_follows_its_setting(cx: &mut TestAppContext) {
+        init_test(cx);
+        let fs = FakeFs::new(cx.executor());
+        let project = Project::test(fs, None, cx).await;
+        let (workspace, cx) =
+            cx.add_window_view(|window, cx| Workspace::test_new(project, window, cx));
+        let pane = workspace.read_with(cx, |workspace, _| workspace.active_pane().clone());
+        cx.simulate_resize(size(px(500.), px(600.)));
+
+        add_described_items(&pane, &HIDDEN_TABS_LABELS, cx);
+        assert!(
+            cx.debug_bounds("hidden_tabs_button").is_some(),
+            "the hidden tabs button should be shown by default"
+        );
+
+        set_show_hidden_tabs_button(cx, false);
+        cx.run_until_parked();
+        let hidden_indices = painted_hidden_tab_indices(&pane, HIDDEN_TABS_LABELS.len(), cx);
+        assert!(
+            !hidden_indices.is_empty(),
+            "tabs should still overflow while the button is disabled"
+        );
+        assert!(
+            cx.debug_bounds("hidden_tabs_button").is_none(),
+            "disabling tab_bar.show_hidden_tabs_button should remove the button"
+        );
+
+        set_show_hidden_tabs_button(cx, true);
+        cx.run_until_parked();
+        assert!(
+            cx.debug_bounds("hidden_tabs_button").is_some(),
+            "enabling tab_bar.show_hidden_tabs_button again should bring the button back"
+        );
+    }
+
+    #[gpui::test]
+    async fn hidden_tabs_button_shown_when_pane_is_not_focused(cx: &mut TestAppContext) {
+        init_test(cx);
+        let fs = FakeFs::new(cx.executor());
+        let project = Project::test(fs, None, cx).await;
+        let (workspace, cx) =
+            cx.add_window_view(|window, cx| Workspace::test_new(project, window, cx));
+        let pane = workspace.read_with(cx, |workspace, _| workspace.active_pane().clone());
+        cx.simulate_resize(size(px(500.), px(600.)));
+
+        add_described_items(&pane, &HIDDEN_TABS_LABELS, cx);
+        cx.update(|window, cx| window.blur(cx));
+        cx.run_until_parked();
+
+        assert!(
+            !pane.update_in(cx, |pane, window, cx| pane.has_focus(window, cx)),
+            "the pane should have lost focus"
+        );
+        let hidden_indices = painted_hidden_tab_indices(&pane, HIDDEN_TABS_LABELS.len(), cx);
+        assert!(
+            !hidden_indices.is_empty(),
+            "tabs should still overflow in the unfocused pane"
+        );
+        assert!(
+            cx.debug_bounds("hidden_tabs_button").is_some(),
+            "the hidden tabs button should stay visible in an unfocused pane"
+        );
+    }
+
+    #[gpui::test]
+    async fn hidden_tabs_button_sits_in_pinned_row_of_two_row_layout(cx: &mut TestAppContext) {
+        init_test(cx);
+        let fs = FakeFs::new(cx.executor());
+        let project = Project::test(fs, None, cx).await;
+        let (workspace, cx) =
+            cx.add_window_view(|window, cx| Workspace::test_new(project, window, cx));
+        let pane = workspace.read_with(cx, |workspace, _| workspace.active_pane().clone());
+        cx.simulate_resize(size(px(300.), px(600.)));
+        set_pinned_tabs_separate_row(cx, true);
+
+        add_described_items(&pane, &HIDDEN_TABS_LABELS, cx);
+        pane.update_in(cx, |pane, window, cx| pane.pin_tab_at(0, window, cx));
+        cx.run_until_parked();
+
+        let pinned_row_bounds = cx
+            .debug_bounds("pinned_tabs_row")
+            .expect("pinning a tab should switch to the two-row layout");
+        let scroll_handle = pane.read_with(cx, |pane, _| pane.tab_bar_scroll_handle.clone());
+        assert!(
+            scroll_handle.max_offset().x > px(0.),
+            "nine unpinned tabs should overflow a 300px wide row"
+        );
+        let button_bounds = cx
+            .debug_bounds("hidden_tabs_button")
+            .expect("the hidden tabs button should be shown while unpinned tabs overflow");
+        let button_center = button_bounds.center();
+        assert!(
+            button_center.y >= pinned_row_bounds.top()
+                && button_center.y <= pinned_row_bounds.bottom(),
+            "the hidden tabs button should sit in the pinned tab row"
+        );
+        assert!(
+            button_bounds.bottom() <= scroll_handle.bounds().top(),
+            "the hidden tabs button should not take space from the unpinned tab row"
+        );
+    }
+
+    #[gpui::test]
+    async fn hidden_tabs_menu_lists_exactly_the_hidden_tabs(cx: &mut TestAppContext) {
+        init_test(cx);
+        let fs = FakeFs::new(cx.executor());
+        let project = Project::test(fs, None, cx).await;
+        let (workspace, cx) =
+            cx.add_window_view(|window, cx| Workspace::test_new(project, window, cx));
+        let pane = workspace.read_with(cx, |workspace, _| workspace.active_pane().clone());
+        cx.simulate_resize(size(px(500.), px(600.)));
+
+        add_described_items(&pane, &HIDDEN_TABS_LABELS, cx);
+        let hidden_indices = painted_hidden_tab_indices(&pane, HIDDEN_TABS_LABELS.len(), cx);
+        assert!(
+            !hidden_indices.is_empty() && hidden_indices.len() < HIDDEN_TABS_LABELS.len(),
+            "some tabs should be hidden and some visible, hidden: {hidden_indices:?}"
+        );
+
+        click_hidden_tabs_button(cx);
+
+        let listed_entry_tops = HIDDEN_TABS_MENU_ITEM_SELECTORS
+            .into_iter()
+            .enumerate()
+            .filter_map(|(index, menu_item)| {
+                let entry_bounds = cx.debug_bounds(menu_item);
+                assert_eq!(
+                    entry_bounds.is_some(),
+                    hidden_indices.contains(&index),
+                    "{menu_item} should be listed exactly when its tab is outside the viewport"
+                );
+                entry_bounds.map(|bounds| bounds.top())
+            })
+            .collect::<Vec<_>>();
+        assert!(
+            listed_entry_tops.is_sorted(),
+            "hidden tabs should be listed in tab order"
+        );
+    }
+
+    #[gpui::test]
+    async fn hidden_tabs_menu_marks_the_hidden_active_tab(cx: &mut TestAppContext) {
+        init_test(cx);
+        let fs = FakeFs::new(cx.executor());
+        let project = Project::test(fs, None, cx).await;
+        let (workspace, cx) =
+            cx.add_window_view(|window, cx| Workspace::test_new(project, window, cx));
+        let pane = workspace.read_with(cx, |workspace, _| workspace.active_pane().clone());
+        cx.simulate_resize(size(px(500.), px(600.)));
+
+        add_described_items(&pane, &HIDDEN_TABS_LABELS, cx);
+        pane.update(cx, |pane, cx| {
+            pane.tab_bar_scroll_handle.set_offset(point(px(0.), px(0.)));
+            cx.notify();
+        });
+        cx.run_until_parked();
+
+        let active_index = HIDDEN_TABS_LABELS.len() - 1;
+        let hidden_indices = painted_hidden_tab_indices(&pane, HIDDEN_TABS_LABELS.len(), cx);
+        assert!(
+            hidden_indices.contains(&active_index),
+            "scrolling back to the first tab should hide the active last tab"
+        );
+
+        let hidden_tabs = pane.update_in(cx, |pane, window, cx| {
+            pane.hidden_tabs(window, cx)
+                .into_iter()
+                .map(|hidden_tab| (hidden_tab.label.to_string(), hidden_tab.is_active))
+                .collect::<Vec<_>>()
+        });
+        let expected_hidden_tabs = hidden_indices
+            .iter()
+            .map(|&index| (HIDDEN_TABS_LABELS[index].to_string(), index == active_index))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            hidden_tabs, expected_hidden_tabs,
+            "the menu should mark only the active tab"
+        );
+
+        click_hidden_tabs_button(cx);
+        assert!(
+            cx.debug_bounds("MENU_ITEM-T9").is_some(),
+            "the hidden active tab should be listed in the menu"
+        );
+    }
+
+    #[gpui::test]
+    async fn hidden_tabs_menu_entry_activates_and_reveals_the_tab(cx: &mut TestAppContext) {
+        init_test(cx);
+        let fs = FakeFs::new(cx.executor());
+        let project = Project::test(fs, None, cx).await;
+        let (workspace, cx) =
+            cx.add_window_view(|window, cx| Workspace::test_new(project, window, cx));
+        let pane = workspace.read_with(cx, |workspace, _| workspace.active_pane().clone());
+        cx.simulate_resize(size(px(500.), px(600.)));
+
+        add_described_items(&pane, &HIDDEN_TABS_LABELS, cx);
+        let hidden_indices = painted_hidden_tab_indices(&pane, HIDDEN_TABS_LABELS.len(), cx);
+        assert!(
+            hidden_indices.contains(&0),
+            "the first tab should be scrolled out of view"
+        );
+
+        click_hidden_tabs_button(cx);
+        let entry_bounds = cx
+            .debug_bounds("MENU_ITEM-T0")
+            .expect("the hidden first tab should be listed");
+        cx.simulate_click(entry_bounds.center(), Modifiers::none());
+        cx.run_until_parked();
+
+        assert_eq!(
+            pane.read_with(cx, |pane, _| pane.active_item_index()),
+            0,
+            "choosing the entry should activate its tab"
+        );
+        let hidden_indices = painted_hidden_tab_indices(&pane, HIDDEN_TABS_LABELS.len(), cx);
+        assert!(
+            !hidden_indices.contains(&0),
+            "the chosen tab should be scrolled fully into view"
+        );
+        assert!(
+            cx.debug_bounds("MENU_ITEM-T0").is_none(),
+            "choosing an entry should close the menu"
+        );
+    }
+
+    #[gpui::test]
+    async fn hidden_tabs_button_keeps_new_active_tab_fully_visible(cx: &mut TestAppContext) {
+        init_test(cx);
+        let fs = FakeFs::new(cx.executor());
+        let project = Project::test(fs, None, cx).await;
+        let (workspace, cx) =
+            cx.add_window_view(|window, cx| Workspace::test_new(project, window, cx));
+        let pane = workspace.read_with(cx, |workspace, _| workspace.active_pane().clone());
+        cx.simulate_resize(size(px(500.), px(600.)));
+
+        for (index, label) in HIDDEN_TABS_LABELS.into_iter().enumerate() {
+            add_described_items(&pane, &[label], cx);
+            let hidden_indices = painted_hidden_tab_indices(&pane, index + 1, cx);
+            assert!(
+                !hidden_indices.contains(&index),
+                "{label} should be fully visible right after it is opened"
+            );
+        }
+        assert!(
+            cx.debug_bounds("hidden_tabs_button").is_some(),
+            "the hidden tabs button should be shown once tabs overflow"
+        );
+    }
+
+    #[test]
+    fn hidden_tabs_indices_from_viewport_and_tab_bounds() {
+        let viewport = Bounds::new(point(px(100.), px(0.)), size(px(200.), px(30.)));
+        let tab_at = |left: f32| Bounds::new(point(px(left), px(0.)), size(px(80.), px(30.)));
+        let tabs = [
+            tab_at(100.),
+            tab_at(180.),
+            tab_at(260.),
+            tab_at(340.),
+            tab_at(420.),
+        ];
+        let hidden_at = |scroll_x: f32, tab_bounds: &[Bounds<Pixels>]| {
+            hidden_tab_indices(
+                viewport,
+                point(px(scroll_x), px(0.)),
+                tab_bounds.iter().copied(),
+            )
+            .collect::<Vec<_>>()
+        };
+
+        assert_eq!(
+            hidden_at(0., &tabs),
+            vec![2, 3, 4],
+            "tabs past the right edge of an unscrolled viewport are hidden"
+        );
+        assert_eq!(
+            hidden_at(-120., &tabs),
+            vec![0, 1, 4],
+            "scrolling hides tabs on the left and reveals the tabs that now fit"
+        );
+        assert_eq!(
+            hidden_at(-119.5, &tabs),
+            vec![0, 1, 4],
+            "a tab overhanging the viewport by a fraction of a pixel still counts as visible"
+        );
+        assert!(
+            hidden_at(0., &tabs[..2]).is_empty(),
+            "tabs inside the viewport are not hidden"
+        );
+        assert!(
+            hidden_tab_indices(
+                Bounds::default(),
+                point(px(0.), px(0.)),
+                Vec::<Bounds<Pixels>>::new(),
+            )
+            .next()
+            .is_none(),
+            "a tab bar that has not been laid out yet has no hidden tabs"
+        );
+    }
+
+    #[gpui::test]
     async fn test_close_all_items_including_pinned(cx: &mut TestAppContext) {
         init_test(cx);
         let fs = FakeFs::new(cx.executor());
@@ -9097,6 +9653,86 @@ mod tests {
                     .show_pinned_tabs_in_separate_row = Some(enabled);
             });
         });
+    }
+
+    fn set_show_hidden_tabs_button(cx: &mut TestAppContext, enabled: bool) {
+        cx.update_global(|store: &mut SettingsStore, cx| {
+            store.update_user_settings(cx, |settings| {
+                settings
+                    .tab_bar
+                    .get_or_insert_default()
+                    .show_hidden_tabs_button = Some(enabled);
+            });
+        });
+    }
+
+    const HIDDEN_TABS_LABELS: [&str; 10] =
+        ["T0", "T1", "T2", "T3", "T4", "T5", "T6", "T7", "T8", "T9"];
+
+    const HIDDEN_TABS_TAB_SELECTORS: [&str; 10] = [
+        "TAB-0", "TAB-1", "TAB-2", "TAB-3", "TAB-4", "TAB-5", "TAB-6", "TAB-7", "TAB-8", "TAB-9",
+    ];
+
+    const HIDDEN_TABS_MENU_ITEM_SELECTORS: [&str; 10] = [
+        "MENU_ITEM-T0",
+        "MENU_ITEM-T1",
+        "MENU_ITEM-T2",
+        "MENU_ITEM-T3",
+        "MENU_ITEM-T4",
+        "MENU_ITEM-T5",
+        "MENU_ITEM-T6",
+        "MENU_ITEM-T7",
+        "MENU_ITEM-T8",
+        "MENU_ITEM-T9",
+    ];
+
+    fn add_described_items(
+        pane: &Entity<Pane>,
+        descriptions: &[&'static str],
+        cx: &mut VisualTestContext,
+    ) {
+        for description in descriptions {
+            pane.update_in(cx, |pane, window, cx| {
+                let item = cx.new(|cx| {
+                    let mut item = TestItem::new(cx).with_label(description);
+                    item.tab_descriptions = Some(vec![*description]);
+                    item
+                });
+                pane.add_item(Box::new(item), false, false, None, window, cx);
+            });
+        }
+    }
+
+    fn painted_hidden_tab_indices(
+        pane: &Entity<Pane>,
+        tab_count: usize,
+        cx: &mut VisualTestContext,
+    ) -> Vec<usize> {
+        let viewport = pane.read_with(cx, |pane, _| pane.tab_bar_scroll_handle.bounds());
+        let mut hidden_indices = Vec::new();
+        for (index, selector) in HIDDEN_TABS_TAB_SELECTORS
+            .into_iter()
+            .take(tab_count)
+            .enumerate()
+        {
+            let tab_bounds = cx
+                .debug_bounds(selector)
+                .unwrap_or_else(|| panic!("{selector} should be painted"));
+            if tab_bounds.left() < viewport.left() - HIDDEN_TAB_VISIBILITY_TOLERANCE
+                || tab_bounds.right() > viewport.right() + HIDDEN_TAB_VISIBILITY_TOLERANCE
+            {
+                hidden_indices.push(index);
+            }
+        }
+        hidden_indices
+    }
+
+    fn click_hidden_tabs_button(cx: &mut VisualTestContext) {
+        let button_bounds = cx
+            .debug_bounds("hidden_tabs_button")
+            .expect("the hidden tabs button should be rendered");
+        cx.simulate_click(button_bounds.center(), Modifiers::none());
+        cx.run_until_parked();
     }
 
     fn add_labeled_item(

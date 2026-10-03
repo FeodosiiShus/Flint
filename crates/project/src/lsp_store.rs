@@ -726,6 +726,7 @@ impl LocalLspStore {
             && let Some(path) = settings.path.as_ref().map(PathBuf::from)
         {
             let settings = settings.clone();
+            let fs = self.fs.clone();
             return cx.background_spawn(async move {
                 if let Some(mut wait_until_worktree_trust) = wait_until_worktree_trust {
                     let already_trusted =  *wait_until_worktree_trust.borrow();
@@ -748,6 +749,7 @@ impl LocalLspStore {
                 }
                 let mut env = delegate.shell_env().await;
                 env.extend(settings.env.unwrap_or_default());
+                apply_dotnet_root_fallback(&mut env, fs.as_ref()).await;
 
                 Ok(LanguageServerBinary {
                     path: delegate.resolve_relative_path(path),
@@ -816,6 +818,7 @@ impl LocalLspStore {
                 .unwrap_or(false),
         };
 
+        let fs = self.fs.clone();
         cx.spawn(async move |cx| {
             if let Some(mut wait_until_worktree_trust) = wait_until_worktree_trust {
                 let already_trusted = *wait_until_worktree_trust.borrow();
@@ -880,6 +883,7 @@ impl LocalLspStore {
                 }
             }
 
+            apply_dotnet_root_fallback(&mut shell_env, fs.as_ref()).await;
             binary.env = Some(shell_env);
             Ok(binary)
         })
@@ -16758,9 +16762,97 @@ fn extend_formatting_transaction(
     })
 }
 
+const DOTNET_ROOT_VARIABLE: &str = "DOTNET_ROOT";
+const DOTNET_ROOT_ARM64_VARIABLE: &str = "DOTNET_ROOT_ARM64";
+
+fn has_dotnet_root(env: &HashMap<String, String>) -> bool {
+    env.contains_key(DOTNET_ROOT_VARIABLE) || env.contains_key(DOTNET_ROOT_ARM64_VARIABLE)
+}
+
+fn user_dotnet_root(home_dir: &Path) -> PathBuf {
+    home_dir.join(".dotnet")
+}
+
+fn dotnet_root_fallback(
+    env: &HashMap<String, String>,
+    home_dir: &Path,
+    dotnet_executable_exists: bool,
+) -> Option<(String, String)> {
+    if has_dotnet_root(env) || !dotnet_executable_exists {
+        return None;
+    }
+    Some((
+        DOTNET_ROOT_VARIABLE.to_string(),
+        user_dotnet_root(home_dir).to_string_lossy().into_owned(),
+    ))
+}
+
+async fn apply_dotnet_root_fallback(env: &mut HashMap<String, String>, fs: &dyn Fs) {
+    if has_dotnet_root(env) {
+        return;
+    }
+    let home_dir = paths::home_dir();
+    let dotnet_executable_exists = fs.is_file(&user_dotnet_root(home_dir).join("dotnet")).await;
+    if let Some((name, value)) = dotnet_root_fallback(env, home_dir, dotnet_executable_exists) {
+        env.insert(name, value);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dotnet_root_inserts_user_dotnet_directory_when_unset_and_installed() {
+        let env = HashMap::from_iter([("PATH".to_string(), "/usr/bin".to_string())]);
+        let home_dir = Path::new("/Users/someone");
+
+        assert_eq!(
+            dotnet_root_fallback(&env, home_dir, true),
+            Some((
+                "DOTNET_ROOT".to_string(),
+                home_dir.join(".dotnet").to_string_lossy().into_owned(),
+            )),
+            "Roslyn needs DOTNET_ROOT to find a runtime installed only in ~/.dotnet"
+        );
+    }
+
+    #[test]
+    fn dotnet_root_keeps_user_provided_dotnet_root() {
+        let env =
+            HashMap::from_iter([("DOTNET_ROOT".to_string(), "/opt/custom/dotnet".to_string())]);
+
+        assert_eq!(
+            dotnet_root_fallback(&env, Path::new("/Users/someone"), true),
+            None,
+            "an explicit DOTNET_ROOT must never be overridden"
+        );
+    }
+
+    #[test]
+    fn dotnet_root_keeps_user_provided_dotnet_root_arm64() {
+        let env = HashMap::from_iter([(
+            "DOTNET_ROOT_ARM64".to_string(),
+            "/opt/custom/dotnet-arm64".to_string(),
+        )]);
+
+        assert_eq!(
+            dotnet_root_fallback(&env, Path::new("/Users/someone"), true),
+            None,
+            "DOTNET_ROOT_ARM64 takes precedence on Apple silicon, so no fallback may shadow it"
+        );
+    }
+
+    #[test]
+    fn dotnet_root_does_nothing_when_user_dotnet_is_missing() {
+        let env = HashMap::default();
+
+        assert_eq!(
+            dotnet_root_fallback(&env, Path::new("/Users/someone"), false),
+            None,
+            "pointing DOTNET_ROOT at a directory without a dotnet executable would break system installs"
+        );
+    }
 
     #[test]
     fn should_log_lsp_request_failure_suppresses_known_noise() {

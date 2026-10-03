@@ -170,6 +170,7 @@ pub struct WorkspaceSettingsContent {
     pub focus_follows_mouse: Option<FocusFollowsMouse>,
     pub islands: Option<IslandsSettingsContent>,
     pub tool_window_bars: Option<ToolWindowBarsSettingsContent>,
+    pub tool_window_headers: Option<ToolWindowHeadersSettingsContent>,
 }
 
 #[with_fallible_options]
@@ -551,6 +552,7 @@ pub struct TabBarSettingsContent {
     pub show_pinned_tabs_in_separate_row: Option<bool>,
     pub height: Option<u32>,
     pub icon_size: Option<u32>,
+    pub show_hidden_tabs_button: Option<bool>,
 }
 
 #[with_fallible_options]
@@ -607,6 +609,7 @@ pub struct IslandsSettingsContent {
     pub enabled: Option<bool>,
     pub gap: Option<u32>,
     pub corner_radius: Option<u32>,
+    pub dim_inactive_window: Option<bool>,
 }
 
 #[with_fallible_options]
@@ -615,6 +618,13 @@ pub struct ToolWindowBarsSettingsContent {
     pub show: Option<bool>,
     pub icon_size: Option<u32>,
     pub show_names: Option<bool>,
+}
+
+#[with_fallible_options]
+#[derive(Clone, Default, Serialize, Deserialize, JsonSchema, MergeFrom, Debug, PartialEq, Eq)]
+pub struct ToolWindowHeadersSettingsContent {
+    pub show: Option<bool>,
+    pub always_show_actions: Option<bool>,
 }
 
 #[derive(
@@ -941,6 +951,7 @@ pub struct ProjectPanelSettingsContent {
     ///
     /// Default: false
     pub git_status_indicator: Option<bool>,
+    pub rounded_selection: Option<bool>,
 }
 
 /// Controls the width of the git diff hunk indicators in the gutter.

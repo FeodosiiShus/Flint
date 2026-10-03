@@ -638,6 +638,10 @@ struct DraggedProjectEntryView {
     selections: Arc<[SelectedEntry]>,
 }
 
+const SELECTION_PILL_INSET: Pixels = px(4.);
+const SELECTION_PILL_CORNER_RADIUS: Pixels = px(6.);
+const INACTIVE_SELECTION_OPACITY: f32 = 0.5;
+
 struct ItemColors {
     default: Hsla,
     hover: Hsla,
@@ -665,6 +669,53 @@ fn get_item_color(is_sticky: bool, has_background_image: bool, cx: &App) -> Item
         marked: colors.element_selected,
         focused: colors.panel_focused_border,
         drag_over: colors.drop_target_background,
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct SelectionPillColors {
+    background: Hsla,
+    hover_background: Hsla,
+    border: Hsla,
+}
+
+fn inactive_selection_color(selection: Hsla) -> Hsla {
+    selection.grayscale().opacity(INACTIVE_SELECTION_OPACITY)
+}
+
+fn selection_pill_colors(
+    item_colors: &ItemColors,
+    is_marked: bool,
+    is_drag_target: bool,
+    panel_contains_focus: bool,
+    focused_border: Option<Hsla>,
+) -> SelectionPillColors {
+    if is_drag_target {
+        return SelectionPillColors {
+            background: item_colors.drag_over,
+            hover_background: item_colors.drag_over,
+            border: gpui::transparent_black(),
+        };
+    }
+
+    let border = focused_border.unwrap_or(gpui::transparent_black());
+    if !is_marked {
+        return SelectionPillColors {
+            background: gpui::transparent_black(),
+            hover_background: item_colors.hover,
+            border,
+        };
+    }
+
+    let selection = if panel_contains_focus {
+        item_colors.marked
+    } else {
+        inactive_selection_color(item_colors.marked)
+    };
+    SelectionPillColors {
+        background: selection,
+        hover_background: selection,
+        border,
     }
 }
 
@@ -5917,6 +5968,7 @@ impl ProjectPanel {
         let is_sticky = details.sticky.is_some();
         let sticky_index = details.sticky.as_ref().map(|this| this.sticky_index);
         let settings = ProjectPanelSettings::get_global(cx);
+        let rounded_selection = settings.rounded_selection;
         let show_editor = details.is_editing && !details.is_processing;
 
         let selection = SelectedEntry {
@@ -5956,7 +6008,7 @@ impl ProjectPanel {
         let depth = details.depth;
         let worktree_id = details.worktree_id;
 
-        let bg_color = if is_marked {
+        let bg_color = if is_marked && !rounded_selection {
             item_colors.marked
         } else {
             item_colors.default
@@ -5983,22 +6035,23 @@ impl ProjectPanel {
             None
         };
 
-        let show_focused_border = !self.mouse_down && is_active && self.contains_focus(window, cx);
+        let panel_contains_focus = (is_active || is_marked) && self.contains_focus(window, cx);
+        let show_focused_border = !self.mouse_down && is_active && panel_contains_focus;
+        let focused_border_color = match validation_color_and_message {
+            Some((color, _)) => color,
+            None => item_colors.focused,
+        };
 
-        let border_color = if show_focused_border {
-            match validation_color_and_message {
-                Some((color, _)) => color,
-                None => item_colors.focused,
-            }
+        let border_color = if rounded_selection {
+            gpui::transparent_black()
+        } else if show_focused_border {
+            focused_border_color
         } else {
             bg_color
         };
 
         let border_hover_color = if show_focused_border {
-            match validation_color_and_message {
-                Some((color, _)) => color,
-                None => item_colors.focused,
-            }
+            focused_border_color
         } else {
             bg_hover_color
         };
@@ -6029,6 +6082,32 @@ impl ProjectPanel {
             } else {
                 false
             }
+        };
+        let is_drag_target = !is_sticky && is_highlighted && folded_directory_drag_target.is_none();
+        let selection_pill = rounded_selection.then(|| {
+            selection_pill_colors(
+                &item_colors,
+                is_marked,
+                is_drag_target,
+                panel_contains_focus,
+                show_focused_border.then_some(focused_border_color),
+            )
+        });
+        let knockout_behind_pill = |pill_color: Hsla| {
+            if item_colors.default.is_opaque() {
+                item_colors.default.blend(pill_color)
+            } else if pill_color.is_transparent() {
+                item_colors.default
+            } else {
+                pill_color
+            }
+        };
+        let (knockout_color, knockout_hover_color) = match selection_pill {
+            Some(pill) => (
+                knockout_behind_pill(pill.background),
+                knockout_behind_pill(pill.hover_background),
+            ),
+            None => (bg_color, bg_hover_color),
         };
         let git_indicator = settings
             .git_status_indicator
@@ -6080,16 +6159,15 @@ impl ProjectPanel {
             .border_1()
             .border_r_2()
             .border_color(border_color)
-            .hover(|style| style.bg(bg_hover_color).border_color(border_hover_color))
+            .when(selection_pill.is_none(), |this| {
+                this.hover(|style| style.bg(bg_hover_color).border_color(border_hover_color))
+            })
             .when(is_sticky, |this| this.block_mouse_except_scroll())
             .when(!is_sticky, |this| {
-                this.when(
-                    is_highlighted && folded_directory_drag_target.is_none(),
-                    |this| {
-                        this.border_color(transparent_white())
-                            .bg(item_colors.drag_over)
-                    },
-                )
+                this.when(selection_pill.is_none() && is_drag_target, |this| {
+                    this.border_color(transparent_white())
+                        .bg(item_colors.drag_over)
+                })
                 .when(settings.drag_and_drop, |this| {
                     let path_for_external_paths = path.clone();
                     let path_for_dragged_selection = path.clone();
@@ -6430,6 +6508,21 @@ impl ProjectPanel {
                     gpui::Corners::default(),
                 ))
             })
+            .when_some(selection_pill, |this, pill| {
+                this.child(
+                    div()
+                        .absolute()
+                        .top_0()
+                        .bottom_0()
+                        .left(SELECTION_PILL_INSET)
+                        .right(SELECTION_PILL_INSET)
+                        .rounded(SELECTION_PILL_CORNER_RADIUS)
+                        .border_1()
+                        .border_color(pill.border)
+                        .bg(pill.background)
+                        .group_hover(GROUP_NAME, |style| style.bg(pill.hover_background)),
+                )
+            })
             .child(
                 ListItem::new(id)
                     .indent_level(depth)
@@ -6514,9 +6607,9 @@ impl ProjectPanel {
                             DecoratedIcon::new(
                                 Icon::from_path(glyph).color(Color::Muted),
                                 Some(
-                                    IconDecoration::new(decoration_kind, bg_color, cx)
+                                    IconDecoration::new(decoration_kind, knockout_color, cx)
                                         .group_name(Some(GROUP_NAME.into()))
-                                        .knockout_hover_color(bg_hover_color)
+                                        .knockout_hover_color(knockout_hover_color)
                                         .color(color.color(cx))
                                         .position(Point {
                                             x: px(-2.),

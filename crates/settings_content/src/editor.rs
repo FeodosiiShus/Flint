@@ -438,6 +438,7 @@ pub struct ScrollbarContent {
     pub cursors: Option<bool>,
     /// Forcefully enable or disable the scrollbar for each axis
     pub axes: Option<ScrollbarAxesContent>,
+    pub rounded_thumb: Option<bool>,
 }
 
 /// Sticky scroll related settings

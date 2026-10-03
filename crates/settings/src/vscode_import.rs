@@ -804,6 +804,7 @@ impl VsCodeSettings {
             show_pinned_tabs_in_separate_row: None,
             height: None,
             icon_size: None,
+            show_hidden_tabs_button: None,
         })
     }
 
@@ -870,6 +871,7 @@ impl VsCodeSettings {
             auto_open: None,
             diagnostic_badges: None,
             git_status_indicator: None,
+            rounded_selection: None,
         };
 
         if let (Some(false), Some(false)) = (
@@ -1080,6 +1082,7 @@ impl VsCodeSettings {
             focus_follows_mouse: None,
             islands: None,
             tool_window_bars: None,
+            tool_window_headers: None,
         }
     }
 

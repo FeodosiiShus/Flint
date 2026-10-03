@@ -20,7 +20,7 @@ use crate::application_menu::{
 use command_palette_hooks::CommandPaletteFilter;
 
 use gpui::{
-    AnyElement, App, Context, Entity, Focusable, FontWeight, InteractiveElement, IntoElement,
+    AnyElement, App, Context, Entity, Focusable, FontWeight, Hsla, InteractiveElement, IntoElement,
     MouseButton, ParentElement, Render, Styled, Subscription, WeakEntity, Window, actions, div,
 };
 use project::{
@@ -34,15 +34,15 @@ use std::any::TypeId;
 use std::path::Path;
 use theme::ActiveTheme;
 use title_bar_settings::TitleBarSettings;
-use toolbar_widgets::{
-    badge_text_color, project_accent_index, project_initials, upstream_tracking_label,
-};
+use toolbar_widgets::{badge_text_color, project_color, project_initials, upstream_tracking_label};
 use ui::{
     ButtonLike, IconButtonShape, IconWithIndicator, Indicator, PopoverMenu, TintColor, Tooltip,
     prelude::*, utils::platform_title_bar_height,
 };
 use util::ResultExt;
-use workspace::{AccessibleMode, MultiWorkspace, ToggleWorktreeSecurity, Workspace};
+use workspace::{
+    AccessibleMode, MultiWorkspace, ToggleWorktreeSecurity, Workspace, WorkspaceSettings,
+};
 
 use zed_actions::OpenRemote;
 
@@ -273,6 +273,11 @@ impl Render for TitleBar {
             }
         }
 
+        let project_gradient = project_name
+            .as_ref()
+            .filter(|_| title_bar_settings.show_project_gradient)
+            .map(|name| Self::themed_project_color(name, cx));
+
         children.push(
             h_flex()
                 .h_full()
@@ -326,6 +331,7 @@ impl Render for TitleBar {
         if show_menus {
             self.platform_titlebar.update(cx, |this, _| {
                 this.set_button_layout(button_layout);
+                this.set_project_gradient(project_gradient);
                 this.set_children(
                     self.application_menu
                         .clone()
@@ -337,6 +343,9 @@ impl Render for TitleBar {
             let title_bar_color = self.platform_titlebar.update(cx, |platform_titlebar, cx| {
                 platform_titlebar.title_bar_color(window, cx)
             });
+            let content_opacity = WorkspaceSettings::get_global(cx)
+                .islands
+                .frame_content_opacity(window.is_window_active());
 
             v_flex()
                 .w_full()
@@ -351,16 +360,28 @@ impl Render for TitleBar {
                             false,
                             gpui::Corners::default(),
                         ))
+                        .when_some(project_gradient, |menu_row, color| {
+                            menu_row.child(platform_title_bar::project_gradient_overlay(
+                                color,
+                                content_opacity,
+                            ))
+                        })
                         .h(height)
                         .pl_2()
-                        .justify_between()
                         .w_full()
-                        .children(children),
+                        .child(
+                            h_flex()
+                                .size_full()
+                                .justify_between()
+                                .opacity(content_opacity)
+                                .children(children),
+                        ),
                 )
                 .into_any_element()
         } else {
             self.platform_titlebar.update(cx, |this, _| {
                 this.set_button_layout(button_layout);
+                this.set_project_gradient(project_gradient);
                 this.set_children(children);
             });
             self.platform_titlebar.clone().into_any_element()
@@ -791,12 +812,14 @@ impl TitleBar {
             )
     }
 
+    fn themed_project_color(project_name: &str, cx: &App) -> Hsla {
+        let theme = cx.theme();
+        project_color(project_name, &theme.accents().0, theme.colors().text_accent)
+    }
+
     fn render_project_badge(project_name: &str, cx: &App) -> Option<AnyElement> {
         let initials = project_initials(project_name)?;
-        let accents = &cx.theme().accents().0;
-        let background = project_accent_index(project_name, accents.len())
-            .and_then(|index| accents.get(index).copied())
-            .unwrap_or(cx.theme().colors().text_accent);
+        let background = Self::themed_project_color(project_name, cx);
 
         Some(
             h_flex()
@@ -1152,10 +1175,175 @@ impl TitleBar {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gpui::{Modifiers, TestAppContext};
+    use gpui::{Background, Modifiers, TestAppContext, VisualTestContext, point};
     use std::{cell::Cell, rc::Rc};
     use util::paths::PathStyle;
     use workspace::AppState;
+
+    const PROJECT_ROOT: &str = "/flint";
+    const PROJECT_NAME: &str = "flint";
+
+    async fn open_named_project_title_bar(
+        cx: &mut TestAppContext,
+    ) -> (Entity<TitleBar>, &mut VisualTestContext) {
+        let app_state = cx.update(|cx| {
+            let app_state = AppState::test(cx);
+            PlatformTitleBar::init(cx);
+            app_state
+        });
+        app_state
+            .fs
+            .create_dir(Path::new(PROJECT_ROOT))
+            .await
+            .expect("project root should be created");
+        let project = Project::test(app_state.fs.clone(), [Path::new(PROJECT_ROOT)], cx).await;
+        let (multi_workspace, cx) =
+            cx.add_window_view(|window, cx| MultiWorkspace::test_new(project, window, cx));
+        let workspace =
+            multi_workspace.read_with(cx, |multi_workspace, _| multi_workspace.workspace().clone());
+        let title_bar = workspace.update_in(cx, |workspace, window, cx| {
+            let title_bar = cx.new(|cx| TitleBar::new("title-bar", workspace, None, window, cx));
+            workspace.set_titlebar_item(title_bar.clone().into(), window, cx);
+            title_bar
+        });
+        cx.update(|window, _| window.activate_window());
+        cx.run_until_parked();
+        (title_bar, cx)
+    }
+
+    #[gpui::test]
+    async fn project_gradient_tints_the_title_bar_from_its_left_edge(cx: &mut TestAppContext) {
+        let (_title_bar, cx) = open_named_project_title_bar(cx).await;
+
+        let title_bar_height = cx.update(|window, cx| platform_title_bar_height(window, cx));
+        let gradient = cx
+            .debug_bounds("project_gradient")
+            .expect("a named project should tint the title bar with its gradient");
+        let search_button = cx
+            .debug_bounds("ICON-MagnifyingGlass")
+            .expect("search button should be rendered at the right edge of the title bar");
+        assert_eq!(
+            gradient.origin,
+            point(px(0.), px(0.)),
+            "the gradient starts at the left edge of the title bar"
+        );
+        assert_eq!(
+            gradient.size.height, title_bar_height,
+            "the gradient fills the full height of the title bar"
+        );
+        assert!(
+            gradient.right() >= search_button.right(),
+            "the gradient spans the title bar behind its widgets"
+        );
+
+        cx.update(|window, cx| {
+            SettingsStore::update_global(cx, |store, cx| {
+                store.update_user_settings(cx, |settings| {
+                    settings
+                        .title_bar
+                        .get_or_insert_default()
+                        .show_project_gradient = Some(false);
+                });
+            });
+            window.refresh();
+        });
+        cx.run_until_parked();
+
+        assert_eq!(
+            cx.debug_bounds("project_gradient"),
+            None,
+            "turning off show_project_gradient removes the tint"
+        );
+    }
+
+    #[gpui::test]
+    async fn project_gradient_uses_the_project_badge_color(cx: &mut TestAppContext) {
+        let (_title_bar, cx) = open_named_project_title_bar(cx).await;
+
+        let project_color = cx.update(|_, cx| TitleBar::themed_project_color(PROJECT_NAME, cx));
+        let painted_quads = cx.update(|window, _| window.painted_quads());
+
+        assert!(
+            painted_quads
+                .iter()
+                .any(|quad| quad.background == Background::from(project_color)),
+            "the project badge is painted with the project color"
+        );
+        assert!(
+            painted_quads
+                .iter()
+                .any(|quad| quad.background == ui::project_gradient_background(project_color)),
+            "the header gradient is painted with the same project color as the badge"
+        );
+    }
+
+    #[gpui::test]
+    async fn inactive_window_dims_title_bar_content_but_not_its_background(
+        cx: &mut TestAppContext,
+    ) {
+        let (title_bar, cx) = open_named_project_title_bar(cx).await;
+
+        let platform_titlebar =
+            title_bar.read_with(cx, |title_bar, _| title_bar.platform_titlebar.clone());
+        let title_bar_color = platform_titlebar.update_in(cx, |platform_titlebar, window, cx| {
+            platform_titlebar.title_bar_color(window, cx)
+        });
+        let (project_color, inactive_opacity) = cx.update(|_, cx| {
+            (
+                TitleBar::themed_project_color(PROJECT_NAME, cx),
+                <WorkspaceSettings as settings::Settings>::get_global(cx)
+                    .islands
+                    .frame_content_opacity(false),
+            )
+        });
+        assert!(
+            inactive_opacity < 1.,
+            "inactive windows dim their frame content by default"
+        );
+        let gradient = ui::project_gradient_background(project_color);
+        let badge = Background::from(project_color);
+
+        assert!(cx.update(|window, _| window.is_window_active()));
+        let active_quads = cx.update(|window, _| window.painted_quads());
+        assert!(
+            active_quads.iter().any(|quad| quad.background == gradient),
+            "an active window paints the gradient at full strength"
+        );
+        assert!(
+            active_quads.iter().any(|quad| quad.background == badge),
+            "an active window paints the title bar widgets at full strength"
+        );
+
+        cx.deactivate_window();
+        cx.run_until_parked();
+
+        assert!(!cx.update(|window, _| window.is_window_active()));
+        let inactive_quads = cx.update(|window, _| window.painted_quads());
+        assert!(
+            inactive_quads
+                .iter()
+                .any(|quad| quad.background == gradient.opacity(inactive_opacity)),
+            "an inactive window dims the gradient"
+        );
+        assert!(
+            !inactive_quads
+                .iter()
+                .any(|quad| quad.background == gradient),
+            "no undimmed gradient remains in an inactive window"
+        );
+        assert!(
+            inactive_quads
+                .iter()
+                .any(|quad| quad.background == badge.opacity(inactive_opacity)),
+            "an inactive window dims the title bar widgets"
+        );
+        assert!(
+            !inactive_quads.iter().any(|quad| {
+                quad.background == Background::from(title_bar_color).opacity(inactive_opacity)
+            }),
+            "the title bar background is never dimmed"
+        );
+    }
 
     #[gpui::test]
     async fn test_search_and_settings_buttons_dispatch_their_actions(cx: &mut TestAppContext) {

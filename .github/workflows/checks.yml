@@ -99,8 +99,23 @@ jobs:
       - name: Run gpui tests
         run: cargo test --locked --package gpui --package gpui_wgpu
 
-      - name: Run islands, tool window bar, tab and sound tests
-        run: cargo test --locked --package workspace --package ui --package audio --lib -- tool_window_bar island status_bar_hides_panel_buttons workspace_settings tab::tests sound
+      - name: Run islands, tool window bar, tool window header, tab and sound tests
+        run: cargo test --locked --package workspace --package ui --package audio --lib -- tool_window_bar tool_window_header island inactive_window status_bar_hides_panel_buttons workspace_settings tab::tests hidden_tabs test_new_tab_scrolls_into_view_completely test_pinned_tabs_scroll_to_item_uses_correct_index project_gradient sound
+
+      - name: Run islands chrome pixel tests
+        run: cargo test --locked --package ui --test islands_chrome_pixels
+
+      - name: Run icon asset tests
+        run: cargo test --locked --package icons
+
+      - name: Run project panel rounded selection tests
+        run: cargo test --locked --package project_panel --lib rounded_selection
+
+      - name: Run editor rounded scrollbar thumb tests
+        run: cargo test --locked --package editor --lib rounded_thumb
+
+      - name: Run language server DOTNET_ROOT tests
+        run: cargo test --locked --package project --features project/test-support --lib dotnet_root
 
       - name: Run zed action and keymap tests
         run: cargo test --locked --package zed --bin zed -- test_action_namespaces test_base_keymap

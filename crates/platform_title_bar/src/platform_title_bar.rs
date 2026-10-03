@@ -53,6 +53,16 @@ pub fn apply_title_bar_insets<E: Styled + FluentBuilder>(
         .when(right_window_controls, |header| header.pr(inset))
 }
 
+pub fn project_gradient_overlay(color: Hsla, content_opacity: f32) -> impl IntoElement {
+    div()
+        .absolute()
+        .top_0()
+        .left_0()
+        .size_full()
+        .opacity(content_opacity)
+        .child(ui::project_gradient_layer(color))
+}
+
 pub struct PlatformTitleBar {
     id: ElementId,
     platform_style: PlatformStyle,
@@ -61,6 +71,7 @@ pub struct PlatformTitleBar {
     system_window_tabs: Entity<SystemWindowTabs>,
     button_layout: Option<WindowButtonLayout>,
     multi_workspace: Option<WeakEntity<MultiWorkspace>>,
+    project_gradient: Option<Hsla>,
     #[cfg(target_os = "macos")]
     traffic_light_y: Option<Pixels>,
 }
@@ -78,6 +89,7 @@ impl PlatformTitleBar {
             system_window_tabs,
             button_layout: None,
             multi_workspace: None,
+            project_gradient: None,
             #[cfg(target_os = "macos")]
             traffic_light_y: None,
         }
@@ -115,6 +127,10 @@ impl PlatformTitleBar {
 
     pub fn set_button_layout(&mut self, button_layout: Option<WindowButtonLayout>) {
         self.button_layout = button_layout;
+    }
+
+    pub fn set_project_gradient(&mut self, color: Option<Hsla>) {
+        self.project_gradient = color;
     }
 
     fn effective_button_layout(
@@ -244,6 +260,9 @@ impl Render for PlatformTitleBar {
 
         let button_layout = self.effective_button_layout(&decorations, cx);
         let sidebar = self.sidebar_render_state(cx);
+        let content_opacity = WorkspaceSettings::get_global(cx)
+            .islands
+            .frame_content_opacity(window.is_window_active());
 
         let title_bar = h_flex()
             .window_control_area(WindowControlArea::Drag)
@@ -302,6 +321,9 @@ impl Render for PlatformTitleBar {
                 false,
                 gpui::Corners::default(),
             ))
+            .when_some(self.project_gradient, |this, color| {
+                this.child(project_gradient_overlay(color, content_opacity))
+            })
             .map(|this| {
                 let show_left_controls = !(sidebar.open && sidebar.side == SidebarSide::Left);
 
@@ -354,6 +376,7 @@ impl Render for PlatformTitleBar {
                     .justify_between()
                     .overflow_x_hidden()
                     .w_full()
+                    .opacity(content_opacity)
                     .children(children),
             )
             .when(

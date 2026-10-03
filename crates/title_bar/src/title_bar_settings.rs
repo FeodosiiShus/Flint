@@ -14,6 +14,7 @@ pub struct TitleBarSettings {
     pub show_run_widget: bool,
     pub show_search_button: bool,
     pub show_settings_button: bool,
+    pub show_project_gradient: bool,
 }
 
 impl Settings for TitleBarSettings {
@@ -31,6 +32,7 @@ impl Settings for TitleBarSettings {
             show_run_widget: content.show_run_widget.unwrap_or(true),
             show_search_button: content.show_search_button.unwrap_or(true),
             show_settings_button: content.show_settings_button.unwrap_or(true),
+            show_project_gradient: content.show_project_gradient.unwrap_or(true),
         }
     }
 }
@@ -52,6 +54,7 @@ mod tests {
         assert!(settings.show_run_widget);
         assert!(settings.show_search_button);
         assert!(settings.show_settings_button);
+        assert!(settings.show_project_gradient);
         assert!(!settings.show_worktree_name);
         assert!(settings.show_branch_name);
     }
@@ -67,7 +70,8 @@ mod tests {
                         "show_run_widget": false,
                         "show_search_button": false,
                         "show_settings_button": false,
-                        "show_worktree_name": true
+                        "show_worktree_name": true,
+                        "show_project_gradient": false
                     }
                 }"#,
                 cx,
@@ -82,6 +86,7 @@ mod tests {
         assert!(!settings.show_run_widget);
         assert!(!settings.show_search_button);
         assert!(!settings.show_settings_button);
+        assert!(!settings.show_project_gradient);
         assert!(settings.show_worktree_name);
     }
 }

@@ -77,7 +77,7 @@
   // You can set this to ".SystemUIFont" to use the system font
   // ".ZedSans" currently aliases to "IBM Plex Sans", but this may
   // change in the future
-  "ui_font_family": ".ZedSans",
+  "ui_font_family": ".SystemUIFont",
   // Set the UI's font fallbacks, this will be merged with the platform's
   // default font fallbacks.
   "ui_font_fallbacks": null,
@@ -117,11 +117,16 @@
     "enabled": true,
     "gap": null,
     "corner_radius": null,
+    "dim_inactive_window": true,
   },
   "tool_window_bars": {
     "show": true,
     "icon_size": null,
     "show_names": false,
+  },
+  "tool_window_headers": {
+    "show": true,
+    "always_show_actions": false,
   },
   // The direction that you want to split panes horizontally. Defaults to "down"
   "pane_split_direction_horizontal": "down",
@@ -658,6 +663,7 @@
     "show_run_widget": true,
     "show_search_button": true,
     "show_settings_button": true,
+    "show_project_gradient": true,
   },
   // Scrollbar related settings
   "scrollbar": {
@@ -698,6 +704,7 @@
       // When false, forcefully disables the vertical scrollbar. Otherwise, obey other settings.
       "vertical": true,
     },
+    "rounded_thumb": true,
   },
   // Minimap related settings
   "minimap": {
@@ -1012,6 +1019,7 @@
       // Whether to automatically open files dropped from external sources.
       "on_drop": true,
     },
+    "rounded_selection": true,
   },
   "outline_panel": {
     // Whether to show the outline panel button in the status bar
@@ -1468,6 +1476,7 @@
     "show_pinned_tabs_in_separate_row": false,
     "height": null,
     "icon_size": null,
+    "show_hidden_tabs_button": true,
   },
   // Settings related to the editor's tabs
   "tabs": {
@@ -2248,6 +2257,12 @@
     "marksman": true,
     "csharp": true,
     "git-firefly": true,
+    "java": true,
+    "swift": true,
+    "dart": true,
+    "vue": true,
+    "svelte": true,
+    "astro": true,
   },
   // The capabilities granted to extensions.
   //

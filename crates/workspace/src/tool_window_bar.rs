@@ -1,5 +1,5 @@
 use crate::WorkspaceSettings;
-use crate::dock::{Dock, DockPosition, PanelHandle, panel_context_menu};
+use crate::dock::{Dock, PanelHandle, panel_context_menu};
 use crate::workspace_settings::ToolWindowBarsSettings;
 use gpui::{
     Action, Anchor, AnyElement, App, Context, Entity, FocusHandle, Focusable, Hsla, IntoElement,
@@ -155,7 +155,7 @@ impl ToolWindowBar {
 
     fn dock_buttons(dock: &Entity<Dock>, window: &Window, cx: &App) -> Vec<ToolWindowButton> {
         let dock_state = dock.read(cx);
-        let position_key = dock_position_key(dock_state.position());
+        let position_key = dock_state.position().key();
         let active_index = dock_state.active_panel_index();
         let dock_open = dock_state.is_open();
         let dock_focus_handle = dock_state.focus_handle(cx);
@@ -374,17 +374,12 @@ fn more_tool_windows_menu(
     menu
 }
 
-fn dock_position_key(position: DockPosition) -> &'static str {
-    match position {
-        DockPosition::Left => "left",
-        DockPosition::Bottom => "bottom",
-        DockPosition::Right => "right",
-    }
-}
-
 impl Render for ToolWindowBar {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let settings = WorkspaceSettings::get_global(cx).tool_window_bars;
+        let content_opacity = WorkspaceSettings::get_global(cx)
+            .islands
+            .frame_content_opacity(window.is_window_active());
         let background = cx.theme().colors().background;
         let side = self.side;
 
@@ -401,6 +396,9 @@ impl Render for ToolWindowBar {
             .collect::<Vec<_>>();
         let more_button = (side == ToolWindowBarSide::Left)
             .then(|| self.render_more_button(&settings, window, cx));
+        if top_buttons.is_empty() && bottom_buttons.is_empty() && more_button.is_none() {
+            return div().into_any_element();
+        }
         let separator_width = settings.icon_size + BUTTON_PADDING * 2.;
 
         v_flex()
@@ -415,8 +413,6 @@ impl Render for ToolWindowBar {
             .h_full()
             .w(settings.bar_width())
             .py(BAR_VERTICAL_PADDING)
-            .gap(BUTTON_GAP)
-            .items_center()
             .bg(background)
             .child(background_image_layer(
                 BackgroundImageTarget::EditorAndTools,
@@ -425,17 +421,26 @@ impl Render for ToolWindowBar {
                 false,
                 gpui::Corners::default(),
             ))
-            .children(top_buttons)
-            .when_some(more_button, |this, more_button| {
-                this.child(
-                    div()
-                        .w(separator_width)
-                        .child(Divider::horizontal().color(DividerColor::Border)),
-                )
-                .child(more_button)
-            })
-            .child(div().flex_1())
-            .children(bottom_buttons)
+            .child(
+                v_flex()
+                    .flex_1()
+                    .w_full()
+                    .gap(BUTTON_GAP)
+                    .items_center()
+                    .opacity(content_opacity)
+                    .children(top_buttons)
+                    .when_some(more_button, |this, more_button| {
+                        this.child(
+                            div()
+                                .w(separator_width)
+                                .child(Divider::horizontal().color(DividerColor::Border)),
+                        )
+                        .child(more_button)
+                    })
+                    .child(div().flex_1())
+                    .children(bottom_buttons),
+            )
+            .into_any_element()
     }
 }
 

@@ -39,6 +39,12 @@ pub(crate) fn project_accent_index(project_name: &str, palette_size: usize) -> O
     usize::try_from(hash % palette_size).ok()
 }
 
+pub(crate) fn project_color(project_name: &str, palette: &[Hsla], fallback: Hsla) -> Hsla {
+    project_accent_index(project_name, palette.len())
+        .and_then(|index| palette.get(index).copied())
+        .unwrap_or(fallback)
+}
+
 pub(crate) fn badge_text_color(background: Hsla) -> Hsla {
     let rgb = background.to_rgb();
     let luminance = 0.2126 * rgb.r + 0.7152 * rgb.g + 0.0722 * rgb.b;
@@ -168,6 +174,32 @@ mod tests {
             badge_text_color(hsla(240.0 / 360.0, 1.0, 0.5, 1.0)),
             gpui::white()
         );
+    }
+
+    #[test]
+    fn project_gradient_color_is_the_badge_palette_entry_for_the_project_name() {
+        let palette = [
+            hsla(0.0, 0.7, 0.5, 1.0),
+            hsla(0.25, 0.7, 0.5, 1.0),
+            hsla(0.5, 0.7, 0.5, 1.0),
+            hsla(0.75, 0.7, 0.5, 1.0),
+        ];
+        let fallback = hsla(0.1, 0.1, 0.1, 1.0);
+        for name in ["flint", "zed", "my-web-app", "проект"] {
+            let badge_index = project_accent_index(name, palette.len())
+                .expect("non-empty palette always yields an index");
+            assert_eq!(
+                project_color(name, &palette, fallback),
+                palette[badge_index],
+                "{name:?} should tint its header with the color of its badge"
+            );
+        }
+    }
+
+    #[test]
+    fn project_gradient_color_falls_back_when_the_theme_has_no_accents() {
+        let fallback = hsla(0.1, 0.1, 0.1, 1.0);
+        assert_eq!(project_color("flint", &[], fallback), fallback);
     }
 
     #[test]

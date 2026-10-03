@@ -117,6 +117,7 @@ pub enum IconName {
     EditorSublime,
     EditorVsCode,
     Ellipsis,
+    EllipsisVertical,
     Envelope,
     Eraser,
     Escape,

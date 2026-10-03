@@ -1,6 +1,7 @@
 use crate::focus_follows_mouse::FocusFollowsMouse as _;
 use crate::persistence::model::DockData;
 use crate::status_bar::HideStatusItem;
+use crate::tool_window_header::{TOOL_WINDOW_GROUP, render_tool_window_header};
 use crate::{DraggedDock, Event, FocusFollowsMouse, ModalLayer, Pane, WorkspaceSettings};
 use crate::{Workspace, status_bar::StatusItemView};
 use anyhow::Context as _;
@@ -363,6 +364,14 @@ impl DockPosition {
             Self::Left => "Left",
             Self::Bottom => "Bottom",
             Self::Right => "Right",
+        }
+    }
+
+    pub(crate) fn key(&self) -> &'static str {
+        match self {
+            Self::Left => "left",
+            Self::Bottom => "bottom",
+            Self::Right => "right",
         }
     }
 
@@ -1271,7 +1280,7 @@ impl Dock {
 }
 
 impl Render for Dock {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let dispatch_context = Self::dispatch_context();
         if let Some(entry) = self.visible_entry() {
             let position = self.position;
@@ -1335,13 +1344,28 @@ impl Render for Dock {
             };
 
             let panel_background = cx.theme().colors().panel_background;
-            let islands = WorkspaceSettings::get_global(cx).islands;
-            let axis = self.position().axis();
+            let workspace_settings = WorkspaceSettings::get_global(cx);
+            let islands = workspace_settings.islands;
+            let header_settings = workspace_settings.tool_window_headers;
+            let position_key = position.key();
+            let header = header_settings.show.then(|| {
+                render_tool_window_header(
+                    position,
+                    entry.panel.clone(),
+                    cx.entity(),
+                    self.focus_handle.clone(),
+                    self.toggle_action(),
+                    header_settings.always_show_actions
+                        || self.focus_handle.contains_focused(window, cx),
+                    window,
+                    cx,
+                )
+            });
             let panel_content = div()
-                .map(|this| match axis {
-                    Axis::Horizontal => this.w_full().h_full(),
-                    Axis::Vertical => this.h_full().w_full(),
-                })
+                .debug_selector(move || format!("tool_window_content_{position_key}"))
+                .flex_1()
+                .min_h_0()
+                .w_full()
                 .child(
                     entry
                         .panel
@@ -1354,22 +1378,19 @@ impl Render for Dock {
                 .track_focus(&self.focus_handle(cx))
                 .focus_follows_mouse(self.focus_follows_mouse, cx)
                 .flex()
-                .map(|this| match axis {
-                    Axis::Horizontal => this.w_full().h_full().flex_row(),
-                    Axis::Vertical => this.h_full().w_full().flex_col(),
-                });
+                .flex_col()
+                .size_full();
 
             if islands.enabled {
                 return dock_panel
                     .p(islands.half_gap())
                     .child(
                         div()
+                            .debug_selector(move || format!("tool_window_{position_key}"))
+                            .group(TOOL_WINDOW_GROUP)
                             .flex()
+                            .flex_col()
                             .size_full()
-                            .map(|this| match axis {
-                                Axis::Horizontal => this.flex_row(),
-                                Axis::Vertical => this.flex_col(),
-                            })
                             .rounded(islands.corner_radius)
                             .overflow_hidden()
                             .bg(panel_background)
@@ -1380,6 +1401,7 @@ impl Render for Dock {
                                 true,
                                 gpui::Corners::all(islands.corner_radius),
                             ))
+                            .children(header)
                             .child(panel_content),
                     )
                     .when(self.resizable(cx), |this| {
@@ -1388,6 +1410,8 @@ impl Render for Dock {
             }
 
             dock_panel
+                .debug_selector(move || format!("tool_window_{position_key}"))
+                .group(TOOL_WINDOW_GROUP)
                 .bg(panel_background)
                 .border_color(cx.theme().colors().border)
                 .overflow_hidden()
@@ -1403,6 +1427,7 @@ impl Render for Dock {
                     true,
                     gpui::Corners::default(),
                 ))
+                .children(header)
                 .child(panel_content)
                 .when(self.resizable(cx), |this| {
                     this.child(create_resize_handle())

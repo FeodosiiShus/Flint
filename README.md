@@ -149,26 +149,44 @@ Flint uses WebStorm's [Islands](https://plugins.jetbrains.com/docs/intellij/supp
 - The left dock, the right dock, the bottom dock and the editor area are separate rounded islands. Docks use the theme's `panel.background`, the editor area uses `editor.background`. Dock resize handles sit in the gaps.
 - Editor tabs: the tab bar has the editor background and no borders. The active tab is a rounded pill with an accent border and a light accent fill while its pane is focused, and a plain border otherwise. Inactive tabs show only their text.
 - Tool window bars run down the left and right window edges. The left bar shows the left dock panels, a separator, a "More Tool Windows" button (a menu of every panel, including panels whose button is hidden), and the bottom dock panels at the bottom. The right bar shows the right dock panels. Click an icon to show or hide its panel; right-click it to move the panel to another dock or hide its button. A filled background marks an open panel, an accent background a focused one. While the bars are shown, the status bar no longer has panel buttons.
+- The right bar disappears when no right dock panel has a button, so it never leaves an empty strip. The editor island then keeps exactly the islands gap to the window edge, the same as on every other side.
+- Tool window headers: every open dock island starts with a header like a WebStorm tool window header: the panel name in semibold, then ⋮ (the panel menu: move to another dock, hide the button) and — (hide the panel). Like WebStorm, the two buttons appear only while the pointer is over the tool window or the tool window has focus. Right-clicking the header opens the same menu.
+- Inactive window: when the Flint window is not focused, the title bar widgets, the tool window bar buttons and the status bar items are drawn at 56% opacity, matching the Islands `Island.inactiveAlpha` of 0.44. Backgrounds and the background image are not dimmed.
 
 ```json
-"islands": { "enabled": true, "gap": null, "corner_radius": null },
-"tool_window_bars": { "show": true, "icon_size": null, "show_names": false }
+"islands": { "enabled": true, "gap": null, "corner_radius": null, "dim_inactive_window": true },
+"tool_window_bars": { "show": true, "icon_size": null, "show_names": false },
+"tool_window_headers": { "show": true, "always_show_actions": false }
 ```
 
 - `islands.gap` — distance between islands in pixels, 0–16. Unset: 4, or 3 with `"unstable.ui_density": "compact"`.
 - `islands.corner_radius` — island corner radius in pixels, 0–24. Unset: 10, or 8 in compact density.
+- `islands.dim_inactive_window` — dim the frame content of an inactive window. Works only with islands enabled.
 - `tool_window_bars.icon_size` — bar icon size in pixels, 12–32; the bar is 20px wider than the icon. Unset: 20, or 16 in compact density.
 - `tool_window_bars.show_names` — show the panel name under each icon.
-- `"islands": { "enabled": false }` together with `"tool_window_bars": { "show": false }` restores the classic Zed layout: flat docks with borders, square tabs and panel buttons in the status bar.
-- Settings window: Window & Layout → Islands and Tool Window Bars.
+- `tool_window_headers.show` — show the header row. `false` returns to panels without a common header.
+- `tool_window_headers.always_show_actions` — show ⋮ and — all the time, like WebStorm's "Always show tool window header icons".
+- `"islands": { "enabled": false }` together with `"tool_window_bars": { "show": false }` and `"tool_window_headers": { "show": false }` restores the classic Zed layout: flat docks with borders, square tabs and panel buttons in the status bar.
+- Settings window: Window & Layout → Islands, Tool Window Bars and Tool Window Headers.
 - WebStorm-like defaults that come with it: `tabs.file_icons: true`, `tab_bar.show_nav_history_buttons: false`, and the Git and Outline panels docked on the left.
 - Not implemented: WebStorm's split tool windows under the bar separator and the bottom-right bar group, because a Flint dock shows one panel at a time.
+
+## Editor tabs, project panel and scrollbar
+
+- Hidden tabs: when the editor tabs do not fit, a ˅ button at the right end of the tab bar lists the tabs outside the visible area, like WebStorm's "Show Hidden Tabs" drop-down. Picking one activates it and scrolls it into view. `"tab_bar": { "show_hidden_tabs_button": true }`.
+- Project panel selection: the hovered and selected rows are rounded pills inset from the panel edges, like WebStorm's tree selection. The selection is the theme's selection color while the panel has focus and a neutral gray otherwise; the keyboard cursor is a border on the pill. `"project_panel": { "rounded_selection": true }`; `false` restores full-width square rows.
+- Editor scrollbar: the thumb is a narrower rounded pill inside the track, like the macOS scrollbar in JetBrains IDEs. Dragging still works on the whole track width. `"scrollbar": { "rounded_thumb": true }`.
+- UI font: the default `ui_font_family` is `.SystemUIFont` (San Francisco on macOS), the closest system font to JetBrains' Inter. `"ui_font_family": ".ZedSans"` brings back IBM Plex Sans.
+- Settings window: Window & Layout → Tab Bar, Panels → Project Panel, Editor → Scrollbar, Appearance → UI Font.
+
+The WebStorm reference used for these changes, with quotes from JetBrains documentation and the full gap list, is in [docs/webstorm-ui-research.md](docs/webstorm-ui-research.md).
 
 ## Main toolbar
 
 The title bar works like WebStorm's [main toolbar](https://www.jetbrains.com/help/webstorm/new-ui.html), left to right:
 
 - Project widget: a rounded badge with one or two initials of the project name, the name and a ˅. Click it to open the recent projects popover. The badge color is picked from the theme's accent colors by a stable hash of the project name, so a project keeps its color across restarts.
+- Project gradient: like WebStorm's colored project headers, the title bar is tinted with the badge color, fading out from the left edge to the middle. It appears only when a project is open.
 - VCS widget: the branch name, then `↓N ↑M` when the branch is behind or ahead of its upstream (only the non-zero directions are shown), and a ˅. Click it to open the branch picker. The worktree button is hidden by default.
 - Run widget: the label of the last task you ran (or "Run…") with a ˅ that opens the task picker (`task: spawn`), a green ▷ that reruns the last task (`task: rerun`) and a green bug that starts debugging (`debugger: start`).
 - Right edge: a magnifying glass that opens Search Everywhere and a gear that opens the Settings window.
@@ -178,6 +196,7 @@ Each widget can be turned off in `settings.json` or in Settings → Window & Lay
 ```json
 "title_bar": {
   "show_project_badge": true,
+  "show_project_gradient": true,
   "show_run_widget": true,
   "show_search_button": true,
   "show_settings_button": true,
@@ -290,6 +309,15 @@ The shortcuts work in the default and the JetBrains keymaps; inside the merge wi
 ```
 
 With `true`, the merge window applies all non-conflicting changes as soon as it opens. Settings window: Version Control → Merge Tool.
+
+## Languages and code navigation
+
+Cmd+click (and `Cmd-B`, `Alt-F7` with the JetBrains keymap) goes to a definition or lists usages through the file's language server, so it works once that server runs:
+
+- Built in, no install step: Rust (rust-analyzer from `rustup` or `PATH`, otherwise downloaded), C and C++ (clangd), Go (gopls, needs `go` on `PATH`), Python, TypeScript and JavaScript, JSON, YAML, CSS, Bash.
+- Installed automatically on first launch from the extension registry: C# (`csharp`, Roslyn), Java (`java`, jdtls), Swift, Dart, Vue, Svelte, Astro, plus HTML, Dockerfile, TOML, Markdown and `.env`. Other languages, such as Kotlin, PHP or Ruby, get their extension after you accept the install suggestion shown when you open such a file. To skip an automatic install, set it to `false` in your `settings.json`: `"auto_install_extensions": { "swift": false }`.
+- C# needs a .NET runtime. If .NET is installed only in `~/.dotnet` and `DOTNET_ROOT` is not set, Flint passes `DOTNET_ROOT=~/.dotnet` to language servers, so Roslyn starts without extra setup. A `DOTNET_ROOT` or `DOTNET_ROOT_ARM64` you set yourself, in the shell or in `lsp.<server>.binary.env`, always wins.
+- Each server still needs its project files to resolve symbols: `Cargo.toml` for Rust, `compile_commands.json` for C and C++, `go.mod` for Go, a `.csproj` or `.sln` for C#, and a JDK for Java.
 
 ## Licensing
 
