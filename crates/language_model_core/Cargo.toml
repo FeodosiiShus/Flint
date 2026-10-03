@@ -13,7 +13,6 @@ path = "src/language_model_core.rs"
 
 [dependencies]
 anyhow.workspace = true
-cloud_llm_client.workspace = true
 collections.workspace = true
 futures.workspace = true
 gpui_shared_string.workspace = true

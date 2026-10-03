@@ -14,7 +14,7 @@ use ui::{
     prelude::*,
     utils::{TRAFFIC_LIGHT_PADDING, platform_title_bar_height},
 };
-use workspace::{MultiWorkspace, SidebarRenderState, SidebarSide};
+use workspace::{MultiWorkspace, SidebarRenderState, SidebarSide, WorkspaceSettings};
 
 use crate::{
     platforms::{platform_linux, platform_windows},
@@ -93,7 +93,9 @@ impl PlatformTitleBar {
     }
 
     pub fn title_bar_color(&self, window: &mut Window, cx: &mut Context<Self>) -> Hsla {
-        if cfg!(any(target_os = "linux", target_os = "freebsd")) {
+        if WorkspaceSettings::get_global(cx).islands.enabled {
+            cx.theme().colors().background
+        } else if cfg!(any(target_os = "linux", target_os = "freebsd")) {
             if window.is_window_active() && !self.should_move {
                 cx.theme().colors().title_bar_background
             } else {
@@ -298,6 +300,7 @@ impl Render for PlatformTitleBar {
                 ui::BackgroundImageArea::Window,
                 titlebar_color,
                 false,
+                gpui::Corners::default(),
             ))
             .map(|this| {
                 let show_left_controls = !(sidebar.open && sidebar.side == SidebarSide::Left);

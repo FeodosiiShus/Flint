@@ -8,6 +8,7 @@ use crate::commit_modal::CommitModal;
 use crate::commit_tooltip::{CommitAvatar, CommitTooltip};
 use crate::commit_view::CommitView;
 use crate::git_panel_settings::GitPanelScrollbarAccessor;
+use crate::merge_tool::{self, AcceptTheirs, AcceptYours, OpenMergeTool};
 use crate::project_diff::{DeployBranchDiff, Diff, ProjectDiff};
 use crate::remote_output::{self, RemoteAction, SuccessMessage};
 use crate::solo_diff_view::SoloDiffView;
@@ -32,9 +33,8 @@ use git::Oid;
 use git::commit::ParsedCommitMessage;
 use git::repository::{
     Branch, CommitData, CommitDetails, CommitOptions, CommitSummary, DiffType, FetchOptions,
-    GitCommitTemplate, GitCommitter, InitialGraphCommitData, LogOrder, LogSource, PushOptions,
-    Remote, RemoteCommandOutput, ResetMode, Upstream, UpstreamTracking, UpstreamTrackingStatus,
-    get_git_committer,
+    GitCommitTemplate, InitialGraphCommitData, LogOrder, LogSource, PushOptions, Remote,
+    RemoteCommandOutput, ResetMode, Upstream, UpstreamTracking, UpstreamTrackingStatus,
 };
 use git::stash::GitStash;
 use git::status::{DiffStat, StageStatus};
@@ -87,12 +87,13 @@ use std::rc::Rc;
 use std::{sync::Arc, time::Duration};
 use strum::{IntoEnumIterator, VariantNames};
 use theme_settings::ThemeSettings;
+use three_way_merge::Side;
 use time::OffsetDateTime;
 use ui::{
-    ButtonLike, Checkbox, Chip, ContextMenu, ContextMenuEntry, Divider, DocumentationSide,
-    ElevationIndex, IndentGuideColors, KeyBinding, PopoverMenu, PopoverMenuHandle,
-    ProjectEmptyState, ScrollAxes, Scrollbars, SplitButton, Tab, TintColor, Tooltip, WithScrollbar,
-    prelude::*,
+    ButtonLike, Checkbox, Chip, ChromeRegion, ContextMenu, ContextMenuEntry, Divider,
+    DocumentationSide, ElevationIndex, IndentGuideColors, KeyBinding, PopoverMenu,
+    PopoverMenuHandle, ProjectEmptyState, ScrollAxes, Scrollbars, SplitButton, TintColor, Tooltip,
+    WithScrollbar, prelude::*,
 };
 use util::paths::PathStyle;
 use util::{ResultExt, TryFutureExt, markdown::MarkdownInlineCode, maybe, rel_path::RelPath};
@@ -137,8 +138,6 @@ actions!(
         FirstEntry,
         /// Select last git panel menu item, and show it in the diff view
         LastEntry,
-        /// Toggles automatic co-author suggestions.
-        ToggleFillCoAuthors,
         /// Sorts entries by path.
         SetSortByPath,
         /// Sorts entries by name.
@@ -1132,7 +1131,6 @@ pub struct GitPanel {
     commit_editor_toggled: bool,
     conflicted_count: usize,
     conflicted_staged_count: usize,
-    add_coauthors: bool,
     generate_commit_message_task: Option<Task<Option<()>>>,
     entries: Vec<GitListEntry>,
     collapsed_sections: HashSet<Section>,
@@ -1172,10 +1170,6 @@ pub struct GitPanel {
     context_menu: Option<GitPanelContextMenu>,
     modal_open: bool,
     show_placeholders: bool,
-    // Only read to compute collaborative co-authors, which requires the `call` feature.
-    #[cfg_attr(not(feature = "call"), allow(dead_code))]
-    local_committer: Option<GitCommitter>,
-    local_committer_task: Option<Task<()>>,
     commit_template: Option<GitCommitTemplate>,
     bulk_staging: Option<BulkStaging>,
     stash_entries: GitStash,
@@ -1471,7 +1465,6 @@ impl GitPanel {
                 commit_editor_toggled: commit_editor_was_serialized,
                 conflicted_count: 0,
                 conflicted_staged_count: 0,
-                add_coauthors: true,
                 generate_commit_message_task: None,
                 entries: Vec::new(),
                 collapsed_sections: HashSet::default(),
@@ -1507,8 +1500,6 @@ impl GitPanel {
                 update_visible_entries_task: Task::ready(()),
                 reopen_commit_buffer_task: Task::ready(()),
                 show_placeholders: false,
-                local_committer: None,
-                local_committer_task: None,
                 commit_template: None,
                 context_menu: None,
                 workspace: workspace.weak_handle(),
@@ -2771,6 +2762,74 @@ impl GitPanel {
         }
     }
 
+    fn merge_tool_available(&self, cx: &App) -> bool {
+        merge_tool::is_available(self.project.read(cx), cx)
+    }
+
+    fn selected_conflicted_entry(&self) -> Option<GitStatusEntry> {
+        let entry = self.get_selected_entry()?.status_entry()?;
+        entry.status.is_conflicted().then(|| entry.clone())
+    }
+
+    fn selected_entry_opens_merge_tool(&self, cx: &App) -> bool {
+        self.merge_tool_available(cx) && self.selected_conflicted_entry().is_some()
+    }
+
+    fn open_merge_tool(&mut self, _: &OpenMergeTool, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(repository) = self.active_repository.clone() else {
+            cx.propagate();
+            return;
+        };
+        let Some(entry) = self.selected_conflicted_entry() else {
+            cx.propagate();
+            return;
+        };
+        let workspace = self.workspace.clone();
+        workspace
+            .update(cx, |workspace, cx| {
+                merge_tool::open_merge_tool(workspace, repository, entry.repo_path, window, cx)
+                    .detach_and_notify_err(cx.weak_entity(), window, cx);
+            })
+            .log_err();
+    }
+
+    fn accept_yours(&mut self, _: &AcceptYours, window: &mut Window, cx: &mut Context<Self>) {
+        self.accept_conflict_side(Side::Left, window, cx);
+    }
+
+    fn accept_theirs(&mut self, _: &AcceptTheirs, window: &mut Window, cx: &mut Context<Self>) {
+        self.accept_conflict_side(Side::Right, window, cx);
+    }
+
+    fn accept_conflict_side(&mut self, side: Side, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(repository) = self.active_repository.clone() else {
+            cx.propagate();
+            return;
+        };
+        let Some(entry) = self.selected_conflicted_entry() else {
+            cx.propagate();
+            return;
+        };
+        merge_tool::accept_side(self.project.clone(), repository, entry.repo_path, side, cx)
+            .detach_and_notify_err(self.workspace.clone(), window, cx);
+    }
+
+    fn open_conflicts_dialog_if_conflicted(
+        &self,
+        repository: Entity<Repository>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.merge_tool_available(cx) {
+            merge_tool::open_conflicts_dialog_if_conflicted(
+                self.workspace.clone(),
+                repository,
+                window,
+                cx,
+            );
+        }
+    }
+
     fn revert_selected(
         &mut self,
         action: &RestoreFile,
@@ -3491,22 +3550,23 @@ impl GitPanel {
         self.tracked_staged_count + self.new_staged_count + self.conflicted_staged_count
     }
 
-    pub fn stash_pop(&mut self, _: &StashPop, _window: &mut Window, cx: &mut Context<Self>) {
+    pub fn stash_pop(&mut self, _: &StashPop, window: &mut Window, cx: &mut Context<Self>) {
         let Some(active_repository) = self.active_repository.clone() else {
             return;
         };
 
-        cx.spawn({
+        cx.spawn_in(window, {
             async move |this, cx| {
                 let stash_task = active_repository
                     .update(cx, |repo, cx| repo.stash_pop(None, cx))
                     .await;
-                this.update(cx, |this, cx| {
+                this.update_in(cx, |this, window, cx| {
                     stash_task
                         .map_err(|e| {
                             this.show_error_toast("stash pop", e, cx);
                         })
                         .ok();
+                    this.open_conflicts_dialog_if_conflicted(active_repository, window, cx);
                     cx.notify();
                 })
             }
@@ -3514,22 +3574,23 @@ impl GitPanel {
         .detach();
     }
 
-    pub fn stash_apply(&mut self, _: &StashApply, _window: &mut Window, cx: &mut Context<Self>) {
+    pub fn stash_apply(&mut self, _: &StashApply, window: &mut Window, cx: &mut Context<Self>) {
         let Some(active_repository) = self.active_repository.clone() else {
             return;
         };
 
-        cx.spawn({
+        cx.spawn_in(window, {
             async move |this, cx| {
                 let stash_task = active_repository
                     .update(cx, |repo, cx| repo.stash_apply(None, cx))
                     .await;
-                this.update(cx, |this, cx| {
+                this.update_in(cx, |this, window, cx| {
                     stash_task
                         .map_err(|e| {
                             this.show_error_toast("stash apply", e, cx);
                         })
                         .ok();
+                    this.open_conflicts_dialog_if_conflicted(active_repository, window, cx);
                     cx.notify();
                 })
             }
@@ -3714,14 +3775,7 @@ impl GitPanel {
     }
 
     fn on_commit(&mut self, _: &Commit, window: &mut Window, cx: &mut Context<Self>) {
-        let is_amend = self.amend_pending;
-        if self.commit(&self.commit_editor.focus_handle(cx), window, cx) {
-            if is_amend {
-                telemetry::event!("Git Amended", source = "Git Panel");
-            } else {
-                telemetry::event!("Git Committed", source = "Git Panel");
-            }
-        }
+        self.commit(&self.commit_editor.focus_handle(cx), window, cx);
     }
 
     /// Commits staged changes with the current commit message.
@@ -3745,9 +3799,7 @@ impl GitPanel {
     }
 
     fn on_amend(&mut self, _: &Amend, window: &mut Window, cx: &mut Context<Self>) {
-        if self.amend(&self.commit_editor.focus_handle(cx), window, cx) {
-            telemetry::event!("Git Amended", source = "Git Panel");
-        }
+        self.amend(&self.commit_editor.focus_handle(cx), window, cx);
     }
 
     /// Enters the amend state on first invocation, loading the last commit
@@ -3894,17 +3946,13 @@ impl GitPanel {
         let askpass = self.askpass_delegate("git commit", window, cx);
         let commit_message = self.custom_or_suggested_commit_message(window, cx);
 
-        let Some(mut message) = commit_message else {
+        let Some(message) = commit_message else {
             self.commit_editor
                 .read(cx)
                 .focus_handle(cx)
                 .focus(window, cx);
             return;
         };
-
-        if self.add_coauthors {
-            self.fill_co_authors(&mut message, cx);
-        }
 
         let task = if self.has_staged_changes() {
             // Repository serializes all git operations, so we can just send a commit immediately
@@ -3964,7 +4012,6 @@ impl GitPanel {
         let Some(repo) = self.active_repository.clone() else {
             return;
         };
-        telemetry::event!("Git Uncommitted");
 
         let confirmation = self.check_for_pushed_commits(window, cx);
         let prior_head = self.load_commit_details("HEAD".to_string(), cx);
@@ -4298,8 +4345,6 @@ impl GitPanel {
             return;
         };
 
-        telemetry::event!("Git Commit Message Generated");
-
         let diff = repo.update(cx, |repo, cx| {
             if self.has_staged_changes() {
                 repo.diff(DiffType::HeadToIndex, cx)
@@ -4510,7 +4555,6 @@ impl GitPanel {
             return;
         }
 
-        telemetry::event!("Git Fetched");
         let askpass = self.askpass_delegate("git fetch", window, cx);
         let this = cx.weak_entity();
 
@@ -4664,7 +4708,6 @@ impl GitPanel {
             return;
         }
 
-        telemetry::event!("Git Pulled");
         let remote = self.get_remote(false, false, window, cx);
         cx.spawn_in(window, async move |this, cx| {
             let _clear_pending_remote_operation = cx.on_drop(&this, |this, cx| {
@@ -4700,12 +4743,15 @@ impl GitPanel {
             let remote_message = pull.await?;
 
             let action = RemoteAction::Pull(remote);
-            this.update(cx, |this, cx| match remote_message {
-                Ok(remote_message) => this.show_remote_output(action, remote_message, cx),
-                Err(e) => {
-                    log::error!("Error while pulling {:?}", e);
-                    this.show_error_toast(action.name(), e, cx)
+            this.update_in(cx, |this, window, cx| {
+                match remote_message {
+                    Ok(remote_message) => this.show_remote_output(action, remote_message, cx),
+                    Err(e) => {
+                        log::error!("Error while pulling {:?}", e);
+                        this.show_error_toast(action.name(), e, cx)
+                    }
                 }
+                this.open_conflicts_dialog_if_conflicted(repo, window, cx);
             })
             .ok();
 
@@ -4733,8 +4779,6 @@ impl GitPanel {
         if !self.start_remote_operation(RemoteOperationKind::Push, cx) {
             return;
         }
-
-        telemetry::event!("Git Pushed");
 
         let options = if force_push {
             Some(PushOptions::Force)
@@ -5007,89 +5051,6 @@ impl GitPanel {
         }
     }
 
-    pub fn load_local_committer(&mut self, cx: &Context<Self>) {
-        if self.local_committer_task.is_none() {
-            self.local_committer_task = Some(cx.spawn(async move |this, cx| {
-                let committer = get_git_committer(cx).await;
-                this.update(cx, |this, cx| {
-                    this.local_committer = Some(committer);
-                    cx.notify()
-                })
-                .ok();
-            }));
-        }
-    }
-
-    #[cfg(not(feature = "call"))]
-    fn potential_co_authors(&self, _cx: &App) -> Vec<(String, String)> {
-        Vec::new()
-    }
-
-    #[cfg(feature = "call")]
-    fn potential_co_authors(&self, cx: &App) -> Vec<(String, String)> {
-        let mut new_co_authors = Vec::new();
-        let project = self.project.read(cx);
-
-        let Some(room) =
-            call::ActiveCall::try_global(cx).and_then(|call| call.read(cx).room().cloned())
-        else {
-            return Vec::default();
-        };
-
-        let room = room.read(cx);
-
-        for (peer_id, collaborator) in project.collaborators() {
-            if collaborator.is_host {
-                continue;
-            }
-
-            let Some(participant) = room.remote_participant_for_peer_id(*peer_id) else {
-                continue;
-            };
-            if !participant.can_write() {
-                continue;
-            }
-            if let Some(email) = &collaborator.committer_email {
-                let name = collaborator
-                    .committer_name
-                    .clone()
-                    .or_else(|| participant.user.name.clone())
-                    .unwrap_or_else(|| participant.user.username.clone().to_string());
-                new_co_authors.push((name.clone(), email.clone()))
-            }
-        }
-        if !project.is_local()
-            && !project.is_read_only(cx)
-            && let Some(local_committer) = self.local_committer(room, cx)
-        {
-            new_co_authors.push(local_committer);
-        }
-        new_co_authors
-    }
-
-    #[cfg(feature = "call")]
-    fn local_committer(&self, room: &call::Room, cx: &App) -> Option<(String, String)> {
-        let user = room.local_participant_user(cx)?;
-        let committer = self.local_committer.as_ref()?;
-        let email = committer.email.clone()?;
-        let name = committer
-            .name
-            .clone()
-            .or_else(|| user.name.clone())
-            .unwrap_or_else(|| user.username.clone().to_string());
-        Some((name, email))
-    }
-
-    fn toggle_fill_co_authors(
-        &mut self,
-        _: &ToggleFillCoAuthors,
-        _: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.add_coauthors = !self.add_coauthors;
-        cx.notify();
-    }
-
     fn set_sort_by_path(&mut self, _: &SetSortByPath, _: &mut Window, cx: &mut Context<Self>) {
         if let Some(workspace) = self.workspace.upgrade() {
             let workspace = workspace.read(cx);
@@ -5273,54 +5234,6 @@ impl GitPanel {
         } else {
             util::debug_panic!("Attempted to toggle directory in flat Git Panel state");
         }
-    }
-
-    fn fill_co_authors(&mut self, message: &mut String, cx: &mut Context<Self>) {
-        const CO_AUTHOR_PREFIX: &str = "Co-authored-by: ";
-
-        let existing_text = message.to_ascii_lowercase();
-        let lowercase_co_author_prefix = CO_AUTHOR_PREFIX.to_lowercase();
-        let mut ends_with_co_authors = false;
-        let existing_co_authors = existing_text
-            .lines()
-            .filter_map(|line| {
-                let line = line.trim();
-                if line.starts_with(&lowercase_co_author_prefix) {
-                    ends_with_co_authors = true;
-                    Some(line)
-                } else {
-                    ends_with_co_authors = false;
-                    None
-                }
-            })
-            .collect::<HashSet<_>>();
-
-        let new_co_authors = self
-            .potential_co_authors(cx)
-            .into_iter()
-            .filter(|(_, email)| {
-                !existing_co_authors
-                    .iter()
-                    .any(|existing| existing.contains(email.as_str()))
-            })
-            .collect::<Vec<_>>();
-
-        if new_co_authors.is_empty() {
-            return;
-        }
-
-        if !ends_with_co_authors {
-            message.push('\n');
-        }
-        for (name, email) in new_co_authors {
-            message.push('\n');
-            message.push_str(CO_AUTHOR_PREFIX);
-            message.push_str(&name);
-            message.push_str(" <");
-            message.push_str(&email);
-            message.push('>');
-        }
-        message.push('\n');
     }
 
     fn schedule_update(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -6290,7 +6203,8 @@ impl GitPanel {
         PopoverMenu::new(id.into())
             .trigger_with_tooltip(
                 IconButton::new("view-options-menu-trigger", IconName::Filter)
-                    .icon_size(IconSize::Small),
+                    .icon_size(IconSize::Small)
+                    .chrome_region(ChromeRegion::Panel),
                 Tooltip::text("View Options"),
             )
             .menu(move |window, cx| {
@@ -6305,6 +6219,7 @@ impl GitPanel {
 
     pub(crate) fn render_generate_commit_message_button(
         &self,
+        chrome_region: Option<ChromeRegion>,
         cx: &Context<Self>,
     ) -> Option<AnyElement> {
         if !agent_settings::AgentSettings::get_global(cx).enabled(cx) {
@@ -6319,6 +6234,7 @@ impl GitPanel {
                         IconButton::new("cancel-generate-commit-message", IconName::Stop)
                             .icon_color(Color::Error)
                             .icon_size(IconSize::Small)
+                            .when_some(chrome_region, |this, region| this.chrome_region(region))
                             .style(ButtonStyle::Tinted(TintColor::Error))
                             .tooltip(Tooltip::text("Cancel Commit Message Generation"))
                             .on_click(cx.listener(|this, _event, _window, cx| {
@@ -6345,6 +6261,7 @@ impl GitPanel {
 
         let button = IconButton::new("generate-commit-message", IconName::AiEdit)
             .shape(ui::IconButtonShape::Square)
+            .when_some(chrome_region, |this, region| this.chrome_region(region))
             .icon_color(if has_commit_model_configuration_error {
                 Color::Disabled
             } else {
@@ -6377,49 +6294,6 @@ impl GitPanel {
         Some(button.into_any_element())
     }
 
-    pub(crate) fn render_co_authors(&self, cx: &Context<Self>) -> Option<AnyElement> {
-        let potential_co_authors = self.potential_co_authors(cx);
-
-        let (tooltip_label, icon) = if self.add_coauthors {
-            ("Remove co-authored-by", IconName::Person)
-        } else {
-            ("Add co-authored-by", IconName::UserCheck)
-        };
-
-        if potential_co_authors.is_empty() {
-            None
-        } else {
-            Some(
-                IconButton::new("co-authors", icon)
-                    .shape(ui::IconButtonShape::Square)
-                    .icon_color(Color::Disabled)
-                    .selected_icon_color(Color::Selected)
-                    .toggle_state(self.add_coauthors)
-                    .tooltip(move |_, cx| {
-                        let title = format!(
-                            "{}:{}{}",
-                            tooltip_label,
-                            if potential_co_authors.len() == 1 {
-                                ""
-                            } else {
-                                "\n"
-                            },
-                            potential_co_authors
-                                .iter()
-                                .map(|(name, email)| format!(" {} <{}>", name, email))
-                                .join("\n")
-                        );
-                        Tooltip::simple(title, cx)
-                    })
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.add_coauthors = !this.add_coauthors;
-                        cx.notify();
-                    }))
-                    .into_any_element(),
-            )
-        }
-    }
-
     fn render_git_commit_menu(
         &self,
         id: impl Into<ElementId>,
@@ -6431,8 +6305,13 @@ impl GitPanel {
 
         PopoverMenu::new(id.into())
             .trigger(
-                crate::render_split_button_chevron_trigger("commit-split-button-right", menu_open)
-                    .disabled(disabled),
+                crate::render_split_button_chevron_trigger(
+                    "commit-split-button-right",
+                    menu_open,
+                    Some(ChromeRegion::Panel),
+                    cx,
+                )
+                .disabled(disabled),
             )
             .with_handle(self.commit_menu_handle.clone())
             .menu({
@@ -6610,6 +6489,8 @@ impl GitPanel {
             .trigger(crate::render_split_button_chevron_trigger(
                 "changes-actions-split-button-right",
                 menu_open,
+                Some(ChromeRegion::Panel),
+                cx,
             ))
             .with_handle(self.changes_actions_menu_handle.clone())
             .menu(move |window, cx| {
@@ -6645,6 +6526,7 @@ impl GitPanel {
             ButtonLike::new_rounded_left("git-changes-actions-split-button-left")
                 .layer(ElevationIndex::ModalSurface)
                 .size(ButtonSize::Compact)
+                .chrome_region(ChromeRegion::Panel)
                 .child(Label::new(text).size(LabelSize::Small).mr_0p5())
                 .tooltip(Tooltip::for_action_title_in(
                     tooltip,
@@ -6679,10 +6561,11 @@ impl GitPanel {
         self.active_repository.as_ref()?;
 
         let diff_stat_total = self.diff_stat_total;
+        let diff_icon_size = ui::chrome_icon_size(ChromeRegion::Panel, IconSize::Small, cx);
 
         Some(
             h_flex()
-                .min_h(Tab::container_height(cx))
+                .min_h(ui::panel_header_height(cx))
                 .w_full()
                 .pl_1()
                 .pr_2()
@@ -6692,12 +6575,13 @@ impl GitPanel {
                 .justify_between()
                 .child(
                     ButtonLike::new("diff-button")
+                        .chrome_region(ChromeRegion::Panel)
                         .child(
                             h_flex()
                                 .gap_1()
                                 .child(
                                     Icon::new(IconName::Diff)
-                                        .size(IconSize::Small)
+                                        .size(diff_icon_size)
                                         .color(Color::Muted),
                                 )
                                 .child(
@@ -6737,7 +6621,11 @@ impl GitPanel {
         )
     }
 
-    pub(crate) fn render_remote_button(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+    pub(crate) fn render_remote_button(
+        &self,
+        chrome_region: Option<ChromeRegion>,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
         let branch = self.active_repository.as_ref()?.read(cx).branch.clone();
         if !self.can_push_and_pull(cx) {
             return None;
@@ -6756,6 +6644,8 @@ impl GitPanel {
                         true,
                         self.pending_remote_operation,
                         self.remote_action_menu_handle.clone(),
+                        chrome_region,
+                        cx,
                     ))
                 })
                 .into_any_element(),
@@ -6771,7 +6661,6 @@ impl GitPanel {
         let settings = ThemeSettings::get_global(cx);
         let panel_editor_style =
             git_commit_editor_style(settings.git_commit_buffer_font_size(cx), cx);
-        let enable_coauthors = self.render_co_authors(cx);
         let editor_focus_handle = self.commit_editor.focus_handle(cx);
         let branch = active_repository.read(cx).branch.clone();
         let head_commit = active_repository.read(cx).head_commit.clone();
@@ -6808,6 +6697,7 @@ impl GitPanel {
             .child(
                 IconButton::new("expand-commit-editor", IconName::MaximizeAlt)
                     .icon_size(IconSize::Small)
+                    .chrome_region(ChromeRegion::Panel)
                     .tooltip({
                         move |_window, cx| {
                             Tooltip::for_action_in(
@@ -6834,6 +6724,7 @@ impl GitPanel {
 
                 IconButton::new("fill-commit-editor", icon)
                     .icon_size(IconSize::Small)
+                    .chrome_region(ChromeRegion::Panel)
                     .tooltip({
                         move |_window, cx| {
                             Tooltip::for_action_in(
@@ -6862,6 +6753,7 @@ impl GitPanel {
 
             IconButton::new("toggle-commit-editor", icon)
                 .icon_size(IconSize::Small)
+                .chrome_region(ChromeRegion::Panel)
                 .tooltip(move |_window, cx| {
                     Tooltip::for_action_in(label, &git::ToggleCommitEditor, &focus_handle, cx)
                 })
@@ -6953,14 +6845,12 @@ impl GitPanel {
                                 h_flex()
                                     .gap_0p5()
                                     .child(toggle_commit_editor_button)
-                                    .children(self.render_generate_commit_message_button(cx)),
+                                    .children(self.render_generate_commit_message_button(
+                                        Some(ChromeRegion::Panel),
+                                        cx,
+                                    )),
                             )
-                            .child(
-                                h_flex()
-                                    .gap_0p5()
-                                    .children(enable_coauthors)
-                                    .child(self.render_commit_button(cx)),
-                            ),
+                            .child(h_flex().gap_0p5().child(self.render_commit_button(cx))),
                     ),
             );
 
@@ -6993,6 +6883,7 @@ impl GitPanel {
                 ButtonLike::new_rounded_left(format!("split-button-left-{}", title))
                     .layer(ElevationIndex::ModalSurface)
                     .size(ButtonSize::Compact)
+                    .chrome_region(ChromeRegion::Panel)
                     .disabled(!can_commit || self.modal_open)
                     .child(
                         Label::new(title)
@@ -7003,7 +6894,6 @@ impl GitPanel {
                     .on_click({
                         let git_panel = cx.weak_entity();
                         move |_, window, cx| {
-                            telemetry::event!("Git Committed", source = "Git Panel");
                             git_panel
                                 .update(cx, |git_panel, cx| {
                                     let options = git_panel.commit_options();
@@ -7065,6 +6955,7 @@ impl GitPanel {
             .child(
                 Button::new("cancel", "Cancel")
                     .label_size(LabelSize::Small)
+                    .chrome_region(ChromeRegion::Panel)
                     .layer(ElevationIndex::ModalSurface)
                     .on_click(cx.listener(|this, _, _, cx| this.set_amend_pending(false, cx))),
             )
@@ -7138,6 +7029,7 @@ impl GitPanel {
                             this.child(
                                 IconButton::new("undo", IconName::Undo)
                                     .icon_size(IconSize::Small)
+                                    .chrome_region(ChromeRegion::Panel)
                                     .tooltip(move |_window, cx| {
                                         Tooltip::with_meta(
                                             "Uncommit",
@@ -7160,6 +7052,7 @@ impl GitPanel {
                         .child(
                             IconButton::new("git-graph-button", IconName::GitGraph)
                                 .icon_size(IconSize::Small)
+                                .chrome_region(ChromeRegion::Panel)
                                 .tooltip(|_window, cx| {
                                     Tooltip::for_action(
                                         "Open Git Graph",
@@ -7221,7 +7114,7 @@ impl GitPanel {
 
         h_flex()
             .relative()
-            .h(Tab::container_height(cx))
+            .h(ui::panel_header_height(cx))
             .w_full()
             .child(tab(
                 ElementId::Name("changes-tab".into()),
@@ -7961,11 +7854,9 @@ impl GitPanel {
                 KeyBinding::for_action_in(&workspace::Open::default(), &focus_handle, cx),
             )
             .on_open_project(|_, window, cx| {
-                telemetry::event!("Git Panel Add Project Clicked");
                 window.dispatch_action(workspace::Open::default().boxed_clone(), cx);
             })
             .on_clone_repo(|_, window, cx| {
-                telemetry::event!("Git Panel Clone Repo Clicked");
                 window.dispatch_action(git::Clone.boxed_clone(), cx);
             })
             .into_any_element()
@@ -8253,6 +8144,26 @@ impl GitPanel {
             .when(file_count > 0, |this| {
                 this.child(Chip::new(file_count.to_string()).label_color(Color::Muted))
             })
+            .when(
+                section == Section::Conflict && self.merge_tool_available(cx),
+                |this| {
+                    let workspace = self.workspace.clone();
+                    this.child(
+                        Button::new("resolve-conflicts", "Resolve…")
+                            .label_size(LabelSize::Small)
+                            .size(ButtonSize::Compact)
+                            .tooltip(Tooltip::text("Open the Conflicts dialog"))
+                            .on_click(move |_, window, cx| {
+                                cx.stop_propagation();
+                                workspace
+                                    .update(cx, |workspace, cx| {
+                                        merge_tool::open_conflicts_dialog(workspace, window, cx);
+                                    })
+                                    .log_err();
+                            }),
+                    )
+                },
+            )
             .child(if section_is_empty {
                 gpui::Empty.into_any_element()
             } else {
@@ -8341,6 +8252,7 @@ impl GitPanel {
         all_deleted: bool,
         file_count: usize,
         target_kind: SelectionTargetKind,
+        show_conflict_actions: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Entity<ContextMenu> {
@@ -8401,6 +8313,13 @@ impl GitPanel {
         ContextMenu::build(window, cx, |context_menu, _, _| {
             context_menu
                 .context(self.focus_handle.clone())
+                .when(show_conflict_actions, |context_menu| {
+                    context_menu
+                        .action("Accept Yours", AcceptYours.boxed_clone())
+                        .action("Accept Theirs", AcceptTheirs.boxed_clone())
+                        .action("Merge…", OpenMergeTool.boxed_clone())
+                        .separator()
+                })
                 .action(stage_title, ToggleStaged.boxed_clone())
                 .action(restore_title, RestoreFile::default().boxed_clone())
                 .separator()
@@ -8469,6 +8388,8 @@ impl GitPanel {
         let all_created = entries.iter().all(|entry| entry.status.is_created());
         let all_deleted = entries.iter().all(|entry| entry.status.is_deleted());
         let will_unstage = self.should_unstage(target_kind, &entries, cx);
+        let show_conflict_actions =
+            target_kind == SelectionTargetKind::File && self.selected_entry_opens_merge_tool(cx);
 
         self.set_context_menu(
             self.build_context_menu(
@@ -8477,6 +8398,7 @@ impl GitPanel {
                 all_deleted,
                 entries.len(),
                 target_kind,
+                show_conflict_actions,
                 window,
                 cx,
             ),
@@ -8813,7 +8735,12 @@ impl GitPanel {
                         this.toggle_mark(ix, cx);
                     } else {
                         this.clear_marks_and_select(ix, cx);
-                        this.open_selected_entry_on_click(event.click_count() > 1, window, cx);
+                        let secondary = event.click_count() > 1;
+                        if secondary && this.selected_entry_opens_merge_tool(cx) {
+                            this.open_merge_tool(&OpenMergeTool, window, cx);
+                        } else {
+                            this.open_selected_entry_on_click(secondary, window, cx);
+                        }
                     }
                 })
             })
@@ -9313,22 +9240,8 @@ impl Render for GitPanel {
         let has_entries = !self.entries.is_empty();
         let has_write_access = self.has_write_access(cx);
 
-        #[cfg(feature = "call")]
-        let has_co_authors = self
-            .workspace
-            .upgrade()
-            .and_then(|_workspace| {
-                call::ActiveCall::try_global(cx).and_then(|call| call.read(cx).room().cloned())
-            })
-            .is_some_and(|room| {
-                self.load_local_committer(cx);
-                let room = room.read(cx);
-                room.remote_participants()
-                    .values()
-                    .any(|remote_participant| remote_participant.can_write())
-            });
-        #[cfg(not(feature = "call"))]
-        let has_co_authors = false;
+        let merge_tool_available =
+            has_write_access && !project.is_read_only(cx) && merge_tool::is_available(project, cx);
 
         v_flex()
             .id("git_panel")
@@ -9358,6 +9271,11 @@ impl Render for GitPanel {
                     .on_action(cx.listener(Self::stash_staged))
                     .on_action(cx.listener(Self::stash_pop))
             })
+            .when(merge_tool_available, |this| {
+                this.on_action(cx.listener(Self::open_merge_tool))
+                    .on_action(cx.listener(Self::accept_yours))
+                    .on_action(cx.listener(Self::accept_theirs))
+            })
             .on_action(cx.listener(Self::cancel))
             .on_action(cx.listener(Self::collapse_selected_entry))
             .on_action(cx.listener(Self::expand_selected_entry))
@@ -9382,9 +9300,6 @@ impl Render for GitPanel {
             .on_action(cx.listener(Self::focus_editor))
             .on_action(cx.listener(Self::expand_commit_editor))
             .on_action(cx.listener(Self::toggle_commit_editor))
-            .when(has_write_access && has_co_authors, |git_panel| {
-                git_panel.on_action(cx.listener(Self::toggle_fill_co_authors))
-            })
             .on_action(cx.listener(Self::set_sort_by_path))
             .on_action(cx.listener(Self::set_sort_by_name))
             .on_action(cx.listener(Self::set_group_by_none))
@@ -9404,6 +9319,7 @@ impl Render for GitPanel {
                 ui::BackgroundImageArea::Window,
                 cx.theme().colors().panel_background,
                 true,
+                gpui::Corners::default(),
             ))
             .child(
                 v_flex()
@@ -9573,6 +9489,7 @@ pub fn panel_editor_container(_window: &mut Window, cx: &mut App) -> Div {
             ui::BackgroundImageArea::Window,
             editor_background,
             true,
+            gpui::Corners::default(),
         ))
 }
 
@@ -9753,6 +9670,7 @@ impl RenderOnce for PanelRepoFooter {
                 Button::new("repo-selector", active_repo_name)
                     .size(ButtonSize::None)
                     .label_size(LabelSize::Small)
+                    .chrome_region(ChromeRegion::Panel)
                     .truncate(true),
                 move |_, cx| {
                     if single_repo {
@@ -9772,6 +9690,7 @@ impl RenderOnce for PanelRepoFooter {
         let branch_selector_button = Button::new("branch-selector", branch_name)
             .size(ButtonSize::None)
             .label_size(LabelSize::Small)
+            .chrome_region(ChromeRegion::Panel)
             .truncate(true)
             .on_click(|_, window, cx| {
                 window.dispatch_action(zed_actions::git::Switch.boxed_clone(), cx);
@@ -9804,13 +9723,19 @@ impl RenderOnce for PanelRepoFooter {
                     .flex_1()
                     .overflow_hidden()
                     .gap_px()
-                    .child(Icon::new(IconName::GitBranch).size(IconSize::Small).color(
-                        if single_repo {
-                            Color::Disabled
-                        } else {
-                            Color::Muted
-                        },
-                    ))
+                    .child(
+                        Icon::new(IconName::GitBranch)
+                            .size(ui::chrome_icon_size(
+                                ChromeRegion::Panel,
+                                IconSize::Small,
+                                cx,
+                            ))
+                            .color(if single_repo {
+                                Color::Disabled
+                            } else {
+                                Color::Muted
+                            }),
+                    )
                     .when(!single_repo, |this| {
                         this.child(div().child(repo_selector).min_w_0()).when(
                             show_separator,
@@ -9824,7 +9749,9 @@ impl RenderOnce for PanelRepoFooter {
                     .child(div().child(branch_selector).min_w_0()),
             )
             .children(if let Some(git_panel) = self.git_panel {
-                git_panel.update(cx, |git_panel, cx| git_panel.render_remote_button(cx))
+                git_panel.update(cx, |git_panel, cx| {
+                    git_panel.render_remote_button(Some(ChromeRegion::Panel), cx)
+                })
             } else {
                 None
             })
@@ -11832,6 +11759,195 @@ mod tests {
             stage_status_of(&panel, &cx, "conflict.rs"),
             StageStatus::Staged
         );
+    }
+
+    async fn setup_git_panel_with_conflict(
+        cx: &mut TestAppContext,
+    ) -> (
+        Arc<FakeFs>,
+        Entity<Workspace>,
+        Entity<GitPanel>,
+        VisualTestContext,
+    ) {
+        let (fs, _, workspace, panel, mut cx) = setup_git_panel_with_changes(
+            cx,
+            json!({
+                ".git": {},
+                "conflict.txt": "",
+                "other.txt": "other\n",
+            }),
+            &[("other.txt", StatusCode::Modified)],
+        )
+        .await;
+        fs.set_conflict_for_repo(
+            path!("/project/.git").as_ref(),
+            "conflict.txt",
+            Some("base\n"),
+            Some("ours\n"),
+            Some("theirs\n"),
+        );
+        cx.run_until_parked();
+        await_git_panel_entries(&panel, &mut cx).await;
+
+        workspace.update_in(&mut cx, |workspace, window, cx| {
+            workspace.add_panel(panel.clone(), window, cx);
+            workspace.open_panel::<GitPanel>(window, cx);
+        });
+        cx.run_until_parked();
+
+        (fs, workspace, panel, cx)
+    }
+
+    fn select_and_focus_entry(
+        panel: &Entity<GitPanel>,
+        path: &str,
+        cx: &mut VisualTestContext,
+    ) -> usize {
+        let index = panel.update_in(cx, |panel, window, cx| {
+            let index = entry_index_for_repo_path(panel, &repo_path(path))
+                .expect("entry should be listed in the git panel");
+            panel.selected_entry = Some(index);
+            panel.focus_handle.focus(window, cx);
+            index
+        });
+        cx.run_until_parked();
+        index
+    }
+
+    fn conflict_state(fs: &FakeFs, path: &str) -> (bool, Option<Vec<u8>>) {
+        fs.with_git_state(path!("/project/.git").as_ref(), false, |state| {
+            (
+                state.unmerged_paths.contains_key(&repo_path(path)),
+                state.index_contents.get(&repo_path(path)).cloned(),
+            )
+        })
+        .unwrap()
+    }
+
+    #[gpui::test]
+    async fn test_conflicted_entry_context_menu_offers_merge_actions(cx: &mut TestAppContext) {
+        init_test(cx);
+        let (fs, _workspace, panel, mut cx) = setup_git_panel_with_conflict(cx).await;
+
+        let other_index = select_and_focus_entry(&panel, "other.txt", &mut cx);
+        panel.update_in(&mut cx, |panel, window, cx| {
+            panel.deploy_entry_context_menu(gpui::point(px(10.), px(10.)), other_index, window, cx);
+        });
+        cx.run_until_parked();
+        assert!(cx.debug_bounds("MENU_ITEM-Stage File").is_some());
+        for label in [
+            "MENU_ITEM-Accept Yours",
+            "MENU_ITEM-Accept Theirs",
+            "MENU_ITEM-Merge…",
+        ] {
+            assert!(
+                cx.debug_bounds(label).is_none(),
+                "{label} must not be offered for a file without conflicts"
+            );
+        }
+        panel.update_in(&mut cx, |panel, _window, cx| {
+            panel.context_menu.take();
+            cx.notify();
+        });
+        cx.run_until_parked();
+
+        let conflict_index = select_and_focus_entry(&panel, "conflict.txt", &mut cx);
+        panel.update_in(&mut cx, |panel, window, cx| {
+            panel.deploy_entry_context_menu(
+                gpui::point(px(10.), px(10.)),
+                conflict_index,
+                window,
+                cx,
+            );
+        });
+        cx.run_until_parked();
+
+        let item_top = |cx: &mut VisualTestContext, label: &'static str| {
+            cx.debug_bounds(label)
+                .unwrap_or_else(|| panic!("{label} should be in the conflict context menu"))
+                .origin
+                .y
+        };
+        let accept_yours = item_top(&mut cx, "MENU_ITEM-Accept Yours");
+        let accept_theirs = item_top(&mut cx, "MENU_ITEM-Accept Theirs");
+        let merge = item_top(&mut cx, "MENU_ITEM-Merge…");
+        let stage_file = item_top(&mut cx, "MENU_ITEM-Stage File");
+        assert!(accept_yours < accept_theirs);
+        assert!(accept_theirs < merge);
+        assert!(merge < stage_file);
+
+        let accept_yours_bounds = cx
+            .debug_bounds("MENU_ITEM-Accept Yours")
+            .expect("Accept Yours should be rendered");
+        cx.simulate_click(accept_yours_bounds.center(), Modifiers::none());
+        cx.run_until_parked();
+
+        assert_eq!(
+            fs.load(path!("/project/conflict.txt").as_ref())
+                .await
+                .unwrap(),
+            "ours\n"
+        );
+        assert_eq!(
+            conflict_state(&fs, "conflict.txt"),
+            (false, Some(b"ours\n".to_vec()))
+        );
+    }
+
+    #[gpui::test]
+    async fn test_accept_theirs_from_git_panel_resolves_conflict(cx: &mut TestAppContext) {
+        init_test(cx);
+        let (fs, _workspace, panel, mut cx) = setup_git_panel_with_conflict(cx).await;
+        assert_eq!(conflict_state(&fs, "conflict.txt"), (true, None));
+
+        select_and_focus_entry(&panel, "conflict.txt", &mut cx);
+        cx.dispatch_action(AcceptTheirs);
+        cx.run_until_parked();
+        await_git_panel_entries(&panel, &mut cx).await;
+
+        assert_eq!(
+            fs.load(path!("/project/conflict.txt").as_ref())
+                .await
+                .unwrap(),
+            "theirs\n"
+        );
+        assert_eq!(
+            conflict_state(&fs, "conflict.txt"),
+            (false, Some(b"theirs\n".to_vec()))
+        );
+        panel.read_with(&cx, |panel, _| {
+            let entry = panel
+                .entries
+                .iter()
+                .filter_map(GitListEntry::status_entry)
+                .find(|entry| entry.repo_path == repo_path("conflict.txt"))
+                .expect("resolved file should still be listed");
+            assert!(!entry.status.is_conflicted());
+        });
+    }
+
+    #[gpui::test]
+    async fn test_open_merge_tool_from_git_panel_opens_merge_view(cx: &mut TestAppContext) {
+        init_test(cx);
+        let (_fs, workspace, panel, mut cx) = setup_git_panel_with_conflict(cx).await;
+
+        let active_merge_view = |workspace: &Entity<Workspace>, cx: &VisualTestContext| {
+            workspace.read_with(cx, |workspace, cx| {
+                workspace
+                    .active_item(cx)
+                    .and_then(|item| item.downcast::<merge_tool::MergeView>())
+            })
+        };
+
+        select_and_focus_entry(&panel, "other.txt", &mut cx);
+        cx.dispatch_action(OpenMergeTool);
+        cx.run_until_parked();
+        assert!(active_merge_view(&workspace, &cx).is_none());
+
+        select_and_focus_entry(&panel, "conflict.txt", &mut cx);
+        cx.dispatch_action(OpenMergeTool);
+        cx.run_until_parked();
+        assert!(active_merge_view(&workspace, &cx).is_some());
     }
 
     #[gpui::test]

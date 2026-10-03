@@ -542,6 +542,7 @@ fn render_debugger_tab_bar(
             ui::BackgroundImageArea::Window,
             cx.theme().colors().tab_bar_background,
             true,
+            gpui::Corners::default(),
         ))
         .child(
             h_flex()
@@ -715,6 +716,7 @@ impl gpui::Render for DebugTerminal {
                 ui::BackgroundImageArea::Window,
                 cx.theme().colors().editor_background,
                 true,
+                gpui::Corners::default(),
             ))
             .children(self.terminal.clone())
     }

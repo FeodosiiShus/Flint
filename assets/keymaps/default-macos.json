@@ -38,8 +38,6 @@
       "cmd-h": "zed::Hide",
       "alt-cmd-h": "zed::HideOthers",
       "cmd-m": "zed::Minimize",
-      "ctrl-cmd-z": "edit_prediction::RatePredictions",
-      "ctrl-cmd-i": "edit_prediction::ToggleMenu",
       "ctrl-cmd-l": "lsp_tool::ToggleMenu",
       "ctrl-cmd-c": "editor::DisplayCursorNames",
       "ctrl-cmd-s": "workspace::ToggleWorktreeSecurity",
@@ -148,7 +146,6 @@
       "shift-f9": "editor::EditLogBreakpoint",
       "ctrl-f12": "editor::GoToDeclaration",
       "alt-ctrl-f12": "editor::GoToDeclarationSplit",
-      "ctrl-cmd-e": "editor::ToggleEditPrediction",
     },
   },
   {
@@ -177,21 +174,6 @@
       "cmd-down": "editor::MoveToStartOfNextExcerpt",
       "cmd-shift-up": "editor::SelectToStartOfExcerpt",
       "cmd-shift-down": "editor::SelectToStartOfNextExcerpt",
-    },
-  },
-  {
-    "context": "Editor && mode == full && edit_prediction",
-    "use_key_equivalents": true,
-    "bindings": {
-      "alt-tab": "editor::NextEditPrediction",
-      "alt-shift-tab": "editor::PreviousEditPrediction",
-    },
-  },
-  {
-    "context": "Editor && !edit_prediction",
-    "use_key_equivalents": true,
-    "bindings": {
-      "alt-tab": "editor::ShowEditPrediction",
     },
   },
   {
@@ -262,15 +244,6 @@
       "cmd-shift-e": "project_panel::ToggleFocus",
       "ctrl-tab": "agents_sidebar::ToggleThreadSwitcher",
       "ctrl-shift-tab": ["agents_sidebar::ToggleThreadSwitcher", { "select_last": true }],
-    },
-  },
-  {
-    "context": "AgentFeedbackMessageEditor > Editor",
-    "use_key_equivalents": true,
-    "bindings": {
-      "escape": "menu::Cancel",
-      "enter": "menu::Confirm",
-      "alt-enter": "editor::Newline",
     },
   },
   {
@@ -922,20 +895,6 @@
     },
   },
   {
-    "context": "Editor && edit_prediction",
-    "bindings": {
-      "alt-tab": "editor::AcceptEditPrediction",
-      "ctrl-cmd-right": "editor::AcceptNextWordEditPrediction",
-      "ctrl-cmd-down": "editor::AcceptNextLineEditPrediction",
-    },
-  },
-  {
-    "context": "Editor && edit_prediction && edit_prediction_mode == eager && !showing_completions",
-    "bindings": {
-      "tab": "editor::AcceptEditPrediction",
-    },
-  },
-  {
     "context": "Editor && showing_code_actions",
     "use_key_equivalents": true,
     "bindings": {
@@ -966,8 +925,6 @@
     "use_key_equivalents": true,
     "bindings": {
       "ctrl-alt-cmd-f": "workspace::FollowNextCollaborator",
-      // TODO: Move this to a dock open action
-      "cmd-shift-c": "collab_panel::ToggleFocus",
       // Only available in debug builds: opens an element inspector for development.
       "cmd-alt-i": "dev::ToggleInspector",
       // Cycles the frame-time debug overlay between hidden, frame-time-only, and detailed modes.
@@ -1231,38 +1188,6 @@
     },
   },
   {
-    "context": "CollabPanel && not_editing",
-    "use_key_equivalents": true,
-    "bindings": {
-      "ctrl-backspace": "collab_panel::Remove",
-      "space": "menu::Confirm",
-    },
-  },
-  {
-    "context": "CollabPanel",
-    "use_key_equivalents": true,
-    "bindings": {
-      "alt-up": "collab_panel::MoveChannelUp",
-      "alt-down": "collab_panel::MoveChannelDown",
-      "alt-enter": "collab_panel::OpenSelectedChannelNotes",
-      "shift-enter": "collab_panel::ToggleSelectedChannelFavorite",
-    },
-  },
-  {
-    "context": "(CollabPanel && editing) > Editor",
-    "use_key_equivalents": true,
-    "bindings": {
-      "space": "collab_panel::InsertSpace",
-    },
-  },
-  {
-    "context": "ChannelModal",
-    "use_key_equivalents": true,
-    "bindings": {
-      "tab": "channel_modal::ToggleMode",
-    },
-  },
-  {
     "context": "CallHierarchyPicker > Picker > Editor",
     "use_key_equivalents": true,
     "bindings": {
@@ -1288,17 +1213,20 @@
     },
   },
   {
+    "context": "SearchEverywhere > Picker > Editor",
+    "use_key_equivalents": true,
+    "bindings": {
+      "tab": "search_everywhere::NextTab",
+      "shift-tab": "search_everywhere::PreviousTab",
+      "ctrl-down": "search_everywhere::NextSection",
+      "ctrl-up": "search_everywhere::PreviousSection",
+    },
+  },
+  {
     "context": "LspCommandSelector > Picker > Editor",
     "use_key_equivalents": true,
     "bindings": {
       "tab": "lsp_command_selector::ToggleArgumentsFocus",
-    },
-  },
-  {
-    "context": "ChannelModal > Picker > Editor",
-    "use_key_equivalents": true,
-    "bindings": {
-      "tab": "channel_modal::ToggleMode",
     },
   },
   {
@@ -1418,46 +1346,12 @@
     },
   },
   {
-    "context": "RatePredictionsModal",
-    "use_key_equivalents": true,
-    "bindings": {
-      "cmd-shift-enter": "zeta::ThumbsUpActivePrediction",
-      "cmd-shift-backspace": "zeta::ThumbsDownActivePrediction",
-      "shift-down": "zeta::NextEdit",
-      "shift-up": "zeta::PreviousEdit",
-      "right": "zeta::PreviewPrediction",
-    },
-  },
-  {
-    "context": "RatePredictionsModal > Editor",
-    "use_key_equivalents": true,
-    "bindings": {
-      "escape": "zeta::FocusPredictions",
-      "cmd-shift-enter": "zeta::ThumbsUpActivePrediction",
-      "cmd-shift-backspace": "zeta::ThumbsDownActivePrediction",
-    },
-  },
-  {
-    "context": "ZedPredictModal",
-    "use_key_equivalents": true,
-    "bindings": {
-      "escape": "menu::Cancel",
-    },
-  },
-  {
     "context": "ConfigureContextServerModal > Editor",
     "use_key_equivalents": true,
     "bindings": {
       "escape": "menu::Cancel",
       "enter": "editor::Newline",
       "cmd-enter": "menu::Confirm",
-    },
-  },
-  {
-    "context": "OnboardingAiConfigurationModal",
-    "use_key_equivalents": true,
-    "bindings": {
-      "escape": "menu::Cancel",
     },
   },
   {
@@ -1547,19 +1441,6 @@
     },
   },
   {
-    "context": "Onboarding",
-    "use_key_equivalents": true,
-    "bindings": {
-      "cmd-=": ["zed::IncreaseUiFontSize", { "persist": false }],
-      "cmd-+": ["zed::IncreaseUiFontSize", { "persist": false }],
-      "cmd--": ["zed::DecreaseUiFontSize", { "persist": false }],
-      "cmd-0": ["zed::ResetUiFontSize", { "persist": false }],
-      "cmd-enter": "onboarding::Finish",
-      "alt-tab": "onboarding::SignIn",
-      "alt-shift-a": "onboarding::OpenAccount",
-    },
-  },
-  {
     "context": "Welcome",
     "use_key_equivalents": true,
     "bindings": {
@@ -1640,13 +1521,6 @@
       "pagedown": "settings_editor::FocusNextRootNavEntry",
       "home": "settings_editor::FocusFirstNavEntry",
       "end": "settings_editor::FocusLastNavEntry",
-    },
-  },
-  {
-    "context": "EditPredictionContext > Editor",
-    "bindings": {
-      "alt-left": "dev::EditPredictionContextGoBack",
-      "alt-right": "dev::EditPredictionContextGoForward",
     },
   },
   {
@@ -1768,6 +1642,18 @@
       "cmd-enter": "skill_creator::SaveSkill",
       "tab": "skill_creator::FocusNextField",
       "shift-tab": "skill_creator::FocusPreviousField",
+    },
+  },
+  {
+    "context": "MergeView || (MergeView > Editor)",
+    "use_key_equivalents": true,
+    "bindings": {
+      "f7": "merge_tool::NextDifference",
+      "shift-f7": "merge_tool::PreviousDifference",
+      "ctrl-cmd-right": "merge_tool::AcceptLeftSide",
+      "ctrl-cmd-left": "merge_tool::AcceptRightSide",
+      "ctrl-shift-tab": "merge_tool::FocusOppositePane",
+      "cmd-shift-d": "merge_tool::ShowSettings",
     },
   },
 ]

@@ -1,12 +1,12 @@
 use crate::{
-    ItemHandle, MultiWorkspace, Pane, SidebarSide, ToggleWorkspaceSidebar,
-    sidebar_side_context_menu,
+    ItemHandle, MultiWorkspace, Pane, SidebarSide, ToggleWorkspaceSidebar, WorkspaceSettings,
+    dock::PanelButtons, sidebar_side_context_menu,
 };
 use gpui::{
     Anchor, AnyView, App, Context, Decorations, Entity, FocusHandle, Focusable, IntoElement,
     ParentElement, Render, Role, SharedString, Styled, Subscription, WeakEntity, Window,
 };
-use settings::{SettingsContent, update_settings_file};
+use settings::{Settings, SettingsContent, update_settings_file};
 use std::{any::TypeId, sync::Arc};
 use theme::CLIENT_SIDE_DECORATION_ROUNDING;
 use ui::{
@@ -119,6 +119,13 @@ impl Render for StatusBar {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let sidebar = SidebarStatus::query(&self.multi_workspace, cx);
         let min_height = ui::chrome_height(ui::ChromeRegion::StatusBar, cx);
+        let workspace_settings = WorkspaceSettings::get_global(cx);
+        let hide_panel_buttons = workspace_settings.tool_window_bars.show;
+        let background = if workspace_settings.islands.enabled {
+            cx.theme().colors().background
+        } else {
+            cx.theme().colors().status_bar_background
+        };
 
         h_flex()
             .id("status-bar")
@@ -156,7 +163,7 @@ impl Render for StatusBar {
             .gap(DynamicSpacing::Base08.rems(cx))
             .p(DynamicSpacing::Base04.rems(cx))
             .when_some(min_height, |this, height| this.min_h(height))
-            .bg(cx.theme().colors().status_bar_background)
+            .bg(background)
             .map(|el| match window.window_decorations() {
                 Decorations::Server => el,
                 Decorations::Client { tiling, .. } => el
@@ -184,23 +191,29 @@ impl Render for StatusBar {
                         if needs_gap_fix { px(-1.) } else { px(0.) }
                     })
                     .border_b(px(1.0))
-                    .border_color(cx.theme().colors().status_bar_background),
+                    .border_color(background),
             })
             .child(background_image_layer(
                 BackgroundImageTarget::EditorAndTools,
                 BackgroundImageArea::Window,
-                cx.theme().colors().status_bar_background,
+                background,
                 false,
+                gpui::Corners::default(),
             ))
-            .child(self.render_left_tools(&sidebar, cx))
-            .child(self.render_right_tools(&sidebar, cx))
+            .child(self.render_left_tools(&sidebar, hide_panel_buttons, cx))
+            .child(self.render_right_tools(&sidebar, hide_panel_buttons, cx))
     }
+}
+
+fn is_shown_in_status_bar(item: &dyn StatusItemViewHandle, hide_panel_buttons: bool) -> bool {
+    !(hide_panel_buttons && item.item_type() == TypeId::of::<PanelButtons>())
 }
 
 impl StatusBar {
     fn render_left_tools(
         &self,
         sidebar: &SidebarStatus,
+        hide_panel_buttons: bool,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         h_flex()
@@ -211,14 +224,21 @@ impl StatusBar {
                 sidebar.show_toggle && !sidebar.open && sidebar.side == SidebarSide::Left,
                 |this| this.child(self.render_sidebar_toggle(sidebar, cx)),
             )
-            .children(self.left_items.iter().enumerate().map(|(index, item)| {
-                render_hideable_item("status-bar-left", index, item.as_ref(), cx)
-            }))
+            .children(
+                self.left_items
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, item)| is_shown_in_status_bar(item.as_ref(), hide_panel_buttons))
+                    .map(|(index, item)| {
+                        render_hideable_item("status-bar-left", index, item.as_ref(), cx)
+                    }),
+            )
     }
 
     fn render_right_tools(
         &self,
         sidebar: &SidebarStatus,
+        hide_panel_buttons: bool,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         h_flex()
@@ -230,6 +250,7 @@ impl StatusBar {
                     .iter()
                     .enumerate()
                     .rev()
+                    .filter(|(_, item)| is_shown_in_status_bar(item.as_ref(), hide_panel_buttons))
                     .map(|(index, item)| {
                         render_hideable_item("status-bar-right", index, item.as_ref(), cx)
                     }),

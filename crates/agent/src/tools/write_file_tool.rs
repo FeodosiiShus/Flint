@@ -1150,7 +1150,7 @@ mod tests {
         );
 
         action_log
-            .update(cx, |log, cx| log.reject_all_edits(None, cx))
+            .update(cx, |log, cx| log.reject_all_edits(cx))
             .await;
         cx.run_until_parked();
 

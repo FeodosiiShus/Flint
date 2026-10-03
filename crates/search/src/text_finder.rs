@@ -22,6 +22,7 @@ use workspace::{DismissDecision, ItemHandle, ModalView, Workspace, WorkspaceDb, 
 mod delegate;
 mod render;
 use delegate::{Delegate, matches_to_multibuffer};
+pub use delegate::{process_search_result, render_matched_line};
 use util::ResultExt as _;
 
 use crate::{ProjectSearchView, SearchOptions, text_finder::delegate::PopulateProjectSearch};
@@ -387,6 +388,16 @@ impl TextFinder {
         }
 
         None
+    }
+
+    pub fn open_with_query(
+        workspace: &mut Workspace,
+        query: String,
+        window: &mut Window,
+        cx: &mut Context<Workspace>,
+    ) -> Task<()> {
+        let options = load_last_search(workspace.database_id(), cx).and_then(|seed| seed.options);
+        Self::open(Some(SearchSeed { query, options }), window, cx)
     }
 
     pub(crate) fn open(

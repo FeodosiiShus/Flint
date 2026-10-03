@@ -37,10 +37,6 @@ pub struct WorkspaceSettingsContent {
     ///
     /// Default: false
     pub confirm_quit: Option<bool>,
-    /// Whether or not to show the call status icon in the status bar.
-    ///
-    /// Default: true
-    pub show_call_status_icon: Option<bool>,
     /// When to automatically save edited buffers.
     ///
     /// Default: off
@@ -172,6 +168,8 @@ pub struct WorkspaceSettingsContent {
     /// Whether the focused panel follows the mouse location
     /// Default: false
     pub focus_follows_mouse: Option<FocusFollowsMouse>,
+    pub islands: Option<IslandsSettingsContent>,
+    pub tool_window_bars: Option<ToolWindowBarsSettingsContent>,
 }
 
 #[with_fallible_options]
@@ -589,8 +587,34 @@ pub struct StatusBarSettingsContent {
     ///
     /// Default: true
     pub pending_keystrokes_indicator: Option<bool>,
+    pub navigation_bar: Option<bool>,
+    pub indentation_button: Option<bool>,
+    pub read_only_button: Option<bool>,
     pub height: Option<u32>,
     pub icon_size: Option<u32>,
+}
+
+#[with_fallible_options]
+#[derive(Clone, Default, Serialize, Deserialize, JsonSchema, MergeFrom, Debug, PartialEq, Eq)]
+pub struct PanelChromeSettingsContent {
+    pub height: Option<u32>,
+    pub icon_size: Option<u32>,
+}
+
+#[with_fallible_options]
+#[derive(Clone, Default, Serialize, Deserialize, JsonSchema, MergeFrom, Debug, PartialEq, Eq)]
+pub struct IslandsSettingsContent {
+    pub enabled: Option<bool>,
+    pub gap: Option<u32>,
+    pub corner_radius: Option<u32>,
+}
+
+#[with_fallible_options]
+#[derive(Clone, Default, Serialize, Deserialize, JsonSchema, MergeFrom, Debug, PartialEq, Eq)]
+pub struct ToolWindowBarsSettingsContent {
+    pub show: Option<bool>,
+    pub icon_size: Option<u32>,
+    pub show_names: Option<bool>,
 }
 
 #[derive(

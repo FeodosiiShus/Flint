@@ -59,8 +59,6 @@ actions!(
         /// Opens the keymap editor.
         #[action(deprecated_aliases = ["zed_actions::OpenKeymapEditor"])]
         OpenKeymap,
-        /// Opens account settings.
-        OpenAccountSettings,
         /// Opens server settings.
         OpenServerSettings,
         /// Quits the application.
@@ -71,18 +69,8 @@ actions!(
         OpenDocs,
         /// Views open source licenses.
         OpenLicenses,
-        /// Opens the Zed status page.
-        OpenStatusPage,
-        /// Opens the Zed merch store.
-        GetMerch,
-        /// Opens the telemetry log.
-        OpenTelemetryLog,
         /// Opens the performance profiler.
         OpenPerformanceProfiler,
-        /// Opens the onboarding view.
-        OpenOnboarding,
-        /// Shows the auto-update notification for testing.
-        ShowUpdateNotification,
     ]
 );
 
@@ -117,12 +105,6 @@ pub struct Extensions {
 #[action(namespace = zed)]
 #[serde(deny_unknown_fields)]
 pub struct AcpRegistry;
-
-/// Show call diagnostics and connection quality statistics.
-#[derive(PartialEq, Clone, Default, Debug, Deserialize, JsonSchema, Action)]
-#[action(namespace = collab)]
-#[serde(deny_unknown_fields)]
-pub struct ShowCallStats;
 
 /// Decreases the font size in the editor buffer.
 #[derive(PartialEq, Clone, Default, Debug, Deserialize, JsonSchema, Action)]
@@ -416,6 +398,43 @@ pub mod text_finder {
     );
 }
 
+pub mod search_everywhere {
+    use gpui::{Action, actions};
+    use schemars::JsonSchema;
+    use serde::Deserialize;
+
+    #[derive(PartialEq, Eq, Clone, Copy, Default, Debug, Deserialize, JsonSchema)]
+    #[serde(rename_all = "snake_case")]
+    pub enum Tab {
+        #[default]
+        All,
+        Classes,
+        Files,
+        Symbols,
+        Actions,
+        Text,
+    }
+
+    #[derive(PartialEq, Clone, Default, Debug, Deserialize, JsonSchema, Action)]
+    #[action(namespace = search_everywhere)]
+    #[serde(deny_unknown_fields)]
+    pub struct Toggle {
+        #[serde(default)]
+        pub tab: Option<Tab>,
+    }
+
+    actions!(
+        search_everywhere,
+        [
+            NextTab,
+            PreviousTab,
+            NextSection,
+            PreviousSection,
+            ToggleNonProjectItems
+        ]
+    );
+}
+
 pub mod project_panel {
     use gpui::actions;
 
@@ -426,21 +445,6 @@ pub mod project_panel {
             Toggle,
             /// Toggles focus on the project panel.
             ToggleFocus
-        ]
-    );
-}
-pub mod feedback {
-    use gpui::actions;
-
-    actions!(
-        feedback,
-        [
-            /// Opens email client to send feedback to Zed support.
-            EmailZed,
-            /// Opens the bug report form.
-            FileBugReport,
-            /// Opens the feature request form.
-            RequestFeature
         ]
     );
 }
@@ -582,10 +586,6 @@ pub mod agent {
             /// Opens the agent settings UI.
             #[action(deprecated_aliases = ["agent::OpenConfiguration"])]
             OpenSettings,
-            /// Opens the agent onboarding modal.
-            OpenOnboardingModal,
-            /// Resets the agent onboarding state.
-            ResetOnboarding,
             /// Starts a chat conversation with the agent.
             Chat,
             /// Toggles the language model selector dropdown.
@@ -804,20 +804,6 @@ pub mod outline {
     pub static TOGGLE_OUTLINE: OnceLock<fn(AnyView, &mut Window, &mut App)> = OnceLock::new();
 }
 
-actions!(
-    zed_predict_onboarding,
-    [
-        /// Opens the Zed Predict onboarding modal.
-        OpenZedPredictOnboarding
-    ]
-);
-actions!(
-    git_onboarding,
-    [
-        /// Opens the git integration onboarding modal.
-        OpenGitIntegrationOnboarding
-    ]
-);
 actions!(
     call_hierarchy,
     [ShowIncomingCalls, ShowOutgoingCalls, ToggleDirection]

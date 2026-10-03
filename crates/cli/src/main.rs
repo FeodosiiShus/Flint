@@ -43,7 +43,6 @@ trait InstalledApp {
         ipc_url: String,
         user_data_dir: Option<&str>,
     ) -> io::Result<ExitStatus>;
-    fn path(&self) -> PathBuf;
 }
 
 #[derive(Parser, Debug)]
@@ -124,10 +123,6 @@ struct Args {
     #[cfg(target_os = "windows")]
     #[arg(long, value_name = "USER@DISTRO")]
     wsl: Option<String>,
-    /// Not supported in Flint CLI, only supported on Flint binary
-    /// Will attempt to give the correct command to run
-    #[arg(long)]
-    system_specs: bool,
     /// Open the project in a dev container.
     ///
     /// Automatically triggers "Reopen in Dev Container" if a `.devcontainer/`
@@ -548,16 +543,6 @@ fn run() -> Result<()> {
         return Ok(());
     }
 
-    if args.system_specs {
-        let path = app.path();
-        let msg = [
-            "The `--system-specs` argument is not supported in the Flint CLI, only on Flint binary.",
-            "To retrieve the system specs on the command line, run the following command:",
-            &format!("{} --system-specs", path.display()),
-        ];
-        anyhow::bail!(msg.join("\n"));
-    }
-
     #[cfg(all(
         any(target_os = "linux", target_os = "macos"),
         not(feature = "no-bundled-uninstall")
@@ -970,10 +955,6 @@ mod linux {
             }
             cmd.status()
         }
-
-        fn path(&self) -> PathBuf {
-            self.0.clone()
-        }
     }
 
     impl App {
@@ -1260,10 +1241,6 @@ mod windows {
             }
             cmd.spawn()?.wait()
         }
-
-        fn path(&self) -> PathBuf {
-            self.0.clone()
-        }
     }
 
     impl Detect {
@@ -1462,13 +1439,6 @@ mod mac_os {
                 cmd.arg("--user-data-dir").arg(dir);
             }
             cmd.status()
-        }
-
-        fn path(&self) -> PathBuf {
-            match self {
-                Bundle::App { app_bundle, .. } => app_bundle.join("Contents/MacOS/zed"),
-                Bundle::LocalPath { executable, .. } => executable.clone(),
-            }
         }
     }
 

@@ -772,6 +772,7 @@ pub struct GitSettings {
     pub branch_picker: Option<BranchPickerSettingsContent>,
     /// File diff settings.
     pub file_diff: Option<FileDiffSettingsContent>,
+    pub merge_tool: Option<MergeToolSettingsContent>,
     /// How hunks are displayed visually in the editor.
     ///
     /// Default: staged_hollow
@@ -935,6 +936,13 @@ pub struct FileDiffSettingsContent {
     ///
     /// Default: true
     pub show_full_file: Option<bool>,
+}
+
+#[with_fallible_options]
+#[derive(Clone, Copy, PartialEq, Debug, Default, Serialize, Deserialize, JsonSchema, MergeFrom)]
+#[serde(rename_all = "snake_case")]
+pub struct MergeToolSettingsContent {
+    pub auto_apply_non_conflicting: Option<bool>,
 }
 
 #[derive(

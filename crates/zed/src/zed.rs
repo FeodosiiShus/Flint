@@ -1,5 +1,4 @@
 mod app_menus;
-pub mod edit_prediction_registry;
 #[cfg(target_os = "macos")]
 pub(crate) mod mac_only_instance;
 mod migrate;
@@ -9,7 +8,6 @@ mod open_listener;
 mod open_url_modal;
 mod quick_action_bar;
 pub mod remote_debug;
-pub mod telemetry_log;
 #[cfg(all(target_os = "macos", feature = "visual-tests"))]
 pub mod visual_tests;
 #[cfg(target_os = "windows")]
@@ -22,7 +20,6 @@ pub use app_menus::*;
 use assets::Assets;
 
 use breadcrumbs::Breadcrumbs;
-use client::zed_urls;
 use collections::VecDeque;
 use debugger_ui::debugger_panel::DebugPanel;
 use editor::{Editor, MultiBuffer};
@@ -54,7 +51,6 @@ use language_tools::lsp_log_view::LspLogToolbarItemView;
 use markdown::{Markdown, MarkdownElement, MarkdownFont, MarkdownStyle};
 use migrate::{MigrationBanner, MigrationEvent, MigrationNotification, MigrationType};
 use migrator::migrate_keymap;
-use onboarding::multibuffer_hint::MultibufferHint;
 pub use open_listener::*;
 use outline_panel::OutlinePanel;
 use paths::{
@@ -103,20 +99,14 @@ use workspace::{
     WorkspaceSettings, create_and_open_local_file,
     notifications::simple_message_notification::MessageNotification, open_new,
 };
-use workspace::{CloseProject, CloseWindow, RestoreBanner, with_active_or_new_workspace};
+use workspace::{CloseProject, CloseWindow, with_active_or_new_workspace};
 use workspace::{Pane, notifications::DetachAndPromptErr};
 use zed_actions::{
-    About, GetMerch, OpenAccountSettings, OpenBrowser, OpenDocs, OpenProjectTasks,
-    OpenServerSettings, OpenSettingsFile, OpenStatusPage, OpenZedUrl, Quit,
+    About, OpenBrowser, OpenDocs, OpenProjectTasks, OpenServerSettings, OpenSettingsFile,
+    OpenZedUrl, Quit,
 };
 
 const DOCS_URL: &str = "https://zed.dev/docs/";
-const STATUS_URL: &str = "https://status.zed.dev";
-const MERCH_URL: &str = "https://merch.zed.dev/";
-
-pub struct CrashHandler(pub Arc<crashes::Client>);
-
-impl gpui::Global for CrashHandler {}
 
 actions!(
     zed,
@@ -199,8 +189,6 @@ pub fn init(cx: &mut App) {
     cx.on_action(|_: &ShowAll, cx| cx.unhide_other_apps());
     cx.on_action(quit);
 
-    cx.on_action(|_: &RestoreBanner, cx| title_bar::restore_banner(cx));
-
     cx.observe_flag::<PanicFeatureFlag, _>({
         let mut added = false;
         move |flag, cx| {
@@ -265,11 +253,6 @@ pub fn init(cx: &mut App) {
                 window,
                 cx,
             );
-        });
-    })
-    .on_action(|_: &OpenAccountSettings, cx| {
-        with_active_or_new_workspace(cx, |_, _, cx| {
-            cx.open_url(&zed_urls::account_url(cx));
         });
     })
     .on_action(|_: &OpenTasks, cx| {
@@ -472,23 +455,6 @@ pub fn initialize_workspace(app_state: Arc<AppState>, cx: &mut App) {
             .detach();
         }
 
-        cx.spawn_in(window, async move |_this, cx| {
-            const TELEMETRY_INTERVAL: std::time::Duration = std::time::Duration::from_mins(5);
-            loop {
-                cx.background_executor().timer(TELEMETRY_INTERVAL).await;
-                if cx
-                    .update(|window, cx| {
-                        input_latency_ui::report_input_latency_telemetry(window, cx);
-                        input_latency_ui::report_frame_duration_telemetry(window, cx);
-                    })
-                    .is_err()
-                {
-                    break;
-                }
-            }
-        })
-        .detach();
-
         let multi_workspace_handle = cx.entity().downgrade();
         window.on_window_should_close(cx, move |window, cx| {
             multi_workspace_handle
@@ -577,27 +543,8 @@ pub fn initialize_workspace(app_state: Arc<AppState>, cx: &mut App) {
 
         if let Some(specs) = window.gpu_specs() {
             log::info!("Using GPU: {:?}", specs);
-            show_software_emulation_warning_if_needed(specs.clone(), window, cx);
-            if let Some(crash_client) = cx.try_global::<CrashHandler>() {
-                crashes::set_gpu_info(&crash_client.0, specs);
-            }
+            show_software_emulation_warning_if_needed(specs, window, cx);
         }
-
-        let edit_prediction_menu_handle = PopoverMenuHandle::default();
-        let edit_prediction_ui = cx.new(|cx| {
-            edit_prediction_ui::EditPredictionButton::new(
-                app_state.fs.clone(),
-                app_state.user_store.clone(),
-                edit_prediction_menu_handle.clone(),
-                workspace.project().clone(),
-                cx,
-            )
-        });
-        workspace.register_action({
-            move |_, _: &edit_prediction_ui::ToggleMenu, window, cx| {
-                edit_prediction_menu_handle.toggle(window, cx);
-            }
-        });
 
         let search_button = cx.new(|_| search::search_status_button::SearchButton::new());
         let diagnostic_summary =
@@ -631,18 +578,23 @@ pub fn initialize_workspace(app_state: Arc<AppState>, cx: &mut App) {
         let git_blame_status = cx.new(|_| git_ui::GitBlameStatus::default());
         let merge_conflict_indicator =
             cx.new(|cx| git_ui::MergeConflictIndicator::new(workspace, cx));
+        let navigation_bar = cx.new(|_| status_widgets::NavigationBar::new(workspace));
+        let indentation_indicator = cx.new(status_widgets::IndentationIndicator::new);
+        let read_only_indicator = cx.new(|_| status_widgets::ReadOnlyIndicator::default());
         workspace.status_bar().update(cx, |status_bar, cx| {
             status_bar.add_left_item(search_button, window, cx);
             status_bar.add_left_item(lsp_button, window, cx);
             status_bar.add_left_item(diagnostic_summary, window, cx);
+            status_bar.add_left_item(navigation_bar, window, cx);
             status_bar.add_left_item(active_file_name, window, cx);
             status_bar.add_left_item(git_blame_status, window, cx);
             status_bar.add_left_item(merge_conflict_indicator, window, cx);
             status_bar.add_left_item(activity_indicator, window, cx);
-            status_bar.add_right_item(edit_prediction_ui, window, cx);
-            status_bar.add_right_item(active_buffer_encoding, window, cx);
             status_bar.add_right_item(active_buffer_language, window, cx);
             status_bar.add_right_item(active_toolchain_language, window, cx);
+            status_bar.add_right_item(read_only_indicator, window, cx);
+            status_bar.add_right_item(indentation_indicator, window, cx);
+            status_bar.add_right_item(active_buffer_encoding, window, cx);
             status_bar.add_right_item(line_ending_indicator, window, cx);
             status_bar.add_right_item(cursor_position, window, cx);
             status_bar.add_right_item(image_info, window, cx);
@@ -780,8 +732,6 @@ fn initialize_panels(window: &mut Window, cx: &mut Context<Workspace>) -> Task<a
         let outline_panel = OutlinePanel::load(workspace_handle.clone(), cx.clone());
         let terminal_panel = TerminalPanel::load(workspace_handle.clone(), cx.clone());
         let git_panel = GitPanel::load(workspace_handle.clone(), cx.clone());
-        let channels_panel =
-            collab_ui::collab_panel::CollabPanel::load(workspace_handle.clone(), cx.clone());
         let debug_panel = DebugPanel::load(workspace_handle.clone(), cx);
 
         async fn add_panel_when_ready(
@@ -804,7 +754,6 @@ fn initialize_panels(window: &mut Window, cx: &mut Context<Workspace>) -> Task<a
             add_panel_when_ready(outline_panel, workspace_handle.clone(), cx.clone()),
             add_panel_when_ready(terminal_panel, workspace_handle.clone(), cx.clone()),
             add_panel_when_ready(git_panel, workspace_handle.clone(), cx.clone()),
-            add_panel_when_ready(channels_panel, workspace_handle.clone(), cx.clone()),
             add_panel_when_ready(debug_panel, workspace_handle.clone(), cx.clone()),
             initialize_agent_panel(workspace_handle.clone(), cx.clone()).map(|r| r.log_err()),
         );
@@ -919,8 +868,6 @@ fn register_actions(
 ) {
     workspace
         .register_action(|_, _: &OpenDocs, _, cx| cx.open_url(DOCS_URL))
-        .register_action(|_, _: &OpenStatusPage, _, cx| cx.open_url(STATUS_URL))
-        .register_action(|_, _: &GetMerch, _, cx| cx.open_url(MERCH_URL))
         .register_action(
             |workspace: &mut Workspace,
              _: &input_latency_ui::DumpInputLatencyHistogram,
@@ -1077,7 +1024,6 @@ fn register_actions(
             }
         })
         .register_action(|workspace, action: &workspace::Open, window, cx| {
-            telemetry::event!("Project Opened");
             workspace::prompt_for_open_path_and_open(
                 workspace,
                 workspace.app_state().clone(),
@@ -1128,7 +1074,6 @@ fn register_actions(
                     DefaultOpenBehavior::NewWindow
                 )
             });
-            telemetry::event!("Project Opened");
             let paths = workspace.prompt_for_open_path(
                 PathPromptOptions {
                     files: true,
@@ -1317,14 +1262,6 @@ fn register_actions(
         )
         .register_action(
             |workspace: &mut Workspace,
-             _: &collab_ui::collab_panel::ToggleFocus,
-             window: &mut Window,
-             cx: &mut Context<Workspace>| {
-                workspace.toggle_panel_focus::<collab_ui::collab_panel::CollabPanel>(window, cx);
-            },
-        )
-        .register_action(
-            |workspace: &mut Workspace,
              _: &terminal_panel::ToggleFocus,
              window: &mut Window,
              cx: &mut Context<Workspace>| {
@@ -1463,8 +1400,6 @@ fn initialize_pane(
     let workspace_handle = cx.weak_entity();
     pane.update(cx, |pane, cx| {
         pane.toolbar().update(cx, |toolbar, cx| {
-            let multibuffer_hint = cx.new(|_| MultibufferHint::new());
-            toolbar.add_item(multibuffer_hint, window, cx);
             let solo_diff_style_toolbar = cx.new(SoloDiffStyleToolbar::new);
             toolbar.add_item(solo_diff_style_toolbar, window, cx);
             let file_diff_style_toolbar = cx.new(FileDiffStyleToolbar::new);
@@ -1492,9 +1427,6 @@ fn initialize_pane(
             toolbar.add_item(dap_log_item, window, cx);
             let acp_tools_item = cx.new(|_| acp_tools::AcpToolsToolbarItemView::new());
             toolbar.add_item(acp_tools_item, window, cx);
-            let telemetry_log_item =
-                cx.new(|cx| telemetry_log::TelemetryLogToolbarItemView::new(window, cx));
-            toolbar.add_item(telemetry_log_item, window, cx);
             let syntax_tree_item = cx.new(|_| language_tools::SyntaxTreeToolbarItemView::new());
             toolbar.add_item(syntax_tree_item, window, cx);
             let migration_banner =
@@ -2384,14 +2316,7 @@ pub fn load_default_keymap(cx: &mut App) {
 /// that lower-precedence editor defaults (e.g. `editor::NewlineBelow` for
 /// `ctrl-enter`) can fire instead of being shadowed by an action whose handler
 /// silently no-ops.
-const AI_ACTION_NAMESPACES: &[&str] = &[
-    "acp::",
-    "agent::",
-    "assistant::",
-    "edit_prediction::",
-    "inline_assistant::",
-    "zeta::",
-];
+const AI_ACTION_NAMESPACES: &[&str] = &["acp::", "agent::", "assistant::", "inline_assistant::"];
 
 fn is_ai_keybinding(binding: &KeyBinding) -> bool {
     let name = binding.action().name();
@@ -5501,9 +5426,7 @@ mod tests {
             let app_state = AppState::test(cx);
 
             theme_settings::init(theme::LoadThemes::JustBase, cx);
-            client::init(&app_state.client, cx);
             workspace::init(app_state.clone(), cx);
-            onboarding::init(cx);
             app_state
         })
     }
@@ -5897,34 +5820,25 @@ mod tests {
                 "app_menu",
                 "assistant",
                 "assistant2",
-                "auto_update",
                 "branch_picker",
                 "bedrock",
                 "branches",
                 "buffer_search",
                 "call_hierarchy",
-                "channel_modal",
                 "cli",
-                "client",
                 "collab",
-                "collab_panel",
                 "command_palette",
                 "console",
                 "context_server",
-                "copilot",
-                "copilot_edit_predictions",
                 "debug_panel",
                 "debugger",
                 "dev",
                 "diagnostics",
-                "edit_prediction",
                 "editor",
                 "encoding_selector",
-                "feedback",
                 "file_finder",
                 "git",
                 "git_graph",
-                "git_onboarding",
                 "git_panel",
                 "git_picker",
                 "go_to_line",
@@ -5942,10 +5856,10 @@ mod tests {
                 "lsp_tool",
                 "markdown",
                 "menu",
+                "merge_tool",
                 "multi_workspace",
                 "new_process_modal",
                 "notebook",
-                "onboarding",
                 "outline",
                 "outline_panel",
                 "pane",
@@ -5958,11 +5872,13 @@ mod tests {
                 "remote_debug",
                 "repl",
                 "search",
+                "search_everywhere",
                 "settings_editor",
                 "settings_profile_selector",
                 "skill_creator",
                 "snippets",
                 "stash_picker",
+                "status_widgets",
                 "svg",
                 "syntax_tree_view",
                 "tab_switcher",
@@ -5983,8 +5899,6 @@ mod tests {
                 "worktree_picker",
                 "zed",
                 "zed_actions",
-                "zed_predict_onboarding",
-                "zeta",
             ];
             assert_eq!(
                 all_namespaces,
@@ -6163,15 +6077,10 @@ mod tests {
             gpui_tokio::init(cx);
             AppState::set_global(app_state.clone(), cx);
             theme_settings::init(theme::LoadThemes::JustBase, cx);
-            audio::init(cx);
-            channel::init(&app_state.client, app_state.user_store.clone(), cx);
-            call::init(app_state.client.clone(), app_state.user_store.clone(), cx);
-            notifications::init(app_state.client.clone(), app_state.user_store.clone(), cx);
             workspace::init(app_state.clone(), cx);
             release_channel::init(Version::new(0, 0, 0), cx);
             command_palette::init(cx);
             editor::init(cx);
-            collab_ui::init(&app_state, cx);
             git_ui::init(cx);
             project_panel::init(cx);
             outline_panel::init(cx);
@@ -6185,14 +6094,7 @@ mod tests {
             );
             image_viewer::init(cx);
             language_model::init(cx);
-            client::RefreshLlmTokenListener::register(
-                app_state.client.clone(),
-                app_state.user_store.clone(),
-                cx,
-            );
-            language_models::init(app_state.user_store.clone(), app_state.client.clone(), cx);
-            web_search::init(cx);
-            web_search_providers::init(app_state.client.clone(), app_state.user_store.clone(), cx);
+            language_models::init(app_state.client.clone(), cx);
             let prompt_builder = PromptBuilder::load(app_state.fs.clone(), false, cx);
             project::AgentRegistryStore::init_global(
                 cx,

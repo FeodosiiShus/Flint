@@ -48,9 +48,9 @@ use settings::{Settings, SettingsStore};
 use theme::{GlobalTheme, SyntaxTheme};
 use theme_settings::ThemeSettings;
 use ui::{
-    ContextMenu, FluentBuilder, HighlightedLabel, IconButton, IconButtonShape, IndentGuideColors,
-    IndentGuideLayout, KeyBinding, ListItem, ScrollAxes, Scrollbars, Tab, Tooltip, WithScrollbar,
-    prelude::*,
+    ChromeRegion, ContextMenu, FluentBuilder, HighlightedLabel, IconButton, IconButtonShape,
+    IndentGuideColors, IndentGuideLayout, KeyBinding, ListItem, ScrollAxes, Scrollbars, Tooltip,
+    WithScrollbar, prelude::*,
 };
 use util::{RangeExt, ResultExt, TryFutureExt, debug_panic, rel_path::RelPath};
 use workspace::{
@@ -5476,8 +5476,8 @@ impl OutlinePanel {
         };
 
         h_flex()
-            .p_2()
-            .h(Tab::container_height(cx))
+            .px_2()
+            .min_h(ui::panel_header_height(cx))
             .justify_between()
             .border_b_1()
             .border_color(cx.theme().colors().border)
@@ -5487,7 +5487,11 @@ impl OutlinePanel {
                     .gap_1p5()
                     .child(
                         Icon::new(IconName::MagnifyingGlass)
-                            .size(IconSize::Small)
+                            .size(ui::chrome_icon_size(
+                                ChromeRegion::Panel,
+                                IconSize::Small,
+                                cx,
+                            ))
                             .color(Color::Muted),
                     )
                     .child(self.filter_editor.clone()),
@@ -5498,6 +5502,7 @@ impl OutlinePanel {
                         this.child(
                             IconButton::new("clear_filter", IconName::Close)
                                 .shape(IconButtonShape::Square)
+                                .chrome_region(ChromeRegion::Panel)
                                 .tooltip(Tooltip::text("Clear Filter"))
                                 .on_click(cx.listener(|outline_panel, _, window, cx| {
                                     outline_panel.filter_editor.update(cx, |editor, cx| {
@@ -5511,6 +5516,7 @@ impl OutlinePanel {
                         this.child(
                             IconButton::new("toggle_symbols", hide_symbols_icon)
                                 .shape(IconButtonShape::Square)
+                                .chrome_region(ChromeRegion::Panel)
                                 .tooltip(Tooltip::for_action_title_in(
                                     hide_symbols_tooltip,
                                     &ToggleSymbols,
@@ -5529,6 +5535,7 @@ impl OutlinePanel {
                                 &self.focus_handle,
                             ))
                             .shape(IconButtonShape::Square)
+                            .chrome_region(ChromeRegion::Panel)
                             .on_click(cx.listener(|outline_panel, _, window, cx| {
                                 outline_panel.toggle_active_editor_pin(
                                     &ToggleActiveEditorPin,
@@ -5777,7 +5784,7 @@ impl Render for OutlinePanel {
                     h_flex()
                         .py_1p5()
                         .px_2()
-                        .h(Tab::container_height(cx))
+                        .min_h(ui::panel_header_height(cx))
                         .gap_0p5()
                         .border_b_1()
                         .border_color(cx.theme().colors().border_variant)

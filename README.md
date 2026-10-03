@@ -28,7 +28,7 @@ The app is ad-hoc signed and not notarized, so macOS Gatekeeper blocks it after 
 xattr -dr com.apple.quarantine "/Applications/Flint.app"
 ```
 
-The app is built on the `dev` release channel and is named "Flint". Dev builds never check for updates, so it never auto-updates to official Zed.
+The app is built on the `dev` release channel and is named "Flint". It has no auto-update, Zed account sign-in or onboarding flow.
 
 ## Background image
 
@@ -87,13 +87,14 @@ Put the same `background_image` object into `<project>/.zed/settings.json`. Proj
 
 ## Toolbar and icon sizes
 
-Flint can make the title bar, the tab bar, the toolbar and the status bar taller and their icons bigger, closer to WebStorm. Each bar has two keys, `height` and `icon_size`, eight keys in total:
+Flint can make the title bar, the tab bar, the toolbar, the status bar and the dock panel headers taller and their icons bigger, closer to WebStorm. Each of the five groups has two keys, `height` and `icon_size`, ten keys in total:
 
 ```json
 "title_bar":  { "height": null, "icon_size": null }
 "tab_bar":    { "height": null, "icon_size": null }
 "toolbar":    { "height": null, "icon_size": null }
 "status_bar": { "height": null, "icon_size": null }
+"panel":      { "height": null, "icon_size": null }
 ```
 
 - The default `null` keeps Zed's built-in sizes. The keys are read only from your user `settings.json`, not from a project's `.zed/settings.json`.
@@ -103,13 +104,15 @@ Flint can make the title bar, the tab bar, the toolbar and the status bar taller
 ### What each key does
 
 - `title_bar.height` — the exact height of the title bar, but never lower than its buttons. With only `title_bar.icon_size` set, the bar grows when needed to keep at least 4px above and below the buttons. On macOS the window buttons (traffic lights) are re-centered vertically.
-- `tab_bar.height` — the exact height of the editor tab bar, but never lower than its buttons. Panel headers that use the tab bar height (Git, Outline, Debugger, Agent, …) follow it.
+- `tab_bar.height` — the exact height of the editor tab bar, but never lower than its buttons. Dock panel headers follow it unless `panel.height` is set.
+- `panel.height` — the exact height of the header and toolbar rows of dock panels (Git, Outline, Debugger, Agent, thread history), but never lower than their buttons. Unset, these rows use the tab bar height.
+- `panel.icon_size` — the icon size of the controls in those header, toolbar and footer rows: in the Git panel View Diff, the filter, Stage All, the branch row and Fetch/Push/Pull, the commit editor buttons, Commit and the last-commit row; the Outline filter row; the Debugger controls; the Agent panel toolbar and thread history toolbar; the thread sidebar's bottom bar. List rows, the terminal panel tabs and the debugger's pane tabs are not affected; the latter two follow `tab_bar`.
 - `toolbar.height`, `status_bar.height` — the minimum height of the bar. The content is centered vertically, and the bar is never smaller than its content.
 - `icon_size` — the size of the primary icons of the bar (Zed's default is 14px). Secondary icons scale proportionally, so a 12px chevron becomes 12·N/14 for `icon_size` N. Buttons grow to at least the icon size plus 8px, and the bars grow so nothing is clipped. Text keeps the UI font size.
 
 ### Setting the sizes
 
-- Settings window: Window & Layout → Status Bar, Title Bar and Tab Bar; Editor → Toolbar. An unset key shows 0 there. Any number you enter is written to `settings.json` and clamped to the range above; the field's reset button removes the key again.
+- Settings window: Window & Layout → Status Bar, Title Bar and Tab Bar; Editor → Toolbar; Panels → Panel Headers. An unset key shows 0 there. Any number you enter is written to `settings.json` and clamped to the range above; the field's reset button removes the key again.
 - `settings.json`:
 
 ```json
@@ -117,7 +120,8 @@ Flint can make the title bar, the tab bar, the toolbar and the status bar taller
   "status_bar": { "height": 36, "icon_size": 20 },
   "tab_bar": { "height": 40 },
   "title_bar": { "height": 40 },
-  "toolbar": { "icon_size": 18 }
+  "toolbar": { "icon_size": 18 },
+  "panel": { "height": 32, "icon_size": 18 }
 }
 ```
 
@@ -128,13 +132,164 @@ Flint can make the title bar, the tab bar, the toolbar and the status bar taller
 | `title_bar` | main toolbar / window header |
 | `tab_bar` | editor tabs |
 | `toolbar` | breadcrumbs / navigation bar above the editor |
-| `status_bar` | status bar plus the tool window buttons |
+| `status_bar` | status bar (plus the tool window buttons when `tool_window_bars.show` is false) |
+| `panel` | tool window header and toolbar |
 
 ### Relationship to `unstable.ui_density`
 
 - `unstable.ui_density` changes only the dynamic spacing paddings: a padding of N px becomes N − 4 px (at least 0) in `compact` and N + 4 px in `comfortable`, except for a few paddings with their own per-density values. The default tab bar height is derived from these paddings, so it changes with density too.
 - An explicit `height` overrides the density-derived default for its bar.
-- Icon sizes are not affected by density.
+- Icon sizes of these five groups are not affected by density. Tool window bar icons are; see [Islands layout and tool window bars](#islands-layout-and-tool-window-bars).
+
+## Islands layout and tool window bars
+
+Flint uses WebStorm's [Islands](https://plugins.jetbrains.com/docs/intellij/supporting-islands-theme.html) layout by default:
+
+- The title bar, the tool window bars, the gaps and the status bar share one window background (the theme's `background` color), with no borders between them.
+- The left dock, the right dock, the bottom dock and the editor area are separate rounded islands. Docks use the theme's `panel.background`, the editor area uses `editor.background`. Dock resize handles sit in the gaps.
+- Editor tabs: the tab bar has the editor background and no borders. The active tab is a rounded pill with an accent border and a light accent fill while its pane is focused, and a plain border otherwise. Inactive tabs show only their text.
+- Tool window bars run down the left and right window edges. The left bar shows the left dock panels, a separator, a "More Tool Windows" button (a menu of every panel, including panels whose button is hidden), and the bottom dock panels at the bottom. The right bar shows the right dock panels. Click an icon to show or hide its panel; right-click it to move the panel to another dock or hide its button. A filled background marks an open panel, an accent background a focused one. While the bars are shown, the status bar no longer has panel buttons.
+
+```json
+"islands": { "enabled": true, "gap": null, "corner_radius": null },
+"tool_window_bars": { "show": true, "icon_size": null, "show_names": false }
+```
+
+- `islands.gap` — distance between islands in pixels, 0–16. Unset: 4, or 3 with `"unstable.ui_density": "compact"`.
+- `islands.corner_radius` — island corner radius in pixels, 0–24. Unset: 10, or 8 in compact density.
+- `tool_window_bars.icon_size` — bar icon size in pixels, 12–32; the bar is 20px wider than the icon. Unset: 20, or 16 in compact density.
+- `tool_window_bars.show_names` — show the panel name under each icon.
+- `"islands": { "enabled": false }` together with `"tool_window_bars": { "show": false }` restores the classic Zed layout: flat docks with borders, square tabs and panel buttons in the status bar.
+- Settings window: Window & Layout → Islands and Tool Window Bars.
+- WebStorm-like defaults that come with it: `tabs.file_icons: true`, `tab_bar.show_nav_history_buttons: false`, and the Git and Outline panels docked on the left.
+- Not implemented: WebStorm's split tool windows under the bar separator and the bottom-right bar group, because a Flint dock shows one panel at a time.
+
+## Main toolbar
+
+The title bar works like WebStorm's [main toolbar](https://www.jetbrains.com/help/webstorm/new-ui.html), left to right:
+
+- Project widget: a rounded badge with one or two initials of the project name, the name and a ˅. Click it to open the recent projects popover. The badge color is picked from the theme's accent colors by a stable hash of the project name, so a project keeps its color across restarts.
+- VCS widget: the branch name, then `↓N ↑M` when the branch is behind or ahead of its upstream (only the non-zero directions are shown), and a ˅. Click it to open the branch picker. The worktree button is hidden by default.
+- Run widget: the label of the last task you ran (or "Run…") with a ˅ that opens the task picker (`task: spawn`), a green ▷ that reruns the last task (`task: rerun`) and a green bug that starts debugging (`debugger: start`).
+- Right edge: a magnifying glass that opens Search Everywhere and a gear that opens the Settings window.
+
+Each widget can be turned off in `settings.json` or in Settings → Window & Layout → Title Bar:
+
+```json
+"title_bar": {
+  "show_project_badge": true,
+  "show_run_widget": true,
+  "show_search_button": true,
+  "show_settings_button": true,
+  "show_worktree_name": false
+}
+```
+
+## Status bar
+
+The status bar works like WebStorm's [status bar and navigation bar](https://www.jetbrains.com/help/webstorm/guided-tour-around-the-user-interface.html):
+
+- Left: a navigation bar `project › directory › … › file › symbol`. Clicking the project, a directory or the file reveals it in the project panel; clicking a symbol (the outline items around the cursor) moves the cursor to it. When the path is wider than half the window, the middle segments collapse into `…`, keeping the first and the last segment. It replaces the active file name (`show_active_file`) while it is enabled.
+- Right, left to right: cursor position, line ending, encoding, indentation, read-only lock, language.
+- Indentation shows `N spaces` or `Tab` for the active file. Clicking it (or `status widgets: select indentation`) opens a picker with 2 spaces, 4 spaces, 8 spaces and Tab; the choice is written to `languages.<Language>.tab_size` / `hard_tabs` in your user `settings.json` (to the top-level `tab_size` / `hard_tabs` for files without a language).
+- The lock shows whether the active file is read-only. Clicking it toggles read-only mode like `workspace: toggle read only file`; it is disabled for editors that are read-only by construction.
+- The path no longer appears above the editor: `toolbar.breadcrumbs` and `toolbar.quick_actions` default to `false`. Set them to `true` to bring the editor toolbar row back.
+
+Each widget can be turned off in `settings.json`, in Settings → Window & Layout → Status Bar, or with "Hide Button" in the widget's right-click menu:
+
+```json
+"status_bar": {
+  "navigation_bar": true,
+  "indentation_button": true,
+  "read_only_button": true,
+  "line_endings_button": true,
+  "active_encoding_button": "enabled"
+}
+```
+
+## Search Everywhere
+
+Search Everywhere is a WebStorm-style popup that searches files, classes, symbols, actions and text at once. With the JetBrains base keymap it opens on a double `Shift`; with any keymap it is available as `search everywhere: toggle` in the command palette. Like WebStorm, it has a row of tabs above the query and a preview of the selected item.
+
+| Tab | What it searches |
+| --- | --- |
+| All | Classes, Files, Symbols and Actions, a few results each, grouped under section headers. Text matches are added at the bottom when the other sections have fewer than five results. A `more…` row opens the full tab for that section. An empty query lists the recently opened files. |
+| Classes | Workspace symbols of kind class, interface, enum and struct. |
+| Files | Files and folders by name (fuzzy, so `CamelCase` and `snake_case` abbreviations work). An empty query lists the recently opened files. `name:line` and `name:line:column` open the file at that position. Opening a folder reveals it in the project panel. |
+| Symbols | All workspace symbols. |
+| Actions | Every action available where the popup was opened, with its key binding. `Enter` runs the action in the editor or panel that had focus; `Cmd-Enter` opens the keymap editor to change its binding. Command aliases from `command_aliases` work here too. |
+| Text | Text in the project files (case-insensitive, at most 100 matches). The last row, "Open in Text Finder", hands the query to the full Text Finder. |
+
+Classes and Symbols come from the language servers' workspace symbol search, so they are empty for languages whose server does not provide it. The "Include non-project items" checkbox adds git-ignored files and symbols outside the project.
+
+### Shortcuts (JetBrains keymap)
+
+| Keys | Action |
+| --- | --- |
+| `Shift` `Shift` | Open on the All tab. Pressing it again while the popup is open toggles "Include non-project items". |
+| `Cmd-O` | Open on the Classes tab. |
+| `Cmd-Shift-O`, `Cmd-Shift-N` | Open on the Files tab. |
+| `Cmd-Alt-O` | Open on the Symbols tab. |
+| `Cmd-Shift-A` | Open on the Actions tab. |
+| `Tab`, `Shift-Tab` | Next or previous tab; the query is kept. |
+| `Ctrl-Down`, `Ctrl-Up` | Jump to the next or previous section; in a single-section tab, to the last or first row. |
+
+Pressing a tab shortcut while the popup is open switches to that tab, or toggles "Include non-project items" when that tab is already active. `Cmd-E` still opens the file finder with its recent files.
+
+### Not implemented
+
+- Math evaluation in the query.
+- `/` to list settings groups.
+- The Git tab (branches and commits).
+- The filter popup (for example, only recent files) and "Open in Find tool window" for tabs other than Text.
+
+## Merge conflicts
+
+Flint resolves merge conflicts like WebStorm's [Resolve conflicts](https://www.jetbrains.com/help/webstorm/resolve-conflicts.html): a Conflicts dialog lists the conflicted files, and a three-pane Merge Revisions window resolves one file. Both work only for local repositories; they are hidden in remote projects.
+
+### Conflicts dialog
+
+- Opens by itself when an in-app pull, stash pop or stash apply leaves conflicted files. For conflicts made on the command line, click "Resolve…" in the header of the Git panel's Conflicts section, or run `merge tool: open conflicts`.
+- Columns: the file, "Yours (<current branch>)" and "Theirs (<merged branch>)", each showing whether that side added, deleted or modified the file. Files are grouped into Unresolved and Resolved, with a resolved/total changes badge per file.
+- Accept Yours keeps the checked-out branch's version of the file and Accept Theirs keeps the merged branch's version; either one stages the file.
+- Resolve All Simple Conflicts applies the non-conflicting changes and the simple conflicts of every file; a file left with nothing to resolve is written and staged.
+- Resolve Manually (or a double-click) opens the file in the Merge Revisions window.
+- Accept and Finish is enabled once every file is resolved and staged; it closes the dialog and focuses the commit editor of the Git panel.
+- Right-click a resolved file → Revert conflict resolution returns it to its conflicted state.
+
+### Git panel
+
+- Double-clicking a conflicted file opens it in the Merge Revisions window; a single click keeps its usual behaviour.
+- The context menu of a conflicted file starts with Accept Yours, Accept Theirs and Merge….
+
+### Merge Revisions window
+
+- Left pane: your version (the checked-out branch), read-only. Right pane: their version (the merged branch), read-only. Centre pane: the Result, a normal editor that starts from the base revision.
+- Each change has `>>` (left) or `<<` (right) to accept it into the Result and `X` to ignore it. Cmd-click on `>>`/`<<` resolves the conflict using that side and ignores the other one; Cmd-click on `X` ignores both sides and keeps the Result text. Alt-click appends the side after the text already in the Result. A magic wand in the Result gutter resolves a simple conflict.
+- Toolbar: previous/next difference, apply non-conflicting changes from the left, from both sides or from the right, resolve simple conflicts, and the gear with Synchronize Scrolling and Ignore Differences (None, Trim whitespaces, Ignore whitespaces, Ignore whitespaces and empty lines). Ignore Differences can be changed only before the first change is applied or the Result is edited. The counter shows the remaining changes and conflicts, for example "3 changes. 1 conflict.".
+- Undo and redo in the Result also undo and redo the accept and ignore states.
+- Bottom buttons: Accept Left and Accept Right take the whole file from one side. Save and Close keeps the partial result in memory and returns to the Conflicts dialog. Apply Changes writes the Result, stages the file and opens the next conflicted file; while unresolved changes remain it first asks "Apply the result anyway?".
+
+### Keyboard shortcuts
+
+| Shortcut | Action |
+|---|---|
+| F7 | Next difference |
+| Shift-F7 | Previous difference |
+| Ctrl-Cmd-Right | Accept the left side of the change at the cursor |
+| Ctrl-Cmd-Left | Accept the right side of the change at the cursor |
+| Ctrl-Shift-Tab | Focus the opposite pane |
+| Cmd-Shift-D | Show the settings popup |
+
+The shortcuts work in the default and the JetBrains keymaps; inside the merge window they take precedence over the debugger's F7.
+
+### Setting
+
+```json
+"git": { "merge_tool": { "auto_apply_non_conflicting": false } }
+```
+
+With `true`, the merge window applies all non-conflicting changes as soon as it opens. Settings window: Version Control → Merge Tool.
 
 ## Licensing
 

@@ -2734,32 +2734,29 @@ mod tests {
 
     #[test]
     fn test_find_value_range_in_json_text() {
-        let text = r#"// "edit_predictions": { "disabled_globs": ["commented/**"] },
+        let text = r#"// "file_finder": { "excluded_globs": ["commented/**"] },
         {
-            // "disabled_globs": ["commented/**"],
-            "languages": { "edit_predictions": { "disabled_globs": ["nested/**"] } },
-            "edit_predictions": {
-                /* "disabled_globs": ["commented/**"], */
-                "mode": "subtle",
-                "disabled_globs": ["live/**", /* ] */ "..."], // ]
+            // "excluded_globs": ["commented/**"],
+            "languages": { "file_finder": { "excluded_globs": ["nested/**"] } },
+            "file_finder": {
+                /* "excluded_globs": ["commented/**"], */
+                "mode": "fast",
+                "excluded_globs": ["live/**", /* ] */ "..."], // ]
             }
         }"#;
-        let range = find_value_range_in_json_text(text, &["edit_predictions", "disabled_globs"])
+        let range = find_value_range_in_json_text(text, &["file_finder", "excluded_globs"])
             .expect("value range");
         assert_eq!(&text[range], r#"["live/**", /* ] */ "..."]"#);
         assert_eq!(
-            find_value_range_in_json_text(text, &["edit_predictions", "missing"]),
+            find_value_range_in_json_text(text, &["file_finder", "missing"]),
             None
         );
         assert_eq!(find_value_range_in_json_text(text, &["missing"]), None);
         assert_eq!(
-            find_value_range_in_json_text("// only a comment", &["edit_predictions"]),
+            find_value_range_in_json_text("// only a comment", &["file_finder"]),
             None
         );
-        assert_eq!(
-            find_value_range_in_json_text("", &["edit_predictions"]),
-            None
-        );
+        assert_eq!(find_value_range_in_json_text("", &["file_finder"]), None);
         assert_eq!(
             find_value_range_in_json_text(r#"{"a": 1}"#, &["a", "b"]),
             None

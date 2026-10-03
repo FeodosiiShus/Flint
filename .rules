@@ -134,7 +134,9 @@ Other entities can then register a callback to handle these events by doing `cx.
 
 ## Build guidelines
 
-- Use `./script/clippy` instead of `cargo clippy`
+- Never compile locally: no `cargo build`, `cargo check`, `cargo test`, `cargo clippy`, `./script/clippy`, `script/bundle-mac`. Builds and tests run only in CI (`.github/workflows/checks.yml`, `.github/workflows/build-macos.yml`).
+- Locally only write code and tests, and verify APIs, imports and signatures by reading the source. Allowed cargo commands: `cargo fmt`, and `cargo update --workspace --offline` after `Cargo.toml` changes to sync `Cargo.lock` (dependency resolution only, nothing is compiled; CI uses `--locked`).
+- Every new test must be reachable from `.github/workflows/checks.yml`, otherwise CI never runs it.
 
 # Rules Hygiene
 

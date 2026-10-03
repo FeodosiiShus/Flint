@@ -21,9 +21,7 @@ use ui::{
     Vector, VectorName, background_image_layer, has_background_image, prelude::*,
 };
 use util::ResultExt;
-use zed_actions::{
-    Extensions, OpenKeymap, OpenOnboarding, OpenSettings, assistant::ToggleFocus, command_palette,
-};
+use zed_actions::{Extensions, OpenKeymap, OpenSettings, assistant::ToggleFocus, command_palette};
 
 #[derive(PartialEq, Clone, Debug, Deserialize, Serialize, JsonSchema, Action)]
 #[action(namespace = welcome)]
@@ -39,6 +37,38 @@ actions!(
         ShowWelcome
     ]
 );
+
+pub fn init(cx: &mut App) {
+    cx.on_action(|_: &ShowWelcome, cx| {
+        crate::with_active_or_new_workspace(cx, |workspace, window, cx| {
+            workspace
+                .with_local_workspace(window, cx, |workspace, window, cx| {
+                    let existing_welcome_page = workspace
+                        .active_pane()
+                        .read(cx)
+                        .items()
+                        .find_map(|item| item.downcast::<WelcomePage>());
+
+                    if let Some(existing_welcome_page) = existing_welcome_page {
+                        workspace.activate_item(&existing_welcome_page, true, true, window, cx);
+                    } else {
+                        let welcome_page = cx
+                            .new(|cx| WelcomePage::new(workspace.weak_handle(), false, window, cx));
+                        workspace.add_item_to_active_pane(
+                            Box::new(welcome_page),
+                            None,
+                            true,
+                            window,
+                            cx,
+                        )
+                    }
+                })
+                .detach_and_log_err(cx);
+        });
+    });
+
+    crate::register_serializable_item::<WelcomePage>(cx);
+}
 
 #[derive(IntoElement)]
 struct SectionHeader {
@@ -418,7 +448,7 @@ impl Render for WelcomePage {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let (first_section, second_section) = CONTENT;
         let first_section_entries = first_section.entries.len();
-        let mut next_tab_index = first_section_entries + second_section.entries.len();
+        let agent_tab_index = first_section_entries + second_section.entries.len();
 
         let ai_enabled = AgentSettings::get_global(cx).enabled(cx);
 
@@ -483,6 +513,7 @@ impl Render for WelcomePage {
                 background_image_area,
                 cx.theme().colors().editor_background,
                 true,
+                gpui::Corners::default(),
             ))
             .child(
                 v_flex()
@@ -512,22 +543,7 @@ impl Render for WelcomePage {
                     .child(first_section.render(Default::default(), &self.focus_handle))
                     .child(second_section)
                     .when(ai_enabled && !showing_recent_projects, |this| {
-                        let agent_tab_index = next_tab_index;
-                        next_tab_index += 1;
                         this.child(self.render_agent_card(agent_tab_index, cx))
-                    })
-                    .when(!self.fallback_to_recent_projects, |this| {
-                        this.child(
-                            v_flex().gap_4().child(Divider::horizontal()).child(
-                                Button::new("welcome-exit", "Return to Onboarding")
-                                    .tab_index(next_tab_index as isize)
-                                    .full_width()
-                                    .label_size(LabelSize::XSmall)
-                                    .on_click(|_, window, cx| {
-                                        window.dispatch_action(OpenOnboarding.boxed_clone(), cx);
-                                    }),
-                            ),
-                        )
                     }),
             )
     }
@@ -546,10 +562,6 @@ impl Item for WelcomePage {
 
     fn tab_content_text(&self, _detail: usize, _cx: &App) -> SharedString {
         "Welcome".into()
-    }
-
-    fn telemetry_event_text(&self) -> Option<&'static str> {
-        Some("New Welcome Page Opened")
     }
 
     fn show_toolbar(&self) -> bool {

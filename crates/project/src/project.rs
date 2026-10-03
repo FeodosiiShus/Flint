@@ -100,7 +100,6 @@ use lsp::{
     LanguageServerBinary, LanguageServerId, LanguageServerName, LanguageServerSelector,
     MessageActionItem,
 };
-pub use lsp_command::EditPredictionDefinition;
 use lsp_command::*;
 use lsp_store::{CompletionDocumentation, LspFormatTarget, OpenLspBufferHandle};
 pub use manifest_tree::ManifestProvidersStore;
@@ -503,7 +502,6 @@ pub enum PrepareRenameResponse {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum InlayId {
-    EditPrediction(usize),
     DebuggerValue(usize),
     // LSP
     Hint(usize),
@@ -514,7 +512,6 @@ pub enum InlayId {
 impl InlayId {
     pub fn id(&self) -> usize {
         match self {
-            Self::EditPrediction(id) => *id,
             Self::DebuggerValue(id) => *id,
             Self::Hint(id) => *id,
             Self::Color(id) => *id,
@@ -1680,7 +1677,6 @@ impl Project {
             remote_proto.add_entity_message_handler(Self::handle_update_worktree);
             remote_proto.add_entity_message_handler(Self::handle_update_project);
             remote_proto.add_entity_message_handler(Self::handle_toast);
-            remote_proto.add_entity_message_handler(Self::handle_telemetry_event);
             remote_proto.add_entity_request_handler(Self::handle_language_server_prompt_request);
             remote_proto
                 .add_entity_request_handler(Self::handle_language_server_show_document_request);
@@ -1714,8 +1710,6 @@ impl Project {
         fs: Arc<dyn Fs>,
         cx: AsyncApp,
     ) -> Result<Entity<Self>> {
-        client.connect(true, &cx).await.into_response()?;
-
         let subscriptions = [
             EntitySubscription::Project(client.subscribe_to_entity::<Self>(remote_id)?),
             EntitySubscription::BufferStore(client.subscribe_to_entity::<BufferStore>(remote_id)?),
@@ -2065,13 +2059,10 @@ impl Project {
         root_paths: impl IntoIterator<Item = &Path>,
         cx: &mut AsyncApp,
     ) -> Entity<Project> {
-        use clock::FakeSystemClock;
-
         let fs = RealFs::new(None, cx.background_executor().clone());
         let languages = LanguageRegistry::test(cx.background_executor().clone());
-        let clock = Arc::new(FakeSystemClock::new());
         let http_client = http_client::FakeHttpClient::with_404_response();
-        let client = cx.update(|cx| client::Client::new(clock, http_client.clone(), cx));
+        let client = cx.update(|cx| client::Client::new(http_client.clone(), cx));
         let user_store = cx.new(|cx| UserStore::new(client.clone(), cx));
         let project = cx.update(|cx| {
             Project::local(
@@ -2126,12 +2117,9 @@ impl Project {
         init_worktree_trust: bool,
         cx: &mut gpui::TestAppContext,
     ) -> Entity<Project> {
-        use clock::FakeSystemClock;
-
         let languages = LanguageRegistry::test(cx.executor());
-        let clock = Arc::new(FakeSystemClock::new());
         let http_client = http_client::FakeHttpClient::with_404_response();
-        let client = cx.update(|cx| client::Client::new(clock, http_client.clone(), cx));
+        let client = cx.update(|cx| client::Client::new(http_client.clone(), cx));
         let user_store = cx.new(|cx| UserStore::new(client.clone(), cx));
         let project = cx.update(|cx| {
             Project::local(
@@ -3993,9 +3981,6 @@ impl Project {
             WorktreeStoreEvent::WorktreeOrderChanged => cx.emit(Event::WorktreeOrderChanged),
             WorktreeStoreEvent::WorktreeUpdateSent(_) => {}
             WorktreeStoreEvent::WorktreeUpdatedEntries(worktree_id, changes) => {
-                self.client()
-                    .telemetry()
-                    .report_discovered_project_type_events(*worktree_id, changes);
                 cx.emit(Event::WorktreeUpdatedEntries(*worktree_id, changes.clone()))
             }
             WorktreeStoreEvent::WorktreeDeletedEntry(worktree_id, id) => {
@@ -4415,19 +4400,6 @@ impl Project {
             let result = task.await;
             drop(guard);
             result
-        })
-    }
-
-    pub fn edit_prediction_definitions<T: ToPointUtf16>(
-        &mut self,
-        buffer: &Entity<Buffer>,
-        position: T,
-        include_type_definitions: bool,
-        cx: &mut Context<Self>,
-    ) -> Task<Result<Vec<EditPredictionDefinition>>> {
-        let position = position.to_point_utf16(buffer.read(cx));
-        self.lsp_store.update(cx, |lsp_store, cx| {
-            lsp_store.edit_prediction_definitions(buffer, position, include_type_definitions, cx)
         })
     }
 
@@ -5563,42 +5535,6 @@ impl Project {
             });
             Ok(())
         })
-    }
-
-    async fn handle_telemetry_event(
-        this: Entity<Self>,
-        envelope: TypedEnvelope<proto::TelemetryEvent>,
-        mut cx: AsyncApp,
-    ) -> Result<()> {
-        let payload = envelope.payload;
-        this.update(&mut cx, |this, cx| {
-            // The remote connection type, OS, version, and architecture are all
-            // already known from connection setup, so they don't need to be sent
-            // with each event.
-            let Some((connection_type, platform, os_version)) =
-                this.remote_client.as_ref().map(|client| {
-                    let client = client.read(cx);
-                    (
-                        client.connection_type(),
-                        client.remote_platform(),
-                        client.remote_os_version(),
-                    )
-                })
-            else {
-                return;
-            };
-            this.client()
-                .telemetry()
-                .report_remote_event(
-                    &payload.event_json,
-                    connection_type,
-                    platform.os.display_name().to_string(),
-                    os_version,
-                    platform.arch.as_str().to_string(),
-                )
-                .log_err();
-        });
-        Ok(())
     }
 
     async fn handle_language_server_prompt_request(

@@ -2776,10 +2776,6 @@ impl acp_thread::AgentConnection for NativeAgentConnection {
         ZED_AGENT_ID.clone()
     }
 
-    fn telemetry_id(&self) -> SharedString {
-        "zed".into()
-    }
-
     fn new_session(
         self: Rc<Self>,
         project: Entity<Project>,
@@ -2903,10 +2899,6 @@ impl acp_thread::AgentConnection for NativeAgentConnection {
     fn session_list(&self, cx: &mut App) -> Option<Rc<dyn AgentSessionList>> {
         let thread_store = self.0.read(cx).thread_store.clone();
         Some(Rc::new(NativeAgentSessionList::new(thread_store, cx)) as _)
-    }
-
-    fn telemetry(&self) -> Option<Rc<dyn acp_thread::AgentTelemetry>> {
-        Some(Rc::new(self.clone()) as Rc<dyn acp_thread::AgentTelemetry>)
     }
 
     fn into_any(self: Rc<Self>) -> Rc<dyn Any> {
@@ -3071,23 +3063,6 @@ impl acp_thread::AgentSessionClientUserMessageIds for NativeAgentConnection {
             thread.update(cx, |thread, cx| {
                 thread.send(client_user_message_id, content, cx)
             })
-        })
-    }
-}
-
-impl acp_thread::AgentTelemetry for NativeAgentConnection {
-    fn thread_data(
-        &self,
-        session_id: &acp_v1::SessionId,
-        cx: &mut App,
-    ) -> Task<Result<serde_json::Value>> {
-        let Some(session) = self.0.read(cx).sessions.get(session_id) else {
-            return Task::ready(Err(anyhow!("Session not found")));
-        };
-
-        let task = session.thread.read(cx).to_db(cx);
-        cx.background_spawn(async move {
-            serde_json::to_value(task.await).context("Failed to serialize thread")
         })
     }
 }
@@ -3287,16 +3262,6 @@ impl NativeThreadEnvironment {
                 Ok(acp_thread)
             })??;
 
-        let depth = current_depth + 1;
-
-        telemetry::event!(
-            "Subagent Started",
-            session = parent_thread_entity.read(cx).id().to_string(),
-            subagent_session = session_id.to_string(),
-            depth,
-            is_resumed = false,
-        );
-
         self.prompt_subagent(session_id, subagent_thread, acp_thread)
     }
 
@@ -3316,18 +3281,6 @@ impl NativeThreadEnvironment {
                 .ok_or_else(|| anyhow!("Subagent session {session_id} was released"))?;
             anyhow::Ok((session.thread.clone(), acp_thread))
         })??;
-
-        let depth = subagent_thread.read(cx).depth();
-
-        if let Some(parent_thread_entity) = self.thread.upgrade() {
-            telemetry::event!(
-                "Subagent Started",
-                session = parent_thread_entity.read(cx).id().to_string(),
-                subagent_session = session_id.to_string(),
-                depth,
-                is_resumed = true,
-            );
-        }
 
         self.prompt_subagent(session_id, subagent_thread, acp_thread)
     }

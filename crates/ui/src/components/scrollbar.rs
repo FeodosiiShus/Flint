@@ -1412,246 +1412,253 @@ impl<T: ScrollableHandle> Element for ScrollbarElement<T> {
         };
 
         let bounds = Bounds::new(self.origin + origin, size);
-        window.with_content_mask(Some(ContentMask { bounds }), |window| {
-            let colors = cx.theme().colors();
+        window.with_content_mask(
+            Some(ContentMask {
+                bounds,
+                ..Default::default()
+            }),
+            |window| {
+                let colors = cx.theme().colors();
 
-            let capture_phase;
+                let capture_phase;
 
-            if self.state.read(cx).visible() {
-                let state = self.state.read(cx);
-                let thumb_state = &state.thumb_state;
-                let style = state.style;
+                if self.state.read(cx).visible() {
+                    let state = self.state.read(cx);
+                    let thumb_state = &state.thumb_state;
+                    let style = state.style;
 
-                if thumb_state.is_dragging() {
-                    capture_phase = DispatchPhase::Capture;
+                    if thumb_state.is_dragging() {
+                        capture_phase = DispatchPhase::Capture;
+                    } else {
+                        capture_phase = DispatchPhase::Bubble;
+                    }
+
+                    for ScrollbarLayout {
+                        thumb_bounds,
+                        cursor_hitbox,
+                        axis,
+                        reserved_space,
+                        track_config,
+                        ..
+                    } in &prepaint_state.thumbs
+                    {
+                        const MAXIMUM_OPACITY: f32 = 0.7;
+                        let (thumb_base_color, hovered) = match thumb_state {
+                            ThumbState::Dragging(dragged_axis, _) if dragged_axis == axis => {
+                                (colors.scrollbar_thumb_active_background, false)
+                            }
+                            ThumbState::Hover(hovered_axis) if hovered_axis == axis => {
+                                (colors.scrollbar_thumb_hover_background, true)
+                            }
+                            _ => (colors.scrollbar_thumb_background, false),
+                        };
+
+                        let blend_color = track_config
+                            .as_ref()
+                            .map(|(_, colors)| colors.background)
+                            .unwrap_or(colors.surface_background);
+
+                        let blending_color = if hovered || reserved_space.needs_scroll_track() {
+                            blend_color
+                        } else {
+                            blend_color.min(blend_color.alpha(MAXIMUM_OPACITY))
+                        };
+
+                        let mut thumb_color = blending_color.blend(thumb_base_color);
+
+                        if !hovered && let Some(fade) = autohide_fade {
+                            thumb_color.fade_out(fade);
+                        }
+
+                        if let Some((track_bounds, colors)) = track_config {
+                            let has_border = colors.has_border;
+
+                            let mut track_color = colors.background;
+                            if let Some(fade) = autohide_fade
+                                && !has_border
+                            {
+                                track_color.fade_out(fade);
+                            }
+
+                            let border_edges = has_border
+                                .then(|| match axis {
+                                    ScrollbarAxis::Horizontal => Edges {
+                                        top: BORDER_WIDTH,
+                                        ..Default::default()
+                                    },
+                                    ScrollbarAxis::Vertical => Edges {
+                                        left: BORDER_WIDTH,
+                                        ..Default::default()
+                                    },
+                                })
+                                .unwrap_or_default();
+
+                            let border_color = if has_border {
+                                cx.theme().colors().border_variant.opacity(0.6)
+                            } else {
+                                Hsla::transparent_black()
+                            };
+
+                            window.paint_quad(quad(
+                                *track_bounds,
+                                Corners::default(),
+                                track_color,
+                                border_edges,
+                                border_color,
+                                BorderStyle::Solid,
+                            ));
+                        }
+
+                        window.paint_quad(quad(
+                            *thumb_bounds,
+                            match style {
+                                ScrollbarStyle::Regular => Corners::all(Pixels::MAX)
+                                    .clamp_radii_for_quad_size(thumb_bounds.size),
+                                ScrollbarStyle::Editor => Corners::default(),
+                            },
+                            thumb_color,
+                            Edges::default(),
+                            Hsla::transparent_black(),
+                            BorderStyle::default(),
+                        ));
+
+                        if thumb_state.is_dragging() {
+                            window.set_window_cursor_style(CursorStyle::Arrow);
+                        } else {
+                            window.set_cursor_style(CursorStyle::Arrow, cursor_hitbox);
+                        }
+                    }
                 } else {
                     capture_phase = DispatchPhase::Bubble;
                 }
 
-                for ScrollbarLayout {
-                    thumb_bounds,
-                    cursor_hitbox,
-                    axis,
-                    reserved_space,
-                    track_config,
-                    ..
-                } in &prepaint_state.thumbs
-                {
-                    const MAXIMUM_OPACITY: f32 = 0.7;
-                    let (thumb_base_color, hovered) = match thumb_state {
-                        ThumbState::Dragging(dragged_axis, _) if dragged_axis == axis => {
-                            (colors.scrollbar_thumb_active_background, false)
-                        }
-                        ThumbState::Hover(hovered_axis) if hovered_axis == axis => {
-                            (colors.scrollbar_thumb_hover_background, true)
-                        }
-                        _ => (colors.scrollbar_thumb_background, false),
-                    };
+                self.state.update(cx, |state, _| {
+                    state.last_prepaint_state = Some(prepaint_state)
+                });
 
-                    let blend_color = track_config
-                        .as_ref()
-                        .map(|(_, colors)| colors.background)
-                        .unwrap_or(colors.surface_background);
+                window.on_mouse_event({
+                    let state = self.state.clone();
 
-                    let blending_color = if hovered || reserved_space.needs_scroll_track() {
-                        blend_color
-                    } else {
-                        blend_color.min(blend_color.alpha(MAXIMUM_OPACITY))
-                    };
+                    move |event: &MouseDownEvent, phase, window, cx| {
+                        state.update(cx, |state, cx| {
+                            let Some(scrollbar_layout) = (phase == capture_phase
+                                && event.button == MouseButton::Left)
+                                .then(|| state.hit_for_position(&event.position))
+                                .flatten()
+                            else {
+                                return;
+                            };
 
-                    let mut thumb_color = blending_color.blend(thumb_base_color);
+                            let ScrollbarLayout {
+                                thumb_bounds, axis, ..
+                            } = scrollbar_layout;
 
-                    if !hovered && let Some(fade) = autohide_fade {
-                        thumb_color.fade_out(fade);
-                    }
-
-                    if let Some((track_bounds, colors)) = track_config {
-                        let has_border = colors.has_border;
-
-                        let mut track_color = colors.background;
-                        if let Some(fade) = autohide_fade
-                            && !has_border
-                        {
-                            track_color.fade_out(fade);
-                        }
-
-                        let border_edges = has_border
-                            .then(|| match axis {
-                                ScrollbarAxis::Horizontal => Edges {
-                                    top: BORDER_WIDTH,
-                                    ..Default::default()
-                                },
-                                ScrollbarAxis::Vertical => Edges {
-                                    left: BORDER_WIDTH,
-                                    ..Default::default()
-                                },
-                            })
-                            .unwrap_or_default();
-
-                        let border_color = if has_border {
-                            cx.theme().colors().border_variant.opacity(0.6)
-                        } else {
-                            Hsla::transparent_black()
-                        };
-
-                        window.paint_quad(quad(
-                            *track_bounds,
-                            Corners::default(),
-                            track_color,
-                            border_edges,
-                            border_color,
-                            BorderStyle::Solid,
-                        ));
-                    }
-
-                    window.paint_quad(quad(
-                        *thumb_bounds,
-                        match style {
-                            ScrollbarStyle::Regular => Corners::all(Pixels::MAX)
-                                .clamp_radii_for_quad_size(thumb_bounds.size),
-                            ScrollbarStyle::Editor => Corners::default(),
-                        },
-                        thumb_color,
-                        Edges::default(),
-                        Hsla::transparent_black(),
-                        BorderStyle::default(),
-                    ));
-
-                    if thumb_state.is_dragging() {
-                        window.set_window_cursor_style(CursorStyle::Arrow);
-                    } else {
-                        window.set_cursor_style(CursorStyle::Arrow, cursor_hitbox);
-                    }
-                }
-            } else {
-                capture_phase = DispatchPhase::Bubble;
-            }
-
-            self.state.update(cx, |state, _| {
-                state.last_prepaint_state = Some(prepaint_state)
-            });
-
-            window.on_mouse_event({
-                let state = self.state.clone();
-
-                move |event: &MouseDownEvent, phase, window, cx| {
-                    state.update(cx, |state, cx| {
-                        let Some(scrollbar_layout) = (phase == capture_phase
-                            && event.button == MouseButton::Left)
-                            .then(|| state.hit_for_position(&event.position))
-                            .flatten()
-                        else {
-                            return;
-                        };
-
-                        let ScrollbarLayout {
-                            thumb_bounds, axis, ..
-                        } = scrollbar_layout;
-
-                        if thumb_bounds.contains(&event.position) {
-                            let offset =
-                                event.position.along(*axis) - thumb_bounds.origin.along(*axis);
-                            state.set_dragging(*axis, offset, window, cx);
-                        } else {
-                            let scroll_handle = state.scroll_handle();
-                            let click_offset = scrollbar_layout.compute_click_offset(
-                                event.position,
-                                scroll_handle.max_offset(),
-                                ScrollbarMouseEvent::TrackClick,
-                            );
-                            state.set_offset(
-                                scroll_handle.offset().apply_along(*axis, |_| click_offset),
-                                cx,
-                            );
-                        };
-
-                        cx.stop_propagation();
-                    });
-                }
-            });
-
-            window.on_mouse_event({
-                let state = self.state.clone();
-
-                move |event: &ScrollWheelEvent, phase, window, cx| {
-                    state.update(cx, |state, cx| {
-                        if phase.capture() && state.parent_hovered(window) {
-                            state.update_hovered_thumb(&event.position, window, cx)
-                        }
-                    });
-                }
-            });
-
-            window.on_mouse_event({
-                let state = self.state.clone();
-
-                move |event: &MouseMoveEvent, phase, window, cx| {
-                    if phase != capture_phase {
-                        return;
-                    }
-
-                    match state.read(cx).thumb_state {
-                        ThumbState::Dragging(axis, drag_state) if event.dragging() => {
-                            if let Some(scrollbar_layout) = state.read(cx).thumb_for_axis(axis) {
-                                let scroll_handle = state.read(cx).scroll_handle();
-                                let drag_offset = scrollbar_layout.compute_click_offset(
+                            if thumb_bounds.contains(&event.position) {
+                                let offset =
+                                    event.position.along(*axis) - thumb_bounds.origin.along(*axis);
+                                state.set_dragging(*axis, offset, window, cx);
+                            } else {
+                                let scroll_handle = state.scroll_handle();
+                                let click_offset = scrollbar_layout.compute_click_offset(
                                     event.position,
                                     scroll_handle.max_offset(),
-                                    ScrollbarMouseEvent::ThumbDrag(drag_state),
+                                    ScrollbarMouseEvent::TrackClick,
                                 );
-                                let new_offset =
-                                    scroll_handle.offset().apply_along(axis, |_| drag_offset);
+                                state.set_offset(
+                                    scroll_handle.offset().apply_along(*axis, |_| click_offset),
+                                    cx,
+                                );
+                            };
 
-                                state.update(cx, |state, cx| state.set_offset(new_offset, cx));
-                                cx.stop_propagation();
-                            }
-                        }
-                        _ => state.update(cx, |state, cx| {
-                            match state.update_parent_hovered(window) {
-                                hover @ ParentHoverEvent::Entered
-                                | hover @ ParentHoverEvent::Within
-                                    if event.pressed_button.is_none() =>
-                                {
-                                    if matches!(hover, ParentHoverEvent::Entered) {
-                                        state.show_scrollbars(window, cx);
-                                    }
-                                    state.update_hovered_thumb(&event.position, window, cx);
-                                    if state.thumb_state != ThumbState::Inactive {
-                                        cx.stop_propagation();
-                                    }
-                                }
-                                ParentHoverEvent::Exited => {
-                                    state.set_thumb_state(ThumbState::Inactive, window, cx);
-                                }
-                                _ => {}
-                            }
-                        }),
+                            cx.stop_propagation();
+                        });
                     }
-                }
-            });
+                });
 
-            window.on_mouse_event({
-                let state = self.state.clone();
-                move |event: &MouseUpEvent, phase, window, cx| {
-                    if phase != capture_phase {
-                        return;
+                window.on_mouse_event({
+                    let state = self.state.clone();
+
+                    move |event: &ScrollWheelEvent, phase, window, cx| {
+                        state.update(cx, |state, cx| {
+                            if phase.capture() && state.parent_hovered(window) {
+                                state.update_hovered_thumb(&event.position, window, cx)
+                            }
+                        });
                     }
+                });
 
-                    state.update(cx, |state, cx| {
-                        if state.is_dragging() {
-                            state.scroll_handle().drag_ended();
-                        }
+                window.on_mouse_event({
+                    let state = self.state.clone();
 
-                        if !state.parent_hovered(window) {
-                            state.schedule_auto_hide(window, cx);
+                    move |event: &MouseMoveEvent, phase, window, cx| {
+                        if phase != capture_phase {
                             return;
                         }
 
-                        state.update_hovered_thumb(&event.position, window, cx);
-                    });
-                }
-            });
-        })
+                        match state.read(cx).thumb_state {
+                            ThumbState::Dragging(axis, drag_state) if event.dragging() => {
+                                if let Some(scrollbar_layout) = state.read(cx).thumb_for_axis(axis)
+                                {
+                                    let scroll_handle = state.read(cx).scroll_handle();
+                                    let drag_offset = scrollbar_layout.compute_click_offset(
+                                        event.position,
+                                        scroll_handle.max_offset(),
+                                        ScrollbarMouseEvent::ThumbDrag(drag_state),
+                                    );
+                                    let new_offset =
+                                        scroll_handle.offset().apply_along(axis, |_| drag_offset);
+
+                                    state.update(cx, |state, cx| state.set_offset(new_offset, cx));
+                                    cx.stop_propagation();
+                                }
+                            }
+                            _ => state.update(cx, |state, cx| {
+                                match state.update_parent_hovered(window) {
+                                    hover @ ParentHoverEvent::Entered
+                                    | hover @ ParentHoverEvent::Within
+                                        if event.pressed_button.is_none() =>
+                                    {
+                                        if matches!(hover, ParentHoverEvent::Entered) {
+                                            state.show_scrollbars(window, cx);
+                                        }
+                                        state.update_hovered_thumb(&event.position, window, cx);
+                                        if state.thumb_state != ThumbState::Inactive {
+                                            cx.stop_propagation();
+                                        }
+                                    }
+                                    ParentHoverEvent::Exited => {
+                                        state.set_thumb_state(ThumbState::Inactive, window, cx);
+                                    }
+                                    _ => {}
+                                }
+                            }),
+                        }
+                    }
+                });
+
+                window.on_mouse_event({
+                    let state = self.state.clone();
+                    move |event: &MouseUpEvent, phase, window, cx| {
+                        if phase != capture_phase {
+                            return;
+                        }
+
+                        state.update(cx, |state, cx| {
+                            if state.is_dragging() {
+                                state.scroll_handle().drag_ended();
+                            }
+
+                            if !state.parent_hovered(window) {
+                                state.schedule_auto_hide(window, cx);
+                                return;
+                            }
+
+                            state.update_hovered_thumb(&event.position, window, cx);
+                        });
+                    }
+                });
+            },
+        )
     }
 }
 

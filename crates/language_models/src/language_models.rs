@@ -1,10 +1,10 @@
 use std::sync::Arc;
 
 use ::settings::{Settings, SettingsStore};
-use client::{Client, UserStore};
+use client::Client;
 use collections::{HashMap, HashSet};
 use credentials_provider::CredentialsProvider;
-use gpui::{App, Context, Entity};
+use gpui::{App, Context};
 use language_model::{LanguageModelProviderId, LanguageModelRegistry};
 use provider::deepseek::DeepSeekLanguageModelProvider;
 
@@ -17,7 +17,6 @@ pub use crate::extension::init_proxy as init_extension_proxy;
 use crate::provider::anthropic::AnthropicLanguageModelProvider;
 use crate::provider::anthropic_compatible::AnthropicCompatibleLanguageModelProvider;
 use crate::provider::bedrock::BedrockLanguageModelProvider;
-use crate::provider::cloud::CloudLanguageModelProvider;
 use crate::provider::copilot_chat::CopilotChatLanguageModelProvider;
 use crate::provider::google::GoogleLanguageModelProvider;
 use crate::provider::llama_cpp::LlamaCppLanguageModelProvider;
@@ -34,13 +33,12 @@ use crate::provider::x_ai::XAiLanguageModelProvider;
 use crate::provider::x_ai_subscribed::XAiSubscribedProvider;
 pub use crate::settings::*;
 
-pub fn init(user_store: Entity<UserStore>, client: Arc<Client>, cx: &mut App) {
+pub fn init(client: Arc<Client>, cx: &mut App) {
     let credentials_provider = client.credentials_provider();
     let registry = LanguageModelRegistry::global(cx);
     registry.update(cx, |registry, cx| {
         register_language_model_providers(
             registry,
-            user_store,
             client.clone(),
             credentials_provider.clone(),
             cx,
@@ -216,19 +214,10 @@ fn register_compatible_providers(
 
 fn register_language_model_providers(
     registry: &mut LanguageModelRegistry,
-    user_store: Entity<UserStore>,
     client: Arc<Client>,
     credentials_provider: Arc<dyn CredentialsProvider>,
     cx: &mut Context<LanguageModelRegistry>,
 ) {
-    registry.register_provider(
-        Arc::new(CloudLanguageModelProvider::new(
-            user_store,
-            client.clone(),
-            cx,
-        )),
-        cx,
-    );
     registry.register_provider(
         Arc::new(AnthropicLanguageModelProvider::new(
             client.http_client(),
@@ -356,7 +345,6 @@ fn register_language_model_providers(
 mod tests {
     use super::*;
     use anyhow::Result;
-    use clock::FakeSystemClock;
     use feature_flags::FeatureFlagAppExt as _;
     use gpui::{AppContext as _, AsyncApp, BorrowAppContext as _};
     use http_client::FakeHttpClient;
@@ -405,11 +393,7 @@ mod tests {
         gpui_tokio::init(cx);
         cx.update_flags(false, Vec::new());
 
-        let client = Client::new(
-            Arc::new(FakeSystemClock::new()),
-            FakeHttpClient::with_404_response(),
-            cx,
-        );
+        let client = Client::new(FakeHttpClient::with_404_response(), cx);
         (client, Arc::new(FakeCredentialsProvider))
     }
 

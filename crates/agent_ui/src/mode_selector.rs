@@ -58,10 +58,6 @@ impl ModeSelector {
         }
     }
 
-    pub fn mode(&self) -> acp::SessionModeId {
-        self.connection.current_mode()
-    }
-
     pub fn set_mode(&mut self, mode: acp::SessionModeId, cx: &mut Context<Self>) {
         self.agent_server
             .set_default_mode(Some(mode.clone()), self.fs.clone(), cx);

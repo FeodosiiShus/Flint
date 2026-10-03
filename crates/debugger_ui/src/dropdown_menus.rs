@@ -3,7 +3,9 @@ use std::rc::Rc;
 use collections::HashMap;
 use gpui::{Anchor, Entity, WeakEntity};
 use project::debugger::session::{ThreadId, ThreadStatus};
-use ui::{CommonAnimationExt, ContextMenu, DropdownMenu, Indicator, Tooltip, prelude::*};
+use ui::{
+    ChromeRegion, CommonAnimationExt, ContextMenu, DropdownMenu, Indicator, Tooltip, prelude::*,
+};
 use util::{maybe, truncate_and_trailoff};
 
 use crate::{
@@ -253,6 +255,7 @@ impl DebugPanel {
                 IconButton::new("close-debug-session", IconName::Close)
                     .visible_on_hover(id)
                     .icon_size(IconSize::Small)
+                    .chrome_region(ChromeRegion::Panel)
                     .on_click({
                         move |_, window, cx| {
                             weak.update(cx, |panel, cx| {

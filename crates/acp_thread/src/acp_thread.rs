@@ -6,7 +6,7 @@ mod mention;
 mod submission;
 mod terminal;
 pub use ::terminal::HeadlessTerminal;
-use action_log::{ActionLog, ActionLogTelemetry};
+use action_log::ActionLog;
 use agent_client_protocol::schema::{MaybeUndefined, v1 as acp_v1, v2 as acp_v2};
 use agent_settings::AgentSettings;
 use anyhow::{Context as _, Result, anyhow};
@@ -3490,15 +3490,6 @@ impl StreamingTextBuffer {
     }
 }
 
-impl From<&AcpThread> for ActionLogTelemetry {
-    fn from(value: &AcpThread) -> Self {
-        Self {
-            agent_telemetry_id: value.connection().telemetry_id(),
-            session_id: value.session_id.0.clone(),
-        }
-    }
-}
-
 #[derive(Debug)]
 pub enum AcpThreadEvent {
     StatusChanged,
@@ -3519,7 +3510,6 @@ pub enum AcpThreadEvent {
     SubagentSpawned(acp_v1::SessionId),
     Stopped {
         activity_generation: u64,
-        activity_duration: Option<Duration>,
         stop_reason: Option<acp_v2::StopReason>,
     },
     Error,
@@ -4112,7 +4102,6 @@ impl AcpThread {
                 // Reported refusal does not authorize deleting agent-owned history.
                 cx.emit(AcpThreadEvent::Stopped {
                     activity_generation: self.activity.generation(),
-                    activity_duration: self.activity.duration(),
                     stop_reason,
                 });
             }
@@ -5216,30 +5205,7 @@ impl AcpThread {
         cx: &mut Context<Self>,
     ) -> Result<(), acp_v1::Error> {
         let status = ToolCallStatus::from_reported(tool_status_from_v1(tool_call.status).as_ref());
-        if let Some(status) = status {
-            self.report_tool_call_completed(status);
-        }
         self.upsert_tool_call_inner(tool_call.into(), status, cx)
-    }
-
-    fn report_tool_call_completed(&self, status: ToolCallStatus) {
-        let agent_telemetry_id = self.connection().telemetry_id();
-        let session = self.session_id();
-        let parent_session_id = self.parent_session_id();
-        if let ToolCallStatus::Completed | ToolCallStatus::Failed = status {
-            let status = if matches!(status, ToolCallStatus::Completed) {
-                "completed"
-            } else {
-                "failed"
-            };
-            telemetry::event!(
-                "Agent Tool Call Completed",
-                agent_telemetry_id,
-                session,
-                parent_session_id,
-                status
-            );
-        }
     }
 
     fn upsert_tool_call_inner(
@@ -5306,9 +5272,6 @@ impl AcpThread {
         let id = acp_v1::ToolCallId::new(update.tool_call_id.0.clone());
         let patch = ToolCallPatch::protocol(update);
         let locations_changed = !patch.locations.is_undefined();
-        if let Some(status) = ToolCallStatus::from_reported(patch.status.value()) {
-            self.report_tool_call_completed(status);
-        }
         let languages = self.project.read(cx).languages().clone();
         if let Some(index) = self.index_for_tool_call(&id) {
             let AgentThreadEntry::ToolCall(call) = &mut self.entries[index] else {
@@ -6326,7 +6289,6 @@ impl AcpThread {
                         );
                         cx.emit(AcpThreadEvent::Stopped {
                             activity_generation: this.activity.generation(),
-                            activity_duration: this.activity.duration(),
                             stop_reason,
                         });
                         Ok(Some(r))
@@ -6529,7 +6491,6 @@ impl AcpThread {
         };
 
         self.flush_streaming_text(cx);
-        let telemetry = ActionLogTelemetry::from(&*self);
         cx.spawn(async move |this, cx| {
             cx.update(|cx| truncate.run(client_id.clone(), cx)).await?;
             this.update(cx, |this, cx| {
@@ -6555,9 +6516,8 @@ impl AcpThread {
                         }
                     }
                 }
-                this.action_log().update(cx, |action_log, cx| {
-                    action_log.reject_all_edits(Some(telemetry), cx)
-                })
+                this.action_log()
+                    .update(cx, |action_log, cx| action_log.reject_all_edits(cx))
             })?
             .await;
             Ok(())
@@ -17004,10 +16964,6 @@ mod tests {
     impl AgentConnection for FakeAgentConnection {
         fn agent_id(&self) -> AgentId {
             AgentId::new("fake")
-        }
-
-        fn telemetry_id(&self) -> SharedString {
-            "fake".into()
         }
 
         fn auth_methods(&self) -> &[acp_v1::AuthMethod] {

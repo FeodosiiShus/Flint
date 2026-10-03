@@ -103,19 +103,11 @@ pub struct LanguageModel {
     pub name: LanguageModelName,
     pub provider_id: LanguageModelProviderId,
     pub provider_name: LanguageModelProviderName,
-    /// The provider that ultimately serves requests, when it differs from
-    /// `provider_id` (for example, a model offered through a gateway).
-    pub upstream_provider_id: Option<LanguageModelProviderId>,
-    pub upstream_provider_name: Option<LanguageModelProviderName>,
     pub telemetry_id: SharedString,
     /// Whether this model is the "latest", so we can highlight it in the UI.
     pub is_latest: bool,
     /// Why the model is currently disabled, if it is.
     pub disabled_reason: Option<DisabledReason>,
-    /// Whether requests to this model require the user to consent to the
-    /// upstream provider retaining inference logs (i.e. the model cannot be
-    /// offered with Zero Data Retention).
-    pub requires_data_retention: bool,
     /// When this model refuses a request, the model ID to fall back to (same provider).
     pub refusal_fallback_model_id: Option<&'static str>,
     /// Information about the cost of using this model, if available.
@@ -193,12 +185,9 @@ impl LanguageModel {
             name,
             provider_id,
             provider_name,
-            upstream_provider_id: None,
-            upstream_provider_name: None,
             telemetry_id: telemetry_id.into(),
             is_latest: false,
             disabled_reason: None,
-            requires_data_retention: false,
             refusal_fallback_model_id: None,
             cost_info: None,
             supports_thinking: false,
@@ -236,28 +225,12 @@ impl LanguageModel {
         self.provider_name.clone()
     }
 
-    pub fn upstream_provider_id(&self) -> LanguageModelProviderId {
-        self.upstream_provider_id
-            .clone()
-            .unwrap_or_else(|| self.provider_id.clone())
-    }
-
-    pub fn upstream_provider_name(&self) -> LanguageModelProviderName {
-        self.upstream_provider_name
-            .clone()
-            .unwrap_or_else(|| self.provider_name.clone())
-    }
-
     pub fn is_latest(&self) -> bool {
         self.is_latest
     }
 
     pub fn is_disabled(&self) -> Option<DisabledReason> {
         self.disabled_reason.clone()
-    }
-
-    pub fn requires_data_retention(&self) -> bool {
-        self.requires_data_retention
     }
 
     pub fn refusal_fallback_model_id(&self) -> Option<&'static str> {

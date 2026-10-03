@@ -7,12 +7,10 @@ pub mod tool_schema;
 pub mod util;
 
 use anyhow::{Context as _, Result, anyhow};
-use cloud_llm_client::CompletionRequestStatus;
 use http_client::{StatusCode, http};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::ops::{Add, Sub};
-use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 use std::{fmt, io};
@@ -82,39 +80,13 @@ pub enum CompactionUpdate {
     Failed,
 }
 
-impl LanguageModelCompletionEvent {
-    pub fn from_completion_request_status(
-        status: CompletionRequestStatus,
-        upstream_provider: LanguageModelProviderName,
-    ) -> Result<Option<Self>, LanguageModelCompletionError> {
-        match status {
-            CompletionRequestStatus::Queued { position } => {
-                Ok(Some(LanguageModelCompletionEvent::Queued { position }))
-            }
-            CompletionRequestStatus::Started => Ok(Some(LanguageModelCompletionEvent::Started)),
-            CompletionRequestStatus::Unknown | CompletionRequestStatus::StreamEnded => Ok(None),
-            CompletionRequestStatus::Failed {
-                code,
-                message,
-                request_id: _,
-                retry_after,
-            } => Err(LanguageModelCompletionError::from_cloud_failure(
-                upstream_provider,
-                code,
-                message,
-                retry_after.map(Duration::from_secs_f64),
-            )),
-        }
-    }
-}
-
 /// Normalized semantic classification of a provider-originated rejection.
 ///
 /// Each language model provider reports failures with its own wire format
-/// (Anthropic's `error.type` strings, OpenRouter's numeric codes, Zed cloud's
-/// `upstream_http_*` codes, ...). Callers that need to react to a rejection's
-/// meaning — deciding whether to retry, which message to show — shouldn't
-/// have to match on every provider's raw vocabulary. Wire-level parsing stays
+/// (Anthropic's `error.type` strings, OpenRouter's numeric codes, ...).
+/// Callers that need to react to a rejection's meaning — deciding whether to
+/// retry, which message to show — shouldn't have to match on every
+/// provider's raw vocabulary. Wire-level parsing stays
 /// local to each provider crate, but is mapped once into this shared
 /// category so the rest of Zed only needs to understand one vocabulary.
 ///
@@ -190,14 +162,6 @@ impl ProviderErrorCategory {
 
 #[derive(Error, Debug)]
 pub enum LanguageModelCompletionError {
-    /// The model requires the user to consent to the upstream provider
-    /// retaining inference logs (see `LanguageModel::requires_data_retention`)
-    /// and that consent has not been given.
-    #[error(
-        "{model_name} cannot be offered with Zero Data Retention. \
-        Anthropic will retain inference logs."
-    )]
-    DataRetentionConsentRequired { model_name: String },
     #[error("missing {provider} API key")]
     NoApiKey { provider: LanguageModelProviderName },
     /// A rejection reported by the language model provider itself, as
@@ -261,90 +225,6 @@ pub enum LanguageModelCompletionError {
 }
 
 impl LanguageModelCompletionError {
-    fn parse_upstream_error_json(message: &str) -> Option<(StatusCode, String)> {
-        let error_json = serde_json::from_str::<serde_json::Value>(message).ok()?;
-        let upstream_status = error_json
-            .get("upstream_status")
-            .and_then(|v| v.as_u64())
-            .and_then(|status| u16::try_from(status).ok())
-            .and_then(|status| StatusCode::from_u16(status).ok())?;
-        let inner_message = error_json
-            .get("message")
-            .and_then(|v| v.as_str())
-            .unwrap_or(message)
-            .to_string();
-        Some((upstream_status, inner_message))
-    }
-
-    pub fn from_cloud_failure(
-        upstream_provider: LanguageModelProviderName,
-        code: String,
-        message: String,
-        retry_after: Option<Duration>,
-    ) -> Self {
-        if code == "upstream_http_error" {
-            if let Some((upstream_status, inner_message)) =
-                Self::parse_upstream_error_json(&message)
-            {
-                let category =
-                    ProviderErrorCategory::from_http_status(upstream_status, &inner_message);
-                return Self::from_provider_response(
-                    upstream_provider,
-                    Some(upstream_status),
-                    Some(code),
-                    inner_message,
-                    retry_after,
-                    category,
-                );
-            }
-            let category = category_from_cloud_failure(&code, &message);
-            Self::from_provider_response(
-                upstream_provider,
-                None,
-                Some(code),
-                message,
-                retry_after,
-                category,
-            )
-        } else if let Some(status_code) = code
-            .strip_prefix("upstream_http_")
-            .and_then(|code| StatusCode::from_str(code).ok())
-        {
-            let category = ProviderErrorCategory::from_http_status(status_code, &message);
-            Self::from_provider_response(
-                upstream_provider,
-                Some(status_code),
-                Some(code),
-                message,
-                retry_after,
-                category,
-            )
-        } else if let Some(status_code) = code
-            .strip_prefix("http_")
-            .and_then(|code| StatusCode::from_str(code).ok())
-        {
-            let category = ProviderErrorCategory::from_http_status(status_code, &message);
-            Self::from_provider_response(
-                ZED_CLOUD_PROVIDER_NAME,
-                Some(status_code),
-                Some(code),
-                message,
-                retry_after,
-                category,
-            )
-        } else {
-            let category = category_from_cloud_failure(&code, &message);
-            Self::from_provider_response(
-                upstream_provider,
-                None,
-                Some(code),
-                message,
-                retry_after,
-                category,
-            )
-        }
-    }
-
     pub fn from_http_status(
         provider: LanguageModelProviderName,
         status_code: StatusCode,
@@ -404,8 +284,7 @@ impl LanguageModelCompletionError {
                         || retry_after.is_some())
             }
             Self::ApiReadResponseError { .. } | Self::HttpSend { .. } => true,
-            Self::DataRetentionConsentRequired { .. }
-            | Self::NoApiKey { .. }
+            Self::NoApiKey { .. }
             | Self::SerializeRequest { .. }
             | Self::BuildRequestBody { .. }
             | Self::DeserializeResponse { .. }
@@ -434,8 +313,7 @@ impl LanguageModelCompletionError {
             Self::ApiReadResponseError { .. } | Self::HttpSend { .. } => {
                 exponential_backoff(attempt)
             }
-            Self::DataRetentionConsentRequired { .. }
-            | Self::NoApiKey { .. }
+            Self::NoApiKey { .. }
             | Self::SerializeRequest { .. }
             | Self::BuildRequestBody { .. }
             | Self::DeserializeResponse { .. }
@@ -443,38 +321,6 @@ impl LanguageModelCompletionError {
             | Self::ModelUnavailable { .. }
             | Self::Other(_) => None,
         }
-    }
-}
-
-fn category_from_cloud_failure(code: &str, message: &str) -> ProviderErrorCategory {
-    if let Some(tokens) = parse_prompt_too_long(message) {
-        return ProviderErrorCategory::PromptTooLarge {
-            tokens: Some(tokens),
-        };
-    }
-    if is_context_window_exceeded_message(message) {
-        return ProviderErrorCategory::PromptTooLarge { tokens: None };
-    }
-    if code == "invalid_encrypted_content" || is_invalid_encrypted_content_message(message) {
-        return ProviderErrorCategory::InvalidEncryptedContent;
-    }
-
-    match code {
-        "context_length_exceeded" | "request_too_large" => {
-            ProviderErrorCategory::PromptTooLarge { tokens: None }
-        }
-        "invalid_request_error" => ProviderErrorCategory::InvalidRequest,
-        "authentication_error" => ProviderErrorCategory::Authentication,
-        "billing_error" | "payment_required_error" => ProviderErrorCategory::PaymentRequired,
-        "permission_error" => ProviderErrorCategory::Permission,
-        "cyber_policy" | "invalid_prompt" => ProviderErrorCategory::ContentPolicy,
-        "not_found_error" => ProviderErrorCategory::EndpointNotFound,
-        "conflict_error" => ProviderErrorCategory::Conflict,
-        "rate_limit_error" | "rate_limit_exceeded" => ProviderErrorCategory::RateLimit,
-        "timeout_error" | "request_timed_out" => ProviderErrorCategory::Timeout,
-        "api_error" | "internal_server_error" => ProviderErrorCategory::InternalServer,
-        "overloaded_error" => ProviderErrorCategory::Overloaded,
-        _ => ProviderErrorCategory::Other,
     }
 }
 
@@ -853,58 +699,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_from_cloud_failure_with_upstream_http_error() {
-        let error = LanguageModelCompletionError::from_cloud_failure(
-            String::from("anthropic").into(),
-            "upstream_http_error".to_string(),
-            r#"{"code":"upstream_http_error","message":"Received an error from the Anthropic API: upstream connect error or disconnect/reset before headers. reset reason: connection timeout","upstream_status":503}"#.to_string(),
-            None,
-        );
-
-        match error {
-            LanguageModelCompletionError::ProviderRejection {
-                provider,
-                category: ProviderErrorCategory::Overloaded,
-                ..
-            } => {
-                assert_eq!(provider.0, "anthropic");
-            }
-            _ => panic!(
-                "Expected Overloaded category for 503 status, got: {:?}",
-                error
-            ),
-        }
-
-        let error = LanguageModelCompletionError::from_cloud_failure(
-            String::from("anthropic").into(),
-            "upstream_http_error".to_string(),
-            r#"{"code":"upstream_http_error","message":"Internal server error","upstream_status":500}"#.to_string(),
-            None,
-        );
-
-        match error {
-            LanguageModelCompletionError::ProviderRejection {
-                provider,
-                status,
-                code,
-                message,
-                category,
-                ..
-            } => {
-                assert_eq!(provider.0, "anthropic");
-                assert_eq!(status, Some(StatusCode::INTERNAL_SERVER_ERROR));
-                assert_eq!(code.as_deref(), Some("upstream_http_error"));
-                assert_eq!(message, "Internal server error");
-                assert_eq!(category, ProviderErrorCategory::InternalServer);
-            }
-            _ => panic!(
-                "Expected ProviderRejection for 500 status, got: {:?}",
-                error
-            ),
-        }
-    }
-
-    #[test]
     fn test_from_http_status_maps_context_length_exceeded_to_prompt_too_large() {
         let error = LanguageModelCompletionError::from_http_status(
             String::from("OpenAI").into(),
@@ -956,51 +750,6 @@ mod tests {
                 category: ProviderErrorCategory::InvalidEncryptedContent,
                 ..
             } if provider.0 == "OpenAI" && error_message == message
-        ));
-    }
-
-    #[test]
-    fn test_from_cloud_failure_with_standard_format() {
-        let error = LanguageModelCompletionError::from_cloud_failure(
-            String::from("anthropic").into(),
-            "upstream_http_503".to_string(),
-            "Service unavailable".to_string(),
-            None,
-        );
-
-        match error {
-            LanguageModelCompletionError::ProviderRejection {
-                provider,
-                category: ProviderErrorCategory::Overloaded,
-                ..
-            } => {
-                assert_eq!(provider.0, "anthropic");
-            }
-            _ => panic!("Expected Overloaded category for upstream_http_503"),
-        }
-    }
-
-    #[test]
-    fn test_from_cloud_failure_maps_content_policy_rejection() {
-        let error = LanguageModelCompletionError::from_cloud_failure(
-            OPEN_AI_PROVIDER_NAME,
-            "cyber_policy".to_string(),
-            "This content was flagged as potentially violating our terms of use.".to_string(),
-            None,
-        );
-
-        assert!(matches!(
-            error,
-            LanguageModelCompletionError::ProviderRejection {
-                provider,
-                status: None,
-                code: Some(code),
-                message,
-                retry_after: None,
-                category: ProviderErrorCategory::ContentPolicy,
-            } if provider == OPEN_AI_PROVIDER_NAME
-                && code == "cyber_policy"
-                && message == "This content was flagged as potentially violating our terms of use."
         ));
     }
 
@@ -1118,61 +867,6 @@ mod tests {
 
         assert!(!error.is_transient());
         assert_eq!(error.retry_delay(1), None);
-    }
-
-    #[test]
-    fn test_upstream_http_error_connection_timeout() {
-        let error = LanguageModelCompletionError::from_cloud_failure(
-            String::from("anthropic").into(),
-            "upstream_http_error".to_string(),
-            r#"{"code":"upstream_http_error","message":"Received an error from the Anthropic API: upstream connect error or disconnect/reset before headers. reset reason: connection timeout","upstream_status":503}"#.to_string(),
-            None,
-        );
-
-        match error {
-            LanguageModelCompletionError::ProviderRejection {
-                provider,
-                category: ProviderErrorCategory::Overloaded,
-                ..
-            } => {
-                assert_eq!(provider.0, "anthropic");
-            }
-            _ => panic!(
-                "Expected Overloaded category for connection timeout with 503 status, got: {:?}",
-                error
-            ),
-        }
-
-        let error = LanguageModelCompletionError::from_cloud_failure(
-            String::from("anthropic").into(),
-            "upstream_http_error".to_string(),
-            r#"{"code":"upstream_http_error","message":"Received an error from the Anthropic API: upstream connect error or disconnect/reset before headers. reset reason: connection timeout","upstream_status":500}"#.to_string(),
-            None,
-        );
-
-        match error {
-            LanguageModelCompletionError::ProviderRejection {
-                provider,
-                status,
-                code,
-                message,
-                category,
-                ..
-            } => {
-                assert_eq!(provider.0, "anthropic");
-                assert_eq!(status, Some(StatusCode::INTERNAL_SERVER_ERROR));
-                assert_eq!(code.as_deref(), Some("upstream_http_error"));
-                assert_eq!(
-                    message,
-                    "Received an error from the Anthropic API: upstream connect error or disconnect/reset before headers. reset reason: connection timeout"
-                );
-                assert_eq!(category, ProviderErrorCategory::InternalServer);
-            }
-            _ => panic!(
-                "Expected ProviderRejection for connection timeout with 500 status, got: {:?}",
-                error
-            ),
-        }
     }
 
     #[test]

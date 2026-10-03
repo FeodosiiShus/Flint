@@ -21,7 +21,7 @@ use git::{
     stash::GitStash,
     status::{
         DiffTreeType, FileStatus, GitStatus, StatusCode, TrackedStatus, TreeDiff, TreeDiffStatus,
-        UnmergedStatus,
+        UnmergedStatus, UnmergedStatusCode,
     },
 };
 use gpui::{AsyncApp, BackgroundExecutor, SharedString, Task};
@@ -61,6 +61,8 @@ pub struct FakeGitRepositoryState {
     pub commit_history: Vec<FakeCommitSnapshot>,
     pub event_emitter: async_channel::Sender<PathBuf>,
     pub unmerged_paths: HashMap<RepoPath, UnmergedStatus>,
+    pub conflict_stages: HashMap<RepoPath, FakeConflictStages>,
+    pub merge_message: Option<String>,
     pub head_contents: HashMap<RepoPath, Vec<u8>>,
     pub index_contents: HashMap<RepoPath, Vec<u8>>,
     // everything in commit contents is in oids
@@ -93,6 +95,8 @@ impl FakeGitRepositoryState {
             head_contents: Default::default(),
             index_contents: Default::default(),
             unmerged_paths: Default::default(),
+            conflict_stages: Default::default(),
+            merge_message: None,
             blames: Default::default(),
             blames_at_revision: Default::default(),
             current_branch_name: Default::default(),
@@ -113,6 +117,61 @@ impl FakeGitRepositoryState {
             commit_template: None,
         }
     }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct FakeConflictStages {
+    pub base: Option<Vec<u8>>,
+    pub ours: Option<Vec<u8>>,
+    pub theirs: Option<Vec<u8>>,
+}
+
+impl FakeConflictStages {
+    pub fn stage(&self, stage: &str) -> Option<&Vec<u8>> {
+        match stage {
+            "1" => self.base.as_ref(),
+            "2" => self.ours.as_ref(),
+            "3" => self.theirs.as_ref(),
+            _ => None,
+        }
+    }
+
+    pub fn unmerged_status(&self) -> UnmergedStatus {
+        let (first_head, second_head) = match (
+            self.base.is_some(),
+            self.ours.is_some(),
+            self.theirs.is_some(),
+        ) {
+            (true, true, true) => (UnmergedStatusCode::Updated, UnmergedStatusCode::Updated),
+            (false, true, true) => (UnmergedStatusCode::Added, UnmergedStatusCode::Added),
+            (true, true, false) => (UnmergedStatusCode::Updated, UnmergedStatusCode::Deleted),
+            (true, false, true) => (UnmergedStatusCode::Deleted, UnmergedStatusCode::Updated),
+            (false, true, false) => (UnmergedStatusCode::Added, UnmergedStatusCode::Updated),
+            (false, false, true) => (UnmergedStatusCode::Updated, UnmergedStatusCode::Added),
+            (_, false, false) => (UnmergedStatusCode::Deleted, UnmergedStatusCode::Deleted),
+        };
+        UnmergedStatus {
+            first_head,
+            second_head,
+        }
+    }
+
+    pub fn conflict_text(&self) -> Option<Vec<u8>> {
+        if self.ours.is_none() && self.theirs.is_none() {
+            return None;
+        }
+        let mut text = b"<<<<<<< HEAD\n".to_vec();
+        text.extend_from_slice(self.ours.as_deref().unwrap_or_default());
+        text.extend_from_slice(b"=======\n");
+        text.extend_from_slice(self.theirs.as_deref().unwrap_or_default());
+        text.extend_from_slice(b">>>>>>> MERGE_HEAD\n");
+        Some(text)
+    }
+}
+
+fn parse_stage_revision(revision: &str) -> Option<(&str, &str)> {
+    let (stage, path) = revision.strip_prefix(':')?.split_once(':')?;
+    matches!(stage, "1" | "2" | "3").then_some((stage, path))
 }
 
 #[derive(Clone, Default, Debug)]
@@ -376,6 +435,14 @@ impl GitRepository for FakeGitRepository {
             Ok(revisions
                 .into_iter()
                 .map(|rev| {
+                    if let Some((stage, path)) = parse_stage_revision(&rev) {
+                        let repo_path = RepoPath::new(path).ok()?;
+                        return state
+                            .conflict_stages
+                            .get(&repo_path)
+                            .and_then(|stages| stages.stage(stage))
+                            .cloned();
+                    }
                     let (prefix, path) = rev.split_once(':')?;
                     let repo_path = RepoPath::new(path).ok()?;
                     match prefix {
@@ -486,7 +553,8 @@ impl GitRepository for FakeGitRepository {
     }
 
     fn merge_message(&self) -> BoxFuture<'_, Option<String>> {
-        async move { None }.boxed()
+        let merge_message = self.with_state_async(false, |state| Ok(state.merge_message.clone()));
+        async move { merge_message.await.ok().flatten() }.boxed()
     }
 
     fn status(&self, path_prefixes: &[RepoPath]) -> Task<Result<GitStatus>> {
@@ -535,6 +603,7 @@ impl GitRepository for FakeGitRepository {
                 .head_contents
                 .keys()
                 .chain(state.index_contents.keys())
+                .chain(state.unmerged_paths.keys())
                 .chain(git_files.keys())
                 .collect::<HashSet<_>>();
             for path in paths {
@@ -1141,9 +1210,12 @@ impl GitRepository for FakeGitRepository {
             self.with_state_async(true, move |state| {
                 for (path, content) in contents {
                     if let Some(content) = content {
-                        state.index_contents.insert(path, content);
+                        state.index_contents.insert(path.clone(), content);
                     } else {
                         state.index_contents.remove(&path);
+                    }
+                    if state.conflict_stages.contains_key(&path) {
+                        state.unmerged_paths.remove(&path);
                     }
                 }
                 Ok(())
@@ -1165,6 +1237,66 @@ impl GitRepository for FakeGitRepository {
                 };
             }
             Ok(())
+        })
+    }
+
+    fn unresolve_paths(
+        &self,
+        paths: Vec<RepoPath>,
+        _env: Arc<HashMap<String, String>>,
+    ) -> BoxFuture<'_, Result<()>> {
+        Box::pin(async move {
+            let working_directory = self
+                .dot_git_path
+                .parent()
+                .context("repository has no working directory")?
+                .to_path_buf();
+            let requested_paths = paths.clone();
+            let conflicts = self
+                .with_state_async(false, move |state| {
+                    requested_paths
+                        .into_iter()
+                        .map(|path| {
+                            let stages = state
+                                .conflict_stages
+                                .get(&path)
+                                .with_context(|| format!("{path:?} has no recorded conflict"))?;
+                            Ok((path, stages.conflict_text()))
+                        })
+                        .collect::<Result<Vec<_>>>()
+                })
+                .await?;
+            for (path, conflict_text) in conflicts {
+                let absolute_path = working_directory.join(path.as_std_path());
+                match conflict_text {
+                    Some(conflict_text) => {
+                        self.fs
+                            .write_file_internal(&absolute_path, conflict_text, false)?
+                    }
+                    None => {
+                        self.fs
+                            .remove_file(
+                                &absolute_path,
+                                RemoveOptions {
+                                    recursive: false,
+                                    ignore_if_not_exists: true,
+                                },
+                            )
+                            .await?
+                    }
+                }
+            }
+            self.with_state_async(true, move |state| {
+                for path in paths {
+                    if let Some(stages) = state.conflict_stages.get(&path) {
+                        let unmerged_status = stages.unmerged_status();
+                        state.unmerged_paths.insert(path.clone(), unmerged_status);
+                        state.index_contents.remove(&path);
+                    }
+                }
+                Ok(())
+            })
+            .await
         })
     }
 

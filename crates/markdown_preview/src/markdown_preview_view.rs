@@ -1649,10 +1649,6 @@ impl Item for MarkdownPreviewView {
             .tab_tooltip_text(cx)
     }
 
-    fn telemetry_event_text(&self) -> Option<&'static str> {
-        Some("Markdown Preview Opened")
-    }
-
     fn added_to_workspace(
         &mut self,
         workspace: &mut Workspace,
@@ -1792,6 +1788,7 @@ impl Render for MarkdownPreviewView {
                 ui::BackgroundImageArea::Window,
                 bg_color,
                 true,
+                gpui::Corners::default(),
             ))
             .child(
                 WithRemSize::new(preview_font_size).size_full().child(

@@ -3,8 +3,8 @@ use anyhow::{Context as _, Result};
 use bytemuck::{Pod, Zeroable};
 use collections::FxHashMap;
 use gpui::{
-    AtlasTextureId, Background, Bounds, DevicePixels, GpuSpecs, Path, Point, PrimitiveBatch,
-    ScaledPixels, Scene, Size, get_gamma_correction_ratios,
+    AtlasTextureId, Background, Bounds, ContentMask, DevicePixels, GpuSpecs, Path, Point,
+    PrimitiveBatch, ScaledPixels, Scene, Size, get_gamma_correction_ratios,
 };
 use log::warn;
 #[cfg(not(target_family = "wasm"))]
@@ -109,6 +109,7 @@ struct PathRasterizationVertex {
     st_position: Point<f32>,
     color: Background,
     bounds: Bounds<ScaledPixels>,
+    content_mask: ContentMask<ScaledPixels>,
 }
 
 pub struct WgpuSurfaceConfig {
@@ -1847,6 +1848,7 @@ impl WgpuRendererCore {
                 st_position: v.st_position,
                 color: path.color,
                 bounds,
+                content_mask: path.content_mask,
             }));
         }
 
@@ -2645,7 +2647,10 @@ mod tests {
             order: 0,
             border_style: BorderStyle::Solid,
             bounds,
-            content_mask: ContentMask { bounds },
+            content_mask: ContentMask {
+                bounds,
+                ..Default::default()
+            },
             background: color.into(),
             border_color: color,
             corner_radii: Corners::default(),
@@ -2799,14 +2804,14 @@ mod tests {
 
     #[test]
     fn webgl_record_sizes_match_shader_word_strides() {
-        assert_eq!(std::mem::size_of::<Quad>(), 40 * 4);
-        assert_eq!(std::mem::size_of::<Shadow>(), 28 * 4);
-        assert_eq!(std::mem::size_of::<PathRasterizationVertex>(), 26 * 4);
+        assert_eq!(std::mem::size_of::<Quad>(), 44 * 4);
+        assert_eq!(std::mem::size_of::<Shadow>(), 32 * 4);
+        assert_eq!(std::mem::size_of::<PathRasterizationVertex>(), 34 * 4);
         assert_eq!(std::mem::size_of::<PathSprite>(), 4 * 4);
-        assert_eq!(std::mem::size_of::<Underline>(), 16 * 4);
-        assert_eq!(std::mem::size_of::<MonochromeSprite>(), 28 * 4);
-        assert_eq!(std::mem::size_of::<SubpixelSprite>(), 28 * 4);
-        assert_eq!(std::mem::size_of::<PolychromeSprite>(), 24 * 4);
+        assert_eq!(std::mem::size_of::<Underline>(), 20 * 4);
+        assert_eq!(std::mem::size_of::<MonochromeSprite>(), 32 * 4);
+        assert_eq!(std::mem::size_of::<SubpixelSprite>(), 32 * 4);
+        assert_eq!(std::mem::size_of::<PolychromeSprite>(), 28 * 4);
     }
 
     #[test]
@@ -2834,6 +2839,12 @@ mod tests {
                         width: 7.0.into(),
                         height: 8.0.into(),
                     },
+                },
+                corner_radii: Corners {
+                    top_left: 34.0.into(),
+                    top_right: 35.0.into(),
+                    bottom_right: 36.0.into(),
+                    bottom_left: 37.0.into(),
                 },
             },
             background: linear_gradient(
@@ -2893,6 +2904,10 @@ mod tests {
                 6.0_f32.to_bits(),
                 7.0_f32.to_bits(),
                 8.0_f32.to_bits(),
+                34.0_f32.to_bits(),
+                35.0_f32.to_bits(),
+                36.0_f32.to_bits(),
+                37.0_f32.to_bits(),
                 1,
                 1,
                 0,

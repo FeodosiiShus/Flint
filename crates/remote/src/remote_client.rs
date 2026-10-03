@@ -71,16 +71,6 @@ impl RemoteOs {
     pub fn is_windows(&self) -> bool {
         matches!(self, RemoteOs::Windows)
     }
-
-    /// A human-readable OS name for telemetry. Matches `client::telemetry::os_name`
-    /// ignoring the compositor (as we run headless on remotes).
-    pub fn display_name(&self) -> &'static str {
-        match self {
-            RemoteOs::Linux => "Linux",
-            RemoteOs::MacOs => "macOS",
-            RemoteOs::Windows => "Windows",
-        }
-    }
 }
 
 impl std::fmt::Display for RemoteOs {
@@ -331,8 +321,6 @@ pub struct RemoteClient {
     unique_identifier: String,
     connection_options: RemoteConnectionOptions,
     path_style: PathStyle,
-    platform: RemotePlatform,
-    os_version: Option<String>,
     state: Option<State>,
 }
 
@@ -432,17 +420,12 @@ impl RemoteClient {
                 });
 
                 let path_style = remote_connection.path_style();
-                let platform = remote_connection.remote_platform();
-                let os_version = remote_connection.remote_os_version();
                 let connection_options = remote_connection.connection_options();
-                let connection_type = connection_options.connection_type();
                 let this = cx.new(|_| Self {
                     client: client.clone(),
                     unique_identifier: unique_identifier.clone(),
                     connection_options,
                     path_style,
-                    platform,
-                    os_version: os_version.clone(),
                     state: Some(State::Connecting),
                 });
 
@@ -510,18 +493,6 @@ impl RemoteClient {
                         heartbeat_task,
                     });
                 });
-
-                // Use the same `remote_*` property schema as the forwarded
-                // remote events (see `client::telemetry::report_remote_event`)
-                // so all remote-origin telemetry can be queried uniformly.
-                telemetry::event!(
-                    "Remote Connection Established",
-                    remote = true,
-                    remote_connection_type = connection_type,
-                    remote_os_name = platform.os.display_name(),
-                    remote_os_version = os_version,
-                    remote_architecture = platform.arch.as_str(),
-                );
 
                 Ok(Some(this))
             });
@@ -1032,24 +1003,6 @@ impl RemoteClient {
         self.path_style
     }
 
-    /// The platform (OS and architecture) of the remote host, detected during
-    /// connection setup.
-    pub fn remote_platform(&self) -> RemotePlatform {
-        self.platform
-    }
-
-    /// The OS version of the remote host (e.g. `"ubuntu 24.04"`), detected
-    /// during connection setup. `None` if it could not be determined.
-    pub fn remote_os_version(&self) -> Option<String> {
-        self.os_version.clone()
-    }
-
-    /// A stable identifier for the kind of remote connection (e.g. `"ssh"`,
-    /// `"wsl"`, `"docker"`, `"podman"`).
-    pub fn connection_type(&self) -> &'static str {
-        self.connection_options.connection_type()
-    }
-
     /// Forcibly disconnects from the remote server by killing the underlying connection.
     /// This will trigger the reconnection logic if reconnection attempts remain.
     /// Useful for testing reconnection behavior in real environments.
@@ -1355,24 +1308,6 @@ impl RemoteConnectionOptions {
         }
     }
 
-    /// A stable identifier for the kind of remote connection, suitable for
-    /// telemetry (e.g. `"ssh"`, `"wsl"`, `"docker"`, `"podman"`).
-    pub fn connection_type(&self) -> &'static str {
-        match self {
-            RemoteConnectionOptions::Ssh(_) => "ssh",
-            RemoteConnectionOptions::Wsl(_) => "wsl",
-            RemoteConnectionOptions::Docker(opts) => {
-                if opts.use_podman {
-                    "podman"
-                } else {
-                    "docker"
-                }
-            }
-            #[cfg(any(test, feature = "test-support"))]
-            RemoteConnectionOptions::Mock(_) => "mock",
-        }
-    }
-
     pub fn host(&self) -> String {
         match self {
             RemoteConnectionOptions::Ssh(opts) => opts.host.to_string(),
@@ -1409,38 +1344,6 @@ mod tests {
         });
 
         assert_eq!(options.display_name(), "1.2.3.4");
-    }
-
-    #[test]
-    fn test_connection_type() {
-        assert_eq!(
-            RemoteConnectionOptions::Ssh(SshConnectionOptions::default()).connection_type(),
-            "ssh"
-        );
-        assert_eq!(
-            RemoteConnectionOptions::Wsl(WslConnectionOptions {
-                distro_name: "Ubuntu".to_string(),
-                user: None,
-            })
-            .connection_type(),
-            "wsl"
-        );
-        assert_eq!(
-            RemoteConnectionOptions::Docker(DockerConnectionOptions {
-                use_podman: false,
-                ..Default::default()
-            })
-            .connection_type(),
-            "docker"
-        );
-        assert_eq!(
-            RemoteConnectionOptions::Docker(DockerConnectionOptions {
-                use_podman: true,
-                ..Default::default()
-            })
-            .connection_type(),
-            "podman"
-        );
     }
 
     #[gpui::test]
@@ -1652,11 +1555,6 @@ pub trait RemoteConnection: Send + Sync {
     ) -> Result<CommandTemplate>;
     fn connection_options(&self) -> RemoteConnectionOptions;
     fn path_style(&self) -> PathStyle;
-    /// The remote platform (OS and architecture), detected during connection setup.
-    fn remote_platform(&self) -> RemotePlatform;
-    /// The remote host's OS version (e.g. `"ubuntu 24.04"` or `"15.6.1"`),
-    /// detected during connection setup. `None` if it could not be determined.
-    fn remote_os_version(&self) -> Option<String>;
     fn shell(&self) -> String;
     fn default_system_shell(&self) -> String;
     fn has_wsl_interop(&self) -> bool;

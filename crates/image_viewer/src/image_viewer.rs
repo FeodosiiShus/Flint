@@ -782,6 +782,7 @@ impl Render for ImageView {
                 ui::BackgroundImageArea::Window,
                 cx.theme().colors().editor_background,
                 true,
+                gpui::Corners::default(),
             ))
             .child({
                 let container = div()

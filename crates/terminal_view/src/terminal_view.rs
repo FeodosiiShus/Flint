@@ -1505,6 +1505,7 @@ impl Render for TerminalView {
                             ui::BackgroundImageArea::Window,
                             cx.theme().colors().editor_background,
                             true,
+                            gpui::Corners::default(),
                         ))
                     })
                     .when_some(self.background_corner_radii, |this, radii| {
@@ -1684,10 +1685,6 @@ impl Item for TerminalView {
         }
         let terminal = self.terminal().read(cx);
         terminal.title(detail == 0).into()
-    }
-
-    fn telemetry_event_text(&self) -> Option<&'static str> {
-        None
     }
 
     fn handle_drop(

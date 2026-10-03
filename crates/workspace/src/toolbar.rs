@@ -143,6 +143,7 @@ impl Render for Toolbar {
                 BackgroundImageArea::Window,
                 cx.theme().colors().toolbar_background,
                 true,
+                gpui::Corners::default(),
             ))
             .when(has_left_items || has_right_items, |this| {
                 this.child(

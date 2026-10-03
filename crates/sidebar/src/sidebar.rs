@@ -16,10 +16,10 @@ use agent_ui::threads_archive_view::{
     fuzzy_match_positions,
 };
 use agent_ui::{
-    AcpThreadImportOnboarding, Agent, AgentPanel, AgentPanelEvent, AgentThreadSource,
-    ArchiveSelectedThread, CrossChannelImportOnboarding, DEFAULT_THREAD_TITLE, NewTerminalThread,
-    NewThread, RenameSelectedThread, TerminalId, ThreadId, ThreadImportModal,
-    ThreadTitleRegenerationResult, channels_with_threads, import_threads_from_other_channels,
+    AcpThreadImportOnboarding, Agent, AgentPanel, AgentPanelEvent, ArchiveSelectedThread,
+    CrossChannelImportOnboarding, DEFAULT_THREAD_TITLE, NewTerminalThread, NewThread,
+    RenameSelectedThread, TerminalId, ThreadId, ThreadImportModal, ThreadTitleRegenerationResult,
+    channels_with_threads, import_threads_from_other_channels,
 };
 use agent_ui::{MessageEditorEvent, StateChange, thread_worktree_archive};
 use chrono::{DateTime, Utc};
@@ -57,10 +57,10 @@ use std::rc::Rc;
 use std::sync::Arc;
 use theme::{ActiveTheme, CLIENT_SIDE_DECORATION_ROUNDING};
 use ui::{
-    AgentThreadStatus, CommonAnimationExt, ContextMenu, ContextMenuEntry, Divider, GradientFade,
-    HighlightedLabel, KeyBinding, PopoverMenu, PopoverMenuHandle, ProjectEmptyState, ScrollAxes,
-    Scrollbars, Tab, ThreadItem, ThreadItemWorktreeInfo, TintColor, Tooltip, WithScrollbar,
-    prelude::*, render_modifiers, right_click_menu,
+    AgentThreadStatus, ChromeRegion, CommonAnimationExt, ContextMenu, ContextMenuEntry, Divider,
+    GradientFade, HighlightedLabel, KeyBinding, PopoverMenu, PopoverMenuHandle, ProjectEmptyState,
+    ScrollAxes, Scrollbars, Tab, ThreadItem, ThreadItemWorktreeInfo, TintColor, Tooltip,
+    WithScrollbar, prelude::*, render_modifiers, right_click_menu,
 };
 use unicode_segmentation::UnicodeSegmentation as _;
 use util::ResultExt as _;
@@ -3301,6 +3301,7 @@ impl Sidebar {
                 ui::BackgroundImageArea::Window,
                 background,
                 true,
+                gpui::Corners::default(),
             ))
             .border_b_1()
             .border_color(color.border.opacity(0.5))
@@ -3737,7 +3738,6 @@ impl Sidebar {
                     Some(metadata.folder_paths().clone()),
                     metadata.title.clone(),
                     focus,
-                    AgentThreadSource::Sidebar,
                     window,
                     cx,
                 );
@@ -4629,14 +4629,7 @@ impl Sidebar {
                                 window: &mut Window,
                                 cx: &mut App| {
             agent_panel.update(cx, |panel, cx| {
-                panel.restore_terminal(
-                    metadata.clone(),
-                    focus,
-                    AgentThreadSource::Sidebar,
-                    workspace,
-                    window,
-                    cx,
-                );
+                panel.restore_terminal(metadata.clone(), focus, workspace, window, cx);
             });
         };
 
@@ -5240,7 +5233,7 @@ impl Sidebar {
                 workspace.update(cx, |workspace, cx| {
                     if let Some(panel) = workspace.panel::<AgentPanel>(cx) {
                         panel.update(cx, |panel, cx| {
-                            panel.activate_draft(false, AgentThreadSource::AgentPanel, window, cx);
+                            panel.activate_draft(false, window, cx);
                         });
                     }
                 });
@@ -6772,6 +6765,7 @@ impl Sidebar {
             .trigger_with_tooltip(
                 IconButton::new("open-project", IconName::FolderAdd)
                     .icon_size(IconSize::Small)
+                    .chrome_region(ChromeRegion::Panel)
                     .selected_style(ButtonStyle::Tinted(TintColor::Accent)),
                 |_window, cx| Tooltip::for_action("Add Project", &OpenRecent::default(), cx),
             )
@@ -7068,7 +7062,7 @@ impl Sidebar {
         let draft_id = workspace.update(cx, |workspace, cx| {
             let panel = workspace.panel::<AgentPanel>(cx)?;
             let draft_id = panel.update(cx, |panel, cx| {
-                panel.activate_new_thread(true, AgentThreadSource::Sidebar, window, cx);
+                panel.activate_new_thread(true, window, cx);
                 panel.active_thread_id(cx)
             });
             workspace.focus_panel::<AgentPanel>(window, cx);
@@ -7105,7 +7099,7 @@ impl Sidebar {
         workspace.update(cx, |workspace, cx| {
             if let Some(panel) = workspace.panel::<AgentPanel>(cx) {
                 panel.update(cx, |panel, cx| {
-                    panel.new_terminal(Some(workspace), AgentThreadSource::Sidebar, window, cx);
+                    panel.new_terminal(Some(workspace), window, cx);
                 });
             }
             workspace.focus_panel::<AgentPanel>(window, cx);
@@ -7350,11 +7344,6 @@ impl Sidebar {
             KeyBinding::for_action(&workspace::Open::default(), cx),
         )
         .on_open_project(|_, window, cx| {
-            let side = match AgentSettings::get_global(cx).sidebar_side() {
-                SidebarSide::Left => "left",
-                SidebarSide::Right => "right",
-            };
-            telemetry::event!("Sidebar Add Project Clicked", side = side);
             window.dispatch_action(
                 Open {
                     create_new_window: Some(false),
@@ -7489,6 +7478,7 @@ impl Sidebar {
                 };
                 IconButton::new("sidebar-close-toggle", icon)
                     .icon_size(IconSize::Small)
+                    .chrome_region(ChromeRegion::Panel)
                     .tooltip(Tooltip::element(move |_window, cx| {
                         v_flex()
                             .gap_1()
@@ -7535,6 +7525,7 @@ impl Sidebar {
             .child(
                 IconButton::new("history", IconName::Clock)
                     .icon_size(IconSize::Small)
+                    .chrome_region(ChromeRegion::Panel)
                     .toggle_state(is_archive)
                     .tooltip(move |_, cx| {
                         let label = if is_archive {
@@ -7558,21 +7549,7 @@ impl Sidebar {
             .map(|w| w.read(cx).workspace().clone())
     }
 
-    fn show_thread_import_modal(
-        &mut self,
-        source: &'static str,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        telemetry::event!(
-            "Agent Threads Import Clicked",
-            source = source,
-            side = match self.side(cx) {
-                SidebarSide::Left => "left",
-                SidebarSide::Right => "right",
-            }
-        );
-
+    fn show_thread_import_modal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(active_workspace) = self.active_workspace(cx) else {
             return;
         };
@@ -7628,7 +7605,7 @@ impl Sidebar {
     ) -> impl IntoElement {
         let on_import = cx.listener(|this, _, window, cx| {
             this.show_archive(window, cx);
-            this.show_thread_import_modal("external_agent_onboarding", window, cx);
+            this.show_thread_import_modal(window, cx);
         });
         render_import_onboarding_banner(
             "acp",
@@ -7667,14 +7644,6 @@ impl Sidebar {
         );
 
         let on_import = cx.listener(|this, _, _window, cx| {
-            telemetry::event!(
-                "Agent Threads Import Clicked",
-                source = "cross_channel_onboarding",
-                side = match this.side(cx) {
-                    SidebarSide::Left => "left",
-                    SidebarSide::Right => "right",
-                }
-            );
             CrossChannelImportOnboarding::dismiss(cx);
             if let Some(workspace) = this.active_workspace(cx) {
                 workspace.update(cx, |workspace, cx| {
@@ -7712,12 +7681,6 @@ impl Sidebar {
     }
 
     fn show_archive(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let side = match self.side(cx) {
-            SidebarSide::Left => "left",
-            SidebarSide::Right => "right",
-        };
-        telemetry::event!("Thread History Viewed", side = side);
-
         let Some(active_workspace) = self
             .multi_workspace
             .upgrade()
@@ -7762,7 +7725,7 @@ impl Sidebar {
                     this.restoring_tasks.remove(thread_id);
                 }
                 ThreadsArchiveViewEvent::Import => {
-                    this.show_thread_import_modal("thread_history", window, cx);
+                    this.show_thread_import_modal(window, cx);
                 }
                 ThreadsArchiveViewEvent::NewThread => {
                     this.show_thread_list(window, cx);
@@ -8040,6 +8003,7 @@ impl Render for Sidebar {
                 ui::BackgroundImageArea::Window,
                 bg,
                 true,
+                gpui::Corners::default(),
             ))
             .when(self.side(cx) == SidebarSide::Left, |el| el.border_r_1())
             .when(self.side(cx) == SidebarSide::Right, |el| el.border_l_1())

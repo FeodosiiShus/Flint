@@ -2,10 +2,6 @@ use crate::inline_prompt_editor::CodegenStatus;
 use futures::{SinkExt, StreamExt, channel::mpsc};
 use gpui::{App, AppContext as _, Context, Entity, EventEmitter, Task};
 use language_model::{LanguageModelRegistry, LanguageModelRequest};
-use language_models::provider::anthropic::telemetry::{
-    AnthropicCompletionType, AnthropicEventData, AnthropicEventReporter, AnthropicEventType,
-};
-use std::time::Instant;
 use terminal::Terminal;
 use uuid::Uuid;
 
@@ -13,7 +9,6 @@ pub struct TerminalCodegen {
     pub status: CodegenStatus,
     terminal: Entity<Terminal>,
     generation: Task<()>,
-    pub message_id: Option<String>,
     transaction: Option<TerminalTransaction>,
     session_id: Uuid,
 }
@@ -26,7 +21,6 @@ impl TerminalCodegen {
             terminal,
             status: CodegenStatus::Idle,
             generation: Task::ready(()),
-            message_id: None,
             transaction: None,
             session_id,
         }
@@ -43,11 +37,6 @@ impl TerminalCodegen {
         };
         let provider = registry.provider_for_model(&model);
 
-        let anthropic_reporter = AnthropicEventReporter::new(&model, cx);
-        let session_id = self.session_id;
-        let model_telemetry_id = model.telemetry_id();
-        let model_provider_id = model.provider_id().to_string();
-
         self.status = CodegenStatus::Pending;
         self.transaction = Some(TerminalTransaction::start(self.terminal.clone()));
         self.generation = cx.spawn(async move |this, cx| {
@@ -57,64 +46,17 @@ impl TerminalCodegen {
                 Err(error) => Err(error),
             };
             let generate = async {
-                let message_id = response
-                    .as_ref()
-                    .ok()
-                    .and_then(|response| response.message_id.clone());
-
                 let (mut hunks_tx, mut hunks_rx) = mpsc::channel(1);
 
-                let task = cx.background_spawn({
-                    let message_id = message_id.clone();
-                    let anthropic_reporter = anthropic_reporter.clone();
-                    async move {
-                        let mut response_latency = None;
-                        let request_start = Instant::now();
-                        let task = async {
-                            let mut chunks = response?.stream;
-                            while let Some(chunk) = chunks.next().await {
-                                if response_latency.is_none() {
-                                    response_latency = Some(request_start.elapsed());
-                                }
-                                let chunk = chunk?;
-                                hunks_tx.send(chunk).await?;
-                            }
-
-                            anyhow::Ok(())
-                        };
-
-                        let result = task.await;
-
-                        let error_message = result.as_ref().err().map(|error| error.to_string());
-
-                        telemetry::event!(
-                            "Assistant Responded",
-                            session_id = session_id.to_string(),
-                            kind = "inline_terminal",
-                            phase = "response",
-                            model = model_telemetry_id,
-                            model_provider = model_provider_id,
-                            language_name = Option::<&str>::None,
-                            message_id = message_id,
-                            response_latency = response_latency,
-                            error_message = error_message,
-                        );
-
-                        anthropic_reporter.report(AnthropicEventData {
-                            completion_type: AnthropicCompletionType::Terminal,
-                            event: AnthropicEventType::Response,
-                            language_name: None,
-                            message_id,
-                        });
-
-                        result?;
-                        anyhow::Ok(())
+                let task = cx.background_spawn(async move {
+                    let mut chunks = response?.stream;
+                    while let Some(chunk) = chunks.next().await {
+                        let chunk = chunk?;
+                        hunks_tx.send(chunk).await?;
                     }
-                });
 
-                this.update(cx, |this, _| {
-                    this.message_id = message_id;
-                })?;
+                    anyhow::Ok(())
+                });
 
                 while let Some(hunk) = hunks_rx.next().await {
                     this.update(cx, |this, cx| {
@@ -143,12 +85,6 @@ impl TerminalCodegen {
             .ok();
         });
         cx.notify();
-    }
-
-    pub fn completion(&self) -> Option<String> {
-        self.transaction
-            .as_ref()
-            .map(|transaction| transaction.completion.clone())
     }
 
     pub fn stop(&mut self, cx: &mut Context<Self>) {
@@ -183,22 +119,17 @@ pub const CLEAR_INPUT: &str = "\x03";
 const CARRIAGE_RETURN: &str = "\x0d";
 
 struct TerminalTransaction {
-    completion: String,
     terminal: Entity<Terminal>,
 }
 
 impl TerminalTransaction {
     pub fn start(terminal: Entity<Terminal>) -> Self {
-        Self {
-            completion: String::new(),
-            terminal,
-        }
+        Self { terminal }
     }
 
     pub fn push(&mut self, hunk: String, cx: &mut App) {
         // Ensure that the assistant cannot accidentally execute commands that are streamed into the terminal
         let input = Self::sanitize_input(hunk);
-        self.completion.push_str(&input);
         self.terminal
             .update(cx, |terminal, _| terminal.input(input.into_bytes()));
     }

@@ -8,19 +8,10 @@ corgi_version = "0.1.43"
 # what is declared here. Every setting names the packages it applies to, so
 # only those packages' actions key on it — comment or command-text edits
 # rebuild nothing.
-#
-# See the top-level Cargo.toml `[patch.crates-io]` for the local `scratch` patch
-# that lets cxx/webrtc-sys build under the sandbox, and `util::fs_embed!` for
-# how dev builds read embedded assets from the checkout instead of baking the
-# build path into the binary.
 
 # sha256-pinned tools, fetched into the corgi store and exposed to the named
 # packages' build scripts via the given environment variable. URLs and hashes
 # are for the macOS arm64 build host.
-#
-# Note: no protoc tool is needed. `proto` and `livekit_api` compile their
-# protobufs with `protox` (a pure-Rust protoc) and `prost_build::compile_fds`,
-# so nothing shells out to a protoc binary.
 
 [tools.cmake]
 version = "4.1.2"
@@ -28,19 +19,7 @@ url = "https://github.com/Kitware/CMake/releases/download/v4.1.2/cmake-4.1.2-mac
 sha256 = "3be85f5b999e327b1ac7d804cbc9acd767059e9f603c42ec2765f6ab68fbd367"
 bin = "cmake-4.1.2-macos-universal/CMake.app/Contents/bin/cmake"
 env = "CMAKE"
-packages = ["webrtc-sys", "wasmtime-c-api-impl"]
-
-# Prebuilt libwebrtc, so webrtc-sys-build does not have to download it over the
-# network (which the sandbox forbids). The tag must match WEBRTC_TAG in the
-# pinned livekit-rust-sdks revision; webrtc-sys-build reads LK_CUSTOM_WEBRTC and
-# skips the download when it is set.
-[tools.webrtc-prebuilt]
-version = "0001d84-4"
-url = "https://github.com/zed-industries/livekit-rust-sdks/releases/download/webrtc-0001d84-4/webrtc-mac-arm64-release.zip"
-sha256 = "09ba71bfbc15c6aacced7fe20451a9648dfe648c24295f28d75fc386dbd7281a"
-path = "mac-arm64-release"
-env = "LK_CUSTOM_WEBRTC"
-packages = ["webrtc-sys"]
+packages = ["wasmtime-c-api-impl"]
 
 # Plan-time probe: the git SHA is read here (outside the sandbox) and frozen
 # into the keyed value. zed/build.rs prefers $ZED_COMMIT_SHA over running git,
@@ -62,7 +41,6 @@ profiles = ["release"]
 [extra-inputs]
 # Own non-.rs files read at build time (protobufs, bindgen headers, doc/data).
 proto = ["proto/**"]
-livekit_api = ["vendored/protocol/**"]
 gpui = [
     "README.md",
     "examples/image/exif-orientation-rotate-180.jpg",
@@ -72,7 +50,6 @@ gpui = [
 git = ["src/checkpoint.gitignore"]
 git_ui = ["src/commit_message_prompt.txt"]
 editor = ["../grammars/src/**"]
-edit_prediction = ["license_patterns/**"]
 agent_skills = ["builtin/**"]
 agent_settings = ["src/prompts/**"]
 json_schema_store = ["src/schemas/**"]

@@ -1,8 +1,8 @@
 use editor::{Bias, Editor, SelectionEffects, scroll::Autoscroll, styled_runs_for_code_label};
 use fuzzy::{StringMatch, StringMatchCandidate};
 use gpui::{
-    App, Context, DismissEvent, Entity, HighlightStyle, ParentElement, StyledText, Task, TaskExt,
-    TextStyle, WeakEntity, Window, relative,
+    App, BackgroundExecutor, Context, DismissEvent, Entity, HighlightStyle, ParentElement,
+    StyledText, Task, TaskExt, TextStyle, WeakEntity, Window, relative,
 };
 use ordered_float::OrderedFloat;
 use picker::{Picker, PickerDelegate, PreviewUpdate};
@@ -16,6 +16,8 @@ use workspace::{
     Workspace,
     ui::{LabelLike, ListItem, ListItemSpacing, prelude::*},
 };
+
+const MAX_MATCHES: usize = 100;
 
 pub fn init(cx: &mut App) {
     cx.observe_new(
@@ -65,46 +67,203 @@ impl ProjectSymbolsDelegate {
 
     // Note if you make changes to this, also change `agent_ui::completion_provider::search_symbols`
     fn filter(&mut self, query: &str, window: &mut Window, cx: &mut Context<Picker<Self>>) {
-        const MAX_MATCHES: usize = 100;
-        let mut visible_matches = cx.foreground_executor().block_on(fuzzy::match_strings(
+        self.matches = cx.foreground_executor().block_on(match_symbol_candidates(
+            &self.symbols,
             &self.visible_match_candidates,
-            query,
-            false,
-            true,
-            MAX_MATCHES,
-            &Default::default(),
-            cx.background_executor().clone(),
-        ));
-        let mut external_matches = cx.foreground_executor().block_on(fuzzy::match_strings(
             &self.external_match_candidates,
             query,
-            false,
-            true,
-            MAX_MATCHES - visible_matches.len().min(MAX_MATCHES),
-            &Default::default(),
+            MAX_MATCHES,
             cx.background_executor().clone(),
         ));
-        let sort_key_for_match = |mat: &StringMatch| {
-            let symbol = &self.symbols[mat.candidate_id];
-            (Reverse(OrderedFloat(mat.score)), symbol.label.filter_text())
-        };
-
-        visible_matches.sort_unstable_by_key(sort_key_for_match);
-        external_matches.sort_unstable_by_key(sort_key_for_match);
-        let mut matches = visible_matches;
-        matches.append(&mut external_matches);
-
-        for mat in &mut matches {
-            let symbol = &self.symbols[mat.candidate_id];
-            let filter_start = symbol.label.filter_range.start;
-            for position in &mut mat.positions {
-                *position += filter_start;
-            }
-        }
-
-        self.matches = matches;
         self.set_selected_index(0, window, cx);
     }
+}
+
+pub fn symbol_query_filter(query: &str) -> &str {
+    query.rsplit_once("::").map_or(query, |(_, suffix)| suffix)
+}
+
+pub fn partition_symbol_candidates(
+    symbols: &[Symbol],
+    project: &Project,
+    cx: &App,
+) -> (Vec<StringMatchCandidate>, Vec<StringMatchCandidate>) {
+    symbols
+        .iter()
+        .enumerate()
+        .map(|(id, symbol)| StringMatchCandidate::new(id, symbol.label.filter_text()))
+        .partition(|candidate| {
+            if let SymbolLocation::InProject(path) = &symbols[candidate.id].path {
+                project
+                    .entry_for_path(path, cx)
+                    .is_some_and(|entry| !entry.is_ignored)
+            } else {
+                false
+            }
+        })
+}
+
+pub async fn match_symbol_candidates(
+    symbols: &[Symbol],
+    visible_candidates: &[StringMatchCandidate],
+    external_candidates: &[StringMatchCandidate],
+    query: &str,
+    max_matches: usize,
+    executor: BackgroundExecutor,
+) -> Vec<StringMatch> {
+    let mut visible_matches = fuzzy::match_strings(
+        visible_candidates,
+        query,
+        false,
+        true,
+        max_matches,
+        &Default::default(),
+        executor.clone(),
+    )
+    .await;
+    let mut external_matches = fuzzy::match_strings(
+        external_candidates,
+        query,
+        false,
+        true,
+        max_matches - visible_matches.len().min(max_matches),
+        &Default::default(),
+        executor,
+    )
+    .await;
+    let sort_key_for_match = |mat: &StringMatch| {
+        let symbol = &symbols[mat.candidate_id];
+        (Reverse(OrderedFloat(mat.score)), symbol.label.filter_text())
+    };
+
+    visible_matches.sort_unstable_by_key(sort_key_for_match);
+    external_matches.sort_unstable_by_key(sort_key_for_match);
+    let mut matches = visible_matches;
+    matches.append(&mut external_matches);
+
+    for mat in &mut matches {
+        let symbol = &symbols[mat.candidate_id];
+        let filter_start = symbol.label.filter_range.start;
+        for position in &mut mat.positions {
+            *position += filter_start;
+        }
+    }
+    matches
+}
+
+pub fn open_symbol<T: 'static>(
+    symbol: Symbol,
+    secondary: bool,
+    workspace: WeakEntity<Workspace>,
+    project: &Entity<Project>,
+    window: &mut Window,
+    cx: &mut Context<T>,
+) -> Task<anyhow::Result<()>> {
+    let buffer = project.update(cx, |project, cx| {
+        project.open_buffer_for_symbol(&symbol, cx)
+    });
+    cx.spawn_in(window, async move |_, cx| {
+        let buffer = buffer.await?;
+        workspace.update_in(cx, |workspace, window, cx| {
+            let position = buffer
+                .read(cx)
+                .clip_point_utf16(symbol.range.start, Bias::Left);
+            let pane = if secondary {
+                workspace.adjacent_pane(window, cx)
+            } else {
+                workspace.active_pane().clone()
+            };
+
+            let editor = workspace.open_project_item::<Editor>(
+                secondary.then_some(pane),
+                buffer,
+                true,
+                true,
+                true,
+                true,
+                window,
+                cx,
+            );
+
+            editor.update(cx, |editor, cx| {
+                let multibuffer_snapshot = editor.buffer().read(cx).snapshot(cx);
+                let Some(buffer_snapshot) = multibuffer_snapshot.as_singleton() else {
+                    return;
+                };
+                let text_anchor = buffer_snapshot.anchor_before(position);
+                let Some(anchor) = multibuffer_snapshot.anchor_in_buffer(text_anchor) else {
+                    return;
+                };
+                editor.change_selections(
+                    SelectionEffects::scroll(Autoscroll::center()),
+                    window,
+                    cx,
+                    |selections| selections.select_ranges([anchor..anchor]),
+                );
+            });
+        })?;
+        anyhow::Ok(())
+    })
+}
+
+pub fn symbol_path_label(
+    symbol: &Symbol,
+    project: &Project,
+    show_worktree_root_name: bool,
+    cx: &App,
+) -> String {
+    let path_style = project.path_style(cx);
+    match &symbol.path {
+        SymbolLocation::InProject(project_path) => {
+            let mut path = project_path.path.to_rel_path_buf();
+            if show_worktree_root_name
+                && let Some(worktree) = project.worktree_for_id(project_path.worktree_id, cx)
+            {
+                path = worktree.read(cx).root_name().join(&path);
+            }
+            path.display(path_style).into_owned()
+        }
+        SymbolLocation::OutsideProject {
+            abs_path,
+            signature: _,
+        } => abs_path.to_string_lossy().into_owned(),
+    }
+}
+
+pub fn symbol_label(symbol: &Symbol, positions: &[usize], cx: &App) -> StyledText {
+    let theme = cx.theme();
+    let local_player = theme.players().local();
+    let syntax_runs = styled_runs_for_code_label(&symbol.label, theme.syntax(), &local_player);
+    let label = symbol.label.text.clone();
+    let settings = ThemeSettings::get_global(cx);
+
+    let text_style = TextStyle {
+        color: theme.colors().text,
+        font_family: settings.buffer_font.family.clone(),
+        font_features: settings.buffer_font.features.clone(),
+        font_fallbacks: settings.buffer_font.fallbacks.clone(),
+        font_size: settings.buffer_font_size(cx).into(),
+        font_weight: settings.buffer_font.weight,
+        line_height: relative(1.),
+        ..Default::default()
+    };
+
+    let highlight_style = HighlightStyle {
+        background_color: Some(theme.colors().text_accent.alpha(0.3)),
+        ..Default::default()
+    };
+    let custom_highlights = positions
+        .iter()
+        .map(|position| {
+            (
+                *position..label.ceil_char_boundary(position + 1),
+                highlight_style,
+            )
+        })
+        .collect::<Vec<_>>();
+
+    let highlights = gpui::combine_highlights(custom_highlights, syntax_runs);
+    StyledText::new(label).with_default_highlights(&text_style, highlights)
 }
 
 impl PickerDelegate for ProjectSymbolsDelegate {
@@ -123,54 +282,14 @@ impl PickerDelegate for ProjectSymbolsDelegate {
             .get(self.selected_match_index)
             .map(|mat| self.symbols[mat.candidate_id].clone())
         {
-            let buffer = self.project.update(cx, |project, cx| {
-                project.open_buffer_for_symbol(&symbol, cx)
-            });
-            let symbol = symbol.clone();
-            let workspace = self.workspace.clone();
-            cx.spawn_in(window, async move |_, cx| {
-                let buffer = buffer.await?;
-                workspace.update_in(cx, |workspace, window, cx| {
-                    let position = buffer
-                        .read(cx)
-                        .clip_point_utf16(symbol.range.start, Bias::Left);
-                    let pane = if secondary {
-                        workspace.adjacent_pane(window, cx)
-                    } else {
-                        workspace.active_pane().clone()
-                    };
-
-                    let editor = workspace.open_project_item::<Editor>(
-                        secondary.then_some(pane),
-                        buffer,
-                        true,
-                        true,
-                        true,
-                        true,
-                        window,
-                        cx,
-                    );
-
-                    editor.update(cx, |editor, cx| {
-                        let multibuffer_snapshot = editor.buffer().read(cx).snapshot(cx);
-                        let Some(buffer_snapshot) = multibuffer_snapshot.as_singleton() else {
-                            return;
-                        };
-                        let text_anchor = buffer_snapshot.anchor_before(position);
-                        let Some(anchor) = multibuffer_snapshot.anchor_in_buffer(text_anchor)
-                        else {
-                            return;
-                        };
-                        editor.change_selections(
-                            SelectionEffects::scroll(Autoscroll::center()),
-                            window,
-                            cx,
-                            |s| s.select_ranges([anchor..anchor]),
-                        );
-                    });
-                })?;
-                anyhow::Ok(())
-            })
+            open_symbol(
+                symbol,
+                secondary,
+                self.workspace.clone(),
+                &self.project,
+                window,
+                cx,
+            )
             .detach_and_log_err(cx);
             cx.emit(DismissEvent);
         }
@@ -211,10 +330,7 @@ impl PickerDelegate for ProjectSymbolsDelegate {
         // allows to search by rust path syntax, in that case we only want to
         // filter names by the last segment
         // Ideally this was a first class LSP feature (rich queries)
-        let query_filter = query
-            .rsplit_once("::")
-            .map_or(&*query, |(_, suffix)| suffix)
-            .to_owned();
+        let query_filter = symbol_query_filter(&query).to_owned();
         self.filter(&query_filter, window, cx);
         self.show_worktree_root_name = self.project.read(cx).visible_worktrees(cx).count() > 1;
         let symbols = self
@@ -225,22 +341,8 @@ impl PickerDelegate for ProjectSymbolsDelegate {
             if let Some(symbols) = symbols {
                 this.update_in(cx, |this, window, cx| {
                     let delegate = &mut this.delegate;
-                    let project = delegate.project.read(cx);
-                    let (visible_match_candidates, external_match_candidates) = symbols
-                        .iter()
-                        .enumerate()
-                        .map(|(id, symbol)| {
-                            StringMatchCandidate::new(id, symbol.label.filter_text())
-                        })
-                        .partition(|candidate| {
-                            if let SymbolLocation::InProject(path) = &symbols[candidate.id].path {
-                                project
-                                    .entry_for_path(path, cx)
-                                    .is_some_and(|e| !e.is_ignored)
-                            } else {
-                                false
-                            }
-                        });
+                    let (visible_match_candidates, external_match_candidates) =
+                        partition_symbol_candidates(&symbols, delegate.project.read(cx), cx);
 
                     delegate.visible_match_candidates = visible_match_candidates;
                     delegate.external_match_candidates = external_match_candidates;
@@ -259,56 +361,15 @@ impl PickerDelegate for ProjectSymbolsDelegate {
         _window: &mut Window,
         cx: &mut Context<Picker<Self>>,
     ) -> Option<Self::ListItem> {
-        let path_style = self.project.read(cx).path_style(cx);
         let string_match = &self.matches.get(ix)?;
         let symbol = &self.symbols.get(string_match.candidate_id)?;
-        let theme = cx.theme();
-        let local_player = theme.players().local();
-        let syntax_runs = styled_runs_for_code_label(&symbol.label, theme.syntax(), &local_player);
-
-        let path = match &symbol.path {
-            SymbolLocation::InProject(project_path) => {
-                let project = self.project.read(cx);
-                let mut path = project_path.path.to_rel_path_buf();
-                if self.show_worktree_root_name
-                    && let Some(worktree) = project.worktree_for_id(project_path.worktree_id, cx)
-                {
-                    path = worktree.read(cx).root_name().join(&path);
-                }
-                path.display(path_style).into_owned().into()
-            }
-            SymbolLocation::OutsideProject {
-                abs_path,
-                signature: _,
-            } => abs_path.to_string_lossy(),
-        };
-        let label = symbol.label.text.clone();
+        let path = symbol_path_label(
+            symbol,
+            self.project.read(cx),
+            self.show_worktree_root_name,
+            cx,
+        );
         let line_number = symbol.range.start.0.row + 1;
-        let path = path.into_owned();
-
-        let settings = ThemeSettings::get_global(cx);
-
-        let text_style = TextStyle {
-            color: cx.theme().colors().text,
-            font_family: settings.buffer_font.family.clone(),
-            font_features: settings.buffer_font.features.clone(),
-            font_fallbacks: settings.buffer_font.fallbacks.clone(),
-            font_size: settings.buffer_font_size(cx).into(),
-            font_weight: settings.buffer_font.weight,
-            line_height: relative(1.),
-            ..Default::default()
-        };
-
-        let highlight_style = HighlightStyle {
-            background_color: Some(cx.theme().colors().text_accent.alpha(0.3)),
-            ..Default::default()
-        };
-        let custom_highlights = string_match
-            .positions
-            .iter()
-            .map(|pos| (*pos..label.ceil_char_boundary(pos + 1), highlight_style));
-
-        let highlights = gpui::combine_highlights(custom_highlights, syntax_runs);
 
         Some(
             ListItem::new(ix)
@@ -317,12 +378,11 @@ impl PickerDelegate for ProjectSymbolsDelegate {
                 .toggle_state(selected)
                 .child(
                     v_flex()
-                        .child(
-                            LabelLike::new().child(
-                                StyledText::new(&label)
-                                    .with_default_highlights(&text_style, highlights),
-                            ),
-                        )
+                        .child(LabelLike::new().child(symbol_label(
+                            symbol,
+                            &string_match.positions,
+                            cx,
+                        )))
                         .child(
                             h_flex()
                                 .child(Label::new(path).size(LabelSize::Small).color(Color::Muted))

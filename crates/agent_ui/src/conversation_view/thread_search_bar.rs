@@ -884,6 +884,7 @@ impl Render for ThreadSearchBar {
                 ui::BackgroundImageArea::Window,
                 theme.panel_background,
                 true,
+                gpui::Corners::default(),
             ))
             .border_b_1()
             .border_color(theme.border.opacity(0.6))

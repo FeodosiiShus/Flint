@@ -164,7 +164,6 @@ impl LanguageModelProvider for CopilotChatLanguageModelProvider {
                                     .map(|model| model.read(cx).is_authenticated())
                                     .unwrap_or(false)
                             },
-                            copilot_ui::ConfigurationMode::Chat,
                             cx,
                         )
                         .compact()

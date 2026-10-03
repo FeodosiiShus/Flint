@@ -1,4 +1,3 @@
-pub mod auth;
 mod conn;
 mod message_stream;
 mod notification;

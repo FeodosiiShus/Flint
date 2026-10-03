@@ -505,6 +505,7 @@ impl Render for SyntaxTreeView {
                 ui::BackgroundImageArea::Window,
                 cx.theme().colors().editor_background,
                 true,
+                gpui::Corners::default(),
             ))
             .map(|this| {
                 let editor_state = self.editor.as_ref();
@@ -578,10 +579,6 @@ impl Item for SyntaxTreeView {
 
     fn tab_content_text(&self, _detail: usize, _cx: &App) -> SharedString {
         "Syntax Tree".into()
-    }
-
-    fn telemetry_event_text(&self) -> Option<&'static str> {
-        None
     }
 
     fn can_split(&self) -> bool {

@@ -9,7 +9,6 @@ use std::{
 };
 
 use anyhow::Context as _;
-use client::parse_zed_link;
 use command_palette_hooks::{
     CommandInterceptItem, CommandInterceptResult, CommandPaletteFilter,
     GlobalCommandPaletteInterceptor,
@@ -31,7 +30,7 @@ use ui::{
 };
 use util::ResultExt;
 use workspace::{ModalView, Workspace, WorkspaceSettings};
-use zed_actions::{OpenZedUrl, command_palette::Toggle};
+use zed_actions::command_palette::Toggle;
 
 actions!(command_palette, [RemoveSelected]);
 
@@ -117,21 +116,12 @@ impl CommandPalette {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let filter = CommandPaletteFilter::try_global(cx);
-
-        let commands = window
-            .available_actions(cx)
+        let commands = palette_actions(window, cx)
             .into_iter()
-            .filter_map(|action| {
-                if filter.is_some_and(|filter| filter.is_hidden(&*action)) {
-                    return None;
-                }
-
-                Some(Command {
-                    name: SharedString::from(humanize_action_name(action.name())),
-                    action,
-                    usage: None,
-                })
+            .map(|(name, action)| Command {
+                name,
+                action,
+                usage: None,
             })
             .collect();
 
@@ -583,10 +573,7 @@ impl PickerDelegate for CommandPaletteDelegate {
         window: &mut Window,
         cx: &mut Context<Picker<Self>>,
     ) -> gpui::Task<()> {
-        let settings = WorkspaceSettings::get_global(cx);
-        if let Some(alias) = settings.command_aliases.get(&query) {
-            query = alias.as_ref().to_owned();
-        }
+        query = resolve_command_alias(query, cx);
 
         let workspace = self.workspace.clone();
 
@@ -595,14 +582,11 @@ impl PickerDelegate for CommandPaletteDelegate {
         let (mut tx, mut rx) = postage::dispatch::channel(1);
 
         let query_str = query.as_str();
-        let is_zed_link = parse_zed_link(query_str, cx).is_some();
-
         let task = cx.background_spawn({
             let mut commands = self.all_commands.clone();
             let command_usage = self.command_usage(cx);
             let executor = cx.background_executor().clone();
             let query = normalize_action_query(query_str);
-            let query_for_link = query_str.to_string();
             async move {
                 for command in &mut commands {
                     command.usage = command_usage.get(&command.name).copied();
@@ -638,19 +622,7 @@ impl PickerDelegate for CommandPaletteDelegate {
                     }
                 });
 
-                let intercept_result = if is_zed_link {
-                    CommandInterceptResult {
-                        results: vec![CommandInterceptItem {
-                            action: OpenZedUrl {
-                                url: query_for_link.clone().into(),
-                            }
-                            .boxed_clone(),
-                            string: query_for_link,
-                            positions: vec![],
-                        }],
-                        exclusive: false,
-                    }
-                } else if let Some(task) = intercept_task {
+                let intercept_result = if let Some(task) = intercept_task {
                     task.await
                 } else {
                     CommandInterceptResult::default()
@@ -740,11 +712,6 @@ impl PickerDelegate for CommandPaletteDelegate {
 
         let action_ix = self.matches[self.selected_ix].candidate_id;
         let command = self.commands.swap_remove(action_ix);
-        telemetry::event!(
-            "Action Invoked",
-            source = "command palette",
-            action = command.name
-        );
         self.matches.clear();
         self.commands.clear();
         let command_name = command.name.clone();
@@ -861,6 +828,31 @@ impl PickerDelegate for CommandPaletteDelegate {
                 )
                 .into_any(),
         )
+    }
+}
+
+pub fn palette_actions(window: &Window, cx: &App) -> Vec<(SharedString, Box<dyn Action>)> {
+    let filter = CommandPaletteFilter::try_global(cx);
+    window
+        .available_actions(cx)
+        .into_iter()
+        .filter(|action| !filter.is_some_and(|filter| filter.is_hidden(&**action)))
+        .map(|action| {
+            (
+                SharedString::from(humanize_action_name(action.name())),
+                action,
+            )
+        })
+        .collect()
+}
+
+pub fn resolve_command_alias(query: String, cx: &App) -> String {
+    match WorkspaceSettings::get_global(cx)
+        .command_aliases
+        .get(&query)
+    {
+        Some(alias) => alias.as_ref().to_owned(),
+        None => query,
     }
 }
 

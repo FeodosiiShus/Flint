@@ -74,3 +74,36 @@ jobs:
 
       - name: Run chrome size tests
         run: cargo test --locked --package ui --lib chrome_size
+
+      - name: Run title bar tests
+        run: cargo test --locked --package title_bar
+
+      - name: Run status bar widget tests
+        run: cargo test --locked --package status_widgets
+
+      - name: Run Search Everywhere tests
+        run: cargo test --locked --package search_everywhere --package file_finder --package project_symbols --package command_palette
+
+      - name: Run three-way merge tests
+        run: cargo test --locked --package three_way_merge
+
+      - name: Run git conflict stage tests
+        run: cargo test --locked --package git --package fs --features fs/test-support
+
+      - name: Run project git store integration tests
+        run: cargo test --locked --package project --features project/test-support --test integration git_store
+
+      - name: Run merge tool and git panel tests
+        run: cargo test --locked --package git_ui --lib -- merge_tool git_panel
+
+      - name: Run gpui tests
+        run: cargo test --locked --package gpui --package gpui_wgpu
+
+      - name: Run islands, tool window bar, tab and sound tests
+        run: cargo test --locked --package workspace --package ui --package audio --lib -- tool_window_bar island status_bar_hides_panel_buttons workspace_settings tab::tests sound
+
+      - name: Run zed action and keymap tests
+        run: cargo test --locked --package zed --bin zed -- test_action_namespaces test_base_keymap
+
+      - name: Check tests of crates changed by Flint compile
+        run: cargo check --locked --tests --package editor --package vim --package workspace --package agent --package agent_ui --package language_models --package client --package remote_server --package settings_ui --package terminal_view --package sidebar --package debugger_ui --package outline_panel --package language_tools --package diagnostics --package extension_host

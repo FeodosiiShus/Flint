@@ -1,12 +1,12 @@
 mod conflict_set_tests {
-    use std::sync::mpsc;
+    use std::{path::Path, sync::mpsc};
 
     use crate::Project;
 
-    use fs::FakeFs;
+    use fs::{FakeFs, Fs};
     use git::{
         repository::{RepoPath, repo_path},
-        status::{UnmergedStatus, UnmergedStatusCode},
+        status::{FileStatus, StatusCode, TrackedStatus, UnmergedStatus, UnmergedStatusCode},
     };
     use gpui::{BackgroundExecutor, TestAppContext};
     use project::git_store::*;
@@ -666,6 +666,164 @@ mod conflict_set_tests {
             assert!(!conflict_set.has_conflict);
             assert_eq!(conflict_set.snapshot.conflicts.len(), 0);
         });
+    }
+
+    #[gpui::test]
+    async fn test_load_conflict_stages_stage_and_unresolve(
+        executor: BackgroundExecutor,
+        cx: &mut TestAppContext,
+    ) {
+        zlog::init_test();
+        cx.update(|cx| {
+            settings::init(cx);
+        });
+        let fs = FakeFs::new(executor);
+        fs.insert_tree(
+            path!("/project"),
+            json!({
+                ".git": {},
+                "a.txt": "stale\n",
+                "b.txt": "stale\n",
+            }),
+        )
+        .await;
+        let dot_git = Path::new(path!("/project/.git"));
+        fs.set_conflict_for_repo(
+            dot_git,
+            "a.txt",
+            Some("one\ntwo\n"),
+            Some("one\nours\n"),
+            Some("one\ntheirs\n"),
+        );
+        fs.set_conflict_for_repo(
+            dot_git,
+            "b.txt",
+            Some("base\n"),
+            Some("modified by us\n"),
+            None,
+        );
+        fs.set_merge_message_for_repo(dot_git, Some("Merge branch 'feature'"));
+
+        let project = Project::test(fs.clone(), [path!("/project").as_ref()], cx).await;
+        cx.run_until_parked();
+        let repository = project.read_with(cx, |project, cx| {
+            project.repositories(cx).values().next().unwrap().clone()
+        });
+        let both_modified = repo_path("a.txt");
+        let deleted_by_them = repo_path("b.txt");
+        let expected_both_modified_status = FileStatus::Unmerged(UnmergedStatus {
+            first_head: UnmergedStatusCode::Updated,
+            second_head: UnmergedStatusCode::Updated,
+        });
+
+        repository.read_with(cx, |repository, _| {
+            assert_eq!(
+                repository
+                    .status_for_path(&both_modified)
+                    .map(|entry| entry.status),
+                Some(expected_both_modified_status)
+            );
+            assert_eq!(
+                repository
+                    .status_for_path(&deleted_by_them)
+                    .map(|entry| entry.status),
+                Some(FileStatus::Unmerged(UnmergedStatus {
+                    first_head: UnmergedStatusCode::Updated,
+                    second_head: UnmergedStatusCode::Deleted,
+                }))
+            );
+            assert!(repository.has_conflict(&both_modified));
+            assert_eq!(
+                repository.merge.message.as_deref(),
+                Some("Merge branch 'feature'")
+            );
+        });
+
+        let expected_both_modified_stages = ConflictStages {
+            base: Some("one\ntwo\n".to_string()),
+            ours: Some("one\nours\n".to_string()),
+            theirs: Some("one\ntheirs\n".to_string()),
+        };
+        let stages = repository
+            .update(cx, |repository, cx| {
+                repository.load_conflict_stages(both_modified.clone(), cx)
+            })
+            .await
+            .unwrap();
+        assert_eq!(stages, expected_both_modified_stages);
+        let stages = repository
+            .update(cx, |repository, cx| {
+                repository.load_conflict_stages(deleted_by_them.clone(), cx)
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            stages,
+            ConflictStages {
+                base: Some("base\n".to_string()),
+                ours: Some("modified by us\n".to_string()),
+                theirs: None,
+            }
+        );
+
+        fs.write(Path::new(path!("/project/a.txt")), b"one\nresolved\n")
+            .await
+            .unwrap();
+        repository
+            .update(cx, |repository, cx| {
+                repository.stage_entries(vec![both_modified.clone()], cx)
+            })
+            .await
+            .unwrap();
+        cx.run_until_parked();
+        repository.read_with(cx, |repository, _| {
+            assert_eq!(
+                repository
+                    .status_for_path(&both_modified)
+                    .map(|entry| entry.status),
+                Some(FileStatus::Tracked(TrackedStatus {
+                    index_status: StatusCode::Modified,
+                    worktree_status: StatusCode::Unmodified,
+                }))
+            );
+            assert!(
+                repository.had_conflict_on_last_merge_head_change(&both_modified),
+                "a staged conflict stays listed as resolved while the merge is in progress"
+            );
+            assert!(
+                repository
+                    .status_for_path(&deleted_by_them)
+                    .is_some_and(|entry| entry.status.is_conflicted()),
+                "staging one path must not resolve another"
+            );
+        });
+
+        repository
+            .update(cx, |repository, cx| {
+                repository.unresolve_paths(vec![both_modified.clone()], cx)
+            })
+            .await
+            .unwrap();
+        cx.run_until_parked();
+        repository.read_with(cx, |repository, _| {
+            assert_eq!(
+                repository
+                    .status_for_path(&both_modified)
+                    .map(|entry| entry.status),
+                Some(expected_both_modified_status)
+            );
+        });
+        assert_eq!(
+            fs.load(Path::new(path!("/project/a.txt"))).await.unwrap(),
+            "<<<<<<< HEAD\none\nours\n=======\none\ntheirs\n>>>>>>> MERGE_HEAD\n"
+        );
+        let stages = repository
+            .update(cx, |repository, cx| {
+                repository.load_conflict_stages(both_modified.clone(), cx)
+            })
+            .await
+            .unwrap();
+        assert_eq!(stages, expected_both_modified_stages);
     }
 }
 

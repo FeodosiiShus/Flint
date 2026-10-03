@@ -1,5 +1,6 @@
+mod agent_api_keys_onboarding;
 mod agent_notification;
-mod end_trial_upsell;
+mod agent_panel_onboarding_card;
 mod mention_crease;
 mod model_selector_components;
 mod sandbox_status_tooltip;
@@ -7,8 +8,9 @@ mod session_notice;
 mod terminal_tool_header;
 mod undo_reject_toast;
 
+pub use agent_api_keys_onboarding::*;
 pub use agent_notification::*;
-pub use end_trial_upsell::*;
+pub use agent_panel_onboarding_card::*;
 pub use mention_crease::*;
 pub use model_selector_components::*;
 pub use sandbox_status_tooltip::*;

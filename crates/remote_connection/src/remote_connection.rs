@@ -2,7 +2,6 @@ use std::{path::PathBuf, sync::Arc};
 
 use anyhow::Result;
 use askpass::EncryptedPassword;
-use auto_update::AutoUpdater;
 use futures::{FutureExt as _, channel::oneshot, select};
 use gpui::{
     AnyWindowHandle, App, AsyncApp, DismissEvent, Entity, EventEmitter, Focusable, FontFeatures,
@@ -488,53 +487,41 @@ impl remote::RemoteClientDelegate for RemoteClientDelegate {
     fn download_server_binary_locally(
         &self,
         platform: RemotePlatform,
-        release_channel: ReleaseChannel,
+        _release_channel: ReleaseChannel,
         version: Option<Version>,
-        cx: &mut AsyncApp,
+        _cx: &mut AsyncApp,
     ) -> Task<anyhow::Result<PathBuf>> {
-        let this = self.clone();
-        cx.spawn(async move |cx| {
-            AutoUpdater::download_remote_server_release(
-                release_channel,
-                version.clone(),
-                platform.os.as_str(),
-                platform.arch.as_str(),
-                move |status, cx| this.set_status(Some(status), cx),
-                cx,
-            )
-            .await
-            .with_context(|| {
-                format!(
-                    "Downloading remote server binary (version: {}, os: {}, arch: {})",
-                    version
-                        .as_ref()
-                        .map(|v| format!("{}", v))
-                        .unwrap_or("unknown".to_string()),
-                    platform.os,
-                    platform.arch,
-                )
-            })
-        })
+        Task::ready(Err(remote_server_binary_unavailable(
+            platform,
+            version.as_ref(),
+        )))
     }
 
     fn get_download_url(
         &self,
-        platform: RemotePlatform,
-        release_channel: ReleaseChannel,
-        version: Option<Version>,
-        cx: &mut AsyncApp,
+        _platform: RemotePlatform,
+        _release_channel: ReleaseChannel,
+        _version: Option<Version>,
+        _cx: &mut AsyncApp,
     ) -> Task<Result<Option<String>>> {
-        cx.spawn(async move |cx| {
-            AutoUpdater::get_remote_server_release_url(
-                release_channel,
-                version,
-                platform.os.as_str(),
-                platform.arch.as_str(),
-                cx,
-            )
-            .await
-        })
+        Task::ready(Ok(None))
     }
+}
+
+fn remote_server_binary_unavailable(
+    platform: RemotePlatform,
+    version: Option<&Version>,
+) -> anyhow::Error {
+    let version = version
+        .map(|version| version.to_string())
+        .unwrap_or_else(|| "unknown".to_string());
+    anyhow::anyhow!(
+        "No remote server binary is available for {} {} (version {version}). \
+         Prebuilt remote server downloads are not supported; set ZED_BUILD_REMOTE_SERVER \
+         to build the remote server locally, or install it on the remote host.",
+        platform.os,
+        platform.arch,
+    )
 }
 
 impl RemoteClientDelegate {
@@ -632,8 +619,7 @@ pub fn connect_reusing_pool(
 
 /// Delegate for remote connections that reuse an existing pooled
 /// connection. Password prompts are not expected (the SSH transport
-/// is already established), but server binary downloads are supported
-/// via [`AutoUpdater`].
+/// is already established).
 struct BackgroundRemoteClientDelegate;
 
 impl remote::RemoteClientDelegate for BackgroundRemoteClientDelegate {
@@ -655,51 +641,24 @@ impl remote::RemoteClientDelegate for BackgroundRemoteClientDelegate {
     fn download_server_binary_locally(
         &self,
         platform: RemotePlatform,
-        release_channel: ReleaseChannel,
+        _release_channel: ReleaseChannel,
         version: Option<Version>,
-        cx: &mut AsyncApp,
+        _cx: &mut AsyncApp,
     ) -> Task<anyhow::Result<PathBuf>> {
-        cx.spawn(async move |cx| {
-            AutoUpdater::download_remote_server_release(
-                release_channel,
-                version.clone(),
-                platform.os.as_str(),
-                platform.arch.as_str(),
-                |_status, _cx| {},
-                cx,
-            )
-            .await
-            .with_context(|| {
-                format!(
-                    "Downloading remote server binary (version: {}, os: {}, arch: {})",
-                    version
-                        .as_ref()
-                        .map(|v| format!("{v}"))
-                        .unwrap_or("unknown".to_string()),
-                    platform.os,
-                    platform.arch,
-                )
-            })
-        })
+        Task::ready(Err(remote_server_binary_unavailable(
+            platform,
+            version.as_ref(),
+        )))
     }
 
     fn get_download_url(
         &self,
-        platform: RemotePlatform,
-        release_channel: ReleaseChannel,
-        version: Option<Version>,
-        cx: &mut AsyncApp,
+        _platform: RemotePlatform,
+        _release_channel: ReleaseChannel,
+        _version: Option<Version>,
+        _cx: &mut AsyncApp,
     ) -> Task<Result<Option<String>>> {
-        cx.spawn(async move |cx| {
-            AutoUpdater::get_remote_server_release_url(
-                release_channel,
-                version,
-                platform.os.as_str(),
-                platform.arch.as_str(),
-                cx,
-            )
-            .await
-        })
+        Task::ready(Ok(None))
     }
 }
 
@@ -738,8 +697,6 @@ pub fn connect(
             .await
     })
 }
-
-use anyhow::Context as _;
 
 #[cfg(test)]
 mod tests {

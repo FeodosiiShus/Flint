@@ -91,8 +91,6 @@ pub fn build_terminal_auth_task(
 pub trait AgentConnection {
     fn agent_id(&self) -> AgentId;
 
-    fn telemetry_id(&self) -> SharedString;
-
     fn agent_version(&self) -> Option<SharedString> {
         None
     }
@@ -250,10 +248,6 @@ pub trait AgentConnection {
         None
     }
 
-    fn telemetry(&self) -> Option<Rc<dyn AgentTelemetry>> {
-        None
-    }
-
     fn session_modes(
         &self,
         _session_id: &acp_v1::SessionId,
@@ -316,16 +310,6 @@ pub trait AgentSessionRetry {
 
 pub trait AgentSessionSetTitle {
     fn run(&self, title: SharedString, cx: &mut App) -> Task<Result<()>>;
-}
-
-pub trait AgentTelemetry {
-    /// A representation of the current thread state that can be serialized for
-    /// storage with telemetry events.
-    fn thread_data(
-        &self,
-        session_id: &acp_v1::SessionId,
-        cx: &mut App,
-    ) -> Task<Result<serde_json::Value>>;
 }
 
 pub trait AgentSessionModes {
@@ -814,7 +798,6 @@ mod test_support {
         supports_session_additional_directories: bool,
         supports_set_title: bool,
         agent_id: AgentId,
-        telemetry_id: SharedString,
     }
 
     struct Session {
@@ -842,7 +825,6 @@ mod test_support {
                 supports_session_additional_directories: false,
                 supports_set_title: true,
                 agent_id: AgentId::new("stub"),
-                telemetry_id: "stub".into(),
             }
         }
 
@@ -910,11 +892,6 @@ mod test_support {
 
         pub fn with_agent_id(mut self, agent_id: AgentId) -> Self {
             self.agent_id = agent_id;
-            self
-        }
-
-        pub fn with_telemetry_id(mut self, telemetry_id: SharedString) -> Self {
-            self.telemetry_id = telemetry_id;
             self
         }
 
@@ -993,10 +970,6 @@ mod test_support {
     impl AgentConnection for StubAgentConnection {
         fn agent_id(&self) -> AgentId {
             self.agent_id.clone()
-        }
-
-        fn telemetry_id(&self) -> SharedString {
-            self.telemetry_id.clone()
         }
 
         fn auth_methods(&self) -> &[acp_v1::AuthMethod] {

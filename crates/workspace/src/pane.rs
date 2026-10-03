@@ -1126,10 +1126,6 @@ impl Pane {
                 pane.set_preview_item_id(Some(new_item_id), cx);
             }
 
-            if let Some(text) = new_item.telemetry_event_text(cx) {
-                telemetry::event!(text);
-            }
-
             pane.add_item_inner(
                 new_item,
                 true,
@@ -1354,10 +1350,6 @@ impl Pane {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if let Some(text) = item.telemetry_event_text(cx) {
-            telemetry::event!(text);
-        }
-
         self.add_item_inner(
             item,
             activate_pane,
@@ -2852,12 +2844,13 @@ impl Pane {
             .map(|id| id == item.item_id())
             .unwrap_or(false);
 
+        let pane_focused = self.has_focus(window, cx);
         let label = item.tab_content(
             TabContentParams {
                 detail: Some(detail),
                 selected: is_active,
                 preview: is_preview,
-                deemphasized: !self.has_focus(window, cx),
+                deemphasized: !pane_focused,
                 max_title_len: None,
                 truncate_title_middle: false,
             },
@@ -2922,6 +2915,8 @@ impl Pane {
                 ClosePosition::Right => ui::TabCloseSide::End,
             })
             .toggle_state(is_active)
+            .focused(pane_focused)
+            .islands(WorkspaceSettings::get_global(cx).islands.enabled)
             .on_click(cx.listener({
                 let item_handle = item.boxed_clone();
                 move |pane: &mut Self, event: &ClickEvent, window, cx| {
@@ -3584,6 +3579,7 @@ impl Pane {
         cx: &mut Context<Pane>,
     ) -> TabBar {
         tab_bar
+            .islands(WorkspaceSettings::get_global(cx).islands.enabled)
             .when(
                 self.display_nav_history_buttons.unwrap_or_default(),
                 |tab_bar| {
@@ -3675,11 +3671,9 @@ impl Pane {
             .flex_none()
             .child(pinned_tab_bar)
             .child(
-                TabBar::new("unpinned_tab_bar").child(self.render_unpinned_tabs_container(
-                    unpinned_tabs,
-                    tab_count,
-                    cx,
-                )),
+                TabBar::new("unpinned_tab_bar")
+                    .islands(WorkspaceSettings::get_global(cx).islands.enabled)
+                    .child(self.render_unpinned_tabs_container(unpinned_tabs, tab_count, cx)),
             )
             .into_any_element()
     }
@@ -4636,6 +4630,7 @@ impl Render for Pane {
                                 BackgroundImageArea::Element,
                                 editor_background,
                                 false,
+                                gpui::Corners::default(),
                             );
                             let placeholder = div
                                 .id("pane_placeholder")

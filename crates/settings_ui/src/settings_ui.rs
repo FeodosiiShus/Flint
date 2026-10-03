@@ -4,7 +4,6 @@ pub mod pages;
 
 use agent_skills::SkillIndex;
 use anyhow::{Context as _, Result};
-use cloud_api_types::OrganizationConfiguration;
 use editor::{Editor, EditorEvent};
 use futures::{StreamExt, channel::mpsc};
 use fuzzy::StringMatchCandidate;
@@ -33,7 +32,6 @@ use std::{
     path::PathBuf,
     rc::Rc,
     sync::{Arc, LazyLock, RwLock},
-    time::Duration,
 };
 use theme_settings::ThemeSettings;
 use ui::{
@@ -54,13 +52,9 @@ use zed_actions::{
 
 use crate::components::{
     EnumVariantDropdown, NumberField, NumberFieldMode, NumberFieldType, SettingsInputField,
-    SettingsSectionHeader, font_picker, icon_theme_picker, render_ollama_model_picker,
-    text_field_a11y_state, theme_picker,
+    SettingsSectionHeader, font_picker, icon_theme_picker, text_field_a11y_state, theme_picker,
 };
-use crate::pages::{
-    CustomAgentForm, LlmProviderForm, McpServerForm, render_input_audio_device_dropdown,
-    render_output_audio_device_dropdown,
-};
+use crate::pages::{CustomAgentForm, LlmProviderForm, McpServerForm};
 
 const NAVBAR_CONTAINER_TAB_INDEX: isize = 0;
 const NAVBAR_GROUP_TAB_INDEX: isize = 1;
@@ -113,12 +107,6 @@ struct FocusFile(pub u32);
 struct SettingField<T: 'static> {
     pick: fn(&SettingsContent) -> Option<&T>,
     write: fn(&mut SettingsContent, Option<T>, &App),
-    /// Tells us whether the setting is overridden by the currently selected
-    /// organization's settings. Takes the organization configuration and the
-    /// resolved settings value, and returns `Some(...)` if the organization
-    /// overrides the setting, otherwise `None`.
-    organization_override: Option<fn(&OrganizationConfiguration) -> Option<&T>>,
-
     /// A json-path-like string that gives a unique-ish string that identifies
     /// where in the JSON the setting is defined.
     ///
@@ -167,7 +155,6 @@ impl<T: 'static> SettingField<T> {
         SettingField {
             pick: |_| Some(&UnimplementedSettingField),
             write: |_, _, _| unreachable!(),
-            organization_override: None,
             json_path: self.json_path,
         }
     }
@@ -187,8 +174,6 @@ trait AnySettingField {
     ) -> Option<Box<dyn Fn(&mut Window, &mut App)>>;
 
     fn json_path(&self) -> Option<&'static str>;
-
-    fn is_overridden_by_organization(&self, cx: &App) -> bool;
 }
 
 impl<T: PartialEq + Clone + Send + Sync + 'static> AnySettingField for SettingField<T> {
@@ -247,15 +232,9 @@ impl<T: PartialEq + Clone + Send + Sync + 'static> AnySettingField for SettingFi
             } else {
                 None
             };
-            update_settings_file(
-                current_file.clone(),
-                None,
-                window,
-                cx,
-                move |settings, app| {
-                    (this.write)(settings, value_to_set, app);
-                },
-            )
+            update_settings_file(current_file.clone(), window, cx, move |settings, app| {
+                (this.write)(settings, value_to_set, app);
+            })
             // todo(settings_ui): Don't log err
             .log_err();
         }));
@@ -263,19 +242,6 @@ impl<T: PartialEq + Clone + Send + Sync + 'static> AnySettingField for SettingFi
 
     fn json_path(&self) -> Option<&'static str> {
         self.json_path
-    }
-
-    fn is_overridden_by_organization(&self, cx: &App) -> bool {
-        let Some(org_override) = self.organization_override else {
-            return false;
-        };
-
-        let user_store = AppState::global(cx).user_store.read(cx);
-        let Some(org_config) = user_store.current_organization_configuration() else {
-            return false;
-        };
-
-        (org_override)(&org_config).is_some()
     }
 }
 
@@ -610,8 +576,6 @@ fn init_renderers(cx: &mut App) {
         .add_basic_renderer::<settings::AlternateScroll>(render_dropdown)
         .add_basic_renderer::<settings::TerminalBlink>(render_dropdown)
         .add_basic_renderer::<settings::CursorShapeContent>(render_dropdown)
-        .add_basic_renderer::<settings::EditPredictionPromptFormatContent>(render_dropdown)
-        .add_basic_renderer::<settings::EditPredictionDataCollectionChoice>(render_dropdown)
         .add_basic_renderer::<f32>(render_editable_number_field)
         .add_basic_renderer::<settings::AutoCompactThreshold>(render_text_field)
         .add_basic_renderer::<u32>(render_editable_number_field)
@@ -665,7 +629,6 @@ fn init_renderers(cx: &mut App) {
         .add_basic_renderer::<settings::IncludeIgnoredContent>(render_dropdown)
         .add_basic_renderer::<settings::ShowIndentGuides>(render_dropdown)
         .add_basic_renderer::<settings::ShellDiscriminants>(render_dropdown)
-        .add_basic_renderer::<settings::EditPredictionsMode>(render_dropdown)
         .add_basic_renderer::<settings::RelativeLineNumbers>(render_dropdown)
         .add_basic_renderer::<settings::WindowDecorations>(render_dropdown)
         .add_basic_renderer::<settings::FullscreenMode>(render_dropdown)
@@ -674,12 +637,9 @@ fn init_renderers(cx: &mut App) {
         .add_basic_renderer::<settings::BackgroundImageFill>(render_dropdown)
         .add_basic_renderer::<settings::BackgroundImageAnchor>(render_dropdown)
         .add_basic_renderer::<settings::FontSize>(render_editable_number_field)
-        .add_basic_renderer::<settings::OllamaModelName>(render_ollama_model_picker)
         .add_basic_renderer::<settings::SemanticTokens>(render_dropdown)
         .add_basic_renderer::<settings::DocumentFoldingRanges>(render_dropdown)
         .add_basic_renderer::<settings::DocumentSymbols>(render_dropdown)
-        .add_basic_renderer::<settings::AudioInputDeviceName>(render_input_audio_device_dropdown)
-        .add_basic_renderer::<settings::AudioOutputDeviceName>(render_output_audio_device_dropdown)
         .add_basic_renderer::<settings::TerminalBell>(render_dropdown)
         // please semicolon stay on next line
         ;
@@ -853,8 +813,6 @@ fn open_settings_editor_with(
     cx: &mut App,
     callback: impl FnOnce(&mut SettingsWindow, &mut Window, &mut Context<SettingsWindow>) + 'static,
 ) {
-    telemetry::event!("Settings Viewed");
-
     let existing_window = cx
         .windows()
         .into_iter()
@@ -982,7 +940,6 @@ pub struct SettingsWindow {
     files_focus_handle: FocusHandle,
     search_index: Option<Arc<SearchIndex>>,
     list_state: ListState,
-    shown_errors: HashSet<String>,
     pub(crate) hidden_deleted_skill_directory_paths: HashSet<PathBuf>,
     pub(crate) regex_validation_error: Option<String>,
     pub(crate) sandbox_host_validation_error: Option<String>,
@@ -1500,35 +1457,6 @@ fn render_settings_item(
         .filter(|f| f != &file)
         .and_then(|f| settings_window.display_name(&f));
 
-    let control = if setting_item.field.is_overridden_by_organization(cx) {
-        h_flex()
-            .gap_2()
-            .child(
-                div()
-                    .id(format!(
-                        "{}-organization-configuration-warning",
-                        setting_item.title
-                    ))
-                    .child(
-                        Icon::new(IconName::Warning)
-                            .size(IconSize::Small)
-                            .color(Color::Warning),
-                    )
-                    .tooltip(|_, cx| {
-                        Tooltip::with_meta(
-                            "Overridden by Organization",
-                            None,
-                            "Contact your organization admins to adjust this setting.",
-                            cx,
-                        )
-                    }),
-            )
-            .child(control)
-            .into_any_element()
-    } else {
-        control
-    };
-
     render_settings_item_layout(
         settings_window,
         setting_item.title,
@@ -1885,8 +1813,6 @@ impl SettingsWindow {
                     window.remove_window();
                 })
                 .ok();
-
-                telemetry::event!("Settings Closed")
             }
         })
         .detach();
@@ -2020,7 +1946,6 @@ impl SettingsWindow {
                 .tab_index(HEADER_CONTAINER_TAB_INDEX)
                 .tab_stop(false),
             search_index: None,
-            shown_errors: HashSet::default(),
             hidden_deleted_skill_directory_paths: HashSet::default(),
             regex_validation_error: None,
             sandbox_host_validation_error: None,
@@ -2383,9 +2308,6 @@ impl SettingsWindow {
                 cx.notify();
             })
             .ok();
-
-            cx.background_executor().timer(Duration::from_secs(1)).await;
-            telemetry::event!("Settings Searched", query = query)
         }));
     }
 
@@ -2746,10 +2668,6 @@ impl SettingsWindow {
         }
         self.current_file = self.files[ix].0.clone();
 
-        if let SettingsUiFile::Project((_, _)) = &self.current_file {
-            telemetry::event!("Setting Project Clicked");
-        }
-
         self.build_ui(window, cx);
 
         if self
@@ -2776,10 +2694,6 @@ impl SettingsWindow {
             return;
         }
         self.current_file = self.files[ix].0.clone();
-
-        if let SettingsUiFile::Project((_, _)) = &self.current_file {
-            telemetry::event!("Setting Project Clicked");
-        }
 
         self.last_copied_skill_directory_path = None;
 
@@ -3248,27 +3162,16 @@ impl SettingsWindow {
                                                     },
                                                 ))
                                         })
-                                        .on_click({
-                                            let category = this.pages[entry.page_index].title;
-                                            let subcategory =
-                                                (!entry.is_root).then_some(entry.title);
-
-                                            cx.listener(move |this, event: &gpui::ClickEvent, window, cx| {
+                                        .on_click(cx.listener(
+                                            move |this, event: &gpui::ClickEvent, window, cx| {
                                                 if this.toggle_navbar_entry_on_double_click(
-                                                        entry_index,
-                                                        event,
-                                                        window,
-                                                        cx,
-                                                    )
-                                                {
+                                                    entry_index,
+                                                    event,
+                                                    window,
+                                                    cx,
+                                                ) {
                                                     return;
                                                 }
-
-                                                telemetry::event!(
-                                                    "Settings Navigation Clicked",
-                                                    category = category,
-                                                    subcategory = subcategory
-                                                );
 
                                                 this.open_and_scroll_to_navbar_entry(
                                                     entry_index,
@@ -3277,8 +3180,8 @@ impl SettingsWindow {
                                                     window,
                                                     cx,
                                                 );
-                                            })
-                                        })
+                                            },
+                                        ))
                                     })
                                     .collect()
                             }),
@@ -3869,12 +3772,8 @@ impl SettingsWindow {
             fn banner(
                 label: &'static str,
                 error: String,
-                shown_errors: &mut HashSet<String>,
                 cx: &mut Context<SettingsWindow>,
             ) -> impl IntoElement {
-                if shown_errors.insert(error.clone()) {
-                    telemetry::event!("Settings Error Shown", label = label, error = &error);
-                }
                 Banner::new()
                     .severity(Severity::Warning)
                     .child(
@@ -3905,7 +3804,6 @@ impl SettingsWindow {
                     this.child(banner(
                         "Failed to load your settings. Some values may be incorrect and changes may be lost.",
                         err,
-                        &mut self.shown_errors,
                         cx,
                     ))
                 })
@@ -3916,14 +3814,12 @@ impl SettingsWindow {
                             SettingsUiFile::User => "They can be automatically migrated to the latest version.",
                             SettingsUiFile::Server(_) | SettingsUiFile::Project(_)  => "They must be manually migrated to the latest version."
                         }.to_string(),
-                        &mut self.shown_errors,
                         cx,
                     )),
                     settings::MigrationStatus::Failed { error: err } if !parse_failed => this
                         .child(banner(
                             "Your settings file is out of date, automatic migration failed",
                             err.clone(),
-                            &mut self.shown_errors,
                             cx,
                         )),
                     _ => this,
@@ -4695,13 +4591,12 @@ fn open_user_settings_in_workspace(
 
 fn update_settings_file(
     file: SettingsUiFile,
-    file_name: Option<&'static str>,
     window: &mut Window,
     cx: &mut App,
     update: impl 'static + Send + FnOnce(&mut SettingsContent, &App),
 ) -> Result<()> {
     let mut update = Some(update);
-    update_settings_file_inner(file, file_name, window, cx, &mut || {
+    update_settings_file_inner(file, window, cx, &mut || {
         Box::new(update.take().expect("called once"))
     })
 }
@@ -4709,13 +4604,10 @@ fn update_settings_file(
 #[inline(never)]
 fn update_settings_file_inner(
     file: SettingsUiFile,
-    file_name: Option<&'static str>,
     window: &mut Window,
     cx: &mut App,
     update: &mut dyn FnMut() -> Box<dyn Send + FnOnce(&mut SettingsContent, &App)>,
 ) -> Result<()> {
-    telemetry::event!("Settings Change", setting = file_name, type = file.setting_type());
-
     match file {
         SettingsUiFile::Project((worktree_id, rel_path)) => {
             let rel_path = rel_path.join(paths::local_settings_file_relative_path());
@@ -4885,35 +4777,6 @@ fn update_project_setting_file(
     Ok(())
 }
 
-/// Derives a human-readable label for assistive technology from a setting's
-/// JSON path, e.g. `"buffer_font_size"` becomes `"Buffer Font Size"`.
-struct CurrentSettingsValue<'a, T> {
-    value: &'a T,
-    disabled: bool,
-}
-
-fn get_current_value<'a, T>(
-    settings_store: &'a SettingsStore,
-    file: &SettingsUiFile,
-    field: &'a SettingField<T>,
-    cx: &'a App,
-) -> Option<CurrentSettingsValue<'a, T>> {
-    let user_store = AppState::global(cx).user_store.read(cx);
-    let org_config = user_store.current_organization_configuration();
-
-    let (_file, value) = settings_store.get_value_from_file(file.to_settings(), field.pick);
-    let value = value?;
-
-    let org_value = org_config
-        .zip(field.organization_override)
-        .and_then(|(org_config, org_override)| (org_override)(org_config));
-
-    Some(CurrentSettingsValue {
-        disabled: org_value.is_some(),
-        value: org_value.unwrap_or(&value),
-    })
-}
-
 fn render_text_field<T: From<String> + Into<String> + AsRef<str> + Clone>(
     field: SettingField<T>,
     file: SettingsUiFile,
@@ -4964,15 +4827,9 @@ fn render_text_field<T: From<String> + Into<String> + AsRef<str> + Clone>(
         )
         .on_confirm({
             move |new_text, window, cx| {
-                update_settings_file(
-                    file.clone(),
-                    field.json_path,
-                    window,
-                    cx,
-                    move |settings, app| {
-                        (field.write)(settings, new_text.map(Into::into), app);
-                    },
-                )
+                update_settings_file(file.clone(), window, cx, move |settings, app| {
+                    (field.write)(settings, new_text.map(Into::into), app);
+                })
                 .log_err(); // todo(settings_ui) don't log err
             }
         })
@@ -4988,10 +4845,8 @@ fn render_toggle_button<B: Into<bool> + From<bool> + Copy>(
     _window: &mut Window,
     cx: &mut App,
 ) -> AnyElement {
-    let value = get_current_value(&SettingsStore::global(cx), &file, &field, cx);
-    let (value, disabled) = value
-        .map(|current_value| (*current_value.value, current_value.disabled))
-        .unwrap_or((false.into(), false));
+    let (_, value) = SettingsStore::global(cx).get_value_from_file(file.to_settings(), field.pick);
+    let value = value.copied().unwrap_or(false.into());
 
     let toggle_state = if value.into() {
         ToggleState::Selected
@@ -5005,13 +4860,10 @@ fn render_toggle_button<B: Into<bool> + From<bool> + Copy>(
         .when(!description.is_empty(), |this| {
             this.aria_description(description)
         })
-        .disabled(disabled)
         .on_click({
             move |state, window, cx| {
-                telemetry::event!("Settings Change", setting = field.json_path, type = file.setting_type());
-
                 let state = *state == ui::ToggleState::Selected;
-                update_settings_file(file.clone(), field.json_path, window, cx, move |settings, app| {
+                update_settings_file(file.clone(), window, cx, move |settings, app| {
                     (field.write)(settings, Some(state.into()), app);
                 })
                 .log_err(); // todo(settings_ui) don't log err
@@ -5047,15 +4899,9 @@ fn render_editable_number_field<T: NumberFieldType + Send + Sync>(
         .on_change({
             move |value, window, cx| {
                 let value = *value;
-                update_settings_file(
-                    file.clone(),
-                    field.json_path,
-                    window,
-                    cx,
-                    move |settings, app| {
-                        (field.write)(settings, Some(value), app);
-                    },
-                )
+                update_settings_file(file.clone(), window, cx, move |settings, app| {
+                    (field.write)(settings, Some(value), app);
+                })
                 .log_err(); // todo(settings_ui) don't log err
             }
         })
@@ -5080,25 +4926,18 @@ where
         .and_then(|metadata| metadata.should_do_titlecase)
         .unwrap_or(true);
 
-    let current_value = get_current_value(&SettingsStore::global(cx), &file, &field, cx);
-    let (current_value, disabled) = current_value
-        .map(|current_value| (*current_value.value, current_value.disabled))
-        .unwrap_or((variants()[0], false));
+    let (_, current_value) =
+        SettingsStore::global(cx).get_value_from_file(file.to_settings(), field.pick);
+    let current_value = current_value.copied().unwrap_or(variants()[0]);
 
     EnumVariantDropdown::new("dropdown", current_value, variants(), labels(), {
         move |value, window, cx| {
             if value == current_value {
                 return;
             }
-            update_settings_file(
-                file.clone(),
-                field.json_path,
-                window,
-                cx,
-                move |settings, app| {
-                    (field.write)(settings, Some(value), app);
-                },
-            )
+            update_settings_file(file.clone(), window, cx, move |settings, app| {
+                (field.write)(settings, Some(value), app);
+            })
             .log_err(); // todo(settings_ui) don't log err
         }
     })
@@ -5106,7 +4945,6 @@ where
     .when(!description.is_empty(), |this| {
         this.aria_description(description)
     })
-    .disabled(disabled)
     .tab_index(0)
     .title_case(should_do_titlecase)
     .into_any_element()
@@ -5179,15 +5017,9 @@ fn render_font_picker(
                 font_picker(
                     current_value,
                     move |font_name, window, cx| {
-                        update_settings_file(
-                            file.clone(),
-                            field.json_path,
-                            window,
-                            cx,
-                            move |settings, app| {
-                                (field.write)(settings, Some(font_name.to_string().into()), app);
-                            },
-                        )
+                        update_settings_file(file.clone(), window, cx, move |settings, app| {
+                            (field.write)(settings, Some(font_name.to_string().into()), app);
+                        })
                         .log_err(); // todo(settings_ui) don't log err
                     },
                     window,
@@ -5236,19 +5068,13 @@ fn render_theme_picker(
                 theme_picker(
                     current_value,
                     move |theme_name, window, cx| {
-                        update_settings_file(
-                            file.clone(),
-                            field.json_path,
-                            window,
-                            cx,
-                            move |settings, app| {
-                                (field.write)(
-                                    settings,
-                                    Some(settings::ThemeName(theme_name.into())),
-                                    app,
-                                );
-                            },
-                        )
+                        update_settings_file(file.clone(), window, cx, move |settings, app| {
+                            (field.write)(
+                                settings,
+                                Some(settings::ThemeName(theme_name.into())),
+                                app,
+                            );
+                        })
                         .log_err(); // todo(settings_ui) don't log err
                     },
                     window,
@@ -5297,19 +5123,13 @@ fn render_icon_theme_picker(
                 icon_theme_picker(
                     current_value,
                     move |theme_name, window, cx| {
-                        update_settings_file(
-                            file.clone(),
-                            field.json_path,
-                            window,
-                            cx,
-                            move |settings, app| {
-                                (field.write)(
-                                    settings,
-                                    Some(settings::IconThemeName(theme_name.into())),
-                                    app,
-                                );
-                            },
-                        )
+                        update_settings_file(file.clone(), window, cx, move |settings, app| {
+                            (field.write)(
+                                settings,
+                                Some(settings::IconThemeName(theme_name.into())),
+                                app,
+                            );
+                        })
                         .log_err(); // todo(settings_ui) don't log err
                     },
                     window,
@@ -5378,7 +5198,6 @@ pub mod test {
                 files_focus_handle: cx.focus_handle(),
                 search_index: None,
                 list_state: ListState::new(0, gpui::ListAlignment::Top, px(0.0)),
-                shown_errors: HashSet::default(),
                 hidden_deleted_skill_directory_paths: HashSet::default(),
                 regex_validation_error: None,
                 sandbox_host_validation_error: None,
@@ -5517,7 +5336,6 @@ pub mod test {
             files_focus_handle: cx.focus_handle(),
             search_index: None,
             list_state: ListState::new(0, gpui::ListAlignment::Top, px(0.0)),
-            shown_errors: HashSet::default(),
             hidden_deleted_skill_directory_paths: HashSet::default(),
             regex_validation_error: None,
             sandbox_host_validation_error: None,

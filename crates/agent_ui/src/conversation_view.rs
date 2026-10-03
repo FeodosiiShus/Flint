@@ -6,7 +6,7 @@ use acp_thread::{
     SelectedPermissionOutcome, ThreadStatus, ToolCall, ToolCallContent, ToolCallStatus,
 };
 use acp_thread::{AgentConnection, Plan};
-use action_log::{ActionLog, ActionLogTelemetry, DiffStats};
+use action_log::{ActionLog, DiffStats};
 use agent::{NativeAgentServer, NoModelConfiguredError, ThreadStore};
 use agent_client_protocol::schema::{v1 as acp_v1, v2 as acp_v2};
 #[cfg(test)]
@@ -34,9 +34,7 @@ use gpui::{
     linear_gradient, list, pulsating_between,
 };
 use language::{Buffer, Language, Rope};
-use language_model::{
-    LanguageModelCompletionError, ProviderErrorCategory, ZED_CLOUD_PROVIDER_NAME,
-};
+use language_model::{LanguageModelCompletionError, ProviderErrorCategory};
 use markdown::{
     CodeBlockRenderer, CopyButtonVisibility, Markdown, MarkdownElement, MarkdownFont, MarkdownStyle,
 };
@@ -47,7 +45,7 @@ use crate::conversation_view::elicitation::{
     ElicitationCard, ElicitationCardHandlers, ElicitationFormState, should_render_elicitation,
 };
 use crate::message_editor::SessionCapabilities;
-use crate::{AgentThreadSource, DEFAULT_THREAD_TITLE, resolve_agent_image};
+use crate::{DEFAULT_THREAD_TITLE, resolve_agent_image};
 use lru::LruCache;
 use rope::Point;
 use settings::{NotifyWhenAgentWaiting, Settings as _, SettingsStore};
@@ -116,16 +114,8 @@ mod thread_view;
 pub use message_queue::*;
 pub use thread_view::*;
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-enum ThreadFeedback {
-    Positive,
-    Negative,
-}
-
 #[derive(Debug)]
 pub(crate) enum ThreadError {
-    ZedPaymentRequired,
-    DataRetentionConsentRequired,
     Refusal,
     AuthenticationRequired(SharedString),
     RateLimitExceeded {
@@ -188,11 +178,6 @@ impl From<anyhow::Error> for ThreadError {
                         provider: provider.to_string().into(),
                     },
                     ProviderErrorCategory::PromptTooLarge { .. } => Self::PromptTooLarge,
-                    ProviderErrorCategory::PaymentRequired
-                        if provider == &ZED_CLOUD_PROVIDER_NAME =>
-                    {
-                        Self::ZedPaymentRequired
-                    }
                     ProviderErrorCategory::Authentication => Self::AuthenticationFailed {
                         provider: provider.to_string().into(),
                     },
@@ -223,7 +208,6 @@ impl From<anyhow::Error> for ThreadError {
                 | HttpSend { provider, .. } => Self::StreamError {
                     provider: provider.to_string().into(),
                 },
-                DataRetentionConsentRequired { .. } => Self::DataRetentionConsentRequired,
                 _ => {
                     let message: SharedString = format!("{:#}", error).into();
                     Self::Other {
@@ -620,16 +604,6 @@ impl Conversation {
         {
             return;
         }
-        let agent_telemetry_id = thread.read(cx).connection().telemetry_id();
-        let session_id = thread.read(cx).session_id().clone();
-
-        telemetry::event!(
-            "Agent Tool Call Authorized",
-            agent = agent_telemetry_id,
-            session = session_id,
-            option = outcome.option_kind
-        );
-
         thread.update(cx, |thread, cx| {
             thread.authorize_permission_request(request_id, outcome, cx);
         });
@@ -995,7 +969,6 @@ impl ConversationView {
         workspace: WeakEntity<Workspace>,
         project: Entity<Project>,
         thread_store: Option<Entity<ThreadStore>>,
-        source: AgentThreadSource,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -1063,7 +1036,6 @@ impl ConversationView {
                 title,
                 project,
                 initial_content,
-                source,
                 window,
                 cx,
             ),
@@ -1200,7 +1172,6 @@ impl ConversationView {
             title,
             self.project.clone(),
             None,
-            AgentThreadSource::AgentPanel,
             window,
             cx,
         );
@@ -1225,7 +1196,6 @@ impl ConversationView {
         title: Option<SharedString>,
         project: Entity<Project>,
         initial_content: Option<AgentInitialContent>,
-        source: AgentThreadSource,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> ServerState {
@@ -1262,9 +1232,6 @@ impl ConversationView {
 
         let connect_result = connection_entry.read(cx).wait_for_connection();
 
-        let side = crate::agent_sidebar_side(cx);
-        let thread_location = "current_worktree";
-
         let load_task = cx.spawn_in(window, async move |this, cx| {
             let connection = match connect_result.await {
                 Ok(AgentConnectedState { connection, .. }) => connection,
@@ -1293,14 +1260,6 @@ impl ConversationView {
                 }
             })
             .log_err();
-
-            telemetry::event!(
-                "Agent Thread Started",
-                agent = connection.telemetry_id(),
-                source = source.as_str(),
-                side = side,
-                thread_location = thread_location
-            );
 
             let mut resumed_without_history = false;
             let result = if let Some(session_id) = resume_session_id.clone() {
@@ -1694,7 +1653,6 @@ impl ConversationView {
                 self.focus_handle.focus(window, cx)
             }
         }
-        self.emit_load_error_telemetry(&err);
         self.set_server_state(ServerState::LoadError { error: err }, cx);
     }
 
@@ -1893,16 +1851,8 @@ impl ConversationView {
             }
             AcpThreadEvent::Stopped {
                 activity_generation,
-                activity_duration,
                 stop_reason,
             } => {
-                if thread.read(cx).uses_reported_activity()
-                    && let Some(active) = self.thread_view(&session_id)
-                {
-                    active
-                        .read(cx)
-                        .report_activity_completion(stop_reason, *activity_duration, cx);
-                }
                 if thread.read(cx).activity_generation() != *activity_generation
                     || thread.read(cx).foreground_activity() != ForegroundActivity::Idle
                 {
@@ -2201,8 +2151,6 @@ impl ConversationView {
             return;
         };
 
-        let agent_telemetry_id = connection.telemetry_id();
-
         if let Some(login_task) = connection.terminal_auth_task(&method, cx) {
             pending_auth_method.replace(method.clone());
 
@@ -2227,19 +2175,6 @@ impl ConversationView {
                         .await
                     }
                     .await;
-
-                    match &result {
-                        Ok(_) => telemetry::event!(
-                            "Authenticate Agent Succeeded",
-                            agent = agent_telemetry_id
-                        ),
-                        Err(_) => {
-                            telemetry::event!(
-                                "Authenticate Agent Failed",
-                                agent = agent_telemetry_id,
-                            )
-                        }
-                    }
 
                     this.update_in(cx, |this, window, cx| {
                         if let Err(err) = result {
@@ -2280,16 +2215,6 @@ impl ConversationView {
         self.auth_task = Some(cx.spawn_in(window, {
             async move |this, cx| {
                 let result = authenticate.await;
-
-                match &result {
-                    Ok(_) => telemetry::event!(
-                        "Authenticate Agent Succeeded",
-                        agent = agent_telemetry_id
-                    ),
-                    Err(_) => {
-                        telemetry::event!("Authenticate Agent Failed", agent = agent_telemetry_id,)
-                    }
-                }
 
                 this.update_in(cx, |this, window, cx| {
                     if let Err(err) = result {
@@ -2544,7 +2469,6 @@ impl ConversationView {
                     .rev()
                     .map(|(ix, method)| {
                         let (method_id, name) = (method.id().0.clone(), method.name().to_string());
-                        let agent_telemetry_id = connection.telemetry_id();
 
                         Button::new(method_id.clone(), name)
                             .label_size(LabelSize::Small)
@@ -2560,12 +2484,6 @@ impl ConversationView {
                             })
                             .on_click({
                                 cx.listener(move |this, _, window, cx| {
-                                    telemetry::event!(
-                                        "Authenticate Agent Started",
-                                        agent = agent_telemetry_id,
-                                        method = method_id
-                                    );
-
                                     this.authenticate(
                                         acp_v1::AuthMethodId::new(method_id.clone()),
                                         window,
@@ -2966,24 +2884,6 @@ impl ConversationView {
         }
     }
 
-    fn emit_load_error_telemetry(&self, error: &LoadError) {
-        let error_kind = match error {
-            LoadError::Unsupported { .. } => "unsupported",
-            LoadError::FailedToInstall(_) => "failed_to_install",
-            LoadError::Exited { .. } => "exited",
-            LoadError::Other(_) => "other",
-        };
-
-        let agent_name = self.agent.agent_id();
-
-        telemetry::event!(
-            "Agent Panel Error Shown",
-            agent = agent_name,
-            kind = error_kind,
-            message = error.to_string(),
-        );
-    }
-
     fn render_load_error(
         &self,
         e: &LoadError,
@@ -3318,7 +3218,6 @@ impl ConversationView {
                                                             root_work_dirs.clone(),
                                                             root_title.clone(),
                                                             true,
-                                                            AgentThreadSource::AgentPanel,
                                                             window,
                                                             cx,
                                                         );
@@ -3737,6 +3636,7 @@ impl Render for ConversationView {
                 ui::BackgroundImageArea::Window,
                 cx.theme().colors().panel_background,
                 true,
+                gpui::Corners::default(),
             ))
             .child(v_flex().flex_1().min_h_0().child(content))
             .when(!active_thread_renders_request_elicitations, |this| {
@@ -4011,21 +3911,6 @@ pub(crate) mod tests {
     use super::*;
 
     #[test]
-    fn test_data_retention_error_maps_from_provider_error() {
-        // The agent wraps the provider error in a fresh `anyhow::Error`, so
-        // the mapping must downcast to `LanguageModelCompletionError` rather
-        // than matching on the anyhow error directly.
-        let provider_error = LanguageModelCompletionError::DataRetentionConsentRequired {
-            model_name: "Claude Fable 5".to_string(),
-        };
-        let error = ThreadError::from(anyhow!(provider_error));
-        assert!(
-            matches!(error, ThreadError::DataRetentionConsentRequired),
-            "expected ThreadError::DataRetentionConsentRequired, got: {error:?}"
-        );
-    }
-
-    #[test]
     fn test_provider_rejection_preserves_provider_message() {
         let provider_error = LanguageModelCompletionError::from_provider_response(
             language_model::OPEN_AI_PROVIDER_NAME,
@@ -4046,7 +3931,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn test_payment_required_preserves_non_zed_provider_message() {
+    fn test_payment_required_preserves_provider_message() {
         for provider in [
             language_model::LanguageModelProviderName::new("OpenRouter"),
             language_model::OPEN_AI_PROVIDER_NAME,
@@ -4074,25 +3959,6 @@ pub(crate) mod tests {
                 );
             }
         }
-    }
-
-    #[test]
-    fn test_payment_required_from_zed_uses_upgrade_prompt() {
-        let provider_error = LanguageModelCompletionError::from_provider_response(
-            ZED_CLOUD_PROVIDER_NAME,
-            Some(http_client::StatusCode::PAYMENT_REQUIRED),
-            None,
-            "Payment required".to_string(),
-            None,
-            ProviderErrorCategory::PaymentRequired,
-        );
-
-        let error = ThreadError::from(anyhow!(provider_error));
-
-        assert!(
-            matches!(error, ThreadError::ZedPaymentRequired),
-            "expected Zed upgrade prompt, got: {error:?}"
-        );
     }
 
     #[gpui::test]
@@ -5469,7 +5335,6 @@ pub(crate) mod tests {
                     workspace.downgrade(),
                     project,
                     Some(thread_store),
-                    AgentThreadSource::AgentPanel,
                     window,
                     cx,
                 )
@@ -5491,10 +5356,6 @@ pub(crate) mod tests {
     impl AgentConnection for RestoredAvailableCommandsConnection {
         fn agent_id(&self) -> AgentId {
             AgentId::new("restored-available-commands")
-        }
-
-        fn telemetry_id(&self) -> SharedString {
-            "restored-available-commands".into()
         }
 
         fn new_session(
@@ -5604,7 +5465,6 @@ pub(crate) mod tests {
                     workspace.downgrade(),
                     project,
                     Some(thread_store),
-                    AgentThreadSource::AgentPanel,
                     window,
                     cx,
                 )
@@ -5685,7 +5545,6 @@ pub(crate) mod tests {
                     workspace.downgrade(),
                     project,
                     Some(thread_store),
-                    AgentThreadSource::AgentPanel,
                     window,
                     cx,
                 )
@@ -5823,7 +5682,6 @@ pub(crate) mod tests {
                     workspace.downgrade(),
                     project.clone(),
                     Some(thread_store),
-                    AgentThreadSource::AgentPanel,
                     window,
                     cx,
                 )
@@ -6274,7 +6132,6 @@ pub(crate) mod tests {
                     workspace.downgrade(),
                     project.clone(),
                     Some(thread_store),
-                    AgentThreadSource::AgentPanel,
                     window,
                     cx,
                 )
@@ -6372,7 +6229,6 @@ pub(crate) mod tests {
                     workspace.downgrade(),
                     project.clone(),
                     Some(thread_store),
-                    AgentThreadSource::AgentPanel,
                     window,
                     cx,
                 )
@@ -6447,7 +6303,6 @@ pub(crate) mod tests {
                     workspace.downgrade(),
                     project.clone(),
                     Some(thread_store),
-                    AgentThreadSource::AgentPanel,
                     window,
                     cx,
                 )
@@ -6514,7 +6369,6 @@ pub(crate) mod tests {
                     workspace.downgrade(),
                     project.clone(),
                     Some(thread_store),
-                    AgentThreadSource::AgentPanel,
                     window,
                     cx,
                 )
@@ -6635,7 +6489,6 @@ pub(crate) mod tests {
                     workspace1.downgrade(),
                     project1.clone(),
                     Some(thread_store),
-                    AgentThreadSource::AgentPanel,
                     window,
                     cx,
                 )
@@ -7264,7 +7117,6 @@ pub(crate) mod tests {
                     workspace.downgrade(),
                     project,
                     Some(thread_store),
-                    AgentThreadSource::AgentPanel,
                     window,
                     cx,
                 )
@@ -7511,10 +7363,6 @@ pub(crate) mod tests {
             AgentId::new("preloaded-elicitation")
         }
 
-        fn telemetry_id(&self) -> SharedString {
-            "preloaded-elicitation".into()
-        }
-
         fn new_session(
             self: Rc<Self>,
             project: Entity<Project>,
@@ -7624,10 +7472,6 @@ pub(crate) mod tests {
     impl AgentConnection for SessionCreationRequestElicitationConnection {
         fn agent_id(&self) -> AgentId {
             AgentId::new("session-creation-request-elicitation")
-        }
-
-        fn telemetry_id(&self) -> SharedString {
-            "session-creation-request-elicitation".into()
         }
 
         fn new_session(
@@ -7756,10 +7600,6 @@ pub(crate) mod tests {
             AgentId::new("release-request-elicitation")
         }
 
-        fn telemetry_id(&self) -> SharedString {
-            "release-request-elicitation".into()
-        }
-
         fn new_session(
             self: Rc<Self>,
             project: Entity<Project>,
@@ -7833,10 +7673,6 @@ pub(crate) mod tests {
     impl AgentConnection for ResumeOnlyAgentConnection {
         fn agent_id(&self) -> AgentId {
             AgentId::new("resume-only")
-        }
-
-        fn telemetry_id(&self) -> SharedString {
-            "resume-only".into()
         }
 
         fn new_session(
@@ -7927,10 +7763,6 @@ pub(crate) mod tests {
             AgentId::new("auth-gated")
         }
 
-        fn telemetry_id(&self) -> SharedString {
-            "auth-gated".into()
-        }
-
         fn new_session(
             self: Rc<Self>,
             project: Entity<Project>,
@@ -8017,10 +7849,6 @@ pub(crate) mod tests {
             AgentId::new("refusal")
         }
 
-        fn telemetry_id(&self) -> SharedString {
-            "refusal".into()
-        }
-
         fn new_session(
             self: Rc<Self>,
             project: Entity<Project>,
@@ -8093,10 +7921,6 @@ pub(crate) mod tests {
     impl AgentConnection for CwdCapturingConnection {
         fn agent_id(&self) -> AgentId {
             AgentId::new("cwd-capturing")
-        }
-
-        fn telemetry_id(&self) -> SharedString {
-            "cwd-capturing".into()
         }
 
         fn new_session(
@@ -8276,7 +8100,6 @@ pub(crate) mod tests {
                     workspace.downgrade(),
                     project.clone(),
                     Some(thread_store.clone()),
-                    AgentThreadSource::AgentPanel,
                     window,
                     cx,
                 )
@@ -8451,7 +8274,6 @@ pub(crate) mod tests {
                     workspace.downgrade(),
                     project.clone(),
                     Some(thread_store.clone()),
-                    AgentThreadSource::AgentPanel,
                     window,
                     cx,
                 )
@@ -16349,7 +16171,6 @@ pub(crate) mod tests {
                     workspace.downgrade(),
                     project,
                     Some(thread_store),
-                    AgentThreadSource::AgentPanel,
                     window,
                     cx,
                 )
@@ -16473,10 +16294,6 @@ pub(crate) mod tests {
     impl AgentConnection for CloseCapableConnection {
         fn agent_id(&self) -> AgentId {
             AgentId::new("close-capable")
-        }
-
-        fn telemetry_id(&self) -> SharedString {
-            "close-capable".into()
         }
 
         fn new_session(

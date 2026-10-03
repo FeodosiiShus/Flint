@@ -81,7 +81,6 @@ impl Console {
             editor.set_use_autoclose(false);
             editor.set_show_wrap_guides(false, cx);
             editor.set_show_indent_guides(false, cx);
-            editor.set_show_edit_predictions(Some(false), window, cx);
             editor.set_use_modal_editing(false);
             editor.disable_mouse_wheel_zoom();
             editor.set_soft_wrap_mode(language::language_settings::SoftWrap::EditorWidth, cx);
@@ -462,6 +461,7 @@ impl Render for Console {
                 ui::BackgroundImageArea::Window,
                 cx.theme().colors().editor_background,
                 true,
+                gpui::Corners::default(),
             ))
             .child(self.render_console(cx))
             .when(self.is_running(cx), |this| {
@@ -477,6 +477,7 @@ impl Render for Console {
                             ui::BackgroundImageArea::Window,
                             cx.theme().colors().editor_background,
                             true,
+                            gpui::Corners::default(),
                         ))
                         .child(self.render_query_bar(cx))
                         .child(SplitButton::new(

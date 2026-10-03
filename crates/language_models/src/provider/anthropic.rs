@@ -1,5 +1,3 @@
-pub mod telemetry;
-
 use anthropic::{ANTHROPIC_API_URL, AnthropicError, AnthropicModelMode};
 use anyhow::Result;
 use collections::BTreeMap;

@@ -33,8 +33,8 @@ use project::{AgentId, AgentServerStore};
 use settings::Settings as _;
 use theme::ActiveTheme;
 use ui::{
-    AgentThreadStatus, Divider, KeyBinding, ListItem, ListItemSpacing, ListSubHeader, ScrollAxes,
-    Scrollbars, Tab, ThreadItem, Tooltip, WithScrollbar, prelude::*,
+    AgentThreadStatus, ChromeRegion, Divider, KeyBinding, ListItem, ListItemSpacing, ListSubHeader,
+    ScrollAxes, Scrollbars, ThreadItem, Tooltip, WithScrollbar, prelude::*,
     utils::platform_title_bar_height,
 };
 use util::ResultExt;
@@ -776,11 +776,6 @@ impl ThreadsArchiveView {
                     .on_click({
                         let thread = thread.clone();
                         cx.listener(move |this, _, window, cx| {
-                            telemetry::event!(
-                                "Archived Thread Opened",
-                                agent = thread.agent_id.as_ref(),
-                                side = crate::agent_sidebar_side(cx)
-                            );
                             this.unarchive_thread(thread.clone(), window, cx);
                         })
                     })
@@ -974,7 +969,7 @@ impl ThreadsArchiveView {
             .mt_px()
             .pl_2p5()
             .pr_1p5()
-            .h(Tab::content_height(cx))
+            .h(ui::panel_header_content_height(cx))
             .justify_between()
             .border_b_1()
             .border_color(cx.theme().colors().border)
@@ -989,6 +984,7 @@ impl ThreadsArchiveView {
                     .child(
                         IconButton::new("new-thread", IconName::Plus)
                             .icon_size(IconSize::Small)
+                            .chrome_region(ChromeRegion::Panel)
                             .tooltip(Tooltip::text("Start New Agent Thread"))
                             .on_click(cx.listener(|_this, _, _, cx| {
                                 cx.emit(ThreadsArchiveViewEvent::NewThread);
@@ -997,6 +993,7 @@ impl ThreadsArchiveView {
                     .child(
                         IconButton::new("thread-import", IconName::Download)
                             .icon_size(IconSize::Small)
+                            .chrome_region(ChromeRegion::Panel)
                             .tooltip(Tooltip::text("Import Threads"))
                             .on_click(cx.listener(|_this, _, _, cx| {
                                 cx.emit(ThreadsArchiveViewEvent::Import);
@@ -1005,6 +1002,7 @@ impl ThreadsArchiveView {
                     .child(
                         IconButton::new("filter-archived-only", IconName::Archive)
                             .icon_size(IconSize::Small)
+                            .chrome_region(ChromeRegion::Panel)
                             .disabled(!has_archived_threads)
                             .toggle_state(self.thread_filter == ThreadFilter::ArchivedOnly)
                             .tooltip(Tooltip::text(

@@ -1,6 +1,3 @@
-use language_models::provider::anthropic::telemetry::{
-    AnthropicCompletionType, AnthropicEventData, AnthropicEventType, report_anthropic_event,
-};
 use std::mem;
 use std::ops::Range;
 use std::sync::Arc;
@@ -42,7 +39,7 @@ use language::{Buffer, Point, Selection, TransactionId};
 use language_model::{ConfigurationError, LanguageModelRegistry};
 use multi_buffer::MultiBufferRow;
 use parking_lot::Mutex;
-use project::{DisableAiSettings, Project};
+use project::Project;
 use prompt_store::PromptBuilder;
 use settings::{Settings, SettingsStore};
 
@@ -54,16 +51,6 @@ use zed_actions::agent::OpenSettings;
 
 pub fn init(fs: Arc<dyn Fs>, prompt_builder: Arc<PromptBuilder>, cx: &mut App) {
     cx.set_global(InlineAssistant::new(fs, prompt_builder));
-
-    cx.observe_global::<SettingsStore>(|cx| {
-        if DisableAiSettings::get_global(cx).disable_ai {
-            // Hide any active inline assist UI when AI is disabled
-            InlineAssistant::update_global(cx, |assistant, cx| {
-                assistant.cancel_all_active_completions(cx);
-            });
-        }
-    })
-    .detach();
 
     cx.observe_new(|_workspace: &mut Workspace, window, cx| {
         let Some(window) = window else {
@@ -156,26 +143,6 @@ impl InlineAssistant {
             }
         })
         .detach();
-    }
-
-    /// Hides all active inline assists when AI is disabled
-    pub fn cancel_all_active_completions(&mut self, cx: &mut App) {
-        // Cancel all active completions in editors
-        for (editor_handle, _) in self.assists_by_editor.iter() {
-            if let Some(editor) = editor_handle.upgrade() {
-                let windows = cx.windows();
-                if !windows.is_empty() {
-                    let window = windows[0];
-                    let _ = window.update(cx, |_, window, cx| {
-                        editor.update(cx, |editor, cx| {
-                            if editor.has_active_edit_prediction() {
-                                editor.cancel(&Default::default(), window, cx);
-                            }
-                        });
-                    });
-                }
-            }
-        }
     }
 
     fn handle_workspace_event(
@@ -401,28 +368,6 @@ impl InlineAssistant {
             let anchor_range = start..end;
 
             codegen_ranges.push(anchor_range);
-
-            if let Some(model) = LanguageModelRegistry::read_global(cx).inline_assistant_model() {
-                telemetry::event!(
-                    "Assistant Invoked",
-                    kind = "inline",
-                    phase = "invoked",
-                    model = model.telemetry_id(),
-                    model_provider = model.provider_id().to_string(),
-                    language_name = buffer.language().map(|language| language.name().to_proto())
-                );
-
-                report_anthropic_event(
-                    &model,
-                    AnthropicEventData {
-                        completion_type: AnthropicCompletionType::Editor,
-                        event: AnthropicEventType::Invoked,
-                        language_name: buffer.language().map(|language| language.name().to_proto()),
-                        message_id: None,
-                    },
-                    cx,
-                );
-            }
         }
 
         Some((codegen_ranges, newest_selection))
@@ -975,61 +920,6 @@ impl InlineAssistant {
             }
 
             let active_alternative = assist.codegen.read(cx).active_alternative().clone();
-            if let Some(model) = LanguageModelRegistry::read_global(cx).inline_assistant_model() {
-                let language_name = assist.editor.upgrade().and_then(|editor| {
-                    let multibuffer = editor.read(cx).buffer().read(cx);
-                    let snapshot = multibuffer.snapshot(cx);
-                    let ranges =
-                        snapshot.range_to_buffer_ranges(assist.range.start..assist.range.end);
-                    ranges
-                        .first()
-                        .and_then(|(buffer, _, _)| buffer.language())
-                        .map(|language| language.name().0.to_string())
-                });
-
-                let codegen = assist.codegen.read(cx);
-                let session_id = codegen.session_id();
-                let message_id = active_alternative.read(cx).message_id.clone();
-                let model_telemetry_id = model.telemetry_id();
-                let model_provider_id = model.provider_id().to_string();
-
-                let (phase, event_type, anthropic_event_type) = if undo {
-                    (
-                        "rejected",
-                        "Assistant Response Rejected",
-                        AnthropicEventType::Reject,
-                    )
-                } else {
-                    (
-                        "accepted",
-                        "Assistant Response Accepted",
-                        AnthropicEventType::Accept,
-                    )
-                };
-
-                telemetry::event!(
-                    event_type,
-                    phase,
-                    session_id = session_id.to_string(),
-                    kind = "inline",
-                    model = model_telemetry_id,
-                    model_provider = model_provider_id,
-                    language_name = language_name,
-                    message_id = message_id.as_deref(),
-                );
-
-                report_anthropic_event(
-                    &model,
-                    AnthropicEventData {
-                        completion_type: AnthropicCompletionType::Editor,
-                        event: anthropic_event_type,
-                        language_name,
-                        message_id,
-                    },
-                    cx,
-                );
-            }
-
             if undo {
                 assist.codegen.update(cx, |codegen, cx| codegen.undo(cx));
             } else {
@@ -1418,7 +1308,6 @@ impl InlineAssistant {
                     editor.disable_mouse_wheel_zoom();
                     editor.set_forbid_vertical_scroll(true);
                     editor.set_read_only(true);
-                    editor.set_show_edit_predictions(Some(false), window, cx);
                     editor.highlight_rows::<DeletedLines>(
                         Anchor::Min..Anchor::Max,
                         |cx| cx.theme().status().deleted_background,
@@ -1797,7 +1686,7 @@ fn merge_ranges(ranges: &mut Vec<Range<Anchor>>, buffer: &MultiBufferSnapshot) {
 pub mod evals {
     use crate::InlineAssistant;
     use agent::ThreadStore;
-    use client::{Client, RefreshLlmTokenListener, UserStore};
+    use client::Client;
     use editor::{Editor, MultiBuffer, MultiBufferOffset};
     use eval_utils::{EvalOutput, NoProcessor};
     use fs::FakeFs;
@@ -1856,16 +1745,12 @@ pub mod evals {
         let (tx, mut completion_rx) = mpsc::unbounded();
         inline_assistant.set_completion_receiver(tx);
 
-        // Initialize settings and client
         cx.update(|cx| {
             gpui_tokio::init(cx);
             settings::init(cx);
-            client::init(&client, cx);
             workspace::init(app_state.clone(), cx);
-            let user_store = cx.new(|cx| UserStore::new(client.clone(), cx));
             language_model::init(cx);
-            RefreshLlmTokenListener::register(client.clone(), user_store.clone(), cx);
-            language_models::init(user_store, client.clone(), cx);
+            language_models::init(client, cx);
 
             cx.set_global(inline_assistant);
         });

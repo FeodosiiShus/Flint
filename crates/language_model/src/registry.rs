@@ -1,6 +1,6 @@
 use crate::{
     LanguageModel, LanguageModelCompletionError, LanguageModelId, LanguageModelProvider,
-    LanguageModelProviderId, LanguageModelProviderState, ZED_CLOUD_PROVIDER_ID, unavailable_error,
+    LanguageModelProviderId, LanguageModelProviderState, unavailable_error,
 };
 use collections::{BTreeMap, HashSet};
 use gpui::{App, Context, Entity, EventEmitter, Global, prelude::*};
@@ -98,10 +98,6 @@ impl LanguageModel {
     pub fn is_same_as(&self, other: &LanguageModel) -> bool {
         self.id == other.id && self.provider_id == other.provider_id
     }
-
-    pub fn is_provided_by_zed(&self) -> bool {
-        self.provider_id == ZED_CLOUD_PROVIDER_ID
-    }
 }
 
 pub enum Event {
@@ -175,19 +171,7 @@ impl LanguageModelRegistry {
     }
 
     pub fn providers(&self) -> Vec<Arc<dyn LanguageModelProvider>> {
-        let zed_provider_id = LanguageModelProviderId("zed.dev".into());
-        let mut providers = Vec::with_capacity(self.providers.len());
-        if let Some(provider) = self.providers.get(&zed_provider_id) {
-            providers.push(provider.clone());
-        }
-        providers.extend(self.providers.values().filter_map(|p| {
-            if p.id() != zed_provider_id {
-                Some(p.clone())
-            } else {
-                None
-            }
-        }));
-        providers
+        self.providers.values().cloned().collect()
     }
 
     /// Returns providers, filtering out hidden built-in providers.

@@ -27,8 +27,7 @@ use gpui::{App, AppContext, AsyncApp, Task};
 use rpc::proto::Envelope;
 
 use crate::{
-    RemoteArch, RemoteClientDelegate, RemoteConnection, RemoteConnectionOptions, RemoteOs,
-    RemotePlatform,
+    RemoteClientDelegate, RemoteConnection, RemoteConnectionOptions, RemoteOs, RemotePlatform,
     remote_client::{CommandTemplate, Interactive},
     transport::parse_platform,
 };
@@ -60,7 +59,6 @@ pub(crate) struct DockerExecConnection {
     remote_binary_relpath: Option<Arc<RelPath>>,
     connection_options: DockerConnectionOptions,
     remote_platform: Option<RemotePlatform>,
-    os_version: Option<String>,
     path_style: Option<PathStyle>,
     shell: String,
 }
@@ -77,7 +75,6 @@ impl DockerExecConnection {
             remote_binary_relpath: None,
             connection_options,
             remote_platform: None,
-            os_version: None,
             path_style: None,
             shell: "sh".to_owned(),
         };
@@ -97,9 +94,6 @@ impl DockerExecConnection {
 
         this.remote_platform = Some(remote_platform);
         log::info!("Remote platform discovered: {:?}", this.remote_platform);
-
-        this.os_version = this.discover_os_version(remote_platform.os).await;
-        log::info!("Remote OS version discovered: {:?}", this.os_version);
 
         this.shell = this.discover_shell().await;
         log::info!("Remote shell discovered: {}", this.shell);
@@ -185,21 +179,6 @@ impl DockerExecConnection {
     async fn check_remote_platform(&self) -> Result<RemotePlatform> {
         let uname = self.run_docker_exec_delimited("uname -sm").await?;
         parse_platform(&uname)
-    }
-
-    /// Best-effort detection of the container's OS version for telemetry.
-    async fn discover_os_version(&self, os: RemoteOs) -> Option<String> {
-        let (program, args) = super::os_version_command(os);
-        match self
-            .run_docker_exec(program, None, &Default::default(), args)
-            .await
-        {
-            Ok(output) => super::parse_os_version(os, &output),
-            Err(error) => {
-                log::warn!("Failed to determine remote OS version: {error:#}");
-                None
-            }
-        }
     }
 
     async fn ensure_server_binary(
@@ -688,7 +667,7 @@ impl RemoteConnection for DockerExecConnection {
         let mut docker_args = vec!["exec".to_string()];
 
         push_environment(&mut docker_args, &self.connection_options.remote_env);
-        for env_var in ["RUST_LOG", "RUST_BACKTRACE", "ZED_GENERATE_MINIDUMPS"] {
+        for env_var in ["RUST_LOG", "RUST_BACKTRACE"] {
             if let Some(value) = std::env::var(env_var).ok() {
                 docker_args.push("-e".to_string());
                 docker_args.push(format!("{env_var}={value}"));
@@ -857,19 +836,6 @@ impl RemoteConnection for DockerExecConnection {
 
     fn path_style(&self) -> PathStyle {
         self.path_style.unwrap_or(PathStyle::Unix)
-    }
-
-    fn remote_platform(&self) -> RemotePlatform {
-        // Docker containers are always Linux; the platform is populated during
-        // setup, so this fallback is only for the brief pre-detection window.
-        self.remote_platform.unwrap_or(RemotePlatform {
-            os: RemoteOs::Linux,
-            arch: RemoteArch::X86_64,
-        })
-    }
-
-    fn remote_os_version(&self) -> Option<String> {
-        self.os_version.clone()
     }
 
     fn shell(&self) -> String {
@@ -1069,7 +1035,6 @@ mod tests {
                     .collect(),
             },
             remote_platform: None,
-            os_version: None,
             path_style: None,
             shell: "/bin/sh".to_string(),
         }

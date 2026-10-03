@@ -597,6 +597,13 @@ pub struct MergeDetails {
     pub message: Option<SharedString>,
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ConflictStages {
+    pub base: Option<String>,
+    pub ours: Option<String>,
+    pub theirs: Option<String>,
+}
+
 #[derive(Clone)]
 pub enum CommitDataState {
     Loading(Option<Shared<oneshot::Receiver<Arc<CommitData>>>>),
@@ -8001,6 +8008,72 @@ impl Repository {
         cx: &mut Context<Self>,
     ) -> Task<anyhow::Result<()>> {
         self.stage_or_unstage_entries(false, entries, cx)
+    }
+
+    pub fn load_conflict_stages(
+        &mut self,
+        repo_path: RepoPath,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<ConflictStages>> {
+        let receiver = self.send_job("load_conflict_stages", None, move |state, _| async move {
+            match state {
+                RepositoryState::Local(LocalRepositoryState { backend, .. }) => {
+                    let path = repo_path.as_unix_str();
+                    let revisions = vec![
+                        format!(":1:{path}"),
+                        format!(":2:{path}"),
+                        format!(":3:{path}"),
+                    ];
+                    let mut stages = backend.load_revisions(revisions).await?.into_iter();
+                    let mut next_stage =
+                        || stages.next().flatten().map(decode_git_text).transpose();
+                    Ok(ConflictStages {
+                        base: next_stage()?,
+                        ours: next_stage()?,
+                        theirs: next_stage()?,
+                    })
+                }
+                RepositoryState::Remote(_) => Err(anyhow!(
+                    "loading conflict stages is not supported for remote repositories"
+                )),
+            }
+        });
+        cx.background_spawn(async move { receiver.await? })
+    }
+
+    pub fn unresolve_paths(
+        &mut self,
+        paths: Vec<RepoPath>,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<()>> {
+        if paths.is_empty() {
+            return Task::ready(Ok(()));
+        }
+        let status = format!(
+            "git checkout -m {}",
+            paths
+                .iter()
+                .map(|path| path.as_unix_str())
+                .collect::<Vec<_>>()
+                .join(" ")
+        );
+        let receiver = self.send_job(
+            "unresolve_paths",
+            Some(status.into()),
+            move |state, _| async move {
+                match state {
+                    RepositoryState::Local(LocalRepositoryState {
+                        backend,
+                        environment,
+                        ..
+                    }) => backend.unresolve_paths(paths, environment).await,
+                    RepositoryState::Remote(_) => Err(anyhow!(
+                        "unresolving conflicts is not supported for remote repositories"
+                    )),
+                }
+            },
+        );
+        cx.background_spawn(async move { receiver.await? })
     }
 
     fn stage_or_unstage_entries(

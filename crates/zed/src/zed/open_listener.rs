@@ -4,8 +4,6 @@ use agent_ui::ExternalSourcePrompt;
 use anyhow::{Context as _, Result, anyhow};
 use cli::{CliRequest, CliResponse, CliResponseSink};
 use cli::{IpcHandshake, ipc};
-use client::{ZedLink, parse_zed_link};
-use db::kvp::KeyValueStore;
 use editor::Editor;
 use fs::Fs;
 use futures::channel::mpsc::{UnboundedReceiver, UnboundedSender};
@@ -16,8 +14,6 @@ use futures::{FutureExt, StreamExt};
 use git_ui::multi_diff_view::MultiDiffView;
 use git_ui_core::file_diff_view::FileDiffView;
 use gpui::{App, AsyncApp, Global, TaskExt, WindowHandle};
-use onboarding::FIRST_OPEN;
-use onboarding::show_onboarding_view;
 use recent_projects::{RemoteSettings, navigate_to_positions, open_remote_project};
 use remote::{RemoteConnectionOptions, WslConnectionOptions};
 use settings::Settings;
@@ -40,8 +36,6 @@ pub struct OpenRequest {
     pub diff_paths: Vec<[String; 2]>,
     pub diff_all: bool,
     pub dev_container: bool,
-    pub open_channel_notes: Vec<(u64, Option<String>)>,
-    pub join_channel: Option<u64>,
     pub remote_connection: Option<RemoteConnectionOptions>,
     pub open_behavior: Option<cli::OpenBehavior>,
 }
@@ -128,8 +122,6 @@ impl OpenRequest {
             && self.open_paths.is_empty()
             && self.diff_paths.is_empty()
             && self.remote_connection.is_none()
-            && self.join_channel.is_none()
-            && self.open_channel_notes.is_empty()
     }
 
     pub fn parse(request: RawOpenRequest, cx: &App) -> Result<Self> {
@@ -194,18 +186,6 @@ impl OpenRequest {
                 this.parse_git_commit_url(commit_path)?
             } else if url.starts_with("ssh://") {
                 this.parse_ssh_file_path(&url, cx)?
-            } else if let Some(zed_link) = parse_zed_link(&url, cx) {
-                match zed_link {
-                    ZedLink::Channel { channel_id } => {
-                        this.join_channel = Some(channel_id);
-                    }
-                    ZedLink::ChannelNotes {
-                        channel_id,
-                        heading,
-                    } => {
-                        this.open_channel_notes.push((channel_id, heading));
-                    }
-                }
             } else {
                 log::error!("unhandled url: {}", url);
             }
@@ -862,24 +842,16 @@ async fn open_workspaces(
         };
 
     if grouped_locations.is_empty() {
-        // If we have no paths to open, show the welcome screen if this is the first launch
-        let kvp = cx.update(|cx| KeyValueStore::global(cx));
-        if matches!(kvp.read_kvp(FIRST_OPEN), Ok(None)) {
-            cx.update(|cx| show_onboarding_view(app_state, cx).detach());
-        }
-        // If not the first launch, show an empty window with empty editor
-        else {
-            cx.update(|cx| {
-                let open_options = OpenOptions {
-                    env,
-                    ..Default::default()
-                };
-                workspace::open_new(open_options, app_state, cx, |workspace, window, cx| {
-                    Editor::new_file(workspace, &Default::default(), window, cx)
-                })
-                .detach_and_log_err(cx);
-            });
-        }
+        cx.update(|cx| {
+            let open_options = OpenOptions {
+                env,
+                ..Default::default()
+            };
+            workspace::open_new(open_options, app_state, cx, |workspace, window, cx| {
+                Editor::new_file(workspace, &Default::default(), window, cx)
+            })
+            .detach_and_log_err(cx);
+        });
         return Ok(());
     }
     // If there are paths to open, open a workspace for each grouping of paths

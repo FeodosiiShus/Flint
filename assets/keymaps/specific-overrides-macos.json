@@ -15,6 +15,17 @@
     },
   },
   {
+    "context": "SearchEverywhere > Picker > Editor",
+    "use_key_equivalents": true,
+    "bindings": {
+      "tab": "search_everywhere::NextTab",
+      "shift-tab": "search_everywhere::PreviousTab",
+      "ctrl-down": "search_everywhere::NextSection",
+      "ctrl-up": "search_everywhere::PreviousSection",
+      "cmd-shift-a": ["search_everywhere::Toggle", { "tab": "actions" }],
+    },
+  },
+  {
     "context": "(Picker && with_preview) > Editor",
     "use_key_equivalents": true,
     "bindings": {

@@ -57,7 +57,7 @@ use collections::{BTreeMap, btree_map};
 #[cfg(feature = "test-support")]
 pub use fake_git_repo::FakeBlobReadGate;
 #[cfg(feature = "test-support")]
-use fake_git_repo::{FakeCommitDataEntry, FakeGitRepositoryState};
+use fake_git_repo::{FakeCommitDataEntry, FakeConflictStages, FakeGitRepositoryState};
 #[cfg(feature = "test-support")]
 use git::{
     repository::{CommitData, InitialGraphCommitData, RepoPath, Worktree, repo_path},
@@ -1836,6 +1836,7 @@ impl FakeFs {
     /// We need to use something large enough for Windows and Unix to consider this a new file.
     /// https://doc.rust-lang.org/nightly/std/time/struct.SystemTime.html#platform-specific-behavior
     const SYSTEMTIME_INTERVAL: Duration = Duration::from_nanos(100);
+    const FAKE_MERGE_HEAD_SHA: &str = "4d455247455f484541445f53484100000000ffff";
 
     pub fn new(executor: gpui::BackgroundExecutor) -> Arc<Self> {
         let (tx, rx) = async_channel::bounded::<PathBuf>(10);
@@ -2437,6 +2438,66 @@ impl FakeFs {
                     .iter()
                     .map(|(path, content)| (path.clone(), *content)),
             );
+        })
+        .unwrap();
+    }
+
+    pub fn set_conflict_for_repo(
+        &self,
+        dot_git: &Path,
+        path: &str,
+        base: Option<&str>,
+        ours: Option<&str>,
+        theirs: Option<&str>,
+    ) {
+        let stages = FakeConflictStages {
+            base: base.map(|text| text.as_bytes().to_vec()),
+            ours: ours.map(|text| text.as_bytes().to_vec()),
+            theirs: theirs.map(|text| text.as_bytes().to_vec()),
+        };
+        let worktree_path = dot_git.parent().unwrap().join(path);
+        match stages.conflict_text() {
+            Some(conflict_text) => self
+                .write_file_internal(&worktree_path, conflict_text, false)
+                .unwrap(),
+            None => {
+                let mut state = self.state.lock();
+                let removed = state
+                    .write_path(&worktree_path, |entry| match entry {
+                        btree_map::Entry::Occupied(entry) => {
+                            entry.remove();
+                            Ok(true)
+                        }
+                        btree_map::Entry::Vacant(_) => Ok(false),
+                    })
+                    .unwrap();
+                if removed {
+                    state.emit_event([(worktree_path, Some(PathEventKind::Removed))]);
+                }
+            }
+        }
+        self.with_git_state(dot_git, true, |state| {
+            let repo_path = repo_path(path);
+            state
+                .unmerged_paths
+                .insert(repo_path.clone(), stages.unmerged_status());
+            state.index_contents.remove(&repo_path);
+            match &stages.ours {
+                Some(ours) => state.head_contents.insert(repo_path.clone(), ours.clone()),
+                None => state.head_contents.remove(&repo_path),
+            };
+            state
+                .refs
+                .entry("MERGE_HEAD".into())
+                .or_insert_with(|| Self::FAKE_MERGE_HEAD_SHA.into());
+            state.conflict_stages.insert(repo_path, stages);
+        })
+        .unwrap();
+    }
+
+    pub fn set_merge_message_for_repo(&self, dot_git: &Path, message: Option<&str>) {
+        self.with_git_state(dot_git, true, |state| {
+            state.merge_message = message.map(str::to_string);
         })
         .unwrap();
     }

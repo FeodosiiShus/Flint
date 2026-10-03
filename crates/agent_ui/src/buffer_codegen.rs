@@ -11,18 +11,13 @@ use futures::{
     join,
 };
 use gpui::{App, AppContext as _, AsyncApp, Context, Entity, EventEmitter, Subscription, Task};
-use language::{
-    Buffer, BufferEditSource, IndentKind, LanguageName, Point, TransactionId, line_diff,
-};
+use language::{Buffer, BufferEditSource, IndentKind, Point, TransactionId, line_diff};
 use language_model::{
     CompletionIntent, LanguageModel, LanguageModelCompletionError, LanguageModelCompletionEvent,
     LanguageModelCompletionStream, LanguageModelRegistry, LanguageModelRequest,
     LanguageModelRequestMessage, LanguageModelRequestTool, LanguageModelTextStream,
     LanguageModelToolChoice, LanguageModelToolUse, LanguageModelToolUseId, Role, StopReason,
     TokenUsage,
-};
-use language_models::provider::anthropic::telemetry::{
-    AnthropicCompletionType, AnthropicEventData, AnthropicEventReporter, AnthropicEventType,
 };
 use multi_buffer::MultiBufferRow;
 use parking_lot::Mutex;
@@ -124,16 +119,8 @@ impl BufferCodegen {
             .push(cx.subscribe(&codegen, |_, _, event, cx| cx.emit(*event)));
     }
 
-    pub fn active_completion(&self, cx: &App) -> Option<String> {
-        self.active_alternative().read(cx).current_completion()
-    }
-
     pub fn active_alternative(&self) -> &Entity<CodegenAlternative> {
         &self.alternatives[self.active_alternative]
-    }
-
-    pub fn language_name(&self, cx: &App) -> Option<LanguageName> {
-        self.active_alternative().read(cx).language_name(cx)
     }
 
     pub fn status<'a>(&self, cx: &'a App) -> &'a CodegenStatus {
@@ -254,14 +241,6 @@ impl BufferCodegen {
     pub fn last_equal_ranges<'a>(&self, cx: &'a App) -> &'a [Range<Anchor>] {
         self.active_alternative().read(cx).last_equal_ranges()
     }
-
-    pub fn selected_text<'a>(&self, cx: &'a App) -> Option<&'a str> {
-        self.active_alternative().read(cx).selected_text()
-    }
-
-    pub fn session_id(&self) -> Uuid {
-        self.session_id
-    }
 }
 
 impl EventEmitter<CodegenEvent> for BufferCodegen {}
@@ -284,8 +263,6 @@ pub struct CodegenAlternative {
     line_operations: Vec<LineOperation>,
     elapsed_time: Option<f64>,
     completion: Option<String>,
-    selected_text: Option<String>,
-    pub message_id: Option<String>,
     session_id: Uuid,
     pub description: Option<String>,
     pub failure: Option<String>,
@@ -331,7 +308,6 @@ impl CodegenAlternative {
             buffer: buffer.clone(),
             old_buffer,
             edit_position: None,
-            message_id: None,
             snapshot,
             last_equal_ranges: Default::default(),
             transformation_transaction_id: None,
@@ -345,19 +321,11 @@ impl CodegenAlternative {
             range,
             elapsed_time: None,
             completion: None,
-            selected_text: None,
             session_id,
             description: None,
             failure: None,
             _subscription: cx.subscribe(&buffer, Self::handle_buffer_event),
         }
-    }
-
-    pub fn language_name(&self, cx: &App) -> Option<LanguageName> {
-        self.old_buffer
-            .read(cx)
-            .language()
-            .map(|language| language.name())
     }
 
     pub fn set_active(&mut self, active: bool, cx: &mut Context<Self>) {
@@ -428,29 +396,24 @@ impl CodegenAlternative {
         let provider = LanguageModelRegistry::read_global(cx).provider_for_model(&model)?;
         if Self::use_streaming_tools(&model, cx) {
             let request = self.build_request(&model, user_prompt, context_task, cx)?;
-            let completion_events = cx.spawn({
-                let model = model.clone();
-                async move |_, cx| provider.stream_completion(&model, request.await, cx).await
+            let completion_events = cx.spawn(async move |_, cx| {
+                provider.stream_completion(&model, request.await, cx).await
             });
-            self.generation = self.handle_completion(model, completion_events, cx);
+            self.generation = self.handle_completion(completion_events, cx);
         } else {
             let stream: LocalBoxFuture<Result<LanguageModelTextStream>> =
                 if user_prompt.trim().to_lowercase() == "delete" {
                     async { Ok(LanguageModelTextStream::default()) }.boxed_local()
                 } else {
                     let request = self.build_request(&model, user_prompt, context_task, cx)?;
-                    cx.spawn({
-                        let model = model.clone();
-                        async move |_, cx| {
-                            Ok(provider
-                                .stream_completion_text(&model, request.await, cx)
-                                .await?)
-                        }
+                    cx.spawn(async move |_, cx| {
+                        Ok(provider
+                            .stream_completion_text(&model, request.await, cx)
+                            .await?)
                     })
                     .boxed_local()
                 };
-            self.generation =
-                self.handle_stream(model, /* strip_invalid_spans: */ true, stream, cx);
+            self.generation = self.handle_stream(/* strip_invalid_spans: */ true, stream, cx);
         }
 
         Ok(())
@@ -653,15 +616,10 @@ impl CodegenAlternative {
 
     pub fn handle_stream(
         &mut self,
-        model: LanguageModel,
         strip_invalid_spans: bool,
         stream: impl 'static + Future<Output = Result<LanguageModelTextStream>>,
         cx: &mut Context<Self>,
     ) -> Task<()> {
-        let anthropic_reporter = AnthropicEventReporter::new(&model, cx);
-        let session_id = self.session_id;
-        let model_telemetry_id = model.telemetry_id();
-        let model_provider_id = model.provider_id().to_string();
         let start_time = Instant::now();
 
         // Make a new snapshot and re-resolve anchor in case the document was modified.
@@ -675,9 +633,6 @@ impl CodegenAlternative {
         let selected_text = snapshot
             .text_for_range(self.range.start..self.range.end)
             .collect::<Rope>();
-
-        self.selected_text = Some(selected_text.to_string());
-
         let selection_start = self.range.start.to_point(&snapshot);
 
         // Start with the indentation of the first line in the selection
@@ -699,16 +654,6 @@ impl CodegenAlternative {
             }
         }
 
-        let language_name = {
-            let multibuffer = self.buffer.read(cx);
-            let snapshot = multibuffer.snapshot(cx);
-            let ranges = snapshot.range_to_buffer_ranges(self.range.start..self.range.end);
-            ranges
-                .first()
-                .and_then(|(buffer, _, _)| buffer.language())
-                .map(|language| language.name())
-        };
-
         self.diff = Diff::default();
         self.status = CodegenStatus::Pending;
         let mut edit_start = self.range.start.to_offset(&snapshot);
@@ -718,26 +663,10 @@ impl CodegenAlternative {
         cx.notify();
         cx.spawn(async move |codegen, cx| {
             let stream = stream.await;
-
-            let token_usage = stream
-                .as_ref()
-                .ok()
-                .map(|stream| stream.last_token_usage.clone());
-            let message_id = stream
-                .as_ref()
-                .ok()
-                .and_then(|stream| stream.message_id.clone());
             let generate = async {
-                let model_telemetry_id = model_telemetry_id.clone();
-                let model_provider_id = model_provider_id.clone();
                 let (mut diff_tx, mut diff_rx) = mpsc::channel(1);
-                let message_id = message_id.clone();
-                let line_based_stream_diff: Task<anyhow::Result<()>> = cx.background_spawn({
-                    let anthropic_reporter = anthropic_reporter.clone();
-                    let language_name = language_name.clone();
-                    async move {
-                        let mut response_latency = None;
-                        let request_start = Instant::now();
+                let line_based_stream_diff: Task<anyhow::Result<()>> =
+                    cx.background_spawn(async move {
                         let diff = async {
                             let raw_stream = stream?.stream.map_err(|error| error.into());
 
@@ -759,9 +688,6 @@ impl CodegenAlternative {
                             let mut first_line = true;
 
                             while let Some(chunk) = chunks.next().await {
-                                if response_latency.is_none() {
-                                    response_latency = Some(request_start.elapsed());
-                                }
                                 let chunk = chunk?;
                                 completion_clone.lock().push_str(&chunk);
 
@@ -835,33 +761,8 @@ impl CodegenAlternative {
                             anyhow::Ok(())
                         };
 
-                        let result = diff.await;
-
-                        let error_message = result.as_ref().err().map(|error| error.to_string());
-                        telemetry::event!(
-                            "Assistant Responded",
-                            kind = "inline",
-                            phase = "response",
-                            session_id = session_id.to_string(),
-                            model = model_telemetry_id,
-                            model_provider = model_provider_id,
-                            language_name = language_name.as_ref().map(|n| n.to_string()),
-                            message_id = message_id.as_deref(),
-                            response_latency = response_latency,
-                            error_message = error_message.as_deref(),
-                        );
-
-                        anthropic_reporter.report(AnthropicEventData {
-                            completion_type: AnthropicCompletionType::Editor,
-                            event: AnthropicEventType::Response,
-                            language_name: language_name.map(|n| n.to_string()),
-                            message_id,
-                        });
-
-                        result?;
-                        Ok(())
-                    }
-                });
+                        diff.await
+                    });
 
                 while let Some((char_ops, line_ops)) = diff_rx.next().await {
                     codegen.update(cx, |codegen, cx| {
@@ -920,7 +821,6 @@ impl CodegenAlternative {
 
             codegen
                 .update(cx, |this, cx| {
-                    this.message_id = message_id;
                     this.last_equal_ranges.clear();
                     if let Err(error) = result {
                         this.status = CodegenStatus::Error(error);
@@ -929,16 +829,6 @@ impl CodegenAlternative {
                     }
                     this.elapsed_time = Some(elapsed_time);
                     this.completion = Some(completion.lock().clone());
-                    if let Some(usage) = token_usage {
-                        let usage = usage.lock();
-                        telemetry::event!(
-                            "Inline Assistant Completion",
-                            model = model_telemetry_id,
-                            model_provider = model_provider_id,
-                            input_tokens = usage.input_tokens,
-                            output_tokens = usage.output_tokens,
-                        )
-                    }
 
                     cx.emit(CodegenEvent::Finished);
                     cx.notify();
@@ -947,6 +837,7 @@ impl CodegenAlternative {
         })
     }
 
+    #[cfg(any(test, feature = "test-support"))]
     pub fn current_completion(&self) -> Option<String> {
         self.completion.clone()
     }
@@ -959,10 +850,6 @@ impl CodegenAlternative {
     #[cfg(any(test, feature = "test-support"))]
     pub fn current_failure(&self) -> Option<String> {
         self.failure.clone()
-    }
-
-    pub fn selected_text(&self) -> Option<&str> {
-        self.selected_text.as_deref()
     }
 
     pub fn stop(&mut self, cx: &mut Context<Self>) {
@@ -1139,7 +1026,6 @@ impl CodegenAlternative {
 
     fn handle_completion(
         &mut self,
-        model: LanguageModel,
         completion_stream: Task<
             Result<LanguageModelCompletionStream, LanguageModelCompletionError>,
         >,
@@ -1468,7 +1354,6 @@ impl CodegenAlternative {
             let Some(task) = codegen
                 .update(cx, move |codegen, cx| {
                     codegen.handle_stream(
-                        model,
                         /* strip_invalid_spans: */ false,
                         async { Ok(language_model_text_stream) },
                         cx,
@@ -1644,7 +1529,6 @@ mod tests {
     use gpui::TestAppContext;
     use indoc::indoc;
     use language::{Buffer, Point};
-    use language_model::fake_provider::FakeLanguageModelProvider;
     use language_model::{
         LanguageModelCompletionError, LanguageModelCompletionEvent, LanguageModelRegistry,
         LanguageModelToolUse, StopReason, TokenUsage,
@@ -2593,10 +2477,8 @@ mod tests {
         cx: &mut TestAppContext,
     ) -> mpsc::UnboundedSender<String> {
         let (chunks_tx, chunks_rx) = mpsc::unbounded();
-        let model = FakeLanguageModelProvider::default().model("fake");
         codegen.update(cx, |codegen, cx| {
             codegen.generation = codegen.handle_stream(
-                model,
                 /* strip_invalid_spans: */ false,
                 future::ready(Ok(LanguageModelTextStream {
                     message_id: None,
@@ -2615,10 +2497,8 @@ mod tests {
     ) -> mpsc::UnboundedSender<Result<LanguageModelCompletionEvent, LanguageModelCompletionError>>
     {
         let (events_tx, events_rx) = mpsc::unbounded();
-        let model = FakeLanguageModelProvider::default().model("fake");
         codegen.update(cx, |codegen, cx| {
-            codegen.generation =
-                codegen.handle_completion(model, Task::ready(Ok(events_rx.boxed())), cx);
+            codegen.generation = codegen.handle_completion(Task::ready(Ok(events_rx.boxed())), cx);
         });
         events_tx
     }
@@ -2628,12 +2508,11 @@ mod tests {
         cx: &mut TestAppContext,
     ) -> mpsc::UnboundedSender<LanguageModelCompletionEvent> {
         let (events_tx, events_rx) = mpsc::unbounded();
-        let model = FakeLanguageModelProvider::default().model("fake");
         codegen.update(cx, |codegen, cx| {
             let completion_stream = Task::ready(Ok(
                 events_rx.map(Ok).boxed() as LanguageModelCompletionStream
             ));
-            codegen.generation = codegen.handle_completion(model, completion_stream, cx);
+            codegen.generation = codegen.handle_completion(completion_stream, cx);
         });
         events_tx
     }

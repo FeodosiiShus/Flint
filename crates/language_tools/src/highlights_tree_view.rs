@@ -824,6 +824,7 @@ impl Render for HighlightsTreeView {
                 ui::BackgroundImageArea::Window,
                 cx.theme().colors().editor_background,
                 true,
+                gpui::Corners::default(),
             ))
             .map(|this| {
                 if display_count > 0 {
@@ -900,10 +901,6 @@ impl Item for HighlightsTreeView {
 
     fn tab_content_text(&self, _detail: usize, _cx: &App) -> SharedString {
         "Highlights".into()
-    }
-
-    fn telemetry_event_text(&self) -> Option<&'static str> {
-        None
     }
 
     fn can_split(&self) -> bool {

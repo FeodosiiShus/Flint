@@ -480,6 +480,7 @@ pub struct GitSettings {
     ///
     /// Default: on
     pub branch_picker: BranchPickerSettings,
+    pub merge_tool: MergeToolSettings,
     /// How hunks are displayed visually in the editor.
     ///
     /// Default: staged_hollow
@@ -616,6 +617,11 @@ impl Default for BranchPickerSettings {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct MergeToolSettings {
+    pub auto_apply_non_conflicting: bool,
+}
+
 #[derive(Clone, Debug)]
 pub struct DiagnosticsSettings {
     /// Whether to show the project diagnostics button in the status bar.
@@ -710,6 +716,12 @@ impl Settings for ProjectSettings {
                 BranchPickerSettings {
                     show_author_name: branch_picker.show_author_name.unwrap(),
                 }
+            },
+            merge_tool: MergeToolSettings {
+                auto_apply_non_conflicting: git
+                    .merge_tool
+                    .and_then(|merge_tool| merge_tool.auto_apply_non_conflicting)
+                    .unwrap_or_default(),
             },
             hunk_style: git.hunk_style.unwrap(),
             diff_base: git.diff_base.unwrap_or_default(),

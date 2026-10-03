@@ -1258,7 +1258,7 @@ async fn stream_results_to_picker(
                 SearchResult::Buffer { buffer, ranges } => {
                     let remaining = cap.saturating_sub(total_matches + batch_matches.len());
                     let capped = ranges.len().min(remaining);
-                    let matches = Delegate::process_search_result(&buffer, &ranges[..capped], cx);
+                    let matches = process_search_result(&buffer, &ranges[..capped], cx);
                     batch_matches.extend(matches);
                     if capped < ranges.len() {
                         limit_reached = true;
@@ -1341,7 +1341,7 @@ fn matched_line_window(
 
 /// Renders the matched source line with syntax highlighting, overlaying the
 /// search match with a highlighted background and bold weight.
-fn render_matched_line(search_match: &SearchMatch, cx: &App) -> StyledText {
+pub fn render_matched_line(search_match: &SearchMatch, cx: &App) -> StyledText {
     let settings = ThemeSettings::get_global(cx);
     let text_style = TextStyle {
         color: cx.theme().colors().text,
@@ -1459,43 +1459,43 @@ impl Delegate {
             )
             .log_err()
     }
+}
 
-    /// Create things from MB
-    pub(crate) fn process_search_result(
-        buffer: &Entity<Buffer>,
-        ranges: &[Range<Anchor>],
-        cx: &AsyncApp,
-    ) -> Vec<SearchMatch> {
-        if ranges.is_empty() {
-            return Vec::new();
-        }
-
-        buffer.read_with(cx, |buf, cx| {
-            let file = buf.file();
-            let path = file.map(|f| ProjectPath {
-                worktree_id: f.worktree_id(cx),
-                path: f.path().clone(),
-            });
-            let mut matches = Vec::new();
-            for anchor_range in ranges {
-                let start_offset: usize = buf.summary_for_anchor(&anchor_range.start);
-                let end_offset: usize = buf.summary_for_anchor(&anchor_range.end);
-                let point = buf.offset_to_point(start_offset);
-
-                if let Some(path) = &path {
-                    matches.push(SearchMatch {
-                        path: path.clone(),
-                        buffer: buffer.clone(),
-                        anchor_range: anchor_range.clone(),
-                        range: start_offset..end_offset,
-                        match_start_byte_column: point.column,
-                        line_number: point.row + 1,
-                    });
-                }
-            }
-            matches
-        })
+/// Create things from MB
+pub fn process_search_result(
+    buffer: &Entity<Buffer>,
+    ranges: &[Range<Anchor>],
+    cx: &AsyncApp,
+) -> Vec<SearchMatch> {
+    if ranges.is_empty() {
+        return Vec::new();
     }
+
+    buffer.read_with(cx, |buf, cx| {
+        let file = buf.file();
+        let path = file.map(|f| ProjectPath {
+            worktree_id: f.worktree_id(cx),
+            path: f.path().clone(),
+        });
+        let mut matches = Vec::new();
+        for anchor_range in ranges {
+            let start_offset: usize = buf.summary_for_anchor(&anchor_range.start);
+            let end_offset: usize = buf.summary_for_anchor(&anchor_range.end);
+            let point = buf.offset_to_point(start_offset);
+
+            if let Some(path) = &path {
+                matches.push(SearchMatch {
+                    path: path.clone(),
+                    buffer: buffer.clone(),
+                    anchor_range: anchor_range.clone(),
+                    range: start_offset..end_offset,
+                    match_start_byte_column: point.column,
+                    line_number: point.row + 1,
+                });
+            }
+        }
+        matches
+    })
 }
 
 #[cfg(test)]
@@ -1596,7 +1596,7 @@ mod tests {
         let async_cx = cx.to_async();
         let mut matches = Vec::new();
         while let Ok(SearchResult::Buffer { buffer, ranges }) = search.rx.recv().await {
-            matches.extend(Delegate::process_search_result(&buffer, &ranges, &async_cx));
+            matches.extend(process_search_result(&buffer, &ranges, &async_cx));
         }
 
         assert_eq!(matches.len(), expected_matches);

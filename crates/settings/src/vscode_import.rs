@@ -183,18 +183,13 @@ impl VsCodeSettings {
         SettingsContent {
             agent: self.agent_settings_content(),
             agent_servers: None,
-            audio: None,
-            auto_update: None,
             base_keymap: Some(BaseKeymapContent::VSCode),
-            calls: None,
-            collaboration_panel: None,
             command_palette: self
                 .read_u64("workbench.commandPalette.history")
                 .map(|history| CommandPaletteSettingsContent {
                     use_command_history: Some(history > 0),
                 }),
             copilot: None,
-            credentials_url: None,
             debugger: None,
             diagnostics: None,
             editor: self.editor_settings_content(),
@@ -216,7 +211,7 @@ impl VsCodeSettings {
             line_indicator_format: None,
             log: None,
             node: self.node_binary_settings(),
-
+            panel: None,
             outline_panel: self.outline_panel_settings_content(),
             preview_tabs: self.preview_tabs_settings_content(),
             project: self.project_settings_content(),
@@ -229,12 +224,10 @@ impl VsCodeSettings {
             }),
             remote: RemoteSettingsContent::default(),
             repl: None,
-            server_url: None,
             session: None,
             status_bar: self.status_bar_settings_content(),
             tab_bar: self.tab_bar_settings_content(),
             tabs: self.item_settings_content(),
-            telemetry: self.telemetry_settings_content(),
             terminal: self.terminal_settings_content(),
             theme: Box::new(self.theme_settings_content()),
             title_bar: None,
@@ -533,7 +526,6 @@ impl VsCodeSettings {
     fn project_settings_content(&self) -> ProjectSettingsContent {
         ProjectSettingsContent {
             all_languages: AllLanguageSettingsContent {
-                edit_predictions: self.edit_predictions_settings_content(),
                 defaults: self.default_language_settings_content(),
                 languages: Default::default(),
                 file_types: self.file_types(),
@@ -576,7 +568,6 @@ impl VsCodeSettings {
                 ..Default::default()
             }),
             debuggers: None,
-            edit_predictions_disabled_in: None,
             enable_language_server: None,
             ensure_final_newline_on_save: self.read_bool("files.insertFinalNewline"),
             line_ending: self.read_enum("files.eol", |s| match s {
@@ -628,7 +619,6 @@ impl VsCodeSettings {
             show_completion_documentation: None,
             colorize_brackets: self.read_bool("editor.bracketPairColorization.enabled"),
             show_completions_on_input: self.read_bool("editor.suggestOnTriggerCharacters"),
-            show_edit_predictions: self.read_bool("editor.inlineSuggest.enabled"),
             show_whitespaces: self.read_enum("editor.renderWhitespace", |s| {
                 Some(match s {
                     "boundary" => ShowWhitespaceSetting::Boundary,
@@ -683,26 +673,6 @@ impl VsCodeSettings {
                 .insert(k.clone());
         }
         skip_default(FileTypeMap(associations))
-    }
-
-    fn edit_predictions_settings_content(&self) -> Option<EditPredictionSettingsContent> {
-        let mut disabled_globs = self
-            .read_value("cursor.general.globalCursorIgnoreList")?
-            .as_array()?
-            .iter()
-            .filter_map(Value::as_str)
-            .filter(|glob| !glob.is_empty() && *glob != SplicingVec::REST)
-            .map(str::to_owned)
-            .collect::<Vec<_>>();
-        if disabled_globs.is_empty() {
-            return None;
-        }
-        disabled_globs.push(SplicingVec::REST.to_owned());
-
-        Some(EditPredictionSettingsContent {
-            disabled_globs: Some(SplicingVec::from(disabled_globs)),
-            ..EditPredictionSettingsContent::default()
-        })
     }
 
     fn outline_panel_settings_content(&self) -> Option<OutlinePanelSettingsContent> {
@@ -846,6 +816,9 @@ impl VsCodeSettings {
             line_endings_button: None,
             active_encoding_button: None,
             pending_keystrokes_indicator: None,
+            navigation_bar: None,
+            indentation_button: None,
+            read_only_button: None,
             height: None,
             icon_size: None,
         })
@@ -908,22 +881,6 @@ impl VsCodeSettings {
         }
 
         skip_default(project_panel_settings)
-    }
-
-    fn telemetry_settings_content(&self) -> Option<TelemetrySettingsContent> {
-        self.read_enum("telemetry.telemetryLevel", |level| {
-            let (metrics, diagnostics) = match level {
-                "all" => (true, true),
-                "error" | "crash" => (false, true),
-                "off" => (false, false),
-                _ => return None,
-            };
-            Some(TelemetrySettingsContent {
-                metrics: Some(metrics),
-                diagnostics: Some(diagnostics),
-                anthropic_retention: None,
-            })
-        })
     }
 
     fn terminal_settings_content(&self) -> Option<TerminalSettingsContent> {
@@ -1100,7 +1057,6 @@ impl VsCodeSettings {
             reveal_if_open: self.read_bool("workbench.editor.revealIfOpen"),
             restore_on_startup: None,
             window_decorations: None,
-            show_call_status_icon: None,
             use_system_path_prompts: self.read_bool("files.simpleDialog.enable").map(|b| !b),
             use_system_prompts: None,
             use_system_window_tabs: self.read_bool("window.nativeTabs"),
@@ -1122,6 +1078,8 @@ impl VsCodeSettings {
             }),
             zoomed_padding: None,
             focus_follows_mouse: None,
+            islands: None,
+            tool_window_bars: None,
         }
     }
 
@@ -1249,88 +1207,6 @@ mod tests {
             .unwrap()
             .settings_content()
             .reduce_motion
-    }
-
-    #[test]
-    fn test_import_disabled_globs_extends_inherited_patterns() -> Result<()> {
-        for (ignore_list, expected_imported, expected_merged) in [
-            (
-                serde_json::json!(["**/build/**", "**/cache/**"]),
-                serde_json::json!(["**/build/**", "**/cache/**", "..."]),
-                serde_json::json!(["**/build/**", "**/cache/**", "**/inherited/**"]),
-            ),
-            (
-                serde_json::json!(["**/build/**", "", false, null, 1, {}, []]),
-                serde_json::json!(["**/build/**", "..."]),
-                serde_json::json!(["**/build/**", "**/inherited/**"]),
-            ),
-            (
-                serde_json::json!(["...", "**/build/**", false]),
-                serde_json::json!(["**/build/**", "..."]),
-                serde_json::json!(["**/build/**", "**/inherited/**"]),
-            ),
-            (
-                serde_json::json!(["**/inherited/**", "**/build/**"]),
-                serde_json::json!(["**/inherited/**", "**/build/**", "..."]),
-                serde_json::json!(["**/inherited/**", "**/build/**"]),
-            ),
-        ] {
-            let content = serde_json::json!({
-                "cursor.general.globalCursorIgnoreList": ignore_list,
-            });
-            let imported =
-                VsCodeSettings::from_str(&content.to_string(), VsCodeSettingsSource::Cursor)?
-                    .settings_content();
-            let imported = imported
-                .project
-                .all_languages
-                .edit_predictions
-                .context("imported edit prediction settings")?;
-            assert_eq!(
-                serde_json::to_value(&imported.disabled_globs)?,
-                expected_imported
-            );
-
-            let mut inherited = EditPredictionSettingsContent {
-                disabled_globs: Some(SplicingVec::from(vec!["**/inherited/**".to_string()])),
-                ..Default::default()
-            };
-            inherited.merge_from(&imported);
-            assert_eq!(
-                serde_json::to_value(&inherited.disabled_globs)?,
-                expected_merged
-            );
-        }
-        Ok(())
-    }
-
-    #[test]
-    fn test_import_disabled_globs_omits_empty_results() -> Result<()> {
-        let inherited = AllLanguageSettingsContent {
-            edit_predictions: Some(EditPredictionSettingsContent {
-                disabled_globs: Some(SplicingVec::from(vec!["**/inherited/**".to_string()])),
-                ..Default::default()
-            }),
-            ..Default::default()
-        };
-        for content in [
-            r#"{"cursor.general.globalCursorIgnoreList": "**/build/**"}"#,
-            r#"{"cursor.general.globalCursorIgnoreList": ["..."]}"#,
-            r#"{"cursor.general.globalCursorIgnoreList": [""]}"#,
-            r#"{"cursor.general.globalCursorIgnoreList": ["...", "", false, null]}"#,
-            r#"{"cursor.general.globalCursorIgnoreList": []}"#,
-            r#"{"cursor.general.globalCursorIgnoreList": [false, null, 1, {}, []]}"#,
-            r#"{"cursor.general.globalCursorIgnoreList": null}"#,
-            r#"{}"#,
-        ] {
-            let imported =
-                VsCodeSettings::from_str(content, VsCodeSettingsSource::Cursor)?.settings_content();
-            assert_eq!(imported.project.all_languages.edit_predictions, None);
-            let mut unchanged = inherited.clone();
-            unchanged.merge_from(&imported.project.all_languages);
-            assert_eq!(unchanged.edit_predictions, inherited.edit_predictions);
-        }
-        Ok(())
     }
 
     #[test]

@@ -1090,6 +1090,7 @@ impl Render for ProjectSearchView {
                     ui::BackgroundImageArea::Window,
                     cx.theme().colors().editor_background,
                     true,
+                    gpui::Corners::default(),
                 ))
                 .track_focus(&self.focus_handle(cx))
                 .child(
@@ -1164,10 +1165,6 @@ impl Item for ProjectSearchView {
         last_query
             .filter(|query| !query.is_empty())
             .unwrap_or_else(|| "Project Search".into())
-    }
-
-    fn telemetry_event_text(&self) -> Option<&'static str> {
-        Some("Project Search Opened")
     }
 
     fn for_each_project_item(

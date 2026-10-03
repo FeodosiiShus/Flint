@@ -598,6 +598,7 @@ impl Render for AgentRegistryPage {
                 ui::BackgroundImageArea::Window,
                 cx.theme().colors().editor_background,
                 true,
+                gpui::Corners::default(),
             ))
             .child(
                 v_flex()
@@ -708,10 +709,6 @@ impl Item for AgentRegistryPage {
 
     fn tab_content_text(&self, _detail: usize, _cx: &App) -> SharedString {
         "ACP Registry".into()
-    }
-
-    fn telemetry_event_text(&self) -> Option<&'static str> {
-        Some("ACP Registry Page Opened")
     }
 
     fn show_toolbar(&self) -> bool {

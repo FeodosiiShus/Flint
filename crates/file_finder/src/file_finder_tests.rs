@@ -1428,12 +1428,11 @@ async fn test_single_file_worktrees(cx: &mut TestAppContext) {
         .await;
     cx.read(|cx| {
         let picker = picker.read(cx);
-        let delegate = &picker.delegate;
         let matches = collect_search_matches(picker).search_matches_only();
         assert_eq!(matches.len(), 1);
 
         let (file_name, file_name_positions, full_path, full_path_positions) =
-            delegate.labels_for_path_match(&matches[0], PathStyle::local());
+            path_match_labels(&matches[0], PathStyle::local());
         assert_eq!(file_name, "the-file");
         assert_eq!(file_name_positions, &[0, 1, 4]);
         assert_eq!(full_path, "");
@@ -4711,7 +4710,6 @@ fn collect_search_matches(picker: &Picker<FileFinderDelegate>) -> SearchEntries 
                 search_entries.search_matches.push(path_match.0.clone());
             }
             Match::CreateNew(_) => {}
-            Match::Channel { .. } => {}
         }
     }
     search_entries
@@ -4746,7 +4744,6 @@ fn assert_match_at_position(
         Match::History { path, .. } => path.absolute.file_name().and_then(|s| s.to_str()),
         Match::Search(path_match) => path_match.0.path.file_name(),
         Match::CreateNew(project_path) => project_path.path.file_name(),
-        Match::Channel { channel_name, .. } => Some(channel_name.as_str()),
     }
     .unwrap();
     assert_eq!(match_file_name, expected_file_name);

@@ -203,19 +203,12 @@ pub struct SettingsContent {
     pub tabs: Option<ItemSettingsContent>,
     pub tab_bar: Option<TabBarSettingsContent>,
     pub status_bar: Option<StatusBarSettingsContent>,
+    pub panel: Option<PanelChromeSettingsContent>,
 
     pub preview_tabs: Option<PreviewTabsSettingsContent>,
 
     pub agent: Option<AgentSettingsContent>,
     pub agent_servers: Option<AllAgentServersSettings>,
-
-    /// Configuration of audio in Zed.
-    pub audio: Option<AudioSettingsContent>,
-
-    /// Whether or not to automatically check for updates.
-    ///
-    /// Default: true
-    pub auto_update: Option<bool>,
 
     /// This base keymap settings adjusts the default keybindings in Zed to be similar
     /// to other common code editors. By default, Zed's keymap closely follows VSCode's
@@ -223,9 +216,6 @@ pub struct SettingsContent {
     ///
     /// Default: VSCode
     pub base_keymap: Option<BaseKeymapContent>,
-
-    /// Configuration for the collab panel visual settings.
-    pub collaboration_panel: Option<PanelSettingsContent>,
 
     pub debugger: Option<DebuggerSettingsContent>,
 
@@ -287,20 +277,8 @@ pub struct SettingsContent {
     /// Default: off
     pub reduce_motion: Option<ReduceMotionMode>,
 
-    /// The URL of the Zed server to connect to.
-    pub server_url: Option<String>,
-
-    /// The URL used as the key for credential storage.
-    ///
-    /// When set, credentials are stored under this URL instead of `server_url`.
-    /// This allows running multiple Zed instances side by side without them
-    /// overwriting each other's keychain entries.
-    pub credentials_url: Option<String>,
-
     /// Configuration for session-related features
     pub session: Option<SessionSettingsContent>,
-    /// Control what info is collected by Zed.
-    pub telemetry: Option<TelemetrySettingsContent>,
 
     /// Configuration of the terminal in Zed.
     pub terminal: Option<TerminalSettingsContent>,
@@ -311,9 +289,6 @@ pub struct SettingsContent {
     ///
     /// Default: false
     pub vim_mode: Option<bool>,
-
-    // Settings related to calls in Zed
-    pub calls: Option<CallSettingsContent>,
 
     /// Settings for the which-key popup.
     pub which_key: Option<WhichKeySettingsContent>,
@@ -404,13 +379,13 @@ impl SettingsContent {
 fallible_options::flattened_deserialize!(SettingsContent {
     sections: { project, theme, extension, workspace, editor, remote },
     options: {
-        call_hierarchy, command_palette, file_finder, git_panel, tabs, tab_bar, status_bar, preview_tabs, agent,
-        agent_servers, audio, auto_update, base_keymap, collaboration_panel, debugger, diagnostics,
+        call_hierarchy, command_palette, file_finder, git_panel, tabs, tab_bar, status_bar, panel, preview_tabs, agent,
+        agent_servers, base_keymap, debugger, diagnostics,
         git,
         global_lsp_settings, image_viewer, markdown_preview, repl, helix_mode, hide_mouse,
         journal, log, line_indicator_format, language_models, copilot, outline_panel, project_panel,
-        node, proxy, reduce_motion, server_url, credentials_url, session, telemetry, terminal,
-        title_bar, vim_mode, calls, which_key, vim, modeline_lines, feature_flags,
+        node, proxy, reduce_motion, session, terminal,
+        title_bar, vim_mode, which_key, vim, modeline_lines, feature_flags,
         instrumentation,
     },
     defaults: {},
@@ -559,79 +534,6 @@ impl strum::VariantNames for BaseKeymapContent {
     ];
 }
 
-/// Configuration of audio in Zed.
-#[with_fallible_options]
-#[derive(Clone, PartialEq, Default, Serialize, Deserialize, JsonSchema, MergeFrom, Debug)]
-pub struct AudioSettingsContent {
-    /// Select specific output audio device.
-    #[serde(rename = "experimental.output_audio_device")]
-    pub output_audio_device: Option<AudioOutputDeviceName>,
-    /// Select specific input audio device.
-    #[serde(rename = "experimental.input_audio_device")]
-    pub input_audio_device: Option<AudioInputDeviceName>,
-}
-
-#[derive(Clone, Default, Debug, Serialize, Deserialize, JsonSchema, MergeFrom, PartialEq, Eq)]
-#[serde(transparent)]
-pub struct AudioOutputDeviceName(pub Option<String>);
-
-impl AsRef<Option<String>> for AudioInputDeviceName {
-    fn as_ref(&self) -> &Option<String> {
-        &self.0
-    }
-}
-
-impl From<Option<String>> for AudioInputDeviceName {
-    fn from(value: Option<String>) -> Self {
-        Self(value)
-    }
-}
-
-#[derive(Clone, Default, Debug, Serialize, Deserialize, JsonSchema, MergeFrom, PartialEq, Eq)]
-#[serde(transparent)]
-pub struct AudioInputDeviceName(pub Option<String>);
-
-impl AsRef<Option<String>> for AudioOutputDeviceName {
-    fn as_ref(&self) -> &Option<String> {
-        &self.0
-    }
-}
-
-impl From<Option<String>> for AudioOutputDeviceName {
-    fn from(value: Option<String>) -> Self {
-        Self(value)
-    }
-}
-
-/// Control what info is collected by Zed.
-#[with_fallible_options]
-#[derive(Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, Debug, MergeFrom)]
-pub struct TelemetrySettingsContent {
-    /// Send debug info like crash reports.
-    ///
-    /// Default: true
-    pub diagnostics: Option<bool>,
-    /// Send anonymized usage data like what languages you're using Zed with.
-    ///
-    /// Default: true
-    pub metrics: Option<bool>,
-    /// Allow sending requests to Anthropic models that cannot be offered with
-    /// Zero Data Retention.
-    ///
-    /// Default: false
-    pub anthropic_retention: Option<bool>,
-}
-
-impl Default for TelemetrySettingsContent {
-    fn default() -> Self {
-        Self {
-            diagnostics: Some(true),
-            metrics: Some(true),
-            anthropic_retention: Some(false),
-        }
-    }
-}
-
 #[with_fallible_options]
 #[derive(Default, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, Clone, MergeFrom)]
 pub struct DebuggerSettingsContent {
@@ -710,21 +612,6 @@ pub enum DockPosition {
     Left,
     Bottom,
     Right,
-}
-
-/// Configuration of voice calls in Zed.
-#[with_fallible_options]
-#[derive(Clone, PartialEq, Default, Serialize, Deserialize, JsonSchema, MergeFrom, Debug)]
-pub struct CallSettingsContent {
-    /// Whether the microphone should be muted when joining a channel or a call.
-    ///
-    /// Default: false
-    pub mute_on_join: Option<bool>,
-
-    /// Whether your current project should be shared when joining an empty channel.
-    ///
-    /// Default: false
-    pub share_on_join: Option<bool>,
 }
 
 #[with_fallible_options]
@@ -942,23 +829,6 @@ pub struct ScrollbarSettings {
 
 #[with_fallible_options]
 #[derive(Clone, Default, Serialize, Deserialize, JsonSchema, MergeFrom, Debug, PartialEq)]
-pub struct PanelSettingsContent {
-    /// Whether to show the panel button in the status bar.
-    ///
-    /// Default: true
-    pub button: Option<bool>,
-    /// Where to dock the panel.
-    ///
-    /// Default: right (Agentic layout), left (Classic layout)
-    pub dock: Option<DockPosition>,
-    /// Default width of the panel in pixels.
-    ///
-    /// Default: 240
-    pub default_width: Option<PixelSetting>,
-}
-
-#[with_fallible_options]
-#[derive(Clone, Default, Serialize, Deserialize, JsonSchema, MergeFrom, Debug, PartialEq)]
 pub struct CommandPaletteSettingsContent {
     /// Whether to use command history ranking for sorting in the command palette.
     ///
@@ -986,10 +856,6 @@ pub struct FileFinderSettingsContent {
     ///
     /// Default: Smart
     pub include_ignored: Option<IncludeIgnoredContent>,
-    /// Whether to include text channels in file finder results.
-    ///
-    /// Default: false
-    pub include_channels: Option<bool>,
 }
 
 #[derive(
@@ -1076,9 +942,6 @@ pub struct VimSettingsContent {
     pub custom_digraphs: Option<HashMap<String, Arc<str>>>,
     pub highlight_on_yank_duration: Option<u64>,
     pub cursor_shape: Option<CursorShapeSettings>,
-    /// When enabled, edit predictions are shown in Vim normal mode.
-    /// By default, edit predictions are only shown in insert and replace modes.
-    pub show_edit_predictions_in_normal_mode: Option<bool>,
 }
 
 #[derive(

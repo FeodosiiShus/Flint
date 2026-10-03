@@ -4,8 +4,8 @@ use crate::{
     DiagnosticsTool, EditFileTool, FetchTool, FindPathTool, FindReferencesTool, GetCodeActionsTool,
     GoToDefinitionTool, GrepTool, ListAgentsAndModelsTool, ListDirectoryTool, MovePathTool,
     ProjectSnapshot, ReadFileTool, RenameTool, SandboxedTerminalTool, SpawnAgentTool,
-    SystemPromptTemplate, Template, Templates, TerminalTool, ToolPermissionDecision, WebSearchTool,
-    WriteFileTool, decide_permission_from_settings,
+    SystemPromptTemplate, Template, Templates, TerminalTool, ToolPermissionDecision, WriteFileTool,
+    decide_permission_from_settings,
 };
 use acp_thread::{AgentModelId, ClientUserMessageId, MentionUri};
 use action_log::ActionLog;
@@ -23,8 +23,6 @@ use agent_settings::{
 };
 use anyhow::{Context as _, Result, anyhow};
 use chrono::{DateTime, Local, Utc};
-use client::UserStore;
-use cloud_api_types::Plan;
 use collections::{HashMap, HashSet, IndexMap};
 use fs::Fs;
 use futures::{
@@ -45,7 +43,7 @@ use language_model::{
     LanguageModelRequest, LanguageModelRequestMessage, LanguageModelRequestTool,
     LanguageModelToolResult, LanguageModelToolResultContent, LanguageModelToolUse,
     LanguageModelToolUseId, MessageContent, ProviderErrorCategory, Role, SelectedModel, Speed,
-    StopReason, TokenUsage, ZED_CLOUD_PROVIDER_ID,
+    StopReason, TokenUsage,
 };
 use project::{Project, trusted_worktrees::TrustedWorktrees};
 use prompt_store::ProjectContext;
@@ -1279,7 +1277,6 @@ pub struct Thread {
     pending_summary_generation: Option<Shared<Task<Option<SharedString>>>>,
     summary: Option<SharedString>,
     messages: Vec<Arc<Message>>,
-    user_store: Entity<UserStore>,
     /// Holds the task that handles agent interaction until the end of the turn.
     /// Survives across multiple requests as the model performs tool calls and
     /// we run tools, report their results.
@@ -1296,7 +1293,6 @@ pub struct Thread {
     /// `cumulative_token_usage` for the in-flight completion request. Reset at
     /// the start of each request.
     current_request_token_usage: TokenUsage,
-    pending_compaction_telemetry: Option<CompactionTelemetry>,
     #[allow(unused)]
     initial_project_snapshot: Shared<Task<Option<Arc<ProjectSnapshot>>>>,
     pub(crate) context_server_registry: Entity<ContextServerRegistry>,
@@ -1436,7 +1432,6 @@ impl Thread {
             pending_summary_generation: None,
             summary: None,
             messages: Vec::new(),
-            user_store: project.read(cx).user_store(),
             running_turn: None,
             end_turn_at_next_boundary: false,
             pending_message: None,
@@ -1444,7 +1439,6 @@ impl Thread {
             request_token_usage: HashMap::default(),
             cumulative_token_usage: TokenUsage::default(),
             current_request_token_usage: TokenUsage::default(),
-            pending_compaction_telemetry: None,
             initial_project_snapshot: {
                 let project_snapshot = Self::project_snapshot(project.clone(), cx);
                 cx.foreground_executor()
@@ -1815,7 +1809,6 @@ impl Thread {
             pending_summary_generation: None,
             summary: db_thread.detailed_summary,
             messages: db_thread.messages,
-            user_store: project.read(cx).user_store(),
             running_turn: None,
             end_turn_at_next_boundary: false,
             pending_message: None,
@@ -1823,7 +1816,6 @@ impl Thread {
             request_token_usage: db_thread.request_token_usage.clone(),
             cumulative_token_usage: db_thread.cumulative_token_usage,
             current_request_token_usage: TokenUsage::default(),
-            pending_compaction_telemetry: None,
             initial_project_snapshot: Task::ready(db_thread.initial_project_snapshot).shared(),
             context_server_registry,
             profile_id,
@@ -2214,7 +2206,6 @@ impl Thread {
             self.project.clone(),
             environment.clone(),
         ));
-        self.add_tool(WebSearchTool);
 
         self.add_tool(AskUserTool);
 
@@ -2619,11 +2610,6 @@ impl Thread {
             (model.clone(), request)
         });
 
-        if compaction.is_some() {
-            self.pending_compaction_telemetry =
-                self.build_compaction_telemetry("manual", &model, cx);
-        }
-
         self.clear_summary();
         cx.notify();
 
@@ -2651,27 +2637,13 @@ impl Thread {
                 // If we were cancelled, `cancel()` already took `running_turn`
                 // (possibly for a new turn), so leave it alone.
                 if *cancellation_rx.borrow() {
-                    this.update(cx, |this, _| {
-                        this.emit_compaction_telemetry_outcome("canceled", None)
-                    })
-                    .log_err();
                     return;
                 }
 
                 match result {
-                    // On success, the telemetry event is deferred until the next
-                    // completion reports usage (see `handle_completion_event`),
-                    // so we leave `pending_compaction_telemetry` in place here.
                     Ok(_) => event_stream.send_stop(acp::StopReason::EndTurn),
                     Err(error) => {
                         log::error!("Manual compaction failed: {:?}", error);
-                        this.update(cx, |this, _| {
-                            this.emit_compaction_telemetry_outcome(
-                                "failed",
-                                Some(error.to_string()),
-                            )
-                        })
-                        .log_err();
                         event_stream.send_error(error);
                     }
                 }
@@ -2809,20 +2781,10 @@ impl Thread {
             )
             .await
             {
-                // On success the telemetry event is deferred until the
-                // completion below reports usage, so we can record an
-                // accurate post-compaction context size (see
-                // `handle_completion_event`).
                 Ok(ControlFlow::Continue(())) => {}
-                Ok(ControlFlow::Break(())) => {
-                    this.update(cx, |this, _| {
-                        this.emit_compaction_telemetry_outcome("canceled", None)
-                    })?;
-                    return Ok(());
-                }
+                Ok(ControlFlow::Break(())) => return Ok(()),
                 Err(error) => {
                     log::error!("Compaction failed: {}", error);
-                    let error_message = error.to_string();
                     match error.downcast::<LanguageModelCompletionError>() {
                         Ok(error) => {
                             attempt += 1;
@@ -2836,29 +2798,9 @@ impl Thread {
                             )
                             .await
                             {
-                                Ok(ControlFlow::Break(())) => {
-                                    this.update(cx, |this, _| {
-                                        this.emit_compaction_telemetry_outcome("canceled", None)
-                                    })?;
-                                    return Ok(());
-                                }
-                                Ok(ControlFlow::Continue(())) => {
-                                    this.update(cx, |this, _| {
-                                        if let Some(telemetry) =
-                                            this.pending_compaction_telemetry.as_mut()
-                                        {
-                                            telemetry.retries += 1;
-                                        }
-                                    })?;
-                                    continue;
-                                }
+                                Ok(ControlFlow::Break(())) => return Ok(()),
+                                Ok(ControlFlow::Continue(())) => continue,
                                 Err(retry_error) => {
-                                    this.update(cx, |this, _| {
-                                        this.emit_compaction_telemetry_outcome(
-                                            "failed",
-                                            Some(error_message),
-                                        )
-                                    })?;
                                     return Err(
                                         retry_error.context("Automatic context compaction failed")
                                     );
@@ -2866,12 +2808,6 @@ impl Thread {
                             }
                         }
                         Err(error) => {
-                            this.update(cx, |this, _| {
-                                this.emit_compaction_telemetry_outcome(
-                                    "failed",
-                                    Some(error_message),
-                                )
-                            })?;
                             return Err(error.context("Automatic context compaction failed"));
                         }
                     }
@@ -2893,18 +2829,6 @@ impl Thread {
                 this.current_request_token_usage = TokenUsage::default();
                 anyhow::Ok((model, provider, request))
             })??;
-
-            telemetry::event!(
-                "Agent Thread Completion",
-                thread_id = this.read_with(cx, |this, _| this.id.to_string())?,
-                parent_thread_id = this.read_with(cx, |this, _| this
-                    .parent_thread_id()
-                    .map(|id| id.to_string()))?,
-                prompt_id = this.read_with(cx, |this, _| this.prompt_id.to_string())?,
-                model = model.telemetry_id(),
-                model_provider = model.provider_id().to_string(),
-                attempt
-            );
 
             log::debug!("Calling model.stream_completion, attempt {}", attempt);
 
@@ -3163,8 +3087,7 @@ impl Thread {
         cx: &mut AsyncApp,
     ) -> Result<ControlFlow<()>> {
         let retry = this.update(cx, |this, cx| {
-            let user_store = this.user_store.read(cx);
-            this.handle_completion_error(error, attempt, user_store.plan(), cx)
+            this.handle_completion_error(error, attempt, cx)
         })??;
         let timer = cx.background_executor().timer(retry.duration);
         event_stream.send_retry(retry);
@@ -3191,12 +3114,6 @@ impl Thread {
             let model = this.compaction_model(cx)?;
             let request = this.build_compaction_request(insertion_ix, &model, cx);
             this.current_request_token_usage = TokenUsage::default();
-            // Preserve telemetry across retries so the retry count keeps
-            // accumulating rather than resetting on each attempt.
-            if this.pending_compaction_telemetry.is_none() {
-                this.pending_compaction_telemetry =
-                    this.build_compaction_telemetry("auto", &model, cx);
-            }
             Some((model, request, insertion_ix))
         })?
         else {
@@ -3373,7 +3290,6 @@ impl Thread {
         &mut self,
         error: LanguageModelCompletionError,
         attempt: u8,
-        plan: Option<Plan>,
         cx: &mut Context<Self>,
     ) -> Result<acp_thread::RetryStatus> {
         if let LanguageModelCompletionError::ProviderRejection {
@@ -3384,17 +3300,7 @@ impl Thread {
             self.mark_token_limit_exceeded(*tokens, cx);
         }
 
-        let Some(model) = self.model() else {
-            return Err(anyhow!(error));
-        };
-
-        let auto_retry = if model.provider_id() == ZED_CLOUD_PROVIDER_ID {
-            plan.is_some()
-        } else {
-            true
-        };
-
-        if !auto_retry {
+        if self.model().is_none() {
             return Err(anyhow!(error));
         }
 
@@ -3474,24 +3380,6 @@ impl Thread {
                 ));
             }
             UsageUpdate(usage) => {
-                telemetry::event!(
-                    "Agent Thread Completion Usage Updated",
-                    thread_id = self.id.to_string(),
-                    parent_thread_id = self.parent_thread_id().map(|id| id.to_string()),
-                    prompt_id = self.prompt_id.to_string(),
-                    model = self.model().map(|m| m.telemetry_id()),
-                    model_provider = self.model().map(|m| m.provider_id().to_string()),
-                    input_tokens = usage.input_tokens,
-                    output_tokens = usage.output_tokens,
-                    cache_creation_input_tokens = usage.cache_creation_input_tokens,
-                    cache_read_input_tokens = usage.cache_read_input_tokens,
-                );
-                // A successful compaction defers its telemetry until the first
-                // completion that follows it, so `tokens_after` reflects the
-                // real post-compaction context size.
-                if let Some(telemetry) = self.pending_compaction_telemetry.take() {
-                    telemetry.emit("succeeded", None, Some(total_input_tokens(usage)));
-                }
                 self.update_token_usage(usage, cx);
             }
             Stop(StopReason::Refusal) => return Err(CompletionError::Refusal.into()),
@@ -4448,48 +4336,6 @@ impl Thread {
         extend_request_history_until(&self.messages, request_messages, end_ix);
     }
 
-    fn build_compaction_telemetry(
-        &self,
-        trigger: &'static str,
-        compaction_model: &LanguageModel,
-        cx: &App,
-    ) -> Option<CompactionTelemetry> {
-        let model = self.model()?;
-        let auto_compact = AgentSettings::get_global(cx).auto_compact;
-        let max_tokens = model.max_token_count();
-        let max_input_tokens = self.input_token_capacity()?;
-        let tokens_before = self
-            .latest_request_token_usage()
-            .map(|usage| total_input_tokens(usage).saturating_add(usage.output_tokens));
-        Some(CompactionTelemetry {
-            trigger,
-            thread_id: self.id.to_string(),
-            parent_thread_id: self.parent_thread_id().map(|id| id.to_string()),
-            prompt_id: self.prompt_id.to_string(),
-            model: model.telemetry_id.to_string(),
-            compaction_model: compaction_model.telemetry_id.to_string(),
-            thinking_effort: self.thinking_effort.clone(),
-            max_tokens,
-            tokens_before,
-            auto_compact_enabled: auto_compact.enabled,
-            auto_compact_threshold: auto_compact.threshold.to_string(),
-            auto_compact_threshold_tokens: auto_compact_threshold_token_count(
-                auto_compact.threshold,
-                max_input_tokens,
-            ),
-            retries: 0,
-        })
-    }
-
-    /// Emits a pending compaction telemetry event for a non-success outcome
-    /// (`"failed"` or `"canceled"`), with no post-compaction token count. A
-    /// no-op if no compaction telemetry is pending.
-    fn emit_compaction_telemetry_outcome(&mut self, status: &'static str, error: Option<String>) {
-        if let Some(telemetry) = self.pending_compaction_telemetry.take() {
-            telemetry.emit(status, error, None);
-        }
-    }
-
     fn compaction_message_target_ix(&self, cx: &App) -> Option<usize> {
         if !self.auto_compaction_enabled(cx) {
             return None;
@@ -4636,9 +4482,6 @@ impl Thread {
                     max_attempts: 1,
                 })
             }
-            // Retrying won't help until the user consents to data retention
-            // or switches models.
-            DataRetentionConsentRequired { .. } => None,
             // Retrying won't help until the thread picks another model.
             ModelUnavailable { .. } => None,
             // `Other` includes mid-stream mapping failures that can be caused by
@@ -4725,52 +4568,6 @@ fn auto_compact_threshold_token_count(
         AutoCompactThreshold::TokensRemaining(tokens) => {
             max_token_count.saturating_sub(tokens).saturating_add(1)
         }
-    }
-}
-
-/// Snapshot of the data needed to report an `"Agent Compaction Completed"`
-/// telemetry event, captured when a compaction starts.
-struct CompactionTelemetry {
-    /// `"auto"` for threshold-triggered compaction, `"manual"` for `/compact`.
-    trigger: &'static str,
-    thread_id: String,
-    parent_thread_id: Option<String>,
-    prompt_id: String,
-    model: String,
-    compaction_model: String,
-    thinking_effort: Option<String>,
-    max_tokens: u64,
-    /// Tokens in the context window immediately before compaction.
-    tokens_before: Option<u64>,
-    auto_compact_enabled: bool,
-    auto_compact_threshold: String,
-    auto_compact_threshold_tokens: u64,
-    /// Number of times the compaction request was retried before the final
-    /// outcome.
-    retries: u32,
-}
-
-impl CompactionTelemetry {
-    fn emit(self, status: &'static str, error: Option<String>, tokens_after: Option<u64>) {
-        telemetry::event!(
-            "Agent Compaction Completed",
-            trigger = self.trigger,
-            status = status,
-            error = error,
-            thread_id = self.thread_id,
-            parent_thread_id = self.parent_thread_id,
-            prompt_id = self.prompt_id,
-            model = self.model,
-            compaction_model = self.compaction_model,
-            thinking_effort = self.thinking_effort,
-            max_tokens = self.max_tokens,
-            tokens_before = self.tokens_before,
-            tokens_after = tokens_after,
-            auto_compact_enabled = self.auto_compact_enabled,
-            auto_compact_threshold = self.auto_compact_threshold,
-            auto_compact_threshold_tokens = self.auto_compact_threshold_tokens,
-            retries = self.retries,
-        );
     }
 }
 
@@ -7979,14 +7776,6 @@ mod tests {
             Some(CompletionIntent::ThreadContextSummarization)
         );
 
-        thread.read_with(cx, |thread, _cx| {
-            let telemetry = thread
-                .pending_compaction_telemetry
-                .as_ref()
-                .expect("pending telemetry");
-            assert_eq!(telemetry.model, compaction_model.telemetry_id());
-        });
-
         fake.send_text(&compaction_model, &request, "summary");
         fake.end_stream(&compaction_model, &request);
         cx.run_until_parked();
@@ -7994,8 +7783,7 @@ mod tests {
 
     /// When `agent.compaction_model` is configured but doesn't resolve (e.g.
     /// the provider isn't registered), manual `/compact` falls back to the
-    /// thread's primary model and the telemetry reflects the actual stream
-    /// model — not the one the user tried to configure.
+    /// thread's primary model.
     #[gpui::test]
     async fn test_compaction_falls_back_when_compaction_model_unavailable(cx: &mut TestAppContext) {
         let (thread, _event_stream, fake) = setup_thread_for_test(cx).await;
@@ -8039,14 +7827,6 @@ mod tests {
             request.intent,
             Some(CompletionIntent::ThreadContextSummarization)
         );
-
-        thread.read_with(cx, |thread, _cx| {
-            let telemetry = thread
-                .pending_compaction_telemetry
-                .as_ref()
-                .expect("pending telemetry");
-            assert_eq!(telemetry.model, thread_model.telemetry_id());
-        });
 
         fake.send_text(&thread_model, &request, "summary");
         fake.end_stream(&thread_model, &request);
@@ -8770,9 +8550,8 @@ mod tests {
     #[test]
     fn test_retry_strategy_does_not_retry_status_less_provider_rejection() {
         // A rejection like OpenAI's `cyber_policy` content-policy error has
-        // no HTTP status of its own (it arrives as a Zed cloud upstream
-        // error code); retrying sends the identical request and gets the
-        // identical rejection, so it must not retry.
+        // no HTTP status of its own; retrying sends the identical request
+        // and gets the identical rejection, so it must not retry.
         let error = LanguageModelCompletionError::from_provider_response(
             language_model::OPEN_AI_PROVIDER_NAME,
             None,

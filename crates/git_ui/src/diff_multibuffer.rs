@@ -915,6 +915,7 @@ impl Render for DiffMultibuffer {
                 ui::BackgroundImageArea::Window,
                 cx.theme().colors().editor_background,
                 true,
+                gpui::Corners::default(),
             ))
             .flex()
             .items_center()
@@ -936,7 +937,7 @@ impl Render for DiffMultibuffer {
                     .upgrade()
                     .and_then(|workspace| workspace.read(cx).panel::<GitPanel>(cx))
                 {
-                    panel.update(cx, |panel, cx| panel.render_remote_button(cx))
+                    panel.update(cx, |panel, cx| panel.render_remote_button(None, cx))
                 } else {
                     None
                 };

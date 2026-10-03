@@ -177,13 +177,10 @@ fn run_visual_tests(project_path: PathBuf, update_baseline: bool) -> Result<()> 
     cx.update(|cx| {
         gpui_tokio::init(cx);
         theme_settings::init(theme::LoadThemes::JustBase, cx);
-        client::init(&app_state.client, cx);
-        audio::init(cx);
         workspace::init(app_state.clone(), cx);
         release_channel::init(semver::Version::new(0, 0, 0), cx);
         command_palette::init(cx);
         editor::init(cx);
-        call::init(app_state.client.clone(), app_state.user_store.clone(), cx);
         title_bar::init(cx);
         project_panel::init(cx);
         outline_panel::init(cx);
@@ -203,12 +200,7 @@ fn run_visual_tests(project_path: PathBuf, update_baseline: bool) -> Result<()> 
         prompt_store::init(cx);
         let prompt_builder = prompt_store::PromptBuilder::load(app_state.fs.clone(), false, cx);
         language_model::init(cx);
-        client::RefreshLlmTokenListener::register(
-            app_state.client.clone(),
-            app_state.user_store.clone(),
-            cx,
-        );
-        language_models::init(app_state.user_store.clone(), app_state.client.clone(), cx);
+        language_models::init(app_state.client.clone(), cx);
         git_ui::init(cx);
         project::AgentRegistryStore::init_global(
             cx,
@@ -981,15 +973,13 @@ fn init_app_state(cx: &mut App) -> Arc<AppState> {
     let languages = Arc::new(language::LanguageRegistry::test(
         cx.background_executor().clone(),
     ));
-    let clock = Arc::new(clock::FakeSystemClock::new());
     let http_client = http_client::FakeHttpClient::with_404_response();
-    let client = client::Client::new(clock, http_client, cx);
+    let client = client::Client::new(http_client, cx);
     let session = cx.new(|cx| session::AppSession::new(Session::test(), cx));
     let user_store = cx.new(|cx| client::UserStore::new(client.clone(), cx));
-    let workspace_store = cx.new(|cx| workspace::WorkspaceStore::new(client.clone(), cx));
+    let workspace_store = cx.new(|_| workspace::WorkspaceStore::default());
 
     theme_settings::init(theme::LoadThemes::JustBase, cx);
-    client::init(&client, cx);
 
     let app_state = Arc::new(AppState {
         client,
@@ -1398,13 +1388,12 @@ fn run_settings_ui_subpage_visual_tests(
     cx.run_until_parked();
 
     // Test 2: Open settings with a path that maps to a single SubPageLink
-    // "edit_predictions.providers" maps to the "Configure Providers" SubPageLink
     // This should auto-open the sub-page
     workspace_window
         .update(cx, |_workspace, window, cx| {
             window.dispatch_action(
                 Box::new(OpenSettingsAt {
-                    path: "edit_predictions.providers".to_string(),
+                    path: "context_servers".to_string(),
                     target: None,
                 }),
                 cx,

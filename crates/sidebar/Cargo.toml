@@ -43,7 +43,6 @@ remote_connection.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 settings.workspace = true
-telemetry.workspace = true
 theme.workspace = true
 theme_settings.workspace = true
 ui.workspace = true
@@ -71,7 +70,6 @@ fs = { workspace = true, features = ["test-support"] }
 git.workspace = true
 gpui = { workspace = true, features = ["test-support"] }
 client = { workspace = true, features = ["test-support"] }
-clock = { workspace = true, features = ["test-support"] }
 db = { workspace = true, features = ["test-support"] }
 http_client = { workspace = true, features = ["test-support"] }
 node_runtime = { workspace = true, features = ["test-support"] }

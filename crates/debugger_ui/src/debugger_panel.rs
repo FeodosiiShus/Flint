@@ -34,8 +34,8 @@ use std::sync::Arc;
 use task::{DebugScenario, SharedTaskContext};
 
 use ui::{
-    ButtonLike, ContextMenu, Divider, ElevationIndex, PopoverMenu, PopoverMenuHandle, SplitButton,
-    Tab, TintColor, Tooltip, prelude::*,
+    ButtonLike, ChromeRegion, ContextMenu, Divider, ElevationIndex, PopoverMenu, PopoverMenuHandle,
+    SplitButton, TintColor, Tooltip, prelude::*,
 };
 use util::redact::redact_command;
 use util::rel_path::RelPath;
@@ -626,6 +626,7 @@ impl DebugPanel {
         let new_session_button = || {
             IconButton::new("debug-new-session", IconName::Plus)
                 .icon_size(IconSize::Small)
+                .chrome_region(ChromeRegion::Panel)
                 .on_click({
                     move |_, window, cx| window.dispatch_action(crate::Start.boxed_clone(), cx)
                 })
@@ -645,6 +646,7 @@ impl DebugPanel {
         let edit_debug_json_button = || {
             IconButton::new("debug-edit-debug-json", IconName::Code)
                 .icon_size(IconSize::Small)
+                .chrome_region(ChromeRegion::Panel)
                 .on_click(|_, window, cx| {
                     window.dispatch_action(zed_actions::OpenProjectDebugTasks.boxed_clone(), cx);
                 })
@@ -654,6 +656,7 @@ impl DebugPanel {
         let documentation_button = || {
             IconButton::new("debug-open-documentation", IconName::CircleHelp)
                 .icon_size(IconSize::Small)
+                .chrome_region(ChromeRegion::Panel)
                 .on_click(move |_, _, cx| cx.open_url("https://zed.dev/docs/debugger"))
                 .tooltip(Tooltip::text("Open Documentation"))
         };
@@ -661,6 +664,7 @@ impl DebugPanel {
         let logs_button = || {
             IconButton::new("debug-open-logs", IconName::Notepad)
                 .icon_size(IconSize::Small)
+                .chrome_region(ChromeRegion::Panel)
                 .on_click(move |_, window, cx| {
                     window.dispatch_action(debugger_tools::OpenDebugAdapterLogs.boxed_clone(), cx)
                 })
@@ -671,6 +675,7 @@ impl DebugPanel {
             h_flex().pl_0p5().gap_1().child(Divider::vertical()).child(
                 IconButton::new("debug-close-panel", IconName::Close)
                     .icon_size(IconSize::Small)
+                    .chrome_region(ChromeRegion::Panel)
                     .on_click(move |_, window, cx| {
                         window.dispatch_action(workspace::ToggleBottomDock.boxed_clone(), cx)
                     })
@@ -691,7 +696,9 @@ impl DebugPanel {
                 .justify_between()
                 .border_b_1()
                 .border_color(cx.theme().colors().border)
-                .when(is_side, |this| this.gap_1().h(Tab::container_height(cx)))
+                .when(is_side, |this| {
+                    this.gap_1().min_h(ui::panel_header_height(cx))
+                })
                 .child(
                     h_flex()
                         .justify_between()
@@ -713,6 +720,7 @@ impl DebugPanel {
                                                     IconName::DebugPause,
                                                 )
                                                 .icon_size(IconSize::Small)
+                                                .chrome_region(ChromeRegion::Panel)
                                                 .on_click(window.listener_for(
                                                     running_state,
                                                     |this, _, _window, cx| {
@@ -737,6 +745,7 @@ impl DebugPanel {
                                                 IconName::DebugContinue,
                                             )
                                             .icon_size(IconSize::Small)
+                                            .chrome_region(ChromeRegion::Panel)
                                             .disabled(thread_status != ThreadStatus::Stopped)
                                             .on_click(window.listener_for(
                                                 running_state,
@@ -767,6 +776,7 @@ impl DebugPanel {
                                                             IconName::DebugContinueThread,
                                                         )
                                                         .icon_size(IconSize::Small)
+                                                        .chrome_region(ChromeRegion::Panel)
                                                         .disabled(
                                                             thread_status != ThreadStatus::Stopped,
                                                         )
@@ -795,6 +805,7 @@ impl DebugPanel {
                                     .child(
                                         IconButton::new("step-over", IconName::DebugStepOver)
                                             .icon_size(IconSize::Small)
+                                            .chrome_region(ChromeRegion::Panel)
                                             .on_click(window.listener_for(
                                                 running_state,
                                                 |this, _, _window, cx| {
@@ -817,6 +828,7 @@ impl DebugPanel {
                                     .child(
                                         IconButton::new("step-into", IconName::DebugStepInto)
                                             .icon_size(IconSize::Small)
+                                            .chrome_region(ChromeRegion::Panel)
                                             .on_click(window.listener_for(
                                                 running_state,
                                                 |this, _, _window, cx| {
@@ -839,6 +851,7 @@ impl DebugPanel {
                                     .child(
                                         IconButton::new("step-out", IconName::DebugStepOut)
                                             .icon_size(IconSize::Small)
+                                            .chrome_region(ChromeRegion::Panel)
                                             .on_click(window.listener_for(
                                                 running_state,
                                                 |this, _, _window, cx| {
@@ -862,6 +875,7 @@ impl DebugPanel {
                                     .child(
                                         IconButton::new("debug-restart", IconName::RotateCcw)
                                             .icon_size(IconSize::Small)
+                                            .chrome_region(ChromeRegion::Panel)
                                             .on_click(window.listener_for(
                                                 running_state,
                                                 |this, _, window, cx| {
@@ -883,6 +897,7 @@ impl DebugPanel {
                                     .child(
                                         IconButton::new("debug-stop", IconName::Power)
                                             .icon_size(IconSize::Small)
+                                            .chrome_region(ChromeRegion::Panel)
                                             .on_click(window.listener_for(
                                                 running_state,
                                                 |this, _, _window, cx| {
@@ -935,6 +950,7 @@ impl DebugPanel {
                                                     && thread_status != ThreadStatus::Running,
                                             )
                                             .icon_size(IconSize::Small)
+                                            .chrome_region(ChromeRegion::Panel)
                                             .on_click(window.listener_for(
                                                 running_state,
                                                 |this, _, _, cx| {
@@ -1871,7 +1887,7 @@ impl Render for DebugPanel {
                         .child(
                             h_flex()
                                 .track_focus(&self.breakpoint_list.focus_handle(cx))
-                                .h(Tab::container_height(cx))
+                                .h(ui::panel_header_height(cx))
                                 .p_1p5()
                                 .w_full()
                                 .justify_between()

@@ -1,8 +1,8 @@
 use std::{collections::HashMap, sync::Arc};
 
 use gpui::{
-    App, Bounds, Corners, DevicePixels, Global, Hsla, IntoElement, ObjectFit, Pixels, RenderImage,
-    Size, Styled, Window, WindowId, canvas, point, px, size,
+    App, Bounds, ContentMask, Corners, DevicePixels, Global, Hsla, IntoElement, ObjectFit, Pixels,
+    RenderImage, Size, Styled, Window, WindowId, canvas, point, px, size,
 };
 use gpui_util::ResultExt;
 use smallvec::SmallVec;
@@ -219,6 +219,7 @@ pub fn paint_background_image(
     target: BackgroundImageTarget,
     surface_background: Hsla,
     require_opaque: bool,
+    corner_radii: Corners<Pixels>,
     window: &mut Window,
     cx: &App,
 ) {
@@ -237,12 +238,18 @@ pub fn paint_background_image(
         layer.mode,
         layer.alignment,
     );
-    for rect in rects {
-        let image = layer.image.clone();
-        window
-            .paint_image(bounds, rect, Corners::default(), image, 0, false)
-            .log_err();
-    }
+    let surface_mask = ContentMask {
+        bounds,
+        corner_radii: corner_radii.clamp_radii_for_quad_size(bounds.size),
+    };
+    window.with_content_mask(Some(surface_mask), |window| {
+        for rect in rects {
+            let image = layer.image.clone();
+            window
+                .paint_image(bounds, rect, Corners::default(), image, 0, false)
+                .log_err();
+        }
+    });
 }
 
 pub fn background_image_layer(
@@ -250,6 +257,7 @@ pub fn background_image_layer(
     area: BackgroundImageArea,
     surface_background: Hsla,
     require_opaque: bool,
+    corner_radii: Corners<Pixels>,
 ) -> impl IntoElement {
     canvas(
         |_, _, _| {},
@@ -264,6 +272,7 @@ pub fn background_image_layer(
                 target,
                 surface_background,
                 require_opaque,
+                corner_radii,
                 window,
                 cx,
             );

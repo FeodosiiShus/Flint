@@ -1,9 +1,9 @@
 use crate::{AgentTool, Template, Templates, TerminalTool, TerminalToolInput};
 use Role::*;
 use anyhow::{Context as _, Result};
-use client::{Client, RefreshLlmTokenListener, UserStore};
+use client::Client;
 use futures::{FutureExt as _, StreamExt};
-use gpui::{AppContext as _, AsyncApp, TestAppContext};
+use gpui::{AsyncApp, TestAppContext};
 use language_model::{
     LanguageModel, LanguageModelCompletionEvent, LanguageModelRegistry, LanguageModelRequest,
     LanguageModelRequestMessage, MessageContent, Role, SelectedModel,
@@ -162,10 +162,8 @@ impl TerminalToolTest {
             let http_client = Arc::new(ReqwestClient::user_agent("agent tests").unwrap());
             cx.set_http_client(http_client);
             let client = Client::production(cx);
-            let user_store = cx.new(|cx| UserStore::new(client.clone(), cx));
             language_model::init(cx);
-            RefreshLlmTokenListener::register(client.clone(), user_store.clone(), cx);
-            language_models::init(user_store, client, cx);
+            language_models::init(client, cx);
         });
 
         let agent_model = SelectedModel::from_str(

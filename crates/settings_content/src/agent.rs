@@ -626,7 +626,6 @@ fn agent_profile_tools_schema(_: &mut schemars::SchemaGenerator) -> schemars::Sc
         "move_path",
         "read_file",
         "rename_symbol",
-        "search_web",
         "skill",
         "spawn_agent",
         "terminal",
@@ -744,8 +743,7 @@ impl JsonSchema for LanguageModelProviderSetting {
                         "openrouter",
                         "vercel_ai_gateway",
                         "x_ai",
-                        "x_ai_subscribed",
-                        "zed.dev"
+                        "x_ai_subscribed"
                     ]
                 },
                 {

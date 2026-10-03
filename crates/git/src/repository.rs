@@ -960,6 +960,12 @@ pub trait GitRepository: Send + Sync {
         env: Arc<HashMap<String, String>>,
     ) -> BoxFuture<'_, Result<()>>;
 
+    fn unresolve_paths(
+        &self,
+        paths: Vec<RepoPath>,
+        env: Arc<HashMap<String, String>>,
+    ) -> BoxFuture<'_, Result<()>>;
+
     /// Only used to serve `proto::RunGitHook` requests from older remote clients;
     /// new code lets `git commit` run hooks itself.
     ///
@@ -2612,6 +2618,61 @@ impl GitRepository for RealGitRepository {
             .boxed()
     }
 
+    fn unresolve_paths(
+        &self,
+        paths: Vec<RepoPath>,
+        env: Arc<HashMap<String, String>>,
+    ) -> BoxFuture<'_, Result<()>> {
+        let git = self.git_binary_in_worktree();
+        self.executor
+            .spawn(async move {
+                let git = git?;
+                if !paths.is_empty() {
+                    let output = git
+                        .build_command(&["update-index", "--unresolve", "--"])
+                        .envs(env.iter())
+                        .args(paths.iter().map(|path| path.as_unix_str()))
+                        .output()
+                        .await?;
+                    anyhow::ensure!(
+                        output.status.success(),
+                        "Failed to unresolve paths:\n{}",
+                        String::from_utf8_lossy(&output.stderr),
+                    );
+                    let output = git
+                        .build_command(&["ls-files", "--unmerged", "-z", "--"])
+                        .envs(env.iter())
+                        .args(paths.iter().map(|path| path.as_unix_str()))
+                        .output()
+                        .await?;
+                    anyhow::ensure!(
+                        output.status.success(),
+                        "Failed to list unmerged paths:\n{}",
+                        String::from_utf8_lossy(&output.stderr),
+                    );
+                    let unmerged_listing = String::from_utf8_lossy(&output.stdout);
+                    for (checkout_mode, group) in conflict_checkout_groups(&unmerged_listing) {
+                        if group.is_empty() {
+                            continue;
+                        }
+                        let output = git
+                            .build_command(&["checkout", checkout_mode, "--"])
+                            .envs(env.iter())
+                            .args(group.iter())
+                            .output()
+                            .await?;
+                        anyhow::ensure!(
+                            output.status.success(),
+                            "Failed to recreate conflicted merge:\n{}",
+                            String::from_utf8_lossy(&output.stderr),
+                        );
+                    }
+                }
+                Ok(())
+            })
+            .boxed()
+    }
+
     fn stash_paths(
         &self,
         paths: Vec<RepoPath>,
@@ -3750,6 +3811,37 @@ fn parse_initial_graph_output<'a>(
         .collect()
 }
 
+fn conflict_checkout_groups(unmerged_listing: &str) -> [(&'static str, Vec<String>); 3] {
+    let mut sides_by_path = std::collections::BTreeMap::<&str, (bool, bool)>::new();
+    for entry in unmerged_listing.split('\0') {
+        let Some((metadata, path)) = entry.split_once('\t') else {
+            continue;
+        };
+        let (has_ours, has_theirs) = sides_by_path.entry(path).or_default();
+        match metadata.rsplit(' ').next() {
+            Some("2") => *has_ours = true,
+            Some("3") => *has_theirs = true,
+            _ => {}
+        }
+    }
+    let mut merged_paths = Vec::new();
+    let mut ours_paths = Vec::new();
+    let mut theirs_paths = Vec::new();
+    for (path, sides) in sides_by_path {
+        match sides {
+            (true, true) => merged_paths.push(path.to_string()),
+            (true, false) => ours_paths.push(path.to_string()),
+            (false, true) => theirs_paths.push(path.to_string()),
+            (false, false) => {}
+        }
+    }
+    [
+        ("-m", merged_paths),
+        ("--ours", ours_paths),
+        ("--theirs", theirs_paths),
+    ]
+}
+
 fn git_status_args(path_prefixes: &[RepoPath]) -> Vec<OsString> {
     let mut args = vec![
         OsString::from("status"),
@@ -4292,6 +4384,7 @@ mod tests {
     };
 
     use super::*;
+    use crate::status::{UnmergedStatus, UnmergedStatusCode};
     use gpui::TestAppContext;
 
     #[test]
@@ -4357,6 +4450,31 @@ mod tests {
         S: AsRef<OsStr>,
     {
         git_command_output(working_directory, arguments);
+    }
+
+    #[allow(clippy::disallowed_methods)]
+    #[track_caller]
+    fn git_command_expecting_failure<I, S>(working_directory: &Path, arguments: I)
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<OsStr>,
+    {
+        let output = std::process::Command::new("git")
+            .args(arguments)
+            .current_dir(working_directory)
+            .env("GIT_CONFIG_GLOBAL", "")
+            .env("GIT_CONFIG_SYSTEM", "")
+            .env("GIT_AUTHOR_NAME", "test")
+            .env("GIT_AUTHOR_EMAIL", "test@zed.dev")
+            .env("GIT_COMMITTER_NAME", "test")
+            .env("GIT_COMMITTER_EMAIL", "test@zed.dev")
+            .output()
+            .expect("failed to run git command");
+        assert!(
+            !output.status.success(),
+            "git command unexpectedly succeeded: {}",
+            String::from_utf8_lossy(&output.stdout)
+        );
     }
 
     fn git_init_repo(path: &Path) {
@@ -5962,6 +6080,146 @@ mod tests {
                 Some(b"space file committed contents".to_vec()),
                 None,
             ]
+        );
+    }
+
+    #[gpui::test]
+    async fn test_conflict_stages_and_unresolve_paths(cx: &mut TestAppContext) {
+        disable_git_global_config();
+        cx.executor().allow_parking();
+
+        let repo_dir = tempfile::tempdir().unwrap();
+        let work_dir = repo_dir.path();
+        git_init_repo(work_dir);
+
+        let base_text = "first\nbase line\nlast\n";
+        let ours_text = "first\nour line\nlast\n";
+        let theirs_text = "first\ntheir line\nlast\n";
+        let deleted_by_us_base_text = "deleted by us\n";
+        let deleted_by_us_theirs_text = "modified by them\n";
+        let deleted_by_them_base_text = "deleted by them\n";
+        let deleted_by_them_ours_text = "modified by us\n";
+
+        fs::write(work_dir.join("file"), base_text).unwrap();
+        fs::write(work_dir.join("removed"), deleted_by_us_base_text).unwrap();
+        fs::write(work_dir.join("gone"), deleted_by_them_base_text).unwrap();
+        git_command(work_dir, ["add", "."]);
+        git_command(work_dir, ["commit", "-m", "base"]);
+
+        git_command(work_dir, ["checkout", "-b", "theirs"]);
+        fs::write(work_dir.join("file"), theirs_text).unwrap();
+        fs::write(work_dir.join("removed"), deleted_by_us_theirs_text).unwrap();
+        git_command(work_dir, ["rm", "--quiet", "gone"]);
+        git_command(work_dir, ["commit", "-am", "theirs"]);
+
+        git_command(work_dir, ["checkout", "main"]);
+        fs::write(work_dir.join("file"), ours_text).unwrap();
+        fs::write(work_dir.join("gone"), deleted_by_them_ours_text).unwrap();
+        git_command(work_dir, ["rm", "--quiet", "removed"]);
+        git_command(work_dir, ["commit", "-am", "ours"]);
+
+        git_command_expecting_failure(work_dir, ["merge", "theirs"]);
+
+        let repo = RealGitRepository::new(
+            &work_dir.join(".git"),
+            None,
+            Some("git".into()),
+            cx.executor(),
+        )
+        .unwrap();
+
+        let stage_revisions = [
+            ":1:file",
+            ":2:file",
+            ":3:file",
+            ":1:removed",
+            ":2:removed",
+            ":3:removed",
+            ":1:gone",
+            ":2:gone",
+            ":3:gone",
+        ]
+        .map(String::from)
+        .to_vec();
+        let expected_stages = vec![
+            Some(base_text.as_bytes().to_vec()),
+            Some(ours_text.as_bytes().to_vec()),
+            Some(theirs_text.as_bytes().to_vec()),
+            Some(deleted_by_us_base_text.as_bytes().to_vec()),
+            None,
+            Some(deleted_by_us_theirs_text.as_bytes().to_vec()),
+            Some(deleted_by_them_base_text.as_bytes().to_vec()),
+            Some(deleted_by_them_ours_text.as_bytes().to_vec()),
+            None,
+        ];
+        assert_eq!(
+            repo.load_revisions(stage_revisions.clone()).await.unwrap(),
+            expected_stages
+        );
+
+        let conflicted_paths = [repo_path("file"), repo_path("gone"), repo_path("removed")];
+        let expected_conflict_statuses = vec![
+            (
+                repo_path("file"),
+                FileStatus::Unmerged(UnmergedStatus {
+                    first_head: UnmergedStatusCode::Updated,
+                    second_head: UnmergedStatusCode::Updated,
+                }),
+            ),
+            (
+                repo_path("gone"),
+                FileStatus::Unmerged(UnmergedStatus {
+                    first_head: UnmergedStatusCode::Updated,
+                    second_head: UnmergedStatusCode::Deleted,
+                }),
+            ),
+            (
+                repo_path("removed"),
+                FileStatus::Unmerged(UnmergedStatus {
+                    first_head: UnmergedStatusCode::Deleted,
+                    second_head: UnmergedStatusCode::Updated,
+                }),
+            ),
+        ];
+        let status = repo.status(&conflicted_paths).await.unwrap();
+        assert_eq!(status.entries.to_vec(), expected_conflict_statuses);
+
+        fs::write(work_dir.join("file"), "first\nresolved line\nlast\n").unwrap();
+        fs::remove_file(work_dir.join("removed")).unwrap();
+        fs::remove_file(work_dir.join("gone")).unwrap();
+        repo.stage_paths(conflicted_paths.to_vec(), Arc::new(HashMap::default()))
+            .await
+            .unwrap();
+        let status = repo.status(&conflicted_paths).await.unwrap();
+        assert!(
+            status
+                .entries
+                .iter()
+                .all(|(_, status)| !status.is_conflicted()),
+            "staging should resolve the conflicts, got {:?}",
+            status.entries
+        );
+
+        repo.unresolve_paths(conflicted_paths.to_vec(), Arc::new(HashMap::default()))
+            .await
+            .unwrap();
+        let status = repo.status(&conflicted_paths).await.unwrap();
+        assert_eq!(status.entries.to_vec(), expected_conflict_statuses);
+        assert_eq!(
+            fs::read_to_string(work_dir.join("file")).unwrap(),
+            "first\n<<<<<<< ours\nour line\n=======\ntheir line\n>>>>>>> theirs\nlast\n"
+        );
+        assert_eq!(
+            fs::read_to_string(work_dir.join("removed")).unwrap(),
+            deleted_by_us_theirs_text
+        );
+        assert_eq!(
+            fs::read_to_string(work_dir.join("gone")).unwrap(),
+            deleted_by_them_ours_text
+        );
+        assert_eq!(
+            repo.load_revisions(stage_revisions).await.unwrap(),
+            expected_stages
         );
     }
 

@@ -18,7 +18,7 @@ bench-support = ["gpui/bench-support", "gpui_apple/bench-support"]
 test-support = ["gpui/test-support", "gpui_apple/test-support"]
 runtime_shaders = ["gpui_apple/runtime_shaders"]
 font-kit = ["dep:font-kit"]
-screen-capture = ["gpui/screen-capture"]
+screen-capture = ["gpui/screen-capture", "dep:objc2-screen-capture-kit"]
 
 [dependencies]
 gpui.workspace = true
@@ -52,7 +52,7 @@ objc2-app-kit.workspace = true
 objc2-core-graphics.workspace = true
 objc2-core-media.workspace = true
 objc2-foundation.workspace = true
-objc2-screen-capture-kit.workspace = true
+objc2-screen-capture-kit = { workspace = true, optional = true }
 objc2-user-notifications.workspace = true
 parking_lot.workspace = true
 pathfinder_geometry.workspace = true

@@ -16,6 +16,7 @@ impl Settings for ChromeSizeSettings {
         let tab_bar = content.tab_bar.as_ref();
         let toolbar = content.editor.toolbar.as_ref();
         let status_bar = content.status_bar.as_ref();
+        let panel = content.panel.as_ref();
         Self(ChromeSizes {
             title_bar_height: clamp_height(title_bar.and_then(|bar| bar.height)),
             title_bar_icon_size: clamp_icon_size(title_bar.and_then(|bar| bar.icon_size)),
@@ -25,6 +26,8 @@ impl Settings for ChromeSizeSettings {
             toolbar_icon_size: clamp_icon_size(toolbar.and_then(|bar| bar.icon_size)),
             status_bar_height: clamp_height(status_bar.and_then(|bar| bar.height)),
             status_bar_icon_size: clamp_icon_size(status_bar.and_then(|bar| bar.icon_size)),
+            panel_height: clamp_height(panel.and_then(|panel| panel.height)),
+            panel_icon_size: clamp_icon_size(panel.and_then(|panel| panel.icon_size)),
         })
     }
 }
@@ -47,8 +50,8 @@ mod tests {
 
     use gpui::px;
     use settings::{
-        EditorSettingsContent, StatusBarSettingsContent, TabBarSettingsContent,
-        TitleBarSettingsContent, ToolbarContent,
+        EditorSettingsContent, PanelChromeSettingsContent, StatusBarSettingsContent,
+        TabBarSettingsContent, TitleBarSettingsContent, ToolbarContent,
     };
 
     fn chrome_sizes(content: &SettingsContent) -> ChromeSizes {
@@ -72,6 +75,7 @@ mod tests {
                 icon_size,
                 ..Default::default()
             }),
+            panel: Some(PanelChromeSettingsContent { height, icon_size }),
             editor: EditorSettingsContent {
                 toolbar: Some(ToolbarContent {
                     height,
@@ -96,6 +100,8 @@ mod tests {
             toolbar_icon_size: icon_size,
             status_bar_height: height,
             status_bar_icon_size: icon_size,
+            panel_height: height,
+            panel_icon_size: icon_size,
         }
     }
 
@@ -137,7 +143,8 @@ mod tests {
             "title_bar": { "height": null, "icon_size": null },
             "tab_bar": { "height": null, "icon_size": null },
             "toolbar": { "height": null, "icon_size": null },
-            "status_bar": { "height": null, "icon_size": null }
+            "status_bar": { "height": null, "icon_size": null },
+            "panel": { "height": null, "icon_size": null }
         }"#;
         let content: SettingsContent = settings::parse_json_with_comments(json)?;
         assert_eq!(chrome_sizes(&content), ChromeSizes::default());
@@ -258,12 +265,54 @@ mod tests {
     }
 
     #[test]
+    fn chrome_size_maps_panel_group() {
+        let content = SettingsContent {
+            panel: Some(PanelChromeSettingsContent {
+                height: Some(34),
+                icon_size: Some(18),
+            }),
+            ..Default::default()
+        };
+        let expected = ChromeSizes {
+            panel_height: Some(px(34.)),
+            panel_icon_size: Some(px(18.)),
+            ..Default::default()
+        };
+        assert_eq!(chrome_sizes(&content), expected);
+    }
+
+    #[test]
+    fn chrome_size_panel_group_is_independent_of_tab_bar() {
+        let content = SettingsContent {
+            tab_bar: Some(TabBarSettingsContent {
+                height: Some(40),
+                icon_size: Some(20),
+                ..Default::default()
+            }),
+            panel: Some(PanelChromeSettingsContent {
+                height: Some(10),
+                icon_size: None,
+            }),
+            ..Default::default()
+        };
+        let expected = ChromeSizes {
+            tab_bar_height: Some(px(40.)),
+            tab_bar_icon_size: Some(px(20.)),
+            panel_height: Some(px(24.)),
+            panel_icon_size: None,
+            ..Default::default()
+        };
+        assert_eq!(chrome_sizes(&content), expected);
+    }
+
+    #[test]
     fn chrome_size_maps_every_group_from_json() -> anyhow::Result<()> {
         let json = r#"{
             "title_bar": { "height": 40, "icon_size": 18 },
             "tab_bar": { "height": 36, "icon_size": 16 },
             "toolbar": { "height": 100, "icon_size": 20 },
-            "status_bar": { "height": 30, "icon_size": 4 }
+            "status_bar": { "height": 30, "icon_size": 4 },
+            "panel": { "height": 50, "icon_size": 40 }
         }"#;
         let content: SettingsContent = settings::parse_json_with_comments(json)?;
         let expected = ChromeSizes {
@@ -275,6 +324,8 @@ mod tests {
             toolbar_icon_size: Some(px(20.)),
             status_bar_height: Some(px(30.)),
             status_bar_icon_size: Some(px(10.)),
+            panel_height: Some(px(50.)),
+            panel_icon_size: Some(px(32.)),
         };
         assert_eq!(chrome_sizes(&content), expected);
         Ok(())

@@ -59,10 +59,6 @@ message Envelope {
 
     GetDefinition get_definition = 32;
     GetDefinitionResponse get_definition_response = 33;
-    GetEditPredictionDefinition get_edit_prediction_definition = 462;
-    GetEditPredictionDefinitionResponse get_edit_prediction_definition_response = 463;
-    GetEditPredictionTypeDefinition get_edit_prediction_type_definition = 464;
-    GetEditPredictionTypeDefinitionResponse get_edit_prediction_type_definition_response = 465;
     GetDeclaration get_declaration = 237;
     GetDeclarationResponse get_declaration_response = 238;
     GetTypeDefinition get_type_definition = 34;
@@ -378,9 +374,6 @@ message Envelope {
     GetDefaultBranch get_default_branch = 359;
     GetDefaultBranchResponse get_default_branch_response = 360;
 
-    GetCrashFiles get_crash_files = 361;
-    GetCrashFilesResponse get_crash_files_response = 362;
-
     GitClone git_clone = 363;
     GitCloneResponse git_clone_response = 364;
 
@@ -491,7 +484,6 @@ message Envelope {
     ResolveDocumentLinkResponse resolve_document_link_response = 456;
     GitWorktreeCreatedAt git_worktree_created_at = 457;
     GitWorktreeCreatedAtResponse git_worktree_created_at_response = 458;
-    TelemetryEvent telemetry_event = 459;
     ResolveCodeAction resolve_code_action = 460;
     ResolveCodeActionResponse resolve_code_action_response = 461;
     TrashProjectEntry trash_project_entry = 466;
@@ -553,6 +545,9 @@ message Envelope {
   reserved 211 to 216, 232 to 233;
   reserved 397 to 398;
   reserved 406 to 408;
+  reserved 462 to 465;
+  reserved 361 to 362;
+  reserved 459;
 }
 
 message Hello {

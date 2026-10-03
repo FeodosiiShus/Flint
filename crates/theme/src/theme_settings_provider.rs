@@ -13,6 +13,8 @@ pub struct ChromeSizes {
     pub toolbar_icon_size: Option<Pixels>,
     pub status_bar_height: Option<Pixels>,
     pub status_bar_icon_size: Option<Pixels>,
+    pub panel_height: Option<Pixels>,
+    pub panel_icon_size: Option<Pixels>,
 }
 
 /// Trait for providing theme-related settings (fonts, font sizes, UI density)

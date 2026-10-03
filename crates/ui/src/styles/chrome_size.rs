@@ -4,6 +4,7 @@ use crate::{ButtonSize, DynamicSpacing, IconSize};
 
 const DEFAULT_ICON_PX: f32 = 14.;
 const BUTTON_ICON_PADDING: Pixels = px(8.);
+const PANEL_HEADER_BORDER: Pixels = px(1.);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ChromeRegion {
@@ -11,6 +12,7 @@ pub enum ChromeRegion {
     TabBar,
     Toolbar,
     StatusBar,
+    Panel,
 }
 
 pub fn chrome_height(region: ChromeRegion, cx: &App) -> Option<Pixels> {
@@ -20,6 +22,7 @@ pub fn chrome_height(region: ChromeRegion, cx: &App) -> Option<Pixels> {
         ChromeRegion::TabBar => sizes.tab_bar_height,
         ChromeRegion::Toolbar => sizes.toolbar_height,
         ChromeRegion::StatusBar => sizes.status_bar_height,
+        ChromeRegion::Panel => sizes.panel_height,
     }
 }
 
@@ -47,6 +50,21 @@ pub(crate) fn chrome_fit_height(region: ChromeRegion, size: ButtonSize, cx: &App
     }
 }
 
+pub fn panel_header_height(cx: &App) -> Pixels {
+    let region = ChromeRegion::Panel;
+    let tab_bar_height = crate::Tab::container_height(cx);
+    let height = chrome_height(region, cx);
+    if height.is_none() && configured_icon_size(region, cx).is_none() {
+        return tab_bar_height;
+    }
+    let button_height = chrome_fit_height(region, ButtonSize::Default, cx);
+    header_height(height, tab_bar_height, button_height)
+}
+
+pub fn panel_header_content_height(cx: &App) -> Pixels {
+    panel_header_height(cx) - PANEL_HEADER_BORDER
+}
+
 pub(crate) fn chrome_square_side(
     region: ChromeRegion,
     default: IconSize,
@@ -67,6 +85,7 @@ fn configured_icon_size(region: ChromeRegion, cx: &App) -> Option<Pixels> {
         ChromeRegion::TabBar => sizes.tab_bar_icon_size,
         ChromeRegion::Toolbar => sizes.toolbar_icon_size,
         ChromeRegion::StatusBar => sizes.status_bar_icon_size,
+        ChromeRegion::Panel => sizes.panel_icon_size,
     }
 }
 
@@ -98,6 +117,12 @@ fn button_height(size: ButtonSize, icon_size: Pixels, ui_font_size: Pixels) -> P
 
 fn square_side(icon_size: Pixels, icon_px: Pixels, padding: Pixels) -> Pixels {
     (icon_size + BUTTON_ICON_PADDING).max(icon_px + padding * 2.)
+}
+
+fn header_height(height: Option<Pixels>, fallback: Pixels, button_height: Pixels) -> Pixels {
+    height
+        .unwrap_or(fallback)
+        .max(button_height + PANEL_HEADER_BORDER)
 }
 
 #[cfg(test)]
@@ -203,6 +228,41 @@ mod tests {
             let icon_px = scaled_icon_px(default, px(icon_size));
             let side = square_side(px(icon_size), icon_px, px(padding));
             assert_px(f32::from(side), expected);
+        }
+    }
+
+    #[test]
+    fn panel_header_height_is_exact_but_never_below_its_buttons() {
+        let cases = [
+            (None, 32., 22., 32.),
+            (Some(24.), 32., 22., 24.),
+            (Some(40.), 32., 22., 40.),
+            (Some(64.), 32., 40., 64.),
+            (Some(24.), 32., 28., 29.),
+            (Some(30.), 32., 40., 41.),
+            (None, 32., 40., 41.),
+            (None, 28., 22., 28.),
+        ];
+        for (height, fallback, button_height, expected) in cases {
+            let header = header_height(height.map(px), px(fallback), px(button_height));
+            assert_px(f32::from(header), expected);
+        }
+    }
+
+    #[test]
+    fn panel_header_fits_the_tallest_region_button_for_every_icon_size() {
+        for ui_font_size in UI_FONT_SIZES {
+            for icon_size in ICON_SIZES {
+                let button = button_height(ButtonSize::Default, px(icon_size), px(ui_font_size));
+                let header = header_height(Some(px(24.)), px(32.), button);
+                let tallest_square = square_side(
+                    px(icon_size),
+                    scaled_icon_px(IconSize::Medium, px(icon_size)),
+                    px(2.),
+                );
+                assert!(header >= button, "{header:?} < {button:?}");
+                assert!(header >= tallest_square, "{header:?} < {tallest_square:?}");
+            }
         }
     }
 }

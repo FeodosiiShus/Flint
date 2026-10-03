@@ -121,6 +121,7 @@ impl Render for ProjectDiagnosticsEditor {
                         ui::BackgroundImageArea::Window,
                         cx.theme().colors().editor_background,
                         true,
+                        gpui::Corners::default(),
                     ))
                     .child(Label::new(label).color(Color::Muted))
                     .when(self.summary.warning_count > 0, |this| {
@@ -802,10 +803,6 @@ impl Item for ProjectDiagnosticsEditor {
                 )
             })
             .into_any_element()
-    }
-
-    fn telemetry_event_text(&self) -> Option<&'static str> {
-        Some("Project Diagnostics Opened")
     }
 
     fn for_each_project_item(

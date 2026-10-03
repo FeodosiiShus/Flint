@@ -1,13 +1,37 @@
 use std::cmp::Ordering;
 
-use gpui::{AnyElement, IntoElement, Stateful};
+use gpui::{AnyElement, Hsla, IntoElement, Stateful};
 use smallvec::SmallVec;
+use theme::ThemeColors;
 
 use crate::prelude::*;
 
 const START_TAB_SLOT_SIZE: Pixels = px(12.);
 const END_TAB_SLOT_SIZE: Pixels = px(14.);
 const TAB_BORDER_WIDTH: Pixels = px(1.);
+const ISLAND_TAB_PILL_RADIUS: Pixels = px(6.);
+const ISLAND_TAB_PILL_VERTICAL_INSET: Pixels = px(4.);
+const ISLAND_TAB_ACCENT_FILL_OPACITY: f32 = 0.15;
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct IslandTabPillColors {
+    pub background: Hsla,
+    pub border: Hsla,
+}
+
+pub fn island_tab_pill_colors(pane_focused: bool, colors: &ThemeColors) -> IslandTabPillColors {
+    if pane_focused {
+        IslandTabPillColors {
+            background: colors.text_accent.opacity(ISLAND_TAB_ACCENT_FILL_OPACITY),
+            border: colors.text_accent,
+        }
+    } else {
+        IslandTabPillColors {
+            background: gpui::transparent_black(),
+            border: colors.border,
+        }
+    }
+}
 
 /// The position of a [`Tab`] within a list of tabs.
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
@@ -34,6 +58,8 @@ pub enum TabCloseSide {
 pub struct Tab {
     div: Stateful<Div>,
     selected: bool,
+    focused: bool,
+    islands: bool,
     position: TabPosition,
     close_side: TabCloseSide,
     start_slot: Option<AnyElement>,
@@ -49,12 +75,24 @@ impl Tab {
                 .id(id.clone())
                 .debug_selector(|| format!("TAB-{}", id)),
             selected: false,
+            focused: false,
+            islands: false,
             position: TabPosition::First,
             close_side: TabCloseSide::End,
             start_slot: None,
             end_slot: None,
             children: SmallVec::new(),
         }
+    }
+
+    pub fn focused(mut self, focused: bool) -> Self {
+        self.focused = focused;
+        self
+    }
+
+    pub fn islands(mut self, islands: bool) -> Self {
+        self.islands = islands;
+        self
     }
 
     pub fn position(mut self, position: TabPosition) -> Self {
@@ -156,6 +194,43 @@ impl RenderOnce for Tab {
             }
         };
 
+        let content = h_flex()
+            .group("")
+            .relative()
+            .px(DynamicSpacing::Base04.px(cx))
+            .gap(DynamicSpacing::Base04.rems(cx))
+            .text_color(text_color)
+            .child(start_slot)
+            .children(self.children)
+            .child(end_slot);
+
+        if self.islands {
+            let colors = cx.theme().colors();
+            let pill = island_tab_pill_colors(self.focused, colors);
+            let hover_background = colors.ghost_element_hover;
+            let transparent_border = colors.border_transparent;
+            return self
+                .div
+                .h(Tab::container_height(cx))
+                .py(ISLAND_TAB_PILL_VERTICAL_INSET)
+                .px_px()
+                .cursor_pointer()
+                .child(
+                    content
+                        .h_full()
+                        .rounded(ISLAND_TAB_PILL_RADIUS)
+                        .border_1()
+                        .map(|this| {
+                            if self.selected {
+                                this.border_color(pill.border).bg(pill.background)
+                            } else {
+                                this.border_color(transparent_border)
+                                    .hover(move |style| style.bg(hover_background))
+                            }
+                        }),
+                );
+        }
+
         self.div
             .h(Tab::container_height(cx))
             .bg(tab_bg)
@@ -164,6 +239,7 @@ impl RenderOnce for Tab {
                 crate::BackgroundImageArea::Window,
                 tab_bg,
                 true,
+                gpui::Corners::default(),
             ))
             .border_color(cx.theme().colors().border)
             .map(|this| match self.position {
@@ -186,18 +262,7 @@ impl RenderOnce for Tab {
                 TabPosition::Middle(Ordering::Greater) => this.border_r_1().pl_px().border_b_1(),
             })
             .cursor_pointer()
-            .child(
-                h_flex()
-                    .group("")
-                    .relative()
-                    .h(Tab::content_height(cx))
-                    .px(DynamicSpacing::Base04.px(cx))
-                    .gap(DynamicSpacing::Base04.rems(cx))
-                    .text_color(text_color)
-                    .child(start_slot)
-                    .children(self.children)
-                    .child(end_slot),
-            )
+            .child(content.h(Tab::content_height(cx)))
     }
 }
 
@@ -252,5 +317,46 @@ impl Component for Tab {
                 ],
             )])
             .into_any_element()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn focused_pane_pill_has_accent_border_and_tinted_fill() {
+        for colors in [ThemeColors::dark(), ThemeColors::light()] {
+            let pill = island_tab_pill_colors(true, &colors);
+            assert_eq!(pill.border, colors.text_accent);
+            assert_eq!(
+                (pill.background.h, pill.background.s, pill.background.l),
+                (
+                    colors.text_accent.h,
+                    colors.text_accent.s,
+                    colors.text_accent.l
+                ),
+                "the fill is tinted with the accent hue"
+            );
+            assert!(
+                (pill.background.a - colors.text_accent.a * 0.15).abs() < f32::EPSILON,
+                "the fill keeps 15% of the accent alpha, got {}",
+                pill.background.a
+            );
+        }
+    }
+
+    #[test]
+    fn unfocused_pane_pill_has_border_color_and_no_fill() {
+        for colors in [ThemeColors::dark(), ThemeColors::light()] {
+            let pill = island_tab_pill_colors(false, &colors);
+            assert_eq!(pill.border, colors.border);
+            assert!(pill.background.is_transparent());
+            assert_ne!(
+                pill.border,
+                island_tab_pill_colors(true, &colors).border,
+                "focus must be visible from the pill border alone"
+            );
+        }
     }
 }

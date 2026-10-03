@@ -270,7 +270,6 @@ fn enqueue_notification<Notif>(
 
 pub struct AcpConnection {
     id: AgentId,
-    telemetry_id: SharedString,
     agent_version: Option<SharedString>,
     connection: ConnectionTo<Agent>,
     sessions: Rc<RefCell<HashMap<acp::SessionId, AcpSession>>>,
@@ -893,12 +892,6 @@ impl AcpConnection {
         });
 
         let agent_info = response.agent_info;
-        let telemetry_id = agent_info
-            .as_ref()
-            // Use the one the agent provides if we have one
-            .map(|info| SharedString::from(info.name.clone()))
-            // Otherwise, just use the name
-            .unwrap_or_else(|| agent_id.0.clone());
         let agent_version = agent_info
             .and_then(|info| (!info.version.is_empty()).then(|| SharedString::from(info.version)));
         let agent_supports_delete = response
@@ -954,7 +947,6 @@ impl AcpConnection {
             auth_methods,
             agent_server_store,
             connection,
-            telemetry_id,
             agent_version,
             sessions,
             pending_sessions: RefCell::new(HashMap::default()),
@@ -995,7 +987,6 @@ impl AcpConnection {
 
         Self {
             id: agent_id,
-            telemetry_id: "test".into(),
             agent_version: None,
             connection,
             sessions,
@@ -1588,10 +1579,6 @@ impl AgentConnection for AcpConnection {
         self.id.clone()
     }
 
-    fn telemetry_id(&self) -> SharedString {
-        self.telemetry_id.clone()
-    }
-
     fn agent_version(&self) -> Option<SharedString> {
         self.agent_version.clone()
     }
@@ -2019,7 +2006,7 @@ pub mod test_support {
 
     use acp_thread::{
         AgentSessionClientUserMessageIds, AgentSessionConfigOptions, AgentSessionModes,
-        AgentSessionRetry, AgentSessionSetTitle, AgentSessionTruncate, AgentTelemetry,
+        AgentSessionRetry, AgentSessionSetTitle, AgentSessionTruncate,
     };
 
     use super::*;
@@ -2169,10 +2156,6 @@ pub mod test_support {
             self.inner.agent_id()
         }
 
-        fn telemetry_id(&self) -> SharedString {
-            self.inner.telemetry_id()
-        }
-
         fn agent_version(&self) -> Option<SharedString> {
             self.inner.agent_version()
         }
@@ -2293,10 +2276,6 @@ pub mod test_support {
             cx: &App,
         ) -> Option<Rc<dyn AgentSessionSetTitle>> {
             self.inner.set_title(session_id, cx)
-        }
-
-        fn telemetry(&self) -> Option<Rc<dyn AgentTelemetry>> {
-            self.inner.telemetry()
         }
 
         fn session_modes(

@@ -4,9 +4,7 @@ use clock;
 use collections::{BTreeMap, HashMap};
 use fs::MTime;
 use futures::{FutureExt, StreamExt, channel::mpsc};
-use gpui::{
-    App, AppContext, AsyncApp, Context, Entity, SharedString, Subscription, Task, WeakEntity,
-};
+use gpui::{App, AppContext, AsyncApp, Context, Entity, Subscription, Task, WeakEntity};
 use language::{Anchor, Buffer, BufferEvent, Point, ToOffset, ToPoint};
 use project::{Project, ProjectItem, lsp_store::OpenLspBufferHandle};
 use std::{
@@ -642,17 +640,14 @@ impl ActionLog {
         &mut self,
         buffer: Entity<Buffer>,
         buffer_range: Range<impl language::ToPoint>,
-        telemetry: Option<ActionLogTelemetry>,
         cx: &mut Context<Self>,
     ) {
         let Some(tracked_buffer) = self.tracked_buffers.get_mut(&buffer) else {
             return;
         };
 
-        let mut metrics = ActionLogMetrics::for_buffer(buffer.read(cx));
         match tracked_buffer.status {
             TrackedBufferStatus::Deleted => {
-                metrics.add_edits(tracked_buffer.unreviewed_edits.edits());
                 self.tracked_buffers.remove(&buffer);
                 cx.notify();
             }
@@ -692,7 +687,6 @@ impl ActionLog {
                                 .collect::<String>(),
                         );
                         delta += edit.new_len() as i32 - edit.old_len() as i32;
-                        metrics.add_edit(edit);
                         false
                     }
                 });
@@ -704,23 +698,18 @@ impl ActionLog {
                 tracked_buffer.schedule_diff_update(ChangeAuthor::User, cx);
             }
         }
-        if let Some(telemetry) = telemetry {
-            telemetry_report_accepted_edits(&telemetry, metrics);
-        }
     }
 
     pub fn reject_edits_in_ranges(
         &mut self,
         buffer: Entity<Buffer>,
         buffer_ranges: Vec<Range<impl language::ToPoint>>,
-        telemetry: Option<ActionLogTelemetry>,
         cx: &mut Context<Self>,
     ) -> (Task<Result<()>>, Option<PerBufferUndo>) {
         let Some(tracked_buffer) = self.tracked_buffers.get_mut(&buffer) else {
             return (Task::ready(Ok(())), None);
         };
 
-        let mut metrics = ActionLogMetrics::for_buffer(buffer.read(cx));
         let mut undo_info: Option<PerBufferUndo> = None;
         let task = match &tracked_buffer.status {
             TrackedBufferStatus::Created {
@@ -792,7 +781,6 @@ impl ActionLog {
                     }
                 };
 
-                metrics.add_edits(tracked_buffer.unreviewed_edits.edits());
                 self.tracked_buffers.remove(&buffer);
                 cx.notify();
                 task
@@ -806,7 +794,6 @@ impl ActionLog {
                     .update(cx, |project, cx| project.save_buffer(buffer.clone(), cx));
 
                 // Clear all tracked edits for this buffer and start over as if we just read it.
-                metrics.add_edits(tracked_buffer.unreviewed_edits.edits());
                 self.tracked_buffers.remove(&buffer);
                 self.buffer_read(buffer.clone(), cx);
                 cx.notify();
@@ -847,7 +834,6 @@ impl ActionLog {
                         }
 
                         if revert {
-                            metrics.add_edit(edit);
                             let old_range = tracked_buffer
                                 .diff_base
                                 .point_to_offset(Point::new(edit.old.start, 0))
@@ -887,24 +873,12 @@ impl ActionLog {
                     .update(cx, |project, cx| project.save_buffer(buffer, cx))
             }
         };
-        if let Some(telemetry) = telemetry {
-            telemetry_report_rejected_edits(&telemetry, metrics);
-        }
         (task, undo_info)
     }
 
-    pub fn keep_all_edits(
-        &mut self,
-        telemetry: Option<ActionLogTelemetry>,
-        cx: &mut Context<Self>,
-    ) {
-        self.tracked_buffers.retain(|buffer, tracked_buffer| {
-            let mut metrics = ActionLogMetrics::for_buffer(buffer.read(cx));
-            metrics.add_edits(tracked_buffer.unreviewed_edits.edits());
-            if let Some(telemetry) = telemetry.as_ref() {
-                telemetry_report_accepted_edits(telemetry, metrics);
-            }
-            match tracked_buffer.status {
+    pub fn keep_all_edits(&mut self, cx: &mut Context<Self>) {
+        self.tracked_buffers
+            .retain(|buffer, tracked_buffer| match tracked_buffer.status {
                 TrackedBufferStatus::Deleted => false,
                 _ => {
                     if let TrackedBufferStatus::Created { .. } = &mut tracked_buffer.status {
@@ -915,17 +889,12 @@ impl ActionLog {
                     tracked_buffer.schedule_diff_update(ChangeAuthor::User, cx);
                     true
                 }
-            }
-        });
+            });
 
         cx.notify();
     }
 
-    pub fn reject_all_edits(
-        &mut self,
-        telemetry: Option<ActionLogTelemetry>,
-        cx: &mut Context<Self>,
-    ) -> Task<()> {
+    pub fn reject_all_edits(&mut self, cx: &mut Context<Self>) -> Task<()> {
         // Clear any previous undo state before starting a new reject operation
         self.last_reject_undo = None;
 
@@ -940,8 +909,7 @@ impl ActionLog {
             let buffer_ranges = vec![Anchor::min_max_range_for_buffer(
                 buffer.read(cx).remote_id(),
             )];
-            let (reject_task, undo_info) =
-                self.reject_edits_in_ranges(buffer, buffer_ranges, telemetry.clone(), cx);
+            let (reject_task, undo_info) = self.reject_edits_in_ranges(buffer, buffer_ranges, cx);
 
             if let Some(undo) = undo_info {
                 undo_buffers.push(undo);
@@ -1081,61 +1049,6 @@ impl DiffStats {
         }
         total
     }
-}
-
-#[derive(Clone)]
-pub struct ActionLogTelemetry {
-    pub agent_telemetry_id: SharedString,
-    pub session_id: Arc<str>,
-}
-
-struct ActionLogMetrics {
-    lines_removed: u32,
-    lines_added: u32,
-    language: Option<SharedString>,
-}
-
-impl ActionLogMetrics {
-    fn for_buffer(buffer: &Buffer) -> Self {
-        Self {
-            language: buffer.language().map(|l| l.name().0),
-            lines_removed: 0,
-            lines_added: 0,
-        }
-    }
-
-    fn add_edits(&mut self, edits: &[Edit<u32>]) {
-        for edit in edits {
-            self.add_edit(edit);
-        }
-    }
-
-    fn add_edit(&mut self, edit: &Edit<u32>) {
-        self.lines_added += edit.new_len();
-        self.lines_removed += edit.old_len();
-    }
-}
-
-fn telemetry_report_accepted_edits(telemetry: &ActionLogTelemetry, metrics: ActionLogMetrics) {
-    telemetry::event!(
-        "Agent Edits Accepted",
-        agent = telemetry.agent_telemetry_id,
-        session = telemetry.session_id,
-        language = metrics.language,
-        lines_added = metrics.lines_added,
-        lines_removed = metrics.lines_removed
-    );
-}
-
-fn telemetry_report_rejected_edits(telemetry: &ActionLogTelemetry, metrics: ActionLogMetrics) {
-    telemetry::event!(
-        "Agent Edits Rejected",
-        agent = telemetry.agent_telemetry_id,
-        session = telemetry.session_id,
-        language = metrics.language,
-        lines_added = metrics.lines_added,
-        lines_removed = metrics.lines_removed
-    );
 }
 
 fn apply_non_conflicting_edits(
@@ -1393,7 +1306,7 @@ mod tests {
         );
 
         action_log.update(cx, |log, cx| {
-            log.keep_edits_in_range(buffer.clone(), Point::new(3, 0)..Point::new(4, 3), None, cx)
+            log.keep_edits_in_range(buffer.clone(), Point::new(3, 0)..Point::new(4, 3), cx)
         });
         cx.run_until_parked();
         assert_eq!(
@@ -1409,7 +1322,7 @@ mod tests {
         );
 
         action_log.update(cx, |log, cx| {
-            log.keep_edits_in_range(buffer.clone(), Point::new(0, 0)..Point::new(4, 3), None, cx)
+            log.keep_edits_in_range(buffer.clone(), Point::new(0, 0)..Point::new(4, 3), cx)
         });
         cx.run_until_parked();
         assert_eq!(unreviewed_hunks(&action_log, cx), vec![]);
@@ -1494,7 +1407,7 @@ mod tests {
         );
 
         action_log.update(cx, |log, cx| {
-            log.keep_edits_in_range(buffer.clone(), Point::new(1, 0)..Point::new(1, 0), None, cx)
+            log.keep_edits_in_range(buffer.clone(), Point::new(1, 0)..Point::new(1, 0), cx)
         });
         cx.run_until_parked();
         assert_eq!(unreviewed_hunks(&action_log, cx), vec![]);
@@ -1591,7 +1504,7 @@ mod tests {
         );
 
         action_log.update(cx, |log, cx| {
-            log.keep_edits_in_range(buffer.clone(), Point::new(0, 0)..Point::new(1, 0), None, cx)
+            log.keep_edits_in_range(buffer.clone(), Point::new(0, 0)..Point::new(1, 0), cx)
         });
         cx.run_until_parked();
         assert_eq!(unreviewed_hunks(&action_log, cx), vec![]);
@@ -1650,7 +1563,7 @@ mod tests {
         );
 
         action_log.update(cx, |log, cx| {
-            log.keep_edits_in_range(buffer.clone(), 0..5, None, cx)
+            log.keep_edits_in_range(buffer.clone(), 0..5, cx)
         });
         cx.run_until_parked();
         assert_eq!(unreviewed_hunks(&action_log, cx), vec![]);
@@ -1702,7 +1615,7 @@ mod tests {
 
         action_log
             .update(cx, |log, cx| {
-                let (task, _) = log.reject_edits_in_ranges(buffer.clone(), vec![2..5], None, cx);
+                let (task, _) = log.reject_edits_in_ranges(buffer.clone(), vec![2..5], cx);
                 task
             })
             .await
@@ -1827,7 +1740,7 @@ mod tests {
 
         action_log
             .update(cx, |log, cx| {
-                let (task, _) = log.reject_edits_in_ranges(buffer.clone(), vec![2..5], None, cx);
+                let (task, _) = log.reject_edits_in_ranges(buffer.clone(), vec![2..5], cx);
                 task
             })
             .await
@@ -2011,7 +1924,6 @@ mod tests {
                 let (task, _) = log.reject_edits_in_ranges(
                     buffer.clone(),
                     vec![Point::new(4, 0)..Point::new(4, 0)],
-                    None,
                     cx,
                 );
                 task
@@ -2047,7 +1959,6 @@ mod tests {
                 let (task, _) = log.reject_edits_in_ranges(
                     buffer.clone(),
                     vec![Point::new(0, 0)..Point::new(1, 0)],
-                    None,
                     cx,
                 );
                 task
@@ -2076,7 +1987,6 @@ mod tests {
                 let (task, _) = log.reject_edits_in_ranges(
                     buffer.clone(),
                     vec![Point::new(4, 0)..Point::new(4, 0)],
-                    None,
                     cx,
                 );
                 task
@@ -2152,8 +2062,7 @@ mod tests {
             let range_2 = buffer.read(cx).anchor_before(Point::new(5, 0))
                 ..buffer.read(cx).anchor_before(Point::new(5, 3));
 
-            let (task, _) =
-                log.reject_edits_in_ranges(buffer.clone(), vec![range_1, range_2], None, cx);
+            let (task, _) = log.reject_edits_in_ranges(buffer.clone(), vec![range_1, range_2], cx);
             task.detach();
             assert_eq!(
                 buffer.read_with(cx, |buffer, _| buffer.text()),
@@ -2212,7 +2121,6 @@ mod tests {
                 let (task, _) = log.reject_edits_in_ranges(
                     buffer.clone(),
                     vec![Point::new(0, 0)..Point::new(0, 0)],
-                    None,
                     cx,
                 );
                 task
@@ -2269,7 +2177,6 @@ mod tests {
                 let (task, _) = log.reject_edits_in_ranges(
                     buffer.clone(),
                     vec![Point::new(0, 0)..Point::new(0, 11)],
-                    None,
                     cx,
                 );
                 task
@@ -2333,7 +2240,6 @@ mod tests {
                 let (task, _) = log.reject_edits_in_ranges(
                     buffer.clone(),
                     vec![Point::new(0, 0)..Point::new(100, 0)],
-                    None,
                     cx,
                 );
                 task
@@ -2383,7 +2289,7 @@ mod tests {
         // User accepts the single hunk
         action_log.update(cx, |log, cx| {
             let buffer_range = Anchor::min_max_range_for_buffer(buffer.read(cx).remote_id());
-            log.keep_edits_in_range(buffer.clone(), buffer_range, None, cx)
+            log.keep_edits_in_range(buffer.clone(), buffer_range, cx)
         });
         cx.run_until_parked();
         assert_eq!(unreviewed_hunks(&action_log, cx), vec![]);
@@ -2409,7 +2315,6 @@ mod tests {
                     vec![Anchor::min_max_range_for_buffer(
                         buffer.read(cx).remote_id(),
                     )],
-                    None,
                     cx,
                 );
                 task
@@ -2456,7 +2361,7 @@ mod tests {
         cx.run_until_parked();
 
         // User clicks "Accept All"
-        action_log.update(cx, |log, cx| log.keep_all_edits(None, cx));
+        action_log.update(cx, |log, cx| log.keep_all_edits(cx));
         cx.run_until_parked();
         assert!(fs.is_file(path!("/dir/new_file").as_ref()).await);
         assert_eq!(unreviewed_hunks(&action_log, cx), vec![]); // Hunks are cleared
@@ -2475,7 +2380,7 @@ mod tests {
 
         // User clicks "Reject All"
         action_log
-            .update(cx, |log, cx| log.reject_all_edits(None, cx))
+            .update(cx, |log, cx| log.reject_all_edits(cx))
             .await;
         cx.run_until_parked();
         assert!(fs.is_file(path!("/dir/new_file").as_ref()).await);
@@ -2515,7 +2420,7 @@ mod tests {
                     action_log.update(cx, |log, cx| {
                         let range = buffer.read(cx).random_byte_range(0, &mut rng);
                         log::info!("keeping edits in range {:?}", range);
-                        log.keep_edits_in_range(buffer.clone(), range, None, cx)
+                        log.keep_edits_in_range(buffer.clone(), range, cx)
                     });
                 }
                 25..50 => {
@@ -2524,7 +2429,7 @@ mod tests {
                             let range = buffer.read(cx).random_byte_range(0, &mut rng);
                             log::info!("rejecting edits in range {:?}", range);
                             let (task, _) =
-                                log.reject_edits_in_ranges(buffer.clone(), vec![range], None, cx);
+                                log.reject_edits_in_ranges(buffer.clone(), vec![range], cx);
                             task
                         })
                         .await
@@ -2972,7 +2877,7 @@ mod tests {
 
         // Reject all edits
         action_log
-            .update(cx, |log, cx| log.reject_all_edits(None, cx))
+            .update(cx, |log, cx| log.reject_all_edits(cx))
             .await;
         cx.run_until_parked();
 

@@ -153,7 +153,7 @@ backtrace.workspace = true
 bench_metrics = { workspace = true, features = ["test-support"] }
 collections = { workspace = true, features = ["test-support"] }
 env_logger.workspace = true
-gpui_platform = { workspace = true, features = ["font-kit", "wayland", "x11"] }
+gpui_platform = { workspace = true, features = ["font-kit", "wayland", "x11", "test-support"] }
 gpui_util = { workspace = true }
 lyon = { version = "1.0", features = ["extra"] }
 rand.workspace = true

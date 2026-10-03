@@ -713,6 +713,7 @@ impl Render for AcpTools {
                 ui::BackgroundImageArea::Window,
                 cx.theme().colors().editor_background,
                 true,
+                gpui::Corners::default(),
             ))
             .child(
                 h_flex()

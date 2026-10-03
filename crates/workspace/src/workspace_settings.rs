@@ -2,7 +2,7 @@ use std::{num::NonZeroUsize, path::PathBuf, time::Duration};
 
 use crate::DockPosition;
 use collections::HashMap;
-use gpui::{App, Subscription};
+use gpui::{App, Pixels, Subscription, px};
 use serde::Deserialize;
 pub use settings::{
     AutosaveSetting, BottomDockLayout, EncodingDisplayOptions, InactiveOpacity,
@@ -19,7 +19,6 @@ pub struct WorkspaceSettings {
     pub pane_split_direction_vertical: settings::PaneSplitDirectionVertical,
     pub centered_layout: settings::CenteredLayoutSettings,
     pub confirm_quit: bool,
-    pub show_call_status_icon: bool,
     pub autosave: AutosaveSetting,
     pub restore_on_startup: settings::RestoreOnStartupBehavior,
     pub cli_default_open_behavior: settings::CliDefaultOpenBehavior,
@@ -46,6 +45,85 @@ pub struct WorkspaceSettings {
     pub zoomed_padding: bool,
     pub window_decorations: settings::WindowDecorations,
     pub focus_follows_mouse: FocusFollowsMouse,
+    pub islands: IslandsSettings,
+    pub tool_window_bars: ToolWindowBarsSettings,
+}
+
+const ISLANDS_GAP_RANGE: (u32, u32) = (0, 16);
+const ISLANDS_CORNER_RADIUS_RANGE: (u32, u32) = (0, 24);
+const TOOL_WINDOW_BAR_ICON_SIZE_RANGE: (u32, u32) = (12, 32);
+const TOOL_WINDOW_BAR_BUTTON_PADDING: Pixels = px(20.);
+
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct IslandsSettings {
+    pub enabled: bool,
+    pub gap: Pixels,
+    pub corner_radius: Pixels,
+}
+
+impl IslandsSettings {
+    fn from_content(
+        content: Option<&settings::IslandsSettingsContent>,
+        density: Option<settings::UiDensity>,
+    ) -> Self {
+        let compact = is_compact(density);
+        let default_gap = if compact { 3 } else { 4 };
+        let default_corner_radius = if compact { 8 } else { 10 };
+        Self {
+            enabled: content.and_then(|islands| islands.enabled).unwrap_or(true),
+            gap: clamped_pixels(
+                content.and_then(|islands| islands.gap),
+                default_gap,
+                ISLANDS_GAP_RANGE,
+            ),
+            corner_radius: clamped_pixels(
+                content.and_then(|islands| islands.corner_radius),
+                default_corner_radius,
+                ISLANDS_CORNER_RADIUS_RANGE,
+            ),
+        }
+    }
+
+    pub fn half_gap(&self) -> Pixels {
+        self.gap / 2.
+    }
+}
+
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct ToolWindowBarsSettings {
+    pub show: bool,
+    pub icon_size: Pixels,
+    pub show_names: bool,
+}
+
+impl ToolWindowBarsSettings {
+    fn from_content(
+        content: Option<&settings::ToolWindowBarsSettingsContent>,
+        density: Option<settings::UiDensity>,
+    ) -> Self {
+        let default_icon_size = if is_compact(density) { 16 } else { 20 };
+        Self {
+            show: content.and_then(|bars| bars.show).unwrap_or(true),
+            icon_size: clamped_pixels(
+                content.and_then(|bars| bars.icon_size),
+                default_icon_size,
+                TOOL_WINDOW_BAR_ICON_SIZE_RANGE,
+            ),
+            show_names: content.and_then(|bars| bars.show_names).unwrap_or(false),
+        }
+    }
+
+    pub fn bar_width(&self) -> Pixels {
+        self.icon_size + TOOL_WINDOW_BAR_BUTTON_PADDING
+    }
+}
+
+fn is_compact(density: Option<settings::UiDensity>) -> bool {
+    density == Some(settings::UiDensity::Compact)
+}
+
+fn clamped_pixels(value: Option<u32>, default: u32, (min, max): (u32, u32)) -> Pixels {
+    Pixels::from(value.unwrap_or(default).clamp(min, max))
 }
 
 #[cfg(target_os = "macos")]
@@ -118,7 +196,6 @@ impl Settings for WorkspaceSettings {
             pane_split_direction_vertical: workspace.pane_split_direction_vertical.unwrap(),
             centered_layout: workspace.centered_layout.unwrap(),
             confirm_quit: workspace.confirm_quit.unwrap(),
-            show_call_status_icon: workspace.show_call_status_icon.unwrap(),
             autosave: workspace.autosave.unwrap(),
             restore_on_startup: workspace.restore_on_startup.unwrap(),
             cli_default_open_behavior: workspace.cli_default_open_behavior.unwrap(),
@@ -164,6 +241,14 @@ impl Settings for WorkspaceSettings {
                         .unwrap_or(250),
                 ),
             },
+            islands: IslandsSettings::from_content(
+                workspace.islands.as_ref(),
+                content.theme.ui_density,
+            ),
+            tool_window_bars: ToolWindowBarsSettings::from_content(
+                workspace.tool_window_bars.as_ref(),
+                content.theme.ui_density,
+            ),
         }
     }
 }
@@ -222,6 +307,9 @@ pub struct StatusBarSettings {
     pub line_endings_button: bool,
     pub active_encoding_button: EncodingDisplayOptions,
     pub pending_keystrokes_indicator: bool,
+    pub navigation_bar: bool,
+    pub indentation_button: bool,
+    pub read_only_button: bool,
 }
 
 impl Settings for StatusBarSettings {
@@ -235,6 +323,9 @@ impl Settings for StatusBarSettings {
             line_endings_button: status_bar.line_endings_button.unwrap(),
             active_encoding_button: status_bar.active_encoding_button.unwrap(),
             pending_keystrokes_indicator: status_bar.pending_keystrokes_indicator.unwrap(),
+            navigation_bar: status_bar.navigation_bar.unwrap_or(true),
+            indentation_button: status_bar.indentation_button.unwrap_or(true),
+            read_only_button: status_bar.read_only_button.unwrap_or(true),
         }
     }
 }
@@ -285,5 +376,128 @@ impl Settings for BackgroundImageSettings {
             editor_and_tools: BackgroundImageLayerSettings::from_content(editor_and_tools),
             empty_frame: BackgroundImageLayerSettings::from_content(empty_frame),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use settings::{IslandsSettingsContent, ToolWindowBarsSettingsContent, UiDensity};
+
+    #[test]
+    fn islands_use_webstorm_metrics_when_unset() {
+        let islands = IslandsSettings::from_content(None, None);
+        assert_eq!(
+            islands,
+            IslandsSettings {
+                enabled: true,
+                gap: px(4.),
+                corner_radius: px(10.),
+            }
+        );
+        assert_eq!(islands.half_gap(), px(2.));
+
+        let default_density = IslandsSettings::from_content(
+            Some(&IslandsSettingsContent::default()),
+            Some(UiDensity::Default),
+        );
+        assert_eq!(default_density, islands);
+
+        let comfortable = IslandsSettings::from_content(None, Some(UiDensity::Comfortable));
+        assert_eq!(
+            comfortable, islands,
+            "only compact density shrinks the island metrics"
+        );
+    }
+
+    #[test]
+    fn islands_shrink_in_compact_density() {
+        let islands = IslandsSettings::from_content(None, Some(UiDensity::Compact));
+        assert_eq!(islands.gap, px(3.));
+        assert_eq!(islands.corner_radius, px(8.));
+        assert_eq!(islands.half_gap(), px(1.5));
+    }
+
+    #[test]
+    fn explicit_island_values_override_density_defaults() {
+        let content = IslandsSettingsContent {
+            enabled: Some(false),
+            gap: Some(6),
+            corner_radius: Some(12),
+        };
+        let islands = IslandsSettings::from_content(Some(&content), Some(UiDensity::Compact));
+        assert_eq!(
+            islands,
+            IslandsSettings {
+                enabled: false,
+                gap: px(6.),
+                corner_radius: px(12.),
+            }
+        );
+    }
+
+    #[test]
+    fn island_values_are_clamped() {
+        let too_large = IslandsSettingsContent {
+            enabled: None,
+            gap: Some(17),
+            corner_radius: Some(25),
+        };
+        let islands = IslandsSettings::from_content(Some(&too_large), None);
+        assert_eq!(islands.gap, px(16.));
+        assert_eq!(islands.corner_radius, px(24.));
+
+        let at_bounds = IslandsSettingsContent {
+            enabled: None,
+            gap: Some(0),
+            corner_radius: Some(0),
+        };
+        let islands = IslandsSettings::from_content(Some(&at_bounds), None);
+        assert_eq!(islands.gap, px(0.));
+        assert_eq!(islands.corner_radius, px(0.));
+    }
+
+    #[test]
+    fn tool_window_bars_use_webstorm_metrics_when_unset() {
+        let bars = ToolWindowBarsSettings::from_content(None, None);
+        assert_eq!(
+            bars,
+            ToolWindowBarsSettings {
+                show: true,
+                icon_size: px(20.),
+                show_names: false,
+            }
+        );
+        assert_eq!(bars.bar_width(), px(40.));
+
+        let compact = ToolWindowBarsSettings::from_content(None, Some(UiDensity::Compact));
+        assert_eq!(compact.icon_size, px(16.));
+        assert_eq!(compact.bar_width(), px(36.));
+    }
+
+    #[test]
+    fn tool_window_bar_icon_size_is_clamped() {
+        let too_small = ToolWindowBarsSettingsContent {
+            show: Some(false),
+            icon_size: Some(11),
+            show_names: Some(true),
+        };
+        let bars = ToolWindowBarsSettings::from_content(Some(&too_small), None);
+        assert_eq!(
+            bars,
+            ToolWindowBarsSettings {
+                show: false,
+                icon_size: px(12.),
+                show_names: true,
+            }
+        );
+
+        let too_large = ToolWindowBarsSettingsContent {
+            icon_size: Some(33),
+            ..ToolWindowBarsSettingsContent::default()
+        };
+        let bars = ToolWindowBarsSettings::from_content(Some(&too_large), Some(UiDensity::Compact));
+        assert_eq!(bars.icon_size, px(32.));
+        assert_eq!(bars.bar_width(), px(52.));
     }
 }

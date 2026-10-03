@@ -47,7 +47,6 @@ pub(crate) struct SshRemoteConnection {
     killed: AtomicBool,
     remote_binary_path: Option<Arc<RelPath>>,
     ssh_platform: RemotePlatform,
-    ssh_os_version: Option<String>,
     ssh_path_style: PathStyle,
     ssh_shell: String,
     ssh_shell_kind: ShellKind,
@@ -472,7 +471,7 @@ impl RemoteConnection for SshRemoteConnection {
         delegate: Arc<dyn RemoteClientDelegate>,
         cx: &mut AsyncApp,
     ) -> Task<Result<i32>> {
-        const VARS: [&str; 3] = ["RUST_LOG", "RUST_BACKTRACE", "ZED_GENERATE_MINIDUMPS"];
+        const VARS: [&str; 2] = ["RUST_LOG", "RUST_BACKTRACE"];
         delegate.set_status(Some("Starting proxy"), cx);
 
         let Some(remote_binary_path) = self.remote_binary_path.clone() else {
@@ -539,14 +538,6 @@ impl RemoteConnection for SshRemoteConnection {
 
     fn path_style(&self) -> PathStyle {
         self.ssh_path_style
-    }
-
-    fn remote_platform(&self) -> RemotePlatform {
-        self.ssh_platform
-    }
-
-    fn remote_os_version(&self) -> Option<String> {
-        self.ssh_os_version.clone()
     }
 
     fn has_wsl_interop(&self) -> bool {
@@ -798,9 +789,6 @@ impl SshRemoteConnection {
         let ssh_platform = socket.platform(ssh_shell_kind, is_windows).await?;
         log::info!("Remote platform discovered: {:?}", ssh_platform);
 
-        let ssh_os_version = socket.os_version(ssh_platform.os, ssh_shell_kind).await;
-        log::info!("Remote OS version discovered: {:?}", ssh_os_version);
-
         let (ssh_path_style, ssh_default_system_shell) = match ssh_platform.os {
             RemoteOs::Windows => (PathStyle::Windows, ssh_shell.clone()),
             _ => (PathStyle::Unix, String::from("/bin/sh")),
@@ -814,7 +802,6 @@ impl SshRemoteConnection {
             remote_binary_path: None,
             ssh_path_style,
             ssh_platform,
-            ssh_os_version,
             ssh_shell,
             ssh_shell_kind,
             ssh_default_system_shell,
@@ -1470,20 +1457,6 @@ impl SshSocket {
             .await
             .context("Failed to run 'uname -sm' to determine platform")?;
         parse_platform(&output)
-    }
-
-    /// Best-effort detection of the remote OS version. Failures are logged and
-    /// result in `None` rather than failing the connection, since this is only
-    /// used for telemetry.
-    async fn os_version(&self, os: RemoteOs, shell: ShellKind) -> Option<String> {
-        let (program, args) = super::os_version_command(os);
-        match self.run_command(shell, program, args, false).await {
-            Ok(output) => super::parse_os_version(os, &output),
-            Err(error) => {
-                log::warn!("Failed to determine remote OS version: {error:#}");
-                None
-            }
-        }
     }
 
     async fn platform_windows(&self, shell: ShellKind) -> Result<RemotePlatform> {

@@ -364,7 +364,7 @@ fn open_thread(
     window: &mut Window,
     cx: &mut Context<Workspace>,
 ) {
-    use crate::{Agent, AgentPanel, AgentThreadSource, thread_metadata_store::ThreadMetadataStore};
+    use crate::{Agent, AgentPanel, thread_metadata_store::ThreadMetadataStore};
 
     let Some(panel) = workspace.panel::<AgentPanel>(cx) else {
         return;
@@ -381,7 +381,6 @@ fn open_thread(
                 None,
                 Some(name.into()),
                 true,
-                AgentThreadSource::AgentPanel,
                 window,
                 cx,
             );

@@ -10,19 +10,20 @@ use crate::{
     Capslock, Context, Corners, CursorHideMode, CursorStyle, Decorations, DevicePixels,
     DispatchActionListener, DispatchNodeId, DispatchTree, DisplayId, Edges, Effect, Entity,
     EntityId, EventEmitter, FileDropEvent, FontId, Global, GlobalElementId, GlyphId, GpuSpecs,
-    Hsla, InputHandler, InputPreference, IsZero, KeyBinding, KeyContext, KeyDownEvent, KeyEvent,
-    Keystroke, KeystrokeEvent, LayoutId, LineLayoutIndex, Modifiers, ModifiersChangedEvent,
-    MonochromeSprite, MouseButton, MouseEvent, MouseMoveEvent, MouseUpEvent, Path, Pixels,
-    PlatformAtlas, PlatformDisplay, PlatformInput, PlatformInputHandler, PlatformWindow, Point,
-    PolychromeSprite, Priority, PromptButton, PromptLevel, Quad, Render, RenderGlyphParams,
-    RenderImage, RenderImageParams, RenderSvgParams, Replay, ResizeEdge, SMOOTH_SVG_SCALE_FACTOR,
-    SUBPIXEL_VARIANTS_X, SUBPIXEL_VARIANTS_Y, ScaledPixels, Scene, Shadow, SharedString, Size,
-    StrikethroughStyle, Style, SubpixelSprite, SubscriberSet, Subscription, SystemWindowTab,
-    SystemWindowTabController, TabStopMap, TaffyLayoutEngine, Task, TextInputConfiguration,
-    TextInputStateChange, TextRenderingMode, TextStyle, TextStyleRefinement, ThermalState,
-    TransformationMatrix, Underline, UnderlineStyle, WindowAppearance, WindowBackgroundAppearance,
-    WindowBounds, WindowControls, WindowDecorations, WindowOptions, WindowParams, WindowTextSystem,
-    WindowVisibility, point, prelude::*, px, rems, size, transparent_black,
+    Half, Hsla, InputHandler, InputPreference, IsZero, KeyBinding, KeyContext, KeyDownEvent,
+    KeyEvent, Keystroke, KeystrokeEvent, LayoutId, LineLayoutIndex, Modifiers,
+    ModifiersChangedEvent, MonochromeSprite, MouseButton, MouseEvent, MouseMoveEvent, MouseUpEvent,
+    Path, Pixels, PlatformAtlas, PlatformDisplay, PlatformInput, PlatformInputHandler,
+    PlatformWindow, Point, PolychromeSprite, Priority, PromptButton, PromptLevel, Quad, Render,
+    RenderGlyphParams, RenderImage, RenderImageParams, RenderSvgParams, Replay, ResizeEdge,
+    SMOOTH_SVG_SCALE_FACTOR, SUBPIXEL_VARIANTS_X, SUBPIXEL_VARIANTS_Y, ScaledPixels, Scene, Shadow,
+    SharedString, Size, StrikethroughStyle, Style, SubpixelSprite, SubscriberSet, Subscription,
+    SystemWindowTab, SystemWindowTabController, TabStopMap, TaffyLayoutEngine, Task,
+    TextInputConfiguration, TextInputStateChange, TextRenderingMode, TextStyle,
+    TextStyleRefinement, ThermalState, TransformationMatrix, Underline, UnderlineStyle,
+    WindowAppearance, WindowBackgroundAppearance, WindowBounds, WindowControls, WindowDecorations,
+    WindowOptions, WindowParams, WindowTextSystem, WindowVisibility, point, prelude::*, px, rems,
+    size, transparent_black,
 };
 
 use crate::gestures::{GestureTuning, RecognizedTouchGesture, TouchGestureRecognizer};
@@ -52,7 +53,7 @@ use std::{
     hash::{Hash, Hasher},
     marker::PhantomData,
     mem,
-    ops::{DerefMut, Range},
+    ops::{Add, DerefMut, Range, Sub},
     rc::Rc,
     sync::{
         Arc, Weak,
@@ -2171,6 +2172,8 @@ pub struct DispatchEventResult {
 pub struct ContentMask<P: Clone + Debug + Default + PartialEq> {
     /// The bounds
     pub bounds: Bounds<P>,
+    #[expect(missing_docs)]
+    pub corner_radii: Corners<P>,
 }
 
 impl ContentMask<Pixels> {
@@ -2178,13 +2181,37 @@ impl ContentMask<Pixels> {
     pub fn scale(&self, factor: f32) -> ContentMask<ScaledPixels> {
         ContentMask {
             bounds: self.bounds.scale(factor),
+            corner_radii: self.corner_radii.scale(factor),
         }
     }
+}
 
+impl<P> ContentMask<P>
+where
+    P: Ord + Half + Add<P, Output = P> + Sub<P, Output = P> + Copy + Debug + Default + PartialEq,
+{
     /// Intersect the content mask with the given content mask.
     pub fn intersect(&self, other: &Self) -> Self {
         let bounds = self.bounds.intersect(&other.bounds);
-        ContentMask { bounds }
+        let largest_radius = bounds.size.width.min(bounds.size.height).half();
+        let corner_radius = |corner: fn(&Bounds<P>) -> Point<P>, radius: fn(&Corners<P>) -> P| {
+            [self, other]
+                .into_iter()
+                .filter(|mask| corner(&mask.bounds) == corner(&bounds))
+                .map(|mask| radius(&mask.corner_radii))
+                .max()
+                .unwrap_or_default()
+                .min(largest_radius)
+        };
+        ContentMask {
+            bounds,
+            corner_radii: Corners {
+                top_left: corner_radius(|bounds| bounds.origin, |radii| radii.top_left),
+                top_right: corner_radius(Bounds::top_right, |radii| radii.top_right),
+                bottom_right: corner_radius(Bounds::bottom_right, |radii| radii.bottom_right),
+                bottom_left: corner_radius(Bounds::bottom_left, |radii| radii.bottom_left),
+            },
+        }
     }
 }
 
@@ -3131,12 +3158,13 @@ impl Window {
 
         let mut paint_span = |start, end| {
             self.next_frame.scene.insert_primitive(Underline {
-                content_mask: ContentMask {
+                content_mask: underline.content_mask.intersect(&ContentMask {
                     bounds: Bounds::from_corners(
                         point(start, bounds.top()),
                         point(end, bounds.bottom()),
                     ),
-                },
+                    ..Default::default()
+                }),
                 ..underline
             });
         };
@@ -3207,8 +3235,10 @@ impl Window {
 
     #[inline]
     fn snapped_content_mask(&self) -> ContentMask<ScaledPixels> {
+        let content_mask = self.content_mask();
         ContentMask {
-            bounds: self.cover_bounds(self.content_mask().bounds),
+            bounds: self.cover_bounds(content_mask.bounds),
+            corner_radii: content_mask.corner_radii.scale(self.scale_factor()),
         }
     }
 
@@ -4184,6 +4214,7 @@ impl Window {
                     origin: Point::default(),
                     size: self.viewport_size,
                 },
+                ..Default::default()
             })
     }
 
@@ -4564,7 +4595,7 @@ impl Window {
             border_style: quad.border_style,
         };
 
-        if !quad.background.is_transparent() {
+        if !quad.background.is_transparent() || !quad.content_mask.corner_radii.is_zero() {
             self.next_frame.scene.insert_primitive(quad);
             return;
         }
@@ -4608,6 +4639,7 @@ impl Window {
                 self.next_frame.scene.insert_primitive(Quad {
                     content_mask: ContentMask {
                         bounds: content_mask_bounds,
+                        ..Default::default()
                     },
                     ..quad
                 });
@@ -7741,7 +7773,7 @@ mod tests {
     };
 
     use crate::{
-        AnyWindowHandle, AppContext as _, Bounds, ContentMask, Context, DispatchPhase,
+        AnyWindowHandle, AppContext as _, Bounds, ContentMask, Context, Corners, DispatchPhase,
         DragMoveEvent, Empty, ExternalDragPayload, ExternalPaths, FileDragPaths, FileDropEvent,
         FocusHandle, InputEvent as _, InteractiveElement as _, IntoElement, KeyDownEvent,
         Keystroke, LongPressEvent, MouseButton, MouseDownEvent, MouseMoveEvent, ParentElement,
@@ -8356,6 +8388,191 @@ mod tests {
                 root
             }
         }
+    }
+
+    fn rounded_mask(
+        top_left: Point<Pixels>,
+        bottom_right: Point<Pixels>,
+        corner_radii: Corners<Pixels>,
+    ) -> ContentMask<Pixels> {
+        ContentMask {
+            bounds: Bounds::from_corners(top_left, bottom_right),
+            corner_radii,
+        }
+    }
+
+    #[test]
+    fn intersecting_content_masks_keeps_radii_only_at_coinciding_corners() {
+        let island = rounded_mask(
+            point(px(0.), px(0.)),
+            point(px(100.), px(80.)),
+            Corners::all(px(10.)),
+        );
+        let left_half = rounded_mask(
+            point(px(0.), px(0.)),
+            point(px(50.), px(80.)),
+            Corners::default(),
+        );
+        let inset = rounded_mask(
+            point(px(5.), px(5.)),
+            point(px(95.), px(75.)),
+            Corners::default(),
+        );
+
+        let left_intersection = left_half.intersect(&island);
+        assert_eq!(
+            left_intersection.bounds,
+            Bounds::from_corners(point(px(0.), px(0.)), point(px(50.), px(80.)))
+        );
+        assert_eq!(
+            left_intersection.corner_radii,
+            Corners {
+                top_left: px(10.),
+                top_right: px(0.),
+                bottom_right: px(0.),
+                bottom_left: px(10.),
+            }
+        );
+        assert_eq!(left_intersection, island.intersect(&left_half));
+        assert_eq!(inset.intersect(&island).corner_radii, Corners::default());
+    }
+
+    #[test]
+    fn intersecting_content_masks_takes_the_larger_radius_where_both_corners_coincide() {
+        let outer = rounded_mask(
+            point(px(0.), px(0.)),
+            point(px(100.), px(100.)),
+            Corners::all(px(10.)),
+        );
+        let inner = rounded_mask(
+            point(px(0.), px(0.)),
+            point(px(100.), px(100.)),
+            Corners {
+                top_left: px(4.),
+                top_right: px(0.),
+                bottom_right: px(20.),
+                bottom_left: px(10.),
+            },
+        );
+
+        assert_eq!(
+            inner.intersect(&outer).corner_radii,
+            Corners {
+                top_left: px(10.),
+                top_right: px(10.),
+                bottom_right: px(20.),
+                bottom_left: px(10.),
+            }
+        );
+    }
+
+    #[test]
+    fn intersected_content_mask_radii_are_clamped_to_half_the_shorter_side() {
+        let island = rounded_mask(
+            point(px(0.), px(0.)),
+            point(px(100.), px(100.)),
+            Corners::all(px(40.)),
+        );
+        let header = rounded_mask(
+            point(px(0.), px(0.)),
+            point(px(100.), px(30.)),
+            Corners::default(),
+        );
+
+        assert_eq!(
+            header.intersect(&island).corner_radii,
+            Corners {
+                top_left: px(15.),
+                top_right: px(15.),
+                bottom_right: px(0.),
+                bottom_left: px(0.),
+            }
+        );
+    }
+
+    #[test]
+    fn intersecting_disjoint_content_masks_has_no_radii() {
+        let left = rounded_mask(
+            point(px(0.), px(0.)),
+            point(px(10.), px(10.)),
+            Corners::all(px(4.)),
+        );
+        let right = rounded_mask(
+            point(px(20.), px(0.)),
+            point(px(30.), px(10.)),
+            Corners::all(px(4.)),
+        );
+
+        let intersection = left.intersect(&right);
+
+        assert!(intersection.bounds.is_empty());
+        assert_eq!(intersection.corner_radii, Corners::default());
+    }
+
+    #[test]
+    fn scaling_a_content_mask_scales_its_corner_radii() {
+        let mask = rounded_mask(
+            point(px(1.), px(2.)),
+            point(px(11.), px(22.)),
+            Corners::all(px(3.)),
+        );
+
+        let scaled = mask.scale(2.);
+
+        assert_eq!(scaled.bounds, mask.bounds.scale(2.));
+        assert_eq!(scaled.corner_radii, Corners::all(ScaledPixels(6.)));
+    }
+
+    #[gpui::test]
+    fn border_only_quads_inside_a_rounded_mask_keep_the_rounded_mask(cx: &mut TestAppContext) {
+        test_underline_paint_at_scales(cx, |window| {
+            let scale = window.scale_factor();
+            let mask = rounded_mask(
+                point(px(0.), px(0.)),
+                point(px(40.), px(40.)),
+                Corners::all(px(8.)),
+            );
+            let quads = window.with_content_mask(Some(mask), |window| {
+                window.next_frame.scene.clear();
+                window.paint_quad(crate::outline(
+                    Bounds::from_corners(point(px(0.), px(0.)), point(px(40.), px(40.))),
+                    crate::red(),
+                    crate::BorderStyle::Solid,
+                ));
+                window.next_frame.scene.quads.clone()
+            });
+            assert_eq!(quads.len(), 1);
+            assert_eq!(
+                quads[0].content_mask.corner_radii,
+                Corners::all(ScaledPixels(8. * scale))
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn border_only_quads_inside_a_square_mask_are_split_into_strips(cx: &mut TestAppContext) {
+        test_underline_paint_at_scales(cx, |window| {
+            let mask = rounded_mask(
+                point(px(0.), px(0.)),
+                point(px(40.), px(40.)),
+                Corners::default(),
+            );
+            let quads = window.with_content_mask(Some(mask), |window| {
+                window.next_frame.scene.clear();
+                window.paint_quad(crate::outline(
+                    Bounds::from_corners(point(px(0.), px(0.)), point(px(40.), px(40.))),
+                    crate::red(),
+                    crate::BorderStyle::Solid,
+                ));
+                window.next_frame.scene.quads.clone()
+            });
+            assert_eq!(quads.len(), 4);
+            assert!(
+                quads
+                    .iter()
+                    .all(|quad| quad.content_mask.corner_radii == Corners::default())
+            );
+        });
     }
 
     #[test]
@@ -9147,6 +9364,7 @@ mod tests {
             let original_opacity = window.element_opacity();
             let mask = ContentMask {
                 bounds: Bounds::from_corners(point(px(4.), px(10.)), point(px(16.), px(12.))),
+                ..Default::default()
             };
             let style = UnderlineStyle {
                 thickness: px(2.),
@@ -9295,6 +9513,7 @@ mod tests {
                             point(px(-1000.), px(-1000.)),
                             point(px(1000.), px(1000.)),
                         ),
+                        ..Default::default()
                     });
                     paint(window);
                     window.content_mask_stack.pop();

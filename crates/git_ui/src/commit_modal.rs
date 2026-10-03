@@ -153,7 +153,6 @@ impl CommitModal {
                 }
             }
             git_panel.set_modal_open(true, cx);
-            git_panel.load_local_committer(cx);
         });
 
         let dock = workspace.dock_at_position(git_panel.position(window, cx));
@@ -268,6 +267,7 @@ impl CommitModal {
         id: impl Into<ElementId>,
         keybinding_target: Option<FocusHandle>,
         disabled: bool,
+        cx: &App,
     ) -> impl IntoElement {
         let menu_open = self.commit_menu_handle.is_deployed();
 
@@ -277,6 +277,8 @@ impl CommitModal {
                 crate::render_split_button_chevron_trigger(
                     "modal-commit-split-button-right",
                     menu_open,
+                    None,
+                    cx,
                 )
                 .disabled(disabled),
             )
@@ -352,7 +354,6 @@ impl CommitModal {
             can_commit,
             tooltip,
             commit_label,
-            co_authors,
             generate_commit_message,
             active_repo,
             commit_options,
@@ -361,8 +362,7 @@ impl CommitModal {
         ) = self.git_panel.update(cx, |git_panel, cx| {
             let (can_commit, tooltip) = git_panel.configure_commit_button(cx);
             let title = git_panel.commit_button_title();
-            let co_authors = git_panel.render_co_authors(cx);
-            let generate_commit_message = git_panel.render_generate_commit_message_button(cx);
+            let generate_commit_message = git_panel.render_generate_commit_message_button(None, cx);
             let active_repo = git_panel.active_repository.clone();
             let commit_options = git_panel.commit_options();
             let is_generating = git_panel.is_generating_commit_message();
@@ -370,7 +370,6 @@ impl CommitModal {
                 can_commit,
                 tooltip,
                 title,
-                co_authors,
                 generate_commit_message,
                 active_repo,
                 commit_options,
@@ -442,8 +441,7 @@ impl CommitModal {
                             .overflow_x_hidden()
                             .child(branch_picker),
                     )
-                    .children(generate_commit_message)
-                    .children(co_authors),
+                    .children(generate_commit_message),
             )
             .child(
                 h_flex()
@@ -456,7 +454,6 @@ impl CommitModal {
                             .disabled(!can_commit)
                             .child(Label::new(commit_label).size(LabelSize::Small).mr_0p5())
                             .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
-                                telemetry::event!("Git Committed", source = "Git Modal");
                                 this.git_panel.update(cx, |git_panel, cx| {
                                     let options = git_panel.commit_options();
                                     git_panel.commit_changes(options, window, cx)
@@ -496,6 +493,7 @@ impl CommitModal {
                             format!("split-button-right-{}", commit_label),
                             Some(focus_handle),
                             is_generating,
+                            cx,
                         )
                         .into_any_element(),
                     )),
@@ -512,16 +510,10 @@ impl CommitModal {
     }
 
     fn on_commit(&mut self, _: &git::Commit, window: &mut Window, cx: &mut Context<Self>) {
-        let is_amend = self.git_panel.read(cx).amend_pending();
         let did_execute = self.git_panel.update(cx, |git_panel, cx| {
             git_panel.commit(&self.commit_editor.focus_handle(cx), window, cx)
         });
         if did_execute {
-            if is_amend {
-                telemetry::event!("Git Amended", source = "Git Modal");
-            } else {
-                telemetry::event!("Git Committed", source = "Git Modal");
-            }
             cx.emit(DismissEvent);
         }
     }
@@ -541,7 +533,6 @@ impl CommitModal {
         if self.git_panel.update(cx, |git_panel, cx| {
             git_panel.amend(&self.commit_editor.focus_handle(cx), window, cx)
         }) {
-            telemetry::event!("Git Amended", source = "Git Modal");
             cx.emit(DismissEvent);
         }
     }

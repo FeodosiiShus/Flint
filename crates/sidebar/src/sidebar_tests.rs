@@ -437,11 +437,8 @@ async fn start_remote_project(
 
     let remote_client = remote::RemoteClient::connect_mock(opts.clone(), cx).await;
     let project = cx.update(|cx| {
-        let project_client = client::Client::new(
-            Arc::new(clock::FakeSystemClock::new()),
-            http_client::FakeHttpClient::with_404_response(),
-            cx,
-        );
+        let project_client =
+            client::Client::new(http_client::FakeHttpClient::with_404_response(), cx);
         let user_store = cx.new(|cx| client::UserStore::new(project_client.clone(), cx));
         project::Project::remote(
             remote_client,
@@ -2914,7 +2911,6 @@ async fn test_terminal_close_event_keeps_linked_worktree_workspace_with_live_edi
             Some(worktree_folder_paths.clone()),
             None,
             false,
-            AgentThreadSource::AgentPanel,
             window,
             cx,
         );
@@ -7036,7 +7032,6 @@ async fn test_only_actively_viewed_empty_draft_is_visible_in_sidebar(cx: &mut Te
             None,
             None,
             false,
-            agent_ui::AgentThreadSource::AgentPanel,
             window,
             cx,
         );
@@ -14108,11 +14103,8 @@ async fn test_remote_project_integration_does_not_briefly_render_as_separate_pro
     // Connect the client side and build a remote project.
     let remote_client = remote::RemoteClient::connect_mock(original_opts.clone(), cx).await;
     let project = cx.update(|cx| {
-        let project_client = client::Client::new(
-            Arc::new(clock::FakeSystemClock::new()),
-            http_client::FakeHttpClient::with_404_response(),
-            cx,
-        );
+        let project_client =
+            client::Client::new(http_client::FakeHttpClient::with_404_response(), cx);
         let user_store = cx.new(|cx| client::UserStore::new(project_client.clone(), cx));
         project::Project::remote(
             remote_client,

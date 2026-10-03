@@ -17,7 +17,6 @@ tracy = ["ztracing/tracy"]
 track-project-leak = ["gpui/leak-detection"]
 test-support = [
     "gpui/test-support",
-    "gpui_platform/screen-capture",
     "dep:image",
     "workspace/test-support",
     "project/test-support",
@@ -30,7 +29,6 @@ test-support = [
 ]
 visual-tests = [
     "gpui/test-support",
-    "gpui_platform/screen-capture",
     "gpui_platform/test-support",
     "dep:image",
     "dep:tempfile",
@@ -41,7 +39,6 @@ visual-tests = [
     "editor/test-support",
     "terminal_view/test-support",
     "image_viewer/test-support",
-    "clock/test-support",
     "acp_thread/test-support",
     "action_log/test-support",
     "agent_ui/test-support",
@@ -76,27 +73,16 @@ agent_ui = { workspace = true, features = ["audio"] }
 anyhow.workspace = true
 askpass.workspace = true
 assets.workspace = true
-audio.workspace = true
-auto_update.workspace = true
-auto_update_ui.workspace = true
 breadcrumbs.workspace = true
-call.workspace = true
 call_hierarchy.workspace = true
-channel.workspace = true
 chrono.workspace = true
 clap.workspace = true
 cli.workspace = true
 client.workspace = true
-clock = { workspace = true, optional = true }
-codestral.workspace = true
-collab_ui.workspace = true
 collections.workspace = true
 command_palette.workspace = true
 component_preview.workspace = true
-copilot.workspace = true
 copilot_chat.workspace = true
-copilot_ui.workspace = true
-crashes.workspace = true
 dap_adapters.workspace = true
 db.workspace = true
 debug_adapter_extension.workspace = true
@@ -111,34 +97,28 @@ extension.workspace = true
 extension_host.workspace = true
 extensions_ui.workspace = true
 feature_flags.workspace = true
-feedback.workspace = true
 file_finder.workspace = true
 fs.workspace = true
 futures.workspace = true
 git.workspace = true
 git_hosting_providers.workspace = true
-git_ui = { workspace = true, features = ["call"] }
+git_ui.workspace = true
 git_ui_core.workspace = true
 go_to_line.workspace = true
 gpui = { workspace = true, features = ["profiler", "stacker"] }
 gpui_platform = { workspace = true, features = [
-    "screen-capture",
     "font-kit",
     "wayland",
     "x11",
 ] }
 gpui_tokio.workspace = true
-hang_telemetry.workspace = true
 image = { workspace = true, optional = true }
 itertools.workspace = true
 rayon.workspace = true
 semver.workspace = true
-system_specs.workspace = true
 tabular_data_preview.workspace = true
 tempfile = { workspace = true, optional = true }
 
-edit_prediction.workspace = true
-edit_prediction_ui.workspace = true
 http_client.workspace = true
 image_viewer.workspace = true
 input_latency_ui.workspace = true
@@ -166,8 +146,6 @@ migrator.workspace = true
 mimalloc = { version = "0.1", optional = true }
 miniprofiler_ui.workspace = true
 node_runtime.workspace = true
-notifications.workspace = true
-onboarding.workspace = true
 outline.workspace = true
 outline_panel.workspace = true
 parking_lot.workspace = true
@@ -178,16 +156,15 @@ project.workspace = true
 project_panel.workspace = true
 project_symbols.workspace = true
 prompt_store.workspace = true
-proto.workspace = true
 recent_projects.workspace = true
 release_channel.workspace = true
 remote.workspace = true
 repl.workspace = true
-reqwest.workspace = true
 reqwest_client.workspace = true
 rope.workspace = true
 sandbox.workspace = true
 search.workspace = true
+search_everywhere.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 session.workspace = true
@@ -199,19 +176,16 @@ sidebar.workspace = true
 smol.workspace = true
 snippet_provider.workspace = true
 snippets_ui.workspace = true
+status_widgets.workspace = true
 svg_preview.workspace = true
 sysinfo.workspace = true
 tab_switcher.workspace = true
 tasks_ui.workspace = true
-telemetry.workspace = true
-telemetry_events.workspace = true
 terminal_view.workspace = true
 theme.workspace = true
 theme_extension.workspace = true
 theme_selector.workspace = true
 theme_settings.workspace = true
-time.workspace = true
-time_format.workspace = true
 title_bar.workspace = true
 toolchain_selector.workspace = true
 tracing.workspace = true
@@ -224,8 +198,6 @@ uuid.workspace = true
 vim.workspace = true
 vim_mode_setting.workspace = true
 watch.workspace = true
-web_search.workspace = true
-web_search_providers.workspace = true
 which_key.workspace = true
 workspace.workspace = true
 zed_actions.workspace = true
@@ -257,7 +229,6 @@ pkg-config = "0.3.22"
 
 [dev-dependencies]
 activity_indicator = { workspace = true, features = ["test-support"] }
-call = { workspace = true, features = ["test-support"] }
 editor = { workspace = true, features = ["test-support"] }
 fs = { workspace = true, features = ["test-support"] }
 gpui = { workspace = true, features = ["profiler", "test-support"] }

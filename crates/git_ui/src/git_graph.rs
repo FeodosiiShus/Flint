@@ -2835,6 +2835,7 @@ impl GitGraph {
                 ui::BackgroundImageArea::Window,
                 cx.theme().colors().editor_background,
                 true,
+                gpui::Corners::default(),
             ))
             .child(
                 v_flex()
@@ -4133,6 +4134,7 @@ impl Render for GitGraph {
                 ui::BackgroundImageArea::Window,
                 cx.theme().colors().editor_background,
                 true,
+                gpui::Corners::default(),
             ))
             .on_action(cx.listener(|this, _: &OpenCommitView, window, cx| {
                 this.open_selected_commit_view(window, cx);
