@@ -120,9 +120,9 @@ macos() {
         app_id="dev.zed.Zed-Preview"
         ;;
       dev)
-        app="Zed Dev.app"
+        app="Flint.app"
         db_suffix="dev"
-        app_id="dev.zed.Zed-Dev"
+        app_id="io.github.feodosiishus.Flint"
         ;;
     esac
 

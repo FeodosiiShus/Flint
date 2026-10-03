@@ -195,6 +195,7 @@ impl ApplicationMenu {
                         )
                         .style(ButtonStyle::Subtle)
                         .icon_size(IconSize::Small)
+                        .chrome_region(ui::ChromeRegion::TitleBar)
                         .tab_index(0isize)
                         .aria_label("Application menu"),
                         Tooltip::text("Open Application Menu"),
@@ -230,6 +231,7 @@ impl ApplicationMenu {
                         )
                         .style(ButtonStyle::Subtle)
                         .label_size(LabelSize::Small)
+                        .chrome_region(ui::ChromeRegion::TitleBar)
                         .tab_index(0isize),
                     )
                     .with_handle(current_handle.clone()),

@@ -593,6 +593,12 @@ impl Render for AgentRegistryPage {
         v_flex()
             .size_full()
             .bg(cx.theme().colors().editor_background)
+            .child(ui::background_image_layer(
+                ui::BackgroundImageTarget::EditorAndTools,
+                ui::BackgroundImageArea::Window,
+                cx.theme().colors().editor_background,
+                true,
+            ))
             .child(
                 v_flex()
                     .p_4()

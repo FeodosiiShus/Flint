@@ -1357,6 +1357,7 @@ impl MultiWorkspace {
         // workspace (which is now the chrome owner per `owns_window_chrome`).
         workspace.update(cx, |workspace, cx| {
             workspace.refresh_window_state(window, cx);
+            workspace.publish_background_images(window, cx);
         });
 
         cx.emit(MultiWorkspaceEvent::ActiveWorkspaceChanged { source_workspace });
@@ -2051,6 +2052,12 @@ impl Render for MultiWorkspace {
                     .h_full()
                     .w(sidebar_width)
                     .flex_shrink_0()
+                    .child(ui::background_image_layer(
+                        ui::BackgroundImageTarget::EditorAndTools,
+                        ui::BackgroundImageArea::Window,
+                        gpui::transparent_black(),
+                        false,
+                    ))
                     .child(sidebar_handle.to_any())
                     .child(resize_handle)
                     .into_any_element()

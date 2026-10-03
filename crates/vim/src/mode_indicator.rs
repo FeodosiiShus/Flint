@@ -145,8 +145,11 @@ impl Render for ModeIndicator {
             };
             (pending.into(), Some(mode))
         };
+        let region = ui::ChromeRegion::StatusBar;
+        let button_height = ui::chrome_button_height(region, ButtonSize::Default, cx);
         h_flex()
             .h(ButtonSize::Default.rems())
+            .when_some(button_height, |el, height| el.h(height))
             .gap_1()
             .when(!label.is_empty(), |el| {
                 el.child(
@@ -161,6 +164,7 @@ impl Render for ModeIndicator {
                         .when(bg_color != system_transparent, |el| el.px_2())
                         // match with other icons at the bottom that use default buttons
                         .h(ButtonSize::Default.rems())
+                        .when_some(button_height, |el, height| el.h(height))
                         .justify_center()
                         .rounded_sm()
                         .bg(bg_color)

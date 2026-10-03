@@ -1787,6 +1787,12 @@ impl Render for MarkdownPreviewView {
             .min_h_0()
             .relative()
             .bg(bg_color)
+            .child(ui::background_image_layer(
+                ui::BackgroundImageTarget::EditorAndTools,
+                ui::BackgroundImageArea::Window,
+                bg_color,
+                true,
+            ))
             .child(
                 WithRemSize::new(preview_font_size).size_full().child(
                     div()

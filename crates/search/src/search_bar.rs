@@ -50,6 +50,7 @@ pub(super) fn render_action_button(
         icon,
     )
     .shape(IconButtonShape::Square)
+    .chrome_region(ui::ChromeRegion::Toolbar)
     .on_click({
         let focus_handle = focus_handle.clone();
         move |_, window, cx| {

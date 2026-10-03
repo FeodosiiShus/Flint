@@ -387,6 +387,7 @@ impl TitleBar {
         };
 
         let quality_label: SharedString = quality_label.into();
+        let region = ui::ChromeRegion::TitleBar;
 
         h_flex()
             .gap_1()
@@ -398,6 +399,7 @@ impl TitleBar {
                         IconButton::new("leave-call", IconName::Exit)
                             .tooltip(Tooltip::text("Leave Call"))
                             .icon_size(IconSize::Small)
+                            .chrome_region(region)
                             .on_click(move |_, _window, cx| {
                                 ActiveCall::global(cx)
                                     .update(cx, |call, cx| call.hang_up(cx))
@@ -409,6 +411,7 @@ impl TitleBar {
             .child(
                 IconButton::new("call-quality", signal_icon)
                     .icon_size(IconSize::Small)
+                    .chrome_region(region)
                     .when_some(signal_color, |button, color| button.icon_color(color))
                     .tooltip(Tooltip::element(move |window, cx| {
                         let quality_label = quality_label.clone();
@@ -481,6 +484,7 @@ impl TitleBar {
                         }
                     })
                     .icon_size(IconSize::Small)
+                    .chrome_region(region)
                     .toggle_state(is_muted)
                     .selected_style(ButtonStyle::Tinted(TintColor::Error))
                     .on_click(move |_, _window, cx| toggle_mute(cx)),
@@ -497,6 +501,7 @@ impl TitleBar {
                 )
                 .selected_style(ButtonStyle::Tinted(TintColor::Error))
                 .icon_size(IconSize::Small)
+                .chrome_region(region)
                 .toggle_state(is_deafened)
                 .tooltip(move |_window, cx| {
                     if is_deafened {
@@ -572,6 +577,7 @@ impl TitleBar {
                     this.child(
                         IconButton::new("toggle_sharing", icon)
                             .icon_size(IconSize::Small)
+                            .chrome_region(region)
                             .selected_style(ButtonStyle::Tinted(TintColor::Accent))
                             .toggle_state(is_shared)
                             .map(|this| {
@@ -621,6 +627,7 @@ impl TitleBar {
                 let trigger = IconButton::new("screen-share", IconName::Screen)
                     .style(ButtonStyle::Subtle)
                     .icon_size(IconSize::Small)
+                    .chrome_region(region)
                     .toggle_state(is_screen_sharing)
                     .selected_style(ButtonStyle::Tinted(TintColor::Accent))
                     .tooltip(Tooltip::text(if is_screen_sharing {
@@ -680,7 +687,7 @@ impl TitleBar {
                     parent.child(
                         SplitButton::new(
                             trigger.render(window, cx),
-                            self.render_screen_list().into_any_element(),
+                            self.render_screen_list(cx).into_any_element(),
                         )
                         .style(SplitButtonStyle::Transparent),
                     )
@@ -689,17 +696,20 @@ impl TitleBar {
             .into_any_element()
     }
 
-    fn render_screen_list(&self) -> impl IntoElement {
+    fn render_screen_list(&self, cx: &App) -> impl IntoElement {
+        let region = ui::ChromeRegion::TitleBar;
+        let chevron_size = ui::chrome_icon_size(region, IconSize::XSmall, cx);
         PopoverMenu::new("screen-share-screen-list")
             .with_handle(self.screen_share_popover_handle.clone())
             .trigger(
                 ui::ButtonLike::new_rounded_right("screen-share-screen-list-trigger")
+                    .chrome_region(region)
                     .child(
                         h_flex()
                             .mx_neg_0p5()
                             .h_full()
                             .justify_center()
-                            .child(Icon::new(IconName::ChevronDown).size(IconSize::XSmall)),
+                            .child(Icon::new(IconName::ChevronDown).size(chevron_size)),
                     )
                     .toggle_state(self.screen_share_popover_handle.is_deployed()),
             )

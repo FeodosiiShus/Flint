@@ -758,6 +758,7 @@ impl Render for ActivityIndicator {
                         }
                     })
                     .label_size(LabelSize::Small)
+                    .chrome_region(ui::ChromeRegion::StatusBar)
                     .tab_index(0isize)
                     .map(|this| match content.icon {
                         ActivityIcon::LoadingSpinner => this.loading(true),

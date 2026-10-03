@@ -704,7 +704,15 @@ impl Render for AgentDiffPane {
             // Only paint the background for the empty state. When the diff editor
             // is shown it already paints `editor_background`; painting it again
             // here double-composites into a darker patch on transparent windows.
-            .when(is_empty, |el| el.bg(cx.theme().colors().editor_background))
+            .when(is_empty, |el| {
+                el.bg(cx.theme().colors().editor_background)
+                    .child(ui::background_image_layer(
+                        ui::BackgroundImageTarget::EditorAndTools,
+                        ui::BackgroundImageArea::Window,
+                        cx.theme().colors().editor_background,
+                        true,
+                    ))
+            })
             .flex()
             .items_center()
             .justify_center()

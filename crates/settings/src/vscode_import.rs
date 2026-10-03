@@ -547,6 +547,7 @@ impl VsCodeSettings {
             load_direnv: None,
             git_hosting_providers: None,
             disable_ai: None,
+            background_image: None,
         }
     }
 
@@ -831,6 +832,8 @@ impl VsCodeSettings {
                 .read_str("workbench.editor.editorActionsLocation")
                 .and_then(|str| if str == "hidden" { Some(false) } else { None }),
             show_pinned_tabs_in_separate_row: None,
+            height: None,
+            icon_size: None,
         })
     }
 
@@ -843,6 +846,8 @@ impl VsCodeSettings {
             line_endings_button: None,
             active_encoding_button: None,
             pending_keystrokes_indicator: None,
+            height: None,
+            icon_size: None,
         })
     }
 

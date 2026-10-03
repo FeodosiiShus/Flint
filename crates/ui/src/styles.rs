@@ -1,5 +1,7 @@
 pub mod animation;
 mod appearance;
+mod background_image;
+mod chrome_size;
 mod color;
 mod elevation;
 mod platform;
@@ -9,6 +11,8 @@ mod typography;
 mod units;
 
 pub use appearance::*;
+pub use background_image::*;
+pub use chrome_size::*;
 pub use color::*;
 pub use elevation::*;
 pub use platform::*;

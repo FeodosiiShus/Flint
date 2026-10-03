@@ -551,6 +551,8 @@ pub struct TabBarSettingsContent {
     ///
     /// Default: false
     pub show_pinned_tabs_in_separate_row: Option<bool>,
+    pub height: Option<u32>,
+    pub icon_size: Option<u32>,
 }
 
 #[with_fallible_options]
@@ -587,6 +589,8 @@ pub struct StatusBarSettingsContent {
     ///
     /// Default: true
     pub pending_keystrokes_indicator: Option<bool>,
+    pub height: Option<u32>,
+    pub icon_size: Option<u32>,
 }
 
 #[derive(

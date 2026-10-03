@@ -278,7 +278,12 @@ impl Render for PendingKeystrokesIndicator {
             });
         }
 
+        let region = ui::ChromeRegion::StatusBar;
+        let timer_icon_size = ui::chrome_icon_size(region, IconSize::XSmall, cx);
+        let scale = ui::chrome_icon_scale(region, cx).unwrap_or(1.0);
+
         let button = ButtonLike::new("pending-keystrokes-indicator")
+            .chrome_region(region)
             .on_click(|_, window, cx| {
                 window.dispatch_action(zed_actions::dev::OpenKeyContextView.boxed_clone(), cx);
             })
@@ -292,17 +297,17 @@ impl Render for PendingKeystrokesIndicator {
                 };
                 button.child(if cx.reduce_motion() {
                     Icon::new(IconName::CountdownTimer)
-                        .size(IconSize::XSmall)
+                        .size(timer_icon_size)
                         .color(Color::Muted)
                         .into_any_element()
                 } else {
                     let progress = CircularProgress::new(
                         remaining_fraction,
                         1.0,
-                        rems_from_px(13_f32).to_pixels(window.rem_size()),
+                        rems_from_px(13_f32 * scale).to_pixels(window.rem_size()),
                         cx,
                     )
-                    .stroke_width(rems_from_px(2_f32).to_pixels(window.rem_size()))
+                    .stroke_width(rems_from_px(2_f32 * scale).to_pixels(window.rem_size()))
                     .progress_color(cx.theme().colors().text_muted);
                     if timeout.timeout_paused || timeout.remaining_duration.is_zero() {
                         progress.into_any_element()

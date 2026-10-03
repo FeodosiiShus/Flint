@@ -46,9 +46,10 @@ use std::{
 };
 use theme_settings::ThemeSettings;
 use ui::{
-    ContextMenu, ContextMenuEntry, ContextMenuItem, DecoratedIcon, IconButtonShape, IconDecoration,
-    IconDecorationKind, Indicator, PopoverMenu, PopoverMenuHandle, Tab, TabBar, TabPosition,
-    Tooltip, prelude::*, right_click_menu,
+    BackgroundImageArea, BackgroundImageTarget, ContextMenu, ContextMenuEntry, ContextMenuItem,
+    DecoratedIcon, IconButtonShape, IconDecoration, IconDecorationKind, Indicator, PopoverMenu,
+    PopoverMenuHandle, Tab, TabBar, TabPosition, Tooltip, background_image_layer,
+    has_background_image, prelude::*, right_click_menu,
 };
 use util::{
     ResultExt, debug_panic, markdown::MarkdownInlineCode, maybe, paths::PathStyle,
@@ -2791,12 +2792,13 @@ impl Pane {
         &self,
         item: &dyn ItemHandle,
         is_active: bool,
+        icon_size: IconSize,
         window: &Window,
         cx: &App,
     ) -> Option<AnyElement> {
         let icon = item
             .tab_icon(window, cx)?
-            .size(IconSize::Small)
+            .size(icon_size)
             .color(Color::Muted);
 
         let item_diagnostic = item
@@ -2863,7 +2865,8 @@ impl Pane {
             cx,
         );
 
-        let icon = self.tab_icon_element(item, is_active, window, cx);
+        let tab_icon_size = ui::chrome_icon_size(ui::ChromeRegion::TabBar, IconSize::Small, cx);
+        let icon = self.tab_icon_element(item, is_active, tab_icon_size, window, cx);
 
         let settings = ItemSettings::get_global(cx);
         let close_side = &settings.close_position;
@@ -2882,6 +2885,7 @@ impl Pane {
                 .shape(IconButtonShape::Square)
                 .icon_color(Color::Muted)
                 .icon_size(IconSize::Small)
+                .chrome_region(ui::ChromeRegion::TabBar)
                 .disabled(!toggleable)
                 .tooltip(move |_, cx| {
                     if toggleable {
@@ -3008,6 +3012,7 @@ impl Pane {
                         .icon_color(Color::Muted)
                         .size(ButtonSize::None)
                         .icon_size(IconSize::Small)
+                        .chrome_region(ui::ChromeRegion::TabBar)
                         .on_click(cx.listener(move |pane, _, window, cx| {
                             pane.unpin_tab_at(ix, window, cx);
                         }))
@@ -3028,6 +3033,7 @@ impl Pane {
                     .icon_color(Color::Muted)
                     .size(ButtonSize::None)
                     .icon_size(IconSize::Small)
+                    .chrome_region(ui::ChromeRegion::TabBar)
                     .on_click(cx.listener(move |pane, _, window, cx| {
                         pane.close_item_by_id(item_id, SaveIntent::Close, window, cx)
                             .detach_and_log_err(cx);
@@ -3473,6 +3479,7 @@ impl Pane {
 
         let navigate_backward = IconButton::new("navigate_backward", IconName::ArrowLeft)
             .icon_size(IconSize::Small)
+            .chrome_region(ui::ChromeRegion::TabBar)
             .on_click({
                 let entity = cx.entity();
                 move |_, window, cx| {
@@ -3496,6 +3503,7 @@ impl Pane {
 
         let navigate_forward = IconButton::new("navigate_forward", IconName::ArrowRight)
             .icon_size(IconSize::Small)
+            .chrome_region(ui::ChromeRegion::TabBar)
             .on_click({
                 let entity = cx.entity();
                 move |_, window, cx| {
@@ -4329,7 +4337,9 @@ fn default_render_tab_bar_buttons(
         .child(
             PopoverMenu::new("pane-tab-bar-popover-menu")
                 .trigger_with_tooltip(
-                    IconButton::new("plus", IconName::Plus).icon_size(IconSize::Small),
+                    IconButton::new("plus", IconName::Plus)
+                        .icon_size(IconSize::Small)
+                        .chrome_region(ui::ChromeRegion::TabBar),
                     Tooltip::text("New…"),
                 )
                 .anchor(Anchor::TopRight)
@@ -4355,6 +4365,7 @@ fn default_render_tab_bar_buttons(
                 .trigger_with_tooltip(
                     IconButton::new("split", IconName::Split)
                         .icon_size(IconSize::Small)
+                        .chrome_region(ui::ChromeRegion::TabBar)
                         .disabled(!can_clone && !can_split_move),
                     Tooltip::text("Split Pane"),
                 )
@@ -4382,6 +4393,7 @@ fn default_render_tab_bar_buttons(
             let zoomed = pane.is_zoomed();
             IconButton::new("toggle_zoom", IconName::Maximize)
                 .icon_size(IconSize::Small)
+                .chrome_region(ui::ChromeRegion::TabBar)
                 .toggle_state(zoomed)
                 .selected_icon(IconName::Minimize)
                 .on_click(cx.listener(|pane, _, window, cx| {
@@ -4596,6 +4608,8 @@ impl Render for Pane {
             })
             .child({
                 let has_worktrees = project.read(cx).visible_worktrees(cx).next().is_some();
+                let has_empty_frame_image =
+                    has_background_image(BackgroundImageTarget::EmptyFrame, window, cx);
                 // main content
                 div()
                     .flex_1()
@@ -4616,11 +4630,21 @@ impl Render for Pane {
                                 .child(self.toolbar.clone())
                                 .child(item.to_any_view())
                         } else {
+                            let editor_background = cx.theme().colors().editor_background;
+                            let empty_frame_layer = background_image_layer(
+                                BackgroundImageTarget::EmptyFrame,
+                                BackgroundImageArea::Element,
+                                editor_background,
+                                false,
+                            );
                             let placeholder = div
                                 .id("pane_placeholder")
                                 .h_flex()
                                 .size_full()
                                 .justify_center()
+                                .when(has_empty_frame_image, |placeholder| {
+                                    placeholder.bg(editor_background).child(empty_frame_layer)
+                                })
                                 .on_click(cx.listener(
                                     move |this, event: &ClickEvent, window, cx| {
                                         if event.click_count() == 2 {
@@ -5067,10 +5091,14 @@ impl Render for DraggedTab {
             window,
             cx,
         );
-        let icon =
-            self.pane
-                .read(cx)
-                .tab_icon_element(self.item.as_ref(), self.is_active, window, cx);
+        let pane = self.pane.read(cx);
+        let icon = pane.tab_icon_element(
+            self.item.as_ref(),
+            self.is_active,
+            ui::chrome_icon_size(ui::ChromeRegion::TabBar, IconSize::Small, cx),
+            window,
+            cx,
+        );
         Tab::new("")
             .toggle_state(self.is_active)
             .children(icon)

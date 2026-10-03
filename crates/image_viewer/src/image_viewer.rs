@@ -777,6 +777,12 @@ impl Render for ImageView {
             .size_full()
             .relative()
             .bg(cx.theme().colors().editor_background)
+            .child(ui::background_image_layer(
+                ui::BackgroundImageTarget::EditorAndTools,
+                ui::BackgroundImageArea::Window,
+                cx.theme().colors().editor_background,
+                true,
+            ))
             .child({
                 let container = div()
                     .id("image-container")

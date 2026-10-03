@@ -1085,6 +1085,12 @@ impl Render for ProjectSearchView {
                 .justify_center()
                 .overflow_hidden()
                 .bg(cx.theme().colors().editor_background)
+                .child(ui::background_image_layer(
+                    ui::BackgroundImageTarget::EditorAndTools,
+                    ui::BackgroundImageArea::Window,
+                    cx.theme().colors().editor_background,
+                    true,
+                ))
                 .track_focus(&self.focus_handle(cx))
                 .child(
                     v_flex()

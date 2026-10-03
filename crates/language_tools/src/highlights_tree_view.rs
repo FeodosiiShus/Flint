@@ -819,6 +819,12 @@ impl Render for HighlightsTreeView {
             .on_action(cx.listener(Self::select_previous))
             .on_action(cx.listener(Self::select_next))
             .bg(cx.theme().colors().editor_background)
+            .child(ui::background_image_layer(
+                ui::BackgroundImageTarget::EditorAndTools,
+                ui::BackgroundImageArea::Window,
+                cx.theme().colors().editor_background,
+                true,
+            ))
             .map(|this| {
                 if display_count > 0 {
                     this.child(

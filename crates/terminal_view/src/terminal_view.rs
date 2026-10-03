@@ -1499,6 +1499,14 @@ impl Render for TerminalView {
                     .id("terminal-view-container")
                     .size_full()
                     .bg(cx.theme().colors().editor_background)
+                    .when(self.background_corner_radii.is_none(), |this| {
+                        this.child(ui::background_image_layer(
+                            ui::BackgroundImageTarget::EditorAndTools,
+                            ui::BackgroundImageArea::Window,
+                            cx.theme().colors().editor_background,
+                            true,
+                        ))
+                    })
                     .when_some(self.background_corner_radii, |this, radii| {
                         this.rounded_tl(radii.top_left)
                             .rounded_tr(radii.top_right)

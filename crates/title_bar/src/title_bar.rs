@@ -419,7 +419,7 @@ impl Render for TitleBar {
                 );
             });
 
-            let height = platform_title_bar_height(window);
+            let height = platform_title_bar_height(window, cx);
             let title_bar_color = self.platform_titlebar.update(cx, |platform_titlebar, cx| {
                 platform_titlebar.title_bar_color(window, cx)
             });
@@ -430,6 +430,12 @@ impl Render for TitleBar {
                 .child(
                     h_flex()
                         .bg(title_bar_color)
+                        .child(ui::background_image_layer(
+                            ui::BackgroundImageTarget::EditorAndTools,
+                            ui::BackgroundImageArea::Window,
+                            title_bar_color,
+                            false,
+                        ))
                         .h(height)
                         .pl_2()
                         .justify_between()
@@ -655,6 +661,8 @@ impl TitleBar {
         };
 
         let meta = SharedString::from(meta);
+        let region = ui::ChromeRegion::TitleBar;
+        let icon_size = ui::chrome_icon_size(region, IconSize::Small, cx);
 
         Some(
             PopoverMenu::new("remote-project-menu")
@@ -672,13 +680,14 @@ impl TitleBar {
                 .trigger_with_tooltip(
                     ButtonLike::new("remote_project")
                         .selected_style(ButtonStyle::Tinted(TintColor::Accent))
+                        .chrome_region(region)
                         .child(
                             h_flex()
                                 .gap_2()
                                 .max_w_32()
                                 .child(
                                     IconWithIndicator::new(
-                                        Icon::new(icon).size(IconSize::Small).color(icon_color),
+                                        Icon::new(icon).size(icon_size).color(icon_color),
                                         Some(Indicator::dot().color(indicator_color)),
                                     )
                                     .indicator_border_color(Some(
@@ -713,6 +722,7 @@ impl TitleBar {
             .style(ButtonStyle::Tinted(TintColor::Warning))
             .label_size(LabelSize::Small)
             .color(Color::Warning)
+            .chrome_region(ui::ChromeRegion::TitleBar)
             .start_icon(
                 Icon::new(IconName::Warning)
                     .size(IconSize::Small)
@@ -755,6 +765,7 @@ impl TitleBar {
                     .disabled(true)
                     .color(Color::Disabled)
                     .label_size(LabelSize::Small)
+                    .chrome_region(ui::ChromeRegion::TitleBar)
                     .into_any_element(),
             );
         }
@@ -771,6 +782,7 @@ impl TitleBar {
             Button::new("project_owner_trigger", host_user.username.clone())
                 .color(Color::Player(participant_index.0))
                 .label_size(LabelSize::Small)
+                .chrome_region(ui::ChromeRegion::TitleBar)
                 .tab_index(0isize)
                 .tooltip(move |_, cx| {
                     let tooltip_title = format!(
@@ -857,6 +869,7 @@ impl TitleBar {
             .trigger_with_tooltip(
                 Button::new("project_name_trigger", display_name)
                     .label_size(LabelSize::Small)
+                    .chrome_region(ui::ChromeRegion::TitleBar)
                     .tab_index(0isize)
                     .when(self.worktree_count(cx) > 1, |this| {
                         this.end_icon(
@@ -909,6 +922,7 @@ impl TitleBar {
             .trigger_with_tooltip(
                 Button::new("project_name_trigger", display_name)
                     .label_size(LabelSize::Small)
+                    .chrome_region(ui::ChromeRegion::TitleBar)
                     .tab_index(0isize)
                     .when(self.worktree_count(cx) > 1, |this| {
                         this.end_icon(
@@ -1012,6 +1026,7 @@ impl TitleBar {
                     Button::new("worktree_picker_trigger", display_label)
                         .selected_style(ButtonStyle::Tinted(TintColor::Accent))
                         .label_size(LabelSize::Small)
+                        .chrome_region(ui::ChromeRegion::TitleBar)
                         .color(Color::Muted)
                         .tab_index(0isize)
                         .loading(is_creating)
@@ -1045,6 +1060,7 @@ impl TitleBar {
                     Button::new("project_branch_trigger", "Create Branch")
                         .selected_style(ButtonStyle::Tinted(TintColor::Accent))
                         .label_size(LabelSize::Small)
+                        .chrome_region(ui::ChromeRegion::TitleBar)
                         .tab_index(0isize)
                         .start_icon(
                             Icon::new(IconName::GitBranchPlus)
@@ -1055,6 +1071,7 @@ impl TitleBar {
                     Button::new("project_branch_trigger", branch_name)
                         .selected_style(ButtonStyle::Tinted(TintColor::Accent))
                         .label_size(LabelSize::Small)
+                        .chrome_region(ui::ChromeRegion::TitleBar)
                         .color(Color::Muted)
                         .tab_index(0isize)
                         .start_icon(
@@ -1152,6 +1169,8 @@ impl TitleBar {
         status: &client::Status,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
+        let region = ui::ChromeRegion::TitleBar;
+        let icon_size = ui::chrome_icon_size(region, IconSize::Small, cx);
         match status {
             client::Status::ConnectionError
             | client::Status::ConnectionLost
@@ -1160,7 +1179,7 @@ impl TitleBar {
             | client::Status::ReconnectionError { .. } => Some(
                 div()
                     .id("disconnected")
-                    .child(Icon::new(IconName::Disconnected).size(IconSize::Small))
+                    .child(Icon::new(IconName::Disconnected).size(icon_size))
                     .tooltip(Tooltip::text("Disconnected"))
                     .into_any_element(),
             ),
@@ -1179,6 +1198,7 @@ impl TitleBar {
                 Some(
                     Button::new("connection-status", label)
                         .label_size(LabelSize::Small)
+                        .chrome_region(region)
                         .on_click(|_, window, cx| {
                             if let Some(auto_updater) = auto_update::AutoUpdater::get(cx)
                                 && auto_updater.read(cx).status().is_updated()
@@ -1200,6 +1220,7 @@ impl TitleBar {
         let workspace = self.workspace.clone();
         Button::new("sign_in", "Sign In")
             .label_size(LabelSize::Small)
+            .chrome_region(ui::ChromeRegion::TitleBar)
             .tab_index(0isize)
             .on_click(move |_, window, cx| {
                 let client = client.clone();
@@ -1242,6 +1263,8 @@ impl TitleBar {
             .collect();
 
         let show_user_picture = TitleBarSettings::get_global(cx).show_user_picture;
+        let region = ui::ChromeRegion::TitleBar;
+        let icon_size = ui::chrome_icon_size(region, IconSize::Small, cx);
 
         let trigger = if is_signed_in && show_user_picture {
             let avatar = user_avatar.map(|avatar| Avatar::new(avatar)).map(|avatar| {
@@ -1261,6 +1284,7 @@ impl TitleBar {
             ButtonLike::new("user-menu")
                 .aria_label("User menu")
                 .tab_index(0isize)
+                .chrome_region(region)
                 .child(
                     h_flex()
                         .when_some(business_organization, |this, organization| {
@@ -1273,7 +1297,8 @@ impl TitleBar {
             ButtonLike::new("user-menu")
                 .aria_label("User menu")
                 .tab_index(0isize)
-                .child(Icon::new(IconName::ChevronDown).size(IconSize::Small))
+                .chrome_region(region)
+                .child(Icon::new(IconName::ChevronDown).size(icon_size))
         };
 
         PopoverMenu::new("user-menu")

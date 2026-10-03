@@ -1,4 +1,4 @@
-use std::{num::NonZeroUsize, time::Duration};
+use std::{num::NonZeroUsize, path::PathBuf, time::Duration};
 
 use crate::DockPosition;
 use collections::HashMap;
@@ -235,6 +235,55 @@ impl Settings for StatusBarSettings {
             line_endings_button: status_bar.line_endings_button.unwrap(),
             active_encoding_button: status_bar.active_encoding_button.unwrap(),
             pending_keystrokes_indicator: status_bar.pending_keystrokes_indicator.unwrap(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct BackgroundImageLayerSettings {
+    pub path: PathBuf,
+    pub opacity: u32,
+    pub fill: settings::BackgroundImageFill,
+    pub anchor: settings::BackgroundImageAnchor,
+    pub flip_horizontal: bool,
+    pub flip_vertical: bool,
+}
+
+impl BackgroundImageLayerSettings {
+    fn from_content(content: Option<&settings::BackgroundImageLayerContent>) -> Option<Self> {
+        let content = content?;
+        let trimmed_path = content.path.as_deref()?.trim();
+        if trimmed_path.is_empty() {
+            return None;
+        }
+        let opacity = content.opacity.unwrap_or_default();
+        Some(Self {
+            path: PathBuf::from(shellexpand::tilde(trimmed_path).into_owned()),
+            opacity: opacity.0.min(settings::BackgroundImageOpacity::MAX),
+            fill: content.fill.unwrap_or_default(),
+            anchor: content.anchor.unwrap_or_default(),
+            flip_horizontal: content.flip_horizontal.unwrap_or_default(),
+            flip_vertical: content.flip_vertical.unwrap_or_default(),
+        })
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, RegisterSetting)]
+pub struct BackgroundImageSettings {
+    pub editor_and_tools: Option<BackgroundImageLayerSettings>,
+    pub empty_frame: Option<BackgroundImageLayerSettings>,
+}
+
+impl Settings for BackgroundImageSettings {
+    fn from_settings(content: &settings::SettingsContent) -> Self {
+        let Some(background_image) = content.project.background_image.as_ref() else {
+            return Self::default();
+        };
+        let editor_and_tools = background_image.editor_and_tools.as_ref();
+        let empty_frame = background_image.empty_frame.as_ref();
+        Self {
+            editor_and_tools: BackgroundImageLayerSettings::from_content(editor_and_tools),
+            empty_frame: BackgroundImageLayerSettings::from_content(empty_frame),
         }
     }
 }

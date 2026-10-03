@@ -33,10 +33,13 @@ impl Render for DiagnosticIndicator {
             return indicator.hidden();
         }
 
+        let region = ui::ChromeRegion::StatusBar;
+        let icon_size = ui::chrome_icon_size(region, IconSize::Small, cx);
+
         let diagnostic_indicator = match (self.summary.error_count, self.summary.warning_count) {
             (0, 0) => h_flex().child(
                 Icon::new(IconName::Check)
-                    .size(IconSize::Small)
+                    .size(icon_size)
                     .color(Color::Default),
             ),
             (error_count, warning_count) => h_flex()
@@ -44,7 +47,7 @@ impl Render for DiagnosticIndicator {
                 .when(error_count > 0, |this| {
                     this.child(
                         Icon::new(IconName::XCircle)
-                            .size(IconSize::Small)
+                            .size(icon_size)
                             .color(Color::Error),
                     )
                     .child(Label::new(error_count.to_string()).size(LabelSize::Small))
@@ -52,7 +55,7 @@ impl Render for DiagnosticIndicator {
                 .when(warning_count > 0, |this| {
                     this.child(
                         Icon::new(IconName::Warning)
-                            .size(IconSize::Small)
+                            .size(icon_size)
                             .color(Color::Warning),
                     )
                     .child(Label::new(warning_count.to_string()).size(LabelSize::Small))
@@ -74,6 +77,7 @@ impl Render for DiagnosticIndicator {
             Some(
                 Button::new("diagnostic_message", SharedString::new(message))
                     .label_size(LabelSize::Small)
+                    .chrome_region(region)
                     .truncate(true)
                     .tab_index(0isize)
                     .tooltip(move |_window, cx| {
@@ -115,6 +119,7 @@ impl Render for DiagnosticIndicator {
             .child(
                 ButtonLike::new("diagnostic-indicator")
                     .child(diagnostic_indicator)
+                    .chrome_region(region)
                     .tab_index(0isize)
                     .aria_label(diagnostics_label)
                     .tooltip(move |_window, cx| {

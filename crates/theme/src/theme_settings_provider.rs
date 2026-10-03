@@ -2,6 +2,19 @@ use gpui::{App, Font, Global, Pixels};
 
 use crate::UiDensity;
 
+#[allow(missing_docs)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ChromeSizes {
+    pub title_bar_height: Option<Pixels>,
+    pub title_bar_icon_size: Option<Pixels>,
+    pub tab_bar_height: Option<Pixels>,
+    pub tab_bar_icon_size: Option<Pixels>,
+    pub toolbar_height: Option<Pixels>,
+    pub toolbar_icon_size: Option<Pixels>,
+    pub status_bar_height: Option<Pixels>,
+    pub status_bar_icon_size: Option<Pixels>,
+}
+
 /// Trait for providing theme-related settings (fonts, font sizes, UI density)
 /// without coupling to the concrete settings infrastructure.
 ///
@@ -21,6 +34,9 @@ pub trait ThemeSettingsProvider: Send + Sync + 'static {
 
     /// Returns the current UI density setting.
     fn ui_density(&self, cx: &App) -> UiDensity;
+
+    #[allow(missing_docs)]
+    fn chrome_sizes(&self, cx: &App) -> ChromeSizes;
 }
 
 struct GlobalThemeSettingsProvider(Box<dyn ThemeSettingsProvider>);

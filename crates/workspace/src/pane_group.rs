@@ -17,7 +17,7 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use settings::Settings;
 use std::sync::Arc;
-use ui::prelude::*;
+use ui::{BackgroundImageArea, BackgroundImageTarget, background_image_layer, prelude::*};
 
 pub const HANDLE_HITBOX_SIZE: f32 = 4.0;
 const HORIZONTAL_MIN_SIZE: f32 = 80.;
@@ -575,6 +575,12 @@ impl Member {
                             .border_color(cx.theme().colors().border)
                             .shadow_lg()
                             .overflow_hidden()
+                            .child(background_image_layer(
+                                BackgroundImageTarget::EditorAndTools,
+                                BackgroundImageArea::Window,
+                                cx.theme().colors().background,
+                                true,
+                            ))
                     })
                     .child(
                         AnyView::from(pane.clone())

@@ -7,11 +7,32 @@
   // - "light": Use the theme indicated by the "light" field
   // - "dark": Use the theme indicated by the "dark" field
   "theme": {
-    "mode": "system",
+    "mode": "dark",
     "light": "One Light",
-    "dark": "One Dark",
+    "dark": "Eva Dark",
   },
-  "icon_theme": "Zed (Default)",
+  "icon_theme": "Material Icon Theme",
+  "theme_overrides": {
+    "Eva Dark": {
+      "background.appearance": "blurred",
+      "background": "#22272fb3",
+      "surface.background": "#21252b00",
+      "elevated_surface.background": "#22272f99",
+      "element.background": "#282c3499",
+      "status_bar.background": "#21252b99",
+      "title_bar.background": "#21252b99",
+      "title_bar.inactive_background": "#21252b99",
+      "toolbar.background": "#21252b99",
+      "tab_bar.background": "#21252b99",
+      "tab.inactive_background": "#21252b99",
+      "tab.active_background": "#3e588999",
+      "panel.background": "#21252b00",
+      "editor.background": "#282c341a",
+      "editor.gutter.background": "#282c341a",
+      "editor.subheader.background": "#21252b99",
+      "terminal.background": "#282c3400",
+    },
+  },
   // The name of a base set of key bindings to use.
   // This setting can take the following values:
   //
@@ -24,11 +45,11 @@
   // 7. "Emacs"
   // 8. "Cursor"
   // 9. "None"
-  "base_keymap": "Zed",
+  "base_keymap": "JetBrains",
   // The name of a font to use for rendering text in the editor
   // ".ZedMono" currently aliases to Lilex
   // but this may change in the future.
-  "buffer_font_family": ".ZedMono",
+  "buffer_font_family": "JetBrains Mono",
   // Set the buffer text's font fallbacks, this will be merged with
   // the platform's default fallbacks.
   "buffer_font_fallbacks": null,
@@ -38,7 +59,7 @@
     // "calt": false
   },
   // The default font size for text in the editor
-  "buffer_font_size": 15,
+  "buffer_font_size": 13,
   // The weight of the editor font in standard CSS units from 100 to 900.
   "buffer_font_weight": 400,
   // Set the buffer's line height.
@@ -51,7 +72,7 @@
   //         "buffer_line_height": {
   //           "custom": 2
   //         },
-  "buffer_line_height": "comfortable",
+  "buffer_line_height": "standard",
   // The name of a font to use for rendering text in the UI
   // You can set this to ".SystemUIFont" to use the system font
   // ".ZedSans" currently aliases to "IBM Plex Sans", but this may
@@ -68,11 +89,11 @@
   // The weight of the UI font in standard CSS units from 100 to 900.
   "ui_font_weight": 400,
   // The default font size for text in the UI
-  "ui_font_size": 16,
+  "ui_font_size": 15,
   // The font family for agent responses in the agent panel. Falls back to the UI font family if unset.
   "agent_ui_font_family": null,
   // The default font size for agent responses in the agent panel. Falls back to the UI font size if unset.
-  "agent_ui_font_size": null,
+  "agent_ui_font_size": 16,
   // The font family for user messages in the agent panel. Falls back to the buffer font family if unset.
   "agent_buffer_font_family": null,
   // The default font size for user messages in the agent panel.
@@ -91,7 +112,7 @@
   },
   // Layout mode of the bottom dock. Defaults to "contained"
   //   choices: contained, full, left_aligned, right_aligned
-  "bottom_dock_layout": "contained",
+  "bottom_dock_layout": "full",
   // The direction that you want to split panes horizontally. Defaults to "down"
   "pane_split_direction_horizontal": "down",
   // The direction that you want to split panes vertically. Defaults to "right"
@@ -104,6 +125,24 @@
     // The relative width of the right padding of the central pane from the
     // workspace when the centered layout is used.
     "right_padding": 0.2,
+  },
+  "background_image": {
+    "editor_and_tools": {
+      "path": "",
+      "opacity": 15,
+      "fill": "scale",
+      "anchor": "center",
+      "flip_horizontal": false,
+      "flip_vertical": false,
+    },
+    "empty_frame": {
+      "path": "",
+      "opacity": 15,
+      "fill": "scale",
+      "anchor": "center",
+      "flip_horizontal": false,
+      "flip_vertical": false,
+    },
   },
   // Image viewer settings
   "image_viewer": {
@@ -144,7 +183,7 @@
   "helix_mode": false,
   // Whether to show the informational hover box when moving the mouse
   // over symbols in the editor.
-  "hover_popover_enabled": true,
+  "hover_popover_enabled": false,
   // Time to wait in milliseconds before showing the informational hover box.
   // This delay also applies to auto signature help when `auto_signature_help` is enabled.
   "hover_popover_delay": 300,
@@ -381,7 +420,7 @@
   //
   // The colors that are used for different indentation levels are defined in the theme (theme key: `accents`).
   // They can be customized by using theme overrides.
-  "colorize_brackets": false,
+  "colorize_brackets": true,
   // When to show the scrollbar in the completion menu.
   // This setting can take four values:
   //
@@ -443,7 +482,7 @@
   //      "code_lens": "on",
   // 3. Display code lenses in the code action menu.
   //      "code_lens": "menu",
-  "code_lens": "off",
+  "code_lens": "on",
   // What to do when go to definition yields no results.
   //
   // 1. Do nothing: `none`
@@ -597,6 +636,8 @@
     "agent_review": true,
     // Whether to show code action buttons in the editor toolbar.
     "code_actions": false,
+    "height": null,
+    "icon_size": null,
   },
   // Whether to allow windows to tab together based on the user's tabbing preference (macOS only).
   "use_system_window_tabs": false,
@@ -632,6 +673,8 @@
     "open_menus_on_hover": false,
     // The layout of window control buttons in the title bar (Linux only).
     "button_layout": "platform_default",
+    "height": null,
+    "icon_size": null,
   },
   "audio": {
     // Select specific output audio device.
@@ -693,7 +736,7 @@
     //    "always"
     // 3. Never show the minimap:
     //    "never" (default)
-    "show": "never",
+    "show": "auto",
     // Where to show the minimap in the editor.
     // This setting can take two values:
     // 1. Show the minimap on the focused editor only:
@@ -800,7 +843,7 @@
   "fast_scroll_sensitivity": 4.0,
   "sticky_scroll": {
     // Whether to stick scopes to the top of the editor.
-    "enabled": false,
+    "enabled": true,
   },
   "relative_line_numbers": "disabled",
   // If 'search_wrap' is disabled, search result do not wrap around the end of the file.
@@ -839,7 +882,7 @@
   // Inlay hint related settings
   "inlay_hints": {
     // Global switch to toggle hints on and off, switched off by default.
-    "enabled": false,
+    "enabled": true,
     // Toggle certain types of hints on and off, all switched on by default.
     "show_type_hints": true,
     "show_parameter_hints": true,
@@ -879,7 +922,7 @@
     // Default width of the project panel.
     "default_width": 240,
     // Where to dock the project panel. Can be 'left' or 'right'.
-    "dock": "right",
+    "dock": "left",
     // Spacing between worktree entries in the project panel. Can be 'comfortable' or 'standard'.
     "entry_spacing": "comfortable",
     // Whether to show file icons in the project panel.
@@ -949,7 +992,7 @@
       //    "always"
       // 2. Never show indent guides:
       //    "never"
-      "show": "always",
+      "show": "never",
     },
     // Sort order for entries in the project panel.
     // This setting can take three values:
@@ -1065,7 +1108,7 @@
   },
   "collaboration_panel": {
     // Whether to show the collaboration panel button in the status bar.
-    "button": true,
+    "button": false,
     // Where to dock the collaboration panel. Can be 'left' or 'right'.
     "dock": "right",
     // Default width of the collaboration panel.
@@ -1162,7 +1205,7 @@
     // Whether the agent is enabled.
     "enabled": true,
     // Whether to show the agent panel button in the status bar.
-    "button": true,
+    "button": false,
     // Where to dock the agent panel. Can be 'left', 'right' or 'bottom'.
     "dock": "left",
     // Whether the agent panel should use flexible (proportional) sizing when docked
@@ -1428,7 +1471,7 @@
   // - "full": Use LSP semantic tokens exclusively to highlight the text, tree-sitter syntax highlighting is off.
   //
   // May require language server restart to properly apply.
-  "semantic_tokens": "off",
+  "semantic_tokens": "combined",
 
   // Controls whether folding ranges from language servers are used instead of
   // tree-sitter and indent-based folding.
@@ -1456,7 +1499,7 @@
   //     "autosave": "on_focus_change",
   // 4. Save when idle for a certain amount of time:
   //     "autosave": { "after_delay": {"milliseconds": 500} },
-  "autosave": "off",
+  "autosave": { "after_delay": { "milliseconds": 500 } },
   // Maximum number of tabs per pane. Unset for unlimited.
   "max_tabs": null,
   // Settings related to the editor's tab bar.
@@ -1471,6 +1514,8 @@
     // When enabled, pinned tabs appear in a top row and unpinned tabs in a bottom row.
     // When disabled, all tabs appear in a single row (default behavior).
     "show_pinned_tabs_in_separate_row": false,
+    "height": null,
+    "icon_size": null,
   },
   // Settings related to the editor's tabs
   "tabs": {
@@ -1626,7 +1671,7 @@
   //   "modifications_if_available" — same, but falls back to formatting the whole
   //     buffer when range formatting cannot be used
   // Keep in mind, if the autosave with delay is enabled, format_on_save will be ignored
-  "format_on_save": "off",
+  "format_on_save": "on",
   // How to perform a buffer format. This setting can take multiple values:
   //
   // 1. Default. Format files using Zed's Prettier integration (if applicable),
@@ -1693,9 +1738,9 @@
   // Control what info is collected by Zed.
   "telemetry": {
     // Send debug info like crash reports.
-    "diagnostics": true,
+    "diagnostics": false,
     // Send anonymized usage data like what languages you're using Zed with.
-    "metrics": true,
+    "metrics": false,
     // Allow sending requests to Anthropic models that cannot be offered with
     // Zero Data Retention
     "anthropic_retention": false,
@@ -1719,7 +1764,7 @@
   //      "lsp_document_colors": "border",
   // 4. Draw a background behind the color text..
   //      "lsp_document_colors": "background",
-  "lsp_document_colors": "inlay",
+  "lsp_document_colors": "background",
   // Whether to query and display LSP `textDocument/documentLink` links in the editor.
   //
   // Default: true
@@ -1826,14 +1871,14 @@
       "enabled": true,
       // Sets a delay after which the inline blame information is shown.
       // Delay is restarted with every cursor movement.
-      "delay_ms": 0,
+      "delay_ms": 500,
       // Where to render the blame information when it is enabled.
       "location": "inline",
       // The amount of padding between the end of the source line and the start
       // of the inline blame in units of em widths.
       "padding": 7,
       // Whether or not to display the git commit summary on the same line.
-      "show_commit_summary": false,
+      "show_commit_summary": true,
       // The minimum column number to show the inline blame information at
       "min_column": 0,
     },
@@ -2013,6 +2058,8 @@
     // If the input has a timeout, a countdown is shown and hovering pauses it.
     // Its binding preview popover is disabled when "which_key.enabled" is true.
     "pending_keystrokes_indicator": true,
+    "height": null,
+    "icon_size": null,
   },
   // Settings specific to the terminal
   "terminal": {
@@ -2108,7 +2155,7 @@
     "option_as_meta": false,
     // Whether or not selecting text in the terminal will automatically
     // copy to the system clipboard.
-    "copy_on_select": false,
+    "copy_on_select": true,
     // Whether to keep the text selection after copying it to the clipboard.
     "keep_selection_on_copy": true,
     // Whether cmd-click (ctrl-click on Linux and Windows) opens hyperlinks even
@@ -2269,7 +2316,7 @@
     // timeout of `0` will disable path hyperlinking in terminal.
     "path_hyperlink_timeout_ms": 1,
     // Whether to show a badge on the terminal panel icon with the count of open terminals.
-    "show_count_badge": false,
+    "show_count_badge": true,
     // Whether to invoke the OS-specific alert sound when the terminal bell (BEL character) is printed.
     "bell": "off",
   },
@@ -2333,6 +2380,13 @@
   // and change the value to `false`.
   "auto_install_extensions": {
     "html": true,
+    "material-icon-theme": true,
+    "dockerfile": true,
+    "env": true,
+    "toml": true,
+    "marksman": true,
+    "csharp": true,
+    "git-firefly": true,
   },
   // The capabilities granted to extensions.
   //
@@ -2421,7 +2475,7 @@
       },
     },
     "CSharp": {
-      "language_servers": ["roslyn", "!csharp-ls", "!omnisharp", "..."],
+      "language_servers": ["roslyn"],
     },
     "CSS": {
       "prettier": {
@@ -2490,7 +2544,10 @@
       },
     },
     "JavaScript": {
-      "language_servers": ["!typescript-language-server", "vtsls", "..."],
+      "language_servers": ["vtsls", "eslint", "..."],
+      "code_actions_on_format": {
+        "source.fixAll.eslint": true,
+      },
       "prettier": {
         "allowed": true,
       },
@@ -2595,7 +2652,10 @@
       },
     },
     "TSX": {
-      "language_servers": ["!typescript-language-server", "vtsls", "..."],
+      "language_servers": ["vtsls", "eslint", "..."],
+      "code_actions_on_format": {
+        "source.fixAll.eslint": true,
+      },
       "prettier": {
         "allowed": true,
       },
@@ -2606,7 +2666,10 @@
       },
     },
     "TypeScript": {
-      "language_servers": ["!typescript-language-server", "vtsls", "..."],
+      "language_servers": ["vtsls", "eslint", "..."],
+      "code_actions_on_format": {
+        "source.fixAll.eslint": true,
+      },
       "prettier": {
         "allowed": true,
       },
@@ -2631,6 +2694,7 @@
       },
     },
     "YAML": {
+      "tab_size": 2,
       "prettier": {
         "allowed": true,
       },
@@ -2703,7 +2767,7 @@
     // language and MCP servers are downloaded and started automatically.
     //
     // Default: false
-    "trust_all_worktrees": false,
+    "trust_all_worktrees": true,
   },
   // Zed's Prettier integration settings.
   // Allows to enable/disable formatting with Prettier
@@ -2740,6 +2804,42 @@
     //         }
     //     }
     // }
+    "vtsls": {
+      "settings": {
+        "typescript": {
+          "inlayHints": {
+            "parameterNames": {
+              "enabled": "all",
+              "suppressWhenArgumentMatchesName": false,
+            },
+            "parameterTypes": { "enabled": true },
+            "variableTypes": {
+              "enabled": true,
+              "suppressWhenTypeMatchesName": true,
+            },
+            "propertyDeclarationTypes": { "enabled": true },
+            "functionLikeReturnTypes": { "enabled": true },
+            "enumMemberValues": { "enabled": true },
+          },
+        },
+        "javascript": {
+          "inlayHints": {
+            "parameterNames": {
+              "enabled": "all",
+              "suppressWhenArgumentMatchesName": false,
+            },
+            "parameterTypes": { "enabled": true },
+            "variableTypes": {
+              "enabled": true,
+              "suppressWhenTypeMatchesName": true,
+            },
+            "propertyDeclarationTypes": { "enabled": true },
+            "functionLikeReturnTypes": { "enabled": true },
+            "enumMemberValues": { "enabled": true },
+          },
+        },
+      },
+    },
   },
   // DAP Specific settings.
   "dap": {

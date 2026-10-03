@@ -85,15 +85,130 @@ pub struct ProjectSettingsContent {
     ///
     /// Default: false
     pub disable_ai: Option<SaturatingBool>,
+
+    pub background_image: Option<BackgroundImageSettingsContent>,
 }
 
 crate::fallible_options::flattened_deserialize!(ProjectSettingsContent {
     sections: { all_languages, worktree },
     options: {
         terminal, context_server_timeout, load_direnv, git_hosting_providers, disable_ai,
+        background_image,
     },
     defaults: { lsp, dap, context_servers },
 });
+
+#[with_fallible_options]
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema, MergeFrom, Default, PartialEq)]
+pub struct BackgroundImageSettingsContent {
+    pub editor_and_tools: Option<BackgroundImageLayerContent>,
+    pub empty_frame: Option<BackgroundImageLayerContent>,
+}
+
+#[with_fallible_options]
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema, MergeFrom, Default, PartialEq)]
+pub struct BackgroundImageLayerContent {
+    pub path: Option<String>,
+    pub opacity: Option<BackgroundImageOpacity>,
+    pub fill: Option<BackgroundImageFill>,
+    pub anchor: Option<BackgroundImageAnchor>,
+    pub flip_horizontal: Option<bool>,
+    pub flip_vertical: Option<bool>,
+}
+
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Serialize,
+    Deserialize,
+    JsonSchema,
+    MergeFrom,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    derive_more::FromStr,
+)]
+#[serde(transparent)]
+pub struct BackgroundImageOpacity(pub u32);
+
+impl BackgroundImageOpacity {
+    pub const MAX: u32 = 100;
+}
+
+impl Default for BackgroundImageOpacity {
+    fn default() -> Self {
+        Self(15)
+    }
+}
+
+impl std::fmt::Display for BackgroundImageOpacity {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "{}", self.0)
+    }
+}
+
+impl From<u32> for BackgroundImageOpacity {
+    fn from(value: u32) -> Self {
+        Self(value)
+    }
+}
+
+#[with_fallible_options]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Serialize,
+    Deserialize,
+    JsonSchema,
+    MergeFrom,
+    Default,
+    PartialEq,
+    Eq,
+    Hash,
+    strum::VariantArray,
+    strum::VariantNames,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum BackgroundImageFill {
+    Plain,
+    #[default]
+    Scale,
+    Tile,
+}
+
+#[with_fallible_options]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Serialize,
+    Deserialize,
+    JsonSchema,
+    MergeFrom,
+    Default,
+    PartialEq,
+    Eq,
+    Hash,
+    strum::VariantArray,
+    strum::VariantNames,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum BackgroundImageAnchor {
+    TopLeft,
+    TopCenter,
+    TopRight,
+    CenterLeft,
+    #[default]
+    Center,
+    CenterRight,
+    BottomLeft,
+    BottomCenter,
+    BottomRight,
+}
 
 /// When to scan content of linked directories.
 #[derive(

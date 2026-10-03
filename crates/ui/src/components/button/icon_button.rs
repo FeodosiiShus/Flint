@@ -85,6 +85,11 @@ impl IconButton {
         self
     }
 
+    pub fn chrome_region(mut self, region: crate::ChromeRegion) -> Self {
+        self.base = self.base.chrome_region(region);
+        self
+    }
+
     pub fn active_background(mut self, background: Hsla) -> Self {
         self.base.active_background = Some(background);
         self
@@ -263,12 +268,21 @@ impl RenderOnce for IconButton {
             Color::Custom(base_color.opacity(self.alpha.unwrap_or(1.0)))
         };
 
-        let icon_element = Icon::new(icon).size(self.icon_size).color(icon_color);
+        let chrome_region = self.base.chrome_region;
+        let icon_size = match chrome_region {
+            Some(region) => crate::chrome_icon_size(region, self.icon_size, cx),
+            None => self.icon_size,
+        };
+        let chrome_side = chrome_region
+            .filter(|_| self.shape == IconButtonShape::Square)
+            .and_then(|region| crate::chrome_square_side(region, self.icon_size, window, cx));
+        let icon_element = Icon::new(icon).size(icon_size).color(icon_color);
 
         self.base
             .map(|this| match self.shape {
                 IconButtonShape::Square => {
                     let size = self.icon_size.square(window, cx);
+                    let size = chrome_side.map_or(size, |side| size.max(side));
                     this.width(size).height(size.into())
                 }
                 IconButtonShape::Wide => this,

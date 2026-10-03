@@ -48,21 +48,21 @@ trait InstalledApp {
 
 #[derive(Parser, Debug)]
 #[command(
-    name = "zed",
+    name = "flint",
     disable_version_flag = true,
-    before_help = "The Zed CLI binary.
-This CLI is a separate binary that invokes Zed.
+    before_help = "The Flint CLI binary.
+This CLI is a separate binary that invokes Flint.
 
 Examples:
-    `zed`
-          Simply opens Zed
-    `zed --foreground`
+    `flint`
+          Simply opens Flint
+    `flint --foreground`
           Runs in foreground (shows all logs)
-    `zed path-to-your-project`
-          Open your project in Zed
-    `zed -n path-to-file `
+    `flint path-to-your-project`
+          Open your project in Flint
+    `flint -n path-to-file `
           Open file/folder in a new window",
-    after_help = "To read from stdin, append '-', e.g. 'ps axf | zed -'"
+    after_help = "To read from stdin, append '-', e.g. 'ps axf | flint -'"
 )]
 struct Args {
     /// Wait for all of the given paths to be opened/closed before exiting.
@@ -79,7 +79,7 @@ struct Args {
     /// Reuse an existing window, replacing its workspace
     #[arg(short, long, overrides_with_all = ["add", "new", "existing", "classic"], hide = true)]
     reuse: bool,
-    /// Open in existing Zed window
+    /// Open in existing Flint window
     #[arg(short = 'e', long = "existing", overrides_with_all = ["add", "new", "reuse", "classic"])]
     existing: bool,
     /// Use the classic open behavior: new window for directories, reuse for files
@@ -95,21 +95,21 @@ struct Args {
     )]
     #[arg(long, value_name = "DIR", value_hint = clap::ValueHint::DirPath)]
     user_data_dir: Option<String>,
-    /// The paths to open in Zed (space-separated).
+    /// The paths to open in Flint (space-separated).
     ///
     /// Use `path:line:column` syntax to open a file at the given line and column.
     #[arg(trailing_var_arg = true, value_hint = clap::ValueHint::AnyPath)]
     paths_with_position: Vec<String>,
-    /// Print Zed's version and the app path.
+    /// Print Flint's version and the app path.
     #[arg(short, long)]
     version: bool,
-    /// Run zed in the foreground (useful for debugging)
+    /// Run Flint in the foreground (useful for debugging)
     #[arg(long)]
     foreground: bool,
-    /// Custom path to Zed.app or the zed binary
+    /// Custom path to Flint.app or the zed binary
     #[arg(long)]
     zed: Option<PathBuf>,
-    /// Run zed in dev-server mode
+    /// Run Flint in dev-server mode
     #[arg(long)]
     dev_server_token: Option<String>,
     /// The username and WSL distribution to use when opening paths. If not specified,
@@ -124,7 +124,7 @@ struct Args {
     #[cfg(target_os = "windows")]
     #[arg(long, value_name = "USER@DISTRO")]
     wsl: Option<String>,
-    /// Not supported in Zed CLI, only supported on Zed binary
+    /// Not supported in Flint CLI, only supported on Flint binary
     /// Will attempt to give the correct command to run
     #[arg(long)]
     system_specs: bool,
@@ -138,10 +138,10 @@ struct Args {
     /// When directories are provided, recurses into them and shows all changed files in a single multi-diff view.
     #[arg(long, action = clap::ArgAction::Append, num_args = 2, value_names = ["OLD_PATH", "NEW_PATH"], value_hint = clap::ValueHint::AnyPath)]
     diff: Vec<String>,
-    /// Generate shell completions for Zed
+    /// Generate shell completions for Flint
     #[arg(long, value_names = ["SHELL"])]
     completions: Option<Shell>,
-    /// Uninstall Zed from user system
+    /// Uninstall Flint from user system
     #[cfg(all(
         any(target_os = "linux", target_os = "macos"),
         not(feature = "no-bundled-uninstall")
@@ -551,7 +551,7 @@ fn run() -> Result<()> {
     if args.system_specs {
         let path = app.path();
         let msg = [
-            "The `--system-specs` argument is not supported in the Zed CLI, only on Zed binary.",
+            "The `--system-specs` argument is not supported in the Flint CLI, only on Flint binary.",
             "To retrieve the system specs on the command line, run the following command:",
             &format!("{} --system-specs", path.display()),
         ];
@@ -582,7 +582,7 @@ fn run() -> Result<()> {
     }
 
     let (server, server_name) =
-        IpcOneShotServer::<IpcHandshake>::new().context("Handshake before Zed spawn")?;
+        IpcOneShotServer::<IpcHandshake>::new().context("Handshake before Flint spawn")?;
     let url = format!("zed-cli://{server_name}");
 
     let open_behavior = if args.new {
@@ -709,7 +709,7 @@ fn run() -> Result<()> {
             let exit_status = exit_status.clone();
             let user_data_dir_for_thread = user_data_dir.clone();
             move || {
-                let (_, handshake) = server.accept().context("Handshake after Zed spawn")?;
+                let (_, handshake) = server.accept().context("Handshake after Flint spawn")?;
                 let (tx, rx) = (handshake.requests, handshake.responses);
 
                 #[cfg(target_os = "windows")]
@@ -851,16 +851,16 @@ fn prompt_open_behavior() -> Option<cli::CliBehaviorSetting> {
     let blue = console::Style::new().blue();
     let items = [
         format!(
-            "Add to existing Zed window ({})",
-            blue.apply_to("zed --existing")
+            "Add to existing Flint window ({})",
+            blue.apply_to("flint --existing")
         ),
-        format!("Open a new window ({})", blue.apply_to("zed --classic")),
+        format!("Open a new window ({})", blue.apply_to("flint --classic")),
     ];
 
     let prompt = format!(
         "Configure default behavior for {}\n{}",
-        blue.apply_to("zed <path>"),
-        console::style("You can change this later in Zed settings"),
+        blue.apply_to("flint <path>"),
+        console::style("You can change this later in Flint settings"),
     );
 
     let selection = dialoguer::Select::new()
@@ -1375,7 +1375,7 @@ mod mac_os {
 
     impl InstalledApp for Bundle {
         fn zed_version_string(&self) -> String {
-            format!("Zed {} – {}", self.version(), self.path().display(),)
+            format!("Flint {} – {}", self.version(), self.path().display(),)
         }
 
         fn launch(&self, url: String, user_data_dir: Option<&str>) -> anyhow::Result<()> {

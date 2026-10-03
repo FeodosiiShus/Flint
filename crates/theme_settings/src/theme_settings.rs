@@ -5,6 +5,7 @@
 //! This crate provides theme settings integration for Zed,
 //! bridging the theme system with the settings infrastructure.
 
+mod chrome_size;
 mod schema;
 mod settings;
 
@@ -61,6 +62,10 @@ impl ThemeSettingsProvider for ThemeSettingsProviderImpl {
 
     fn ui_density(&self, cx: &App) -> UiDensity {
         ThemeSettings::get_global(cx).ui_density
+    }
+
+    fn chrome_sizes(&self, cx: &App) -> theme::ChromeSizes {
+        chrome_size::ChromeSizeSettings::get_global(cx).0
     }
 }
 

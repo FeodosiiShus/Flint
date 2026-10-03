@@ -431,42 +431,62 @@ impl StickyHeaders {
         let line_height = layout.position_map.line_height;
 
         for line in self.lines.iter_mut().rev() {
-            window.paint_layer(
-                Bounds::new(
-                    layout.gutter_hitbox.origin + point(Pixels::ZERO, line.offset),
-                    size(line.hitbox.size.width, line_height),
-                ),
-                |window| {
-                    let gutter_bounds = Bounds::new(
-                        layout.gutter_hitbox.origin + point(Pixels::ZERO, line.offset),
-                        size(layout.gutter_hitbox.size.width, line_height),
-                    );
-                    window.paint_quad(fill(gutter_bounds, self.gutter_background));
-
-                    let text_bounds = Bounds::new(
-                        layout.position_map.text_hitbox.origin + point(Pixels::ZERO, line.offset),
-                        size(line.available_text_width, line_height),
-                    );
-                    window.paint_quad(fill(text_bounds, self.content_background));
-
-                    if line.hitbox.is_hovered(window) {
-                        let hover_overlay = cx.theme().colors().panel_overlay_hover;
-                        window.paint_quad(fill(gutter_bounds, hover_overlay));
-                        window.paint_quad(fill(text_bounds, hover_overlay));
-                    }
-
-                    line.paint(
-                        layout,
-                        self.gutter_right_padding,
-                        line.available_text_width,
-                        layout.content_origin,
-                        line_height,
-                        whitespace_setting,
-                        window,
-                        cx,
-                    );
-                },
+            let layer_bounds = Bounds::new(
+                layout.gutter_hitbox.origin + point(Pixels::ZERO, line.offset),
+                size(line.hitbox.size.width, line_height),
             );
+            let gutter_bounds = Bounds::new(
+                layout.gutter_hitbox.origin + point(Pixels::ZERO, line.offset),
+                size(layout.gutter_hitbox.size.width, line_height),
+            );
+            let text_bounds = Bounds::new(
+                layout.position_map.text_hitbox.origin + point(Pixels::ZERO, line.offset),
+                size(line.available_text_width, line_height),
+            );
+
+            window.paint_layer(layer_bounds, |window| {
+                window.paint_quad(fill(gutter_bounds, self.gutter_background));
+                window.paint_quad(fill(text_bounds, self.content_background));
+            });
+
+            let image_area = ui::window_background_image_area(window);
+            ui::paint_background_image(
+                gutter_bounds,
+                image_area,
+                ui::BackgroundImageTarget::EditorAndTools,
+                self.gutter_background,
+                true,
+                window,
+                cx,
+            );
+            ui::paint_background_image(
+                text_bounds,
+                image_area,
+                ui::BackgroundImageTarget::EditorAndTools,
+                self.content_background,
+                true,
+                window,
+                cx,
+            );
+
+            window.paint_layer(layer_bounds, |window| {
+                if line.hitbox.is_hovered(window) {
+                    let hover_overlay = cx.theme().colors().panel_overlay_hover;
+                    window.paint_quad(fill(gutter_bounds, hover_overlay));
+                    window.paint_quad(fill(text_bounds, hover_overlay));
+                }
+
+                line.paint(
+                    layout,
+                    self.gutter_right_padding,
+                    line.available_text_width,
+                    layout.content_origin,
+                    line_height,
+                    whitespace_setting,
+                    window,
+                    cx,
+                );
+            });
 
             window.set_cursor_style(CursorStyle::IBeam, &line.hitbox);
         }

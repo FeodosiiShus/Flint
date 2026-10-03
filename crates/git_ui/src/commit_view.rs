@@ -1390,6 +1390,12 @@ impl Render for CommitView {
             .on_action(cx.listener(Self::open_file_at_head_action))
             .size_full()
             .bg(cx.theme().colors().editor_background)
+            .child(ui::background_image_layer(
+                ui::BackgroundImageTarget::EditorAndTools,
+                ui::BackgroundImageArea::Window,
+                cx.theme().colors().editor_background,
+                true,
+            ))
             .child(self.render_header(window, cx))
             .when(
                 !self.editor.read(cx).rhs_editor().read(cx).is_empty(cx),

@@ -1474,12 +1474,24 @@ impl Render for ExtensionsPage {
         v_flex()
             .size_full()
             .bg(cx.theme().colors().editor_background)
+            .child(ui::background_image_layer(
+                ui::BackgroundImageTarget::EditorAndTools,
+                ui::BackgroundImageArea::Window,
+                cx.theme().colors().editor_background,
+                true,
+            ))
             .child(
                 v_flex()
                     .gap_4()
                     .pt_4()
                     .px_4()
                     .bg(cx.theme().colors().editor_background)
+                    .child(ui::background_image_layer(
+                        ui::BackgroundImageTarget::EditorAndTools,
+                        ui::BackgroundImageArea::Window,
+                        cx.theme().colors().editor_background,
+                        true,
+                    ))
                     .child(
                         h_flex()
                             .w_full()

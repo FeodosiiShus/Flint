@@ -1,4 +1,7 @@
-use crate::{CommonAnimationExt, DiffStat, GradientFade, HighlightedLabel, Tooltip, prelude::*};
+use crate::{
+    BackgroundImageTarget, CommonAnimationExt, DiffStat, GradientFade, HighlightedLabel, Tooltip,
+    has_background_image, prelude::*,
+};
 
 use gpui::{
     Animation, AnimationExt, ClickEvent, Hsla, MouseButton, SharedString,
@@ -249,15 +252,18 @@ impl ThreadItem {
 }
 
 impl RenderOnce for ThreadItem {
-    fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let color = cx.theme().colors();
         let raw_bg = self.base_bg.unwrap_or(color.surface_background);
+        let shows_background_image =
+            has_background_image(BackgroundImageTarget::EditorAndTools, window, cx);
         // The fade gradient paints a solid color over the title to blend it into
         // the row background, but a transparent window has no opaque surface to
         // fade into, so it renders as a visible patch; truncate the title instead.
         let opaque_window = cx.theme().window_background_appearance()
             == WindowBackgroundAppearance::Opaque
-            && raw_bg.a >= 1.0;
+            && raw_bg.a >= 1.0
+            && !shows_background_image;
         let apparent_bg = color.background.blend(raw_bg);
 
         let base_bg = if self.selected {

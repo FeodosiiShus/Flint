@@ -500,6 +500,12 @@ impl Render for SyntaxTreeView {
         div()
             .flex_1()
             .bg(cx.theme().colors().editor_background)
+            .child(ui::background_image_layer(
+                ui::BackgroundImageTarget::EditorAndTools,
+                ui::BackgroundImageArea::Window,
+                cx.theme().colors().editor_background,
+                true,
+            ))
             .map(|this| {
                 let editor_state = self.editor.as_ref();
 

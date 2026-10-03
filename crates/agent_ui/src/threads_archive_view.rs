@@ -868,7 +868,7 @@ impl ThreadsArchiveView {
         let left_window_controls = !cfg!(target_os = "macos") && not_fullscreen && sidebar_on_left;
         let right_window_controls =
             !cfg!(target_os = "macos") && not_fullscreen && sidebar_on_right;
-        let header_height = platform_title_bar_height(window);
+        let header_height = platform_title_bar_height(window, cx);
         let show_focus_keybinding =
             self.selection.is_some() && !self.filter_editor.focus_handle(cx).is_focused(window);
 
@@ -948,6 +948,7 @@ impl ThreadsArchiveView {
             cx.button_layout(),
             Box::new(CloseWindow),
             window,
+            cx,
         )
     }
 

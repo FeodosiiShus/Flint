@@ -203,6 +203,10 @@ impl Icon {
         self.size = size;
         self
     }
+
+    pub(crate) fn size_rems(&self) -> Rems {
+        self.size
+    }
 }
 
 impl Transformable for Icon {

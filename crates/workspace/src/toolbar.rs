@@ -6,7 +6,7 @@ use gpui::{
 use language::LanguageRegistry;
 use std::sync::Arc;
 use ui::prelude::*;
-use ui::{h_flex, v_flex};
+use ui::{BackgroundImageArea, BackgroundImageTarget, background_image_layer, h_flex, v_flex};
 
 pub struct PaneSearchBarCallbacks {
     pub setup_search_bar:
@@ -116,10 +116,20 @@ impl Render for Toolbar {
 
         let has_left_items = self.left_items().count() > 0;
         let has_right_items = self.right_items().count() > 0;
+        let region = ui::ChromeRegion::Toolbar;
+        let toolbar_height = ui::chrome_height(region, cx);
+        let row_min_height = toolbar_height.map(|height| {
+            let padding = DynamicSpacing::Base06.px(cx) * 2.;
+            (height - padding - px(1.)).max(px(0.))
+        });
+        let button_height = ui::chrome_button_height(region, ButtonSize::Default, cx);
 
         v_flex()
             .group("toolbar")
             .relative()
+            .when_some(toolbar_height, |this, height| {
+                this.min_h(height).justify_center()
+            })
             .py(DynamicSpacing::Base06.rems(cx))
             .px(DynamicSpacing::Base08.rems(cx))
             .when(has_left_items || has_right_items, |this| {
@@ -128,6 +138,12 @@ impl Render for Toolbar {
             .border_b_1()
             .border_color(cx.theme().colors().border_variant)
             .bg(cx.theme().colors().toolbar_background)
+            .child(background_image_layer(
+                BackgroundImageTarget::EditorAndTools,
+                BackgroundImageArea::Window,
+                cx.theme().colors().toolbar_background,
+                true,
+            ))
             .when(has_left_items || has_right_items, |this| {
                 this.child(
                     h_flex()
@@ -137,7 +153,10 @@ impl Render for Toolbar {
                         .when(has_left_items, |this| {
                             this.child(
                                 h_flex()
-                                    .min_h_8()
+                                    .map(|this| match row_min_height {
+                                        Some(height) => this.min_h(height),
+                                        None => this.min_h_8(),
+                                    })
                                     .flex_auto()
                                     .justify_start()
                                     .overflow_x_hidden()
@@ -147,7 +166,11 @@ impl Render for Toolbar {
                         .when(has_right_items, |this| {
                             this.child(
                                 h_flex()
-                                    .h_8()
+                                    .map(|this| match (row_min_height, button_height) {
+                                        (Some(height), _) => this.min_h(height),
+                                        (None, Some(_)) => this.min_h_8(),
+                                        (None, None) => this.h_8(),
+                                    })
                                     .flex_row_reverse()
                                     .when(has_left_items, |this| this.flex_none())
                                     .justify_end()

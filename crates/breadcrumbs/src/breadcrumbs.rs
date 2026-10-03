@@ -47,10 +47,11 @@ impl EventEmitter<ToolbarItemEvent> for Breadcrumbs {}
 
 impl Render for Breadcrumbs {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let fixed_height = ui::chrome_height(ui::ChromeRegion::Toolbar, cx).is_none();
         let element = h_flex()
             .id("breadcrumb-container")
             .flex_grow_1()
-            .h_8()
+            .when(fixed_height, |this| this.h_8())
             .overflow_x_scroll()
             .text_ui(cx);
 

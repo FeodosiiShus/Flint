@@ -5550,8 +5550,9 @@ impl AgentPanel {
             .gradient_stop(0.75);
         // The fade gradient renders as a visible patch on transparent windows
         // (the title already truncates).
-        let opaque_window =
-            cx.theme().window_background_appearance() == gpui::WindowBackgroundAppearance::Opaque;
+        let opaque_window = cx.theme().window_background_appearance()
+            == gpui::WindowBackgroundAppearance::Opaque
+            && !ui::has_background_image(ui::BackgroundImageTarget::EditorAndTools, window, cx);
 
         h_flex()
             .key_context("TitleEditor")
@@ -6232,6 +6233,12 @@ impl AgentPanel {
             .flex_shrink_0()
             .max_w_full()
             .bg(cx.theme().colors().tab_bar_background)
+            .child(ui::background_image_layer(
+                ui::BackgroundImageTarget::EditorAndTools,
+                ui::BackgroundImageArea::Window,
+                cx.theme().colors().tab_bar_background,
+                true,
+            ))
             .border_b_1()
             .border_color(cx.theme().colors().border)
             .child(toolbar_content)
@@ -6532,6 +6539,12 @@ impl Render for AgentPanel {
             .justify_between()
             .track_focus(&self.focus_handle)
             .bg(cx.theme().colors().panel_background)
+            .child(ui::background_image_layer(
+                ui::BackgroundImageTarget::EditorAndTools,
+                ui::BackgroundImageArea::Window,
+                cx.theme().colors().panel_background,
+                true,
+            ))
             .on_action(cx.listener(|this, action: &NewThread, window, cx| {
                 this.new_thread(action, window, cx);
             }))
@@ -6598,6 +6611,12 @@ impl Render for AgentPanel {
                                         .border_b_1()
                                         .border_color(cx.theme().colors().border_variant)
                                         .bg(cx.theme().colors().toolbar_background)
+                                        .child(ui::background_image_layer(
+                                            ui::BackgroundImageTarget::EditorAndTools,
+                                            ui::BackgroundImageArea::Window,
+                                            cx.theme().colors().toolbar_background,
+                                            true,
+                                        ))
                                         .child(search_bar),
                                 )
                             })

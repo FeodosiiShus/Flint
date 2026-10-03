@@ -63,6 +63,7 @@ impl QuickActionBar {
 
         let button = IconButton::new(button_id, IconName::Eye)
             .icon_size(IconSize::Small)
+            .chrome_region(ui::ChromeRegion::Toolbar)
             .style(ButtonStyle::Subtle)
             .tooltip(move |_window, cx| {
                 Tooltip::with_meta(

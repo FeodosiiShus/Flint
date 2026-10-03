@@ -400,6 +400,8 @@ pub struct ToolbarContent {
     ///
     /// Default: false
     pub code_actions: Option<bool>,
+    pub height: Option<u32>,
+    pub icon_size: Option<u32>,
 }
 
 /// Scrollbar related settings

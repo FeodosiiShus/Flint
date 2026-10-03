@@ -139,7 +139,7 @@ if [[ "${target_dir}" == "debug" ]]; then
 fi
 
 dmg_source_directory="${build_dir}/dmg"
-dmg_file_path="${build_dir}/Zed-${arch_suffix}.dmg"
+dmg_file_path="${build_dir}/Flint-${arch_suffix}.dmg"
 
 rm -rf "${dmg_source_directory}"
 mkdir -p "${dmg_source_directory}"
@@ -147,7 +147,7 @@ mv "${app_path}" "${dmg_source_directory}/"
 ln -s /Applications "${dmg_source_directory}/Applications"
 
 echo "Creating DMG at ${dmg_file_path}"
-hdiutil create -volname Zed -srcfolder "${dmg_source_directory}" -ov -format UDZO "${dmg_file_path}"
+hdiutil create -volname Flint -srcfolder "${dmg_source_directory}" -ov -format UDZO "${dmg_file_path}"
 
 rm "${dmg_source_directory}/Applications"
 

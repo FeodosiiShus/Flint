@@ -1591,7 +1591,19 @@ impl Element for TerminalElement {
                 .map(|radius| radius.to_pixels(window.rem_size()))
                 .clamp_radii_for_quad_size(bounds.size);
 
+            let has_square_corners = gpui::IsZero::is_zero(&corner_radii);
             window.paint_quad(fill(bounds, layout.background_color).corner_radii(corner_radii));
+            if has_square_corners {
+                ui::paint_background_image(
+                    bounds,
+                    ui::window_background_image_area(window),
+                    ui::BackgroundImageTarget::EditorAndTools,
+                    layout.background_color,
+                    true,
+                    window,
+                    cx,
+                );
+            }
 
             let origin = layout.dimensions.bounds.origin - GpuiPoint::new(px(0.), scroll_top);
             let scale_factor = window.scale_factor();

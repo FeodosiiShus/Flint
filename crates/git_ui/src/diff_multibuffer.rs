@@ -910,6 +910,12 @@ impl Render for DiffMultibuffer {
             .track_focus(&self.focus_handle)
             .key_context(if is_empty { "EmptyPane" } else { "GitDiff" })
             .bg(cx.theme().colors().editor_background)
+            .child(ui::background_image_layer(
+                ui::BackgroundImageTarget::EditorAndTools,
+                ui::BackgroundImageArea::Window,
+                cx.theme().colors().editor_background,
+                true,
+            ))
             .flex()
             .items_center()
             .justify_center()

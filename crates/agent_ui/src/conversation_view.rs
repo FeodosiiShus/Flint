@@ -3732,6 +3732,12 @@ impl Render for ConversationView {
             .track_focus(&self.focus_handle)
             .size_full()
             .bg(cx.theme().colors().panel_background)
+            .child(ui::background_image_layer(
+                ui::BackgroundImageTarget::EditorAndTools,
+                ui::BackgroundImageArea::Window,
+                cx.theme().colors().panel_background,
+                true,
+            ))
             .child(v_flex().flex_1().min_h_0().child(content))
             .when(!active_thread_renders_request_elicitations, |this| {
                 this.children(request_elicitation_connection.as_ref().map_or_else(

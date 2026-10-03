@@ -7,6 +7,7 @@ use crate::prelude::*;
 
 const START_TAB_SLOT_SIZE: Pixels = px(12.);
 const END_TAB_SLOT_SIZE: Pixels = px(14.);
+const TAB_BORDER_WIDTH: Pixels = px(1.);
 
 /// The position of a [`Tab`] within a list of tabs.
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
@@ -77,11 +78,19 @@ impl Tab {
     }
 
     pub fn content_height(cx: &App) -> Pixels {
-        DynamicSpacing::Base32.px(cx) - px(1.)
+        Self::container_height(cx) - TAB_BORDER_WIDTH
     }
 
     pub fn container_height(cx: &App) -> Pixels {
-        DynamicSpacing::Base32.px(cx)
+        let region = crate::ChromeRegion::TabBar;
+        let height = crate::chrome_height(region, cx);
+        let button_height = crate::chrome_button_height(region, ButtonSize::Default, cx);
+        if height.is_none() && button_height.is_none() {
+            return DynamicSpacing::Base32.px(cx);
+        }
+        let height = height.unwrap_or_else(|| DynamicSpacing::Base32.px(cx));
+        let button_height = crate::chrome_fit_height(region, ButtonSize::Default, cx);
+        height.max(button_height + TAB_BORDER_WIDTH)
     }
 }
 
@@ -124,14 +133,20 @@ impl RenderOnce for Tab {
             ),
         };
 
+        let slot_scale = crate::chrome_icon_scale(crate::ChromeRegion::TabBar, cx);
+        let (start_slot_size, end_slot_size) = match slot_scale {
+            Some(scale) => (START_TAB_SLOT_SIZE * scale, END_TAB_SLOT_SIZE * scale),
+            None => (START_TAB_SLOT_SIZE, END_TAB_SLOT_SIZE),
+        };
+
         let (start_slot, end_slot) = {
             let start_slot = h_flex()
-                .size(START_TAB_SLOT_SIZE)
+                .size(start_slot_size)
                 .justify_center()
                 .children(self.start_slot);
 
             let end_slot = h_flex()
-                .size(END_TAB_SLOT_SIZE)
+                .size(end_slot_size)
                 .justify_center()
                 .children(self.end_slot);
 
@@ -144,6 +159,12 @@ impl RenderOnce for Tab {
         self.div
             .h(Tab::container_height(cx))
             .bg(tab_bg)
+            .child(crate::background_image_layer(
+                crate::BackgroundImageTarget::EditorAndTools,
+                crate::BackgroundImageArea::Window,
+                tab_bg,
+                true,
+            ))
             .border_color(cx.theme().colors().border)
             .map(|this| match self.position {
                 TabPosition::First => {

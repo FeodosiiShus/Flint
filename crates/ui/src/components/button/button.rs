@@ -242,6 +242,11 @@ impl Button {
         self.loading = loading;
         self
     }
+
+    pub fn chrome_region(mut self, region: crate::ChromeRegion) -> Self {
+        self.base = self.base.chrome_region(region);
+        self
+    }
 }
 
 impl Toggleable for Button {
@@ -460,6 +465,15 @@ impl RenderOnce for Button {
             self.label_color.unwrap_or_default()
         };
         let loading_icon_id = (self.base.id().clone(), "loading");
+        let chrome_region = self.base.chrome_region;
+        let loading_icon_size = match chrome_region {
+            Some(region) => crate::chrome_icon_size(region, IconSize::Small, cx),
+            None => IconSize::Small,
+        };
+        if let Some(region) = chrome_region {
+            self.start_icon = scale_icon(self.start_icon, region, cx);
+            self.end_icon = scale_icon(self.end_icon, region, cx);
+        }
 
         self.base.child(
             h_flex()
@@ -470,7 +484,7 @@ impl RenderOnce for Button {
                     |this| {
                         this.child(
                             Icon::new(IconName::LoadCircle)
-                                .size(IconSize::Small)
+                                .size(loading_icon_size)
                                 .color(Color::Muted)
                                 .with_keyed_rotate_animation(loading_icon_id, 2),
                         )
@@ -512,6 +526,13 @@ impl RenderOnce for Button {
                 }),
         )
     }
+}
+
+fn scale_icon(icon: Option<Icon>, region: crate::ChromeRegion, cx: &App) -> Option<Icon> {
+    icon.map(|icon| {
+        let default = IconSize::Custom(icon.size_rems());
+        icon.size(crate::chrome_icon_size(region, default, cx))
+    })
 }
 
 impl Component for Button {

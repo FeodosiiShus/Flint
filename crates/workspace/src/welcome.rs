@@ -16,7 +16,10 @@ use menu::{SelectNext, SelectPrevious};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use settings::{DefaultOpenBehavior, Settings};
-use ui::{ButtonLike, Divider, DividerColor, KeyBinding, Vector, VectorName, prelude::*};
+use ui::{
+    BackgroundImageArea, BackgroundImageTarget, ButtonLike, Divider, DividerColor, KeyBinding,
+    Vector, VectorName, background_image_layer, has_background_image, prelude::*,
+};
 use util::ResultExt;
 use zed_actions::{
     Extensions, OpenKeymap, OpenOnboarding, OpenSettings, assistant::ToggleFocus, command_palette,
@@ -412,7 +415,7 @@ impl WelcomePage {
 }
 
 impl Render for WelcomePage {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let (first_section, second_section) = CONTENT;
         let first_section_entries = first_section.entries.len();
         let mut next_tab_index = first_section_entries + second_section.entries.len();
@@ -448,9 +451,22 @@ impl Render for WelcomePage {
         };
 
         let welcome_label = if self.fallback_to_recent_projects {
-            "Welcome back to Zed"
+            "Welcome back to Flint"
         } else {
-            "Welcome to Zed"
+            "Welcome to Flint"
+        };
+
+        let shows_empty_frame_image = self.fallback_to_recent_projects
+            && has_background_image(BackgroundImageTarget::EmptyFrame, window, cx);
+        let background_image_target = if shows_empty_frame_image {
+            BackgroundImageTarget::EmptyFrame
+        } else {
+            BackgroundImageTarget::EditorAndTools
+        };
+        let background_image_area = if shows_empty_frame_image {
+            BackgroundImageArea::Element
+        } else {
+            BackgroundImageArea::Window
         };
 
         h_flex()
@@ -462,6 +478,12 @@ impl Render for WelcomePage {
             .size_full()
             .bg(cx.theme().colors().editor_background)
             .justify_center()
+            .child(background_image_layer(
+                background_image_target,
+                background_image_area,
+                cx.theme().colors().editor_background,
+                true,
+            ))
             .child(
                 v_flex()
                     .id("welcome-content")

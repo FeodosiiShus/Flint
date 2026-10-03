@@ -537,6 +537,12 @@ fn render_debugger_tab_bar(
         .border_b_1()
         .border_color(cx.theme().colors().border)
         .bg(cx.theme().colors().tab_bar_background)
+        .child(ui::background_image_layer(
+            ui::BackgroundImageTarget::EditorAndTools,
+            ui::BackgroundImageArea::Window,
+            cx.theme().colors().tab_bar_background,
+            true,
+        ))
         .child(
             h_flex()
                 .w_full()
@@ -704,6 +710,12 @@ impl gpui::Render for DebugTerminal {
             .track_focus(&self.focus_handle)
             .size_full()
             .bg(cx.theme().colors().editor_background)
+            .child(ui::background_image_layer(
+                ui::BackgroundImageTarget::EditorAndTools,
+                ui::BackgroundImageArea::Window,
+                cx.theme().colors().editor_background,
+                true,
+            ))
             .children(self.terminal.clone())
     }
 }

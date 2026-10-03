@@ -42,6 +42,7 @@ impl Render for ActiveFileName {
             .child(
                 Button::new("active-file-name-button", project_path)
                     .label_size(LabelSize::Small)
+                    .chrome_region(ui::ChromeRegion::StatusBar)
                     .tooltip(Tooltip::text(tooltip_text)),
             )
             .into_any_element()

@@ -2262,6 +2262,7 @@ impl Sidebar {
                     is_selected,
                     *has_threads,
                     // has_active_draft,
+                    window,
                     cx,
                 )
             }
@@ -2320,6 +2321,7 @@ impl Sidebar {
         is_active: bool,
         is_focused: bool,
         has_threads: bool,
+        window: &Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let host = key.host();
@@ -2351,7 +2353,8 @@ impl Sidebar {
         // so truncate the label instead.
         let opaque_window = cx.theme().window_background_appearance()
             == WindowBackgroundAppearance::Opaque
-            && sidebar_base_bg.a >= 1.0;
+            && sidebar_base_bg.a >= 1.0
+            && !ui::has_background_image(ui::BackgroundImageTarget::EditorAndTools, window, cx);
 
         let label = if highlight_positions.is_empty() {
             Label::new(label.clone())
@@ -3266,6 +3269,7 @@ impl Sidebar {
             *is_active,
             is_selected,
             *has_threads,
+            window,
             cx,
         );
 
@@ -3292,6 +3296,12 @@ impl Sidebar {
             .left_0()
             .w_full()
             .bg(background)
+            .child(ui::background_image_layer(
+                ui::BackgroundImageTarget::EditorAndTools,
+                ui::BackgroundImageArea::Window,
+                background,
+                true,
+            ))
             .border_b_1()
             .border_color(color.border.opacity(0.5))
             .child(header_element)
@@ -7372,7 +7382,7 @@ impl Sidebar {
         let left_window_controls = !cfg!(target_os = "macos") && not_fullscreen && sidebar_on_left;
         let right_window_controls =
             !cfg!(target_os = "macos") && not_fullscreen && sidebar_on_right;
-        let header_height = platform_title_bar_height(window);
+        let header_height = platform_title_bar_height(window, cx);
 
         h_flex()
             .h(header_height)
@@ -7453,6 +7463,7 @@ impl Sidebar {
             cx.button_layout(),
             Box::new(CloseWindow),
             window,
+            cx,
         )
     }
 
@@ -7939,7 +7950,7 @@ impl Focusable for Sidebar {
 
 impl Render for Sidebar {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let _titlebar_height = ui::utils::platform_title_bar_height(window);
+        let _titlebar_height = ui::utils::platform_title_bar_height(window, cx);
         let ui_font = theme_settings::setup_ui_font(window, cx);
         let sticky_header = self.render_sticky_header(window, cx);
 
@@ -8024,6 +8035,12 @@ impl Render for Sidebar {
                 }
             })
             .bg(bg)
+            .child(ui::background_image_layer(
+                ui::BackgroundImageTarget::EditorAndTools,
+                ui::BackgroundImageArea::Window,
+                bg,
+                true,
+            ))
             .when(self.side(cx) == SidebarSide::Left, |el| el.border_r_1())
             .when(self.side(cx) == SidebarSide::Right, |el| el.border_l_1())
             .border_color(color.border)

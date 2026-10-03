@@ -99,6 +99,12 @@ impl RenderOnce for TabBar {
             .w_full()
             .h(Tab::container_height(cx))
             .bg(cx.theme().colors().tab_bar_background)
+            .child(crate::background_image_layer(
+                crate::BackgroundImageTarget::EditorAndTools,
+                crate::BackgroundImageArea::Window,
+                cx.theme().colors().tab_bar_background,
+                true,
+            ))
             .when(!self.start_children.is_empty(), |this| {
                 this.child(
                     h_flex()

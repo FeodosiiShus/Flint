@@ -1112,13 +1112,14 @@ impl Item for Editor {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<gpui::AnyElement> {
+        let size = ui::chrome_icon_size(ui::ChromeRegion::Toolbar, IconSize::Medium, cx);
         (!TabBarSettings::get_global(cx).show && ItemSettings::get_global(cx).file_icons)
             .then(|| {
                 path_for_buffer(&self.buffer, 0, true, cx)
                     .and_then(|path| FileIcons::get_icon(Path::new(&*path), cx))
             })
             .flatten()
-            .map(|icon_path| Icon::from_path(icon_path).into_any_element())
+            .map(|icon_path| Icon::from_path(icon_path).size(size).into_any_element())
     }
 
     fn added_to_workspace(

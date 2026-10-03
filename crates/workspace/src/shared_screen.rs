@@ -8,6 +8,7 @@ use gpui::{
     ParentElement, Render, SharedString, Styled, Task, div,
 };
 use std::sync::Arc;
+use ui::{BackgroundImageArea, BackgroundImageTarget, background_image_layer};
 use ui::{Icon, IconName, prelude::*};
 
 pub enum Event {
@@ -56,6 +57,12 @@ impl Render for SharedScreen {
             .track_focus(&self.focus)
             .key_context("SharedScreen")
             .size_full()
+            .child(background_image_layer(
+                BackgroundImageTarget::EditorAndTools,
+                BackgroundImageArea::Window,
+                cx.theme().colors().editor_background,
+                true,
+            ))
             .child(self.view.clone())
     }
 }

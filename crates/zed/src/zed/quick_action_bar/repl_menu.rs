@@ -83,6 +83,10 @@ impl QuickActionBar {
         let id = "repl-menu";
 
         let element_id = |suffix| ElementId::Name(format!("{}-{}", id, suffix).into());
+        let region = ui::ChromeRegion::Toolbar;
+        let chevron_size = ui::chrome_icon_size(region, IconSize::XSmall, cx);
+        let dropdown_width = ui::chrome_icon_scale(region, cx).map_or(rems(1.), rems);
+        let repl_icon_size = ui::chrome_icon_size(region, IconSize::Medium, cx);
 
         let editor = editor.downgrade();
         let dropdown_menu = PopoverMenu::new(element_id("menu"))
@@ -215,10 +219,11 @@ impl QuickActionBar {
                 ButtonLike::new_rounded_right(element_id("dropdown"))
                     .child(
                         Icon::new(IconName::ChevronDown)
-                            .size(IconSize::XSmall)
+                            .size(chevron_size)
                             .color(Color::Muted),
                     )
-                    .width(rems(1.))
+                    .chrome_region(region)
+                    .width(dropdown_width)
                     .disabled(menu_state.popover_disabled),
                 Tooltip::text("REPL Menu"),
             );
@@ -226,18 +231,22 @@ impl QuickActionBar {
         let button = ButtonLike::new_rounded_left("toggle_repl_icon")
             .child(if menu_state.icon_is_animating {
                 Icon::new(menu_state.icon)
+                    .size(repl_icon_size)
                     .color(menu_state.icon_color)
                     .with_rotate_animation(5)
                     .into_any_element()
             } else {
                 IconWithIndicator::new(
-                    Icon::new(IconName::ReplNeutral).color(menu_state.icon_color),
+                    Icon::new(IconName::ReplNeutral)
+                        .size(repl_icon_size)
+                        .color(menu_state.icon_color),
                     menu_state.indicator,
                 )
                 .indicator_border_color(Some(cx.theme().colors().toolbar_background))
                 .into_any_element()
             })
             .size(ButtonSize::Compact)
+            .chrome_region(region)
             .style(ButtonStyle::Subtle)
             .tooltip(Tooltip::text(menu_state.tooltip))
             .on_click(|_, window, cx| window.dispatch_action(Box::new(repl::Run {}), cx))
@@ -265,6 +274,7 @@ impl QuickActionBar {
                 .child(
                     IconButton::new("toggle_repl_icon", IconName::ReplNeutral)
                         .size(ButtonSize::Compact)
+                        .chrome_region(ui::ChromeRegion::Toolbar)
                         .icon_color(Color::Muted)
                         .style(ButtonStyle::Subtle)
                         .tooltip(Tooltip::text(tooltip))
@@ -317,6 +327,8 @@ impl QuickActionBar {
 
         let menu_handle: PopoverMenuHandle<Picker<KernelPickerDelegate>> =
             PopoverMenuHandle::default();
+        let region = ui::ChromeRegion::Toolbar;
+        let chevron_size = ui::chrome_icon_size(region, IconSize::XSmall, cx);
         KernelSelector::new(
             {
                 Box::new(move |kernelspec, window, cx| {
@@ -337,6 +349,7 @@ impl QuickActionBar {
             ButtonLike::new("kernel-selector")
                 .style(ButtonStyle::Subtle)
                 .size(ButtonSize::Compact)
+                .chrome_region(region)
                 .child(
                     h_flex()
                         .w_full()
@@ -364,7 +377,7 @@ impl QuickActionBar {
                         .child(
                             Icon::new(IconName::ChevronDown)
                                 .color(Color::Muted)
-                                .size(IconSize::XSmall),
+                                .size(chevron_size),
                         ),
                 ),
             Tooltip::text("Select Kernel"),
@@ -384,6 +397,7 @@ impl QuickActionBar {
                         .style(ButtonStyle::Subtle)
                         .shape(ui::IconButtonShape::Square)
                         .icon_size(ui::IconSize::Small)
+                        .chrome_region(ui::ChromeRegion::Toolbar)
                         .icon_color(Color::Muted)
                         .tooltip(Tooltip::text(tooltip))
                         .on_click(|_, _window, cx| {

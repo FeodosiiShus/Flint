@@ -1,11 +1,6 @@
 name: Build macOS
 
 on:
-  push:
-    branches:
-      - main
-    tags:
-      - "v*"
   workflow_dispatch:
 
 permissions:
@@ -35,26 +30,6 @@ jobs:
         uses: actions/checkout@v7
         with:
           persist-credentials: false
-
-      - name: Free disk space
-        run: |
-          df -h /
-          active_xcode="$(cd "$(xcode-select -p)/../.." && pwd -P)"
-          echo "Active Xcode: ${active_xcode}"
-          for xcode_app in /Applications/Xcode_*.app; do
-            if [[ -L "${xcode_app}" || ! -d "${xcode_app}" ]]; then
-              continue
-            fi
-            if [[ "$(cd "${xcode_app}" && pwd -P)" != "${active_xcode}" ]]; then
-              echo "Removing ${xcode_app}"
-              sudo rm -rf "${xcode_app}" || echo "Could not fully remove ${xcode_app}"
-            fi
-          done
-          if [[ -n "${ANDROID_HOME:-}" && -d "${ANDROID_HOME}" ]]; then
-            echo "Removing ${ANDROID_HOME}"
-            sudo rm -rf "${ANDROID_HOME}" || echo "Could not fully remove ${ANDROID_HOME}"
-          fi
-          df -h /
 
       - name: Check Xcode and Metal toolchain
         run: |
@@ -104,7 +79,7 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: flint-macos-aarch64
-          path: target/aarch64-apple-darwin/release/Zed-aarch64.dmg
+          path: target/aarch64-apple-darwin/release/Flint-aarch64.dmg
           if-no-files-found: error
           compression-level: 0
 
@@ -130,7 +105,7 @@ jobs:
           TAG: ${{ github.ref_name }}
         run: |
           if gh release view "${TAG}" > /dev/null 2>&1; then
-            gh release upload "${TAG}" dist/Zed-aarch64.dmg --clobber
+            gh release upload "${TAG}" dist/Flint-aarch64.dmg --clobber
           else
-            gh release create "${TAG}" dist/Zed-aarch64.dmg --verify-tag --generate-notes --title "Flint ${TAG}"
+            gh release create "${TAG}" dist/Flint-aarch64.dmg --verify-tag --generate-notes --title "Flint ${TAG}"
           fi

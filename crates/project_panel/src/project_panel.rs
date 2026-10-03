@@ -647,12 +647,14 @@ struct ItemColors {
     focused: Hsla,
 }
 
-fn get_item_color(is_sticky: bool, cx: &App) -> ItemColors {
+fn get_item_color(is_sticky: bool, has_background_image: bool, cx: &App) -> ItemColors {
     let colors = cx.theme().colors();
 
     ItemColors {
         default: if is_sticky {
             colors.panel_overlay_background
+        } else if has_background_image {
+            gpui::transparent_black()
         } else {
             colors.panel_background
         },
@@ -5959,7 +5961,9 @@ impl ProjectPanel {
         let diagnostic_mark = details.diagnostic_mark;
         let reserves_chevron_slot = details.reserves_chevron_slot;
         let diagnostic_count = details.diagnostic_count;
-        let item_colors = get_item_color(is_sticky, cx);
+        let has_background_image =
+            ui::has_background_image(ui::BackgroundImageTarget::EditorAndTools, window, cx);
+        let item_colors = get_item_color(is_sticky, has_background_image, cx);
 
         let canonical_path = details.canonical_path.clone();
         let path_style = self.project.read(cx).path_style(cx);
@@ -6433,6 +6437,14 @@ impl ProjectPanel {
                     cx.stop_propagation();
                 }),
             )
+            .when(is_sticky, |this| {
+                this.child(ui::background_image_layer(
+                    ui::BackgroundImageTarget::EditorAndTools,
+                    ui::BackgroundImageArea::Window,
+                    bg_color,
+                    true,
+                ))
+            })
             .child(
                 ListItem::new(id)
                     .indent_level(depth)

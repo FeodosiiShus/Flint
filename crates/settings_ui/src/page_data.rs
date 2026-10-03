@@ -1,4 +1,4 @@
-use gpui::{Action as _, App};
+use gpui::{Action, App};
 use itertools::Itertools as _;
 use settings::{
     AudioInputDeviceName, AudioOutputDeviceName, EditPredictionDataCollectionChoice,
@@ -8,10 +8,12 @@ use std::sync::{Arc, OnceLock};
 use strum::{EnumMessage, IntoDiscriminant as _, VariantArray};
 use theme::SystemAppearance;
 use ui::IntoElement;
+use util::ResultExt as _;
 
 use crate::{
     ActionLink, DynamicItem, PROJECT, SettingField, SettingItem, SettingsFieldMetadata,
-    SettingsPage, SettingsPageItem, SubPageLink, USER, active_language, all_language_names,
+    SettingsPage, SettingsPageItem, SettingsWindow, SubPageLink, USER, active_language,
+    all_language_names,
     pages::{
         open_audio_test_window, render_edit_prediction_setup_page, render_external_agents_page,
         render_llm_providers_page, render_mcp_servers_page, render_sandbox_settings_page,
@@ -1606,6 +1608,399 @@ fn appearance_page() -> SettingsPage {
         ]
     }
 
+    fn background_image_section() -> [SettingsPageItem; 16] {
+        [
+            SettingsPageItem::SectionHeader("Background Image"),
+            SettingsPageItem::ActionLink(ActionLink {
+                title: "Editor and Tool Windows".into(),
+                description: Some("Pick an image for the editor and tool windows.".into()),
+                button_text: "Choose Image…".into(),
+                on_click: Arc::new(|settings_window, _, cx| {
+                    dispatch_to_original_window(
+                        settings_window,
+                        workspace::SelectBackgroundImage.boxed_clone(),
+                        cx,
+                    );
+                }),
+                files: USER,
+            }),
+            SettingsPageItem::SettingItem(SettingItem {
+                title: "Editor Image Path",
+                description: "Absolute or ~/ path to an image file; empty disables it.",
+                field: Box::new(SettingField {
+                    organization_override: None,
+                    json_path: Some("background_image.editor_and_tools.path"),
+                    pick: |settings_content| {
+                        settings_content
+                            .project
+                            .background_image
+                            .as_ref()?
+                            .editor_and_tools
+                            .as_ref()?
+                            .path
+                            .as_ref()
+                    },
+                    write: |settings_content, value, _| {
+                        settings_content
+                            .project
+                            .background_image
+                            .get_or_insert_default()
+                            .editor_and_tools
+                            .get_or_insert_default()
+                            .path = value;
+                    },
+                }),
+                metadata: None,
+                files: USER | PROJECT,
+            }),
+            SettingsPageItem::SettingItem(SettingItem {
+                title: "Editor Image Opacity",
+                description: "Opacity of the image, from 0 (invisible) to 100 (fully opaque).",
+                field: Box::new(SettingField {
+                    organization_override: None,
+                    json_path: Some("background_image.editor_and_tools.opacity"),
+                    pick: |settings_content| {
+                        settings_content
+                            .project
+                            .background_image
+                            .as_ref()?
+                            .editor_and_tools
+                            .as_ref()?
+                            .opacity
+                            .as_ref()
+                    },
+                    write: |settings_content, value, _| {
+                        settings_content
+                            .project
+                            .background_image
+                            .get_or_insert_default()
+                            .editor_and_tools
+                            .get_or_insert_default()
+                            .opacity = value;
+                    },
+                }),
+                metadata: None,
+                files: USER | PROJECT,
+            }),
+            SettingsPageItem::SettingItem(SettingItem {
+                title: "Editor Image Fill",
+                description: "How the image fills the area: plain, scale or tile.",
+                field: Box::new(SettingField {
+                    organization_override: None,
+                    json_path: Some("background_image.editor_and_tools.fill"),
+                    pick: |settings_content| {
+                        settings_content
+                            .project
+                            .background_image
+                            .as_ref()?
+                            .editor_and_tools
+                            .as_ref()?
+                            .fill
+                            .as_ref()
+                    },
+                    write: |settings_content, value, _| {
+                        settings_content
+                            .project
+                            .background_image
+                            .get_or_insert_default()
+                            .editor_and_tools
+                            .get_or_insert_default()
+                            .fill = value;
+                    },
+                }),
+                metadata: None,
+                files: USER | PROJECT,
+            }),
+            SettingsPageItem::SettingItem(SettingItem {
+                title: "Editor Image Anchor",
+                description: "Where the image is placed when Fill is plain.",
+                field: Box::new(SettingField {
+                    organization_override: None,
+                    json_path: Some("background_image.editor_and_tools.anchor"),
+                    pick: |settings_content| {
+                        settings_content
+                            .project
+                            .background_image
+                            .as_ref()?
+                            .editor_and_tools
+                            .as_ref()?
+                            .anchor
+                            .as_ref()
+                    },
+                    write: |settings_content, value, _| {
+                        settings_content
+                            .project
+                            .background_image
+                            .get_or_insert_default()
+                            .editor_and_tools
+                            .get_or_insert_default()
+                            .anchor = value;
+                    },
+                }),
+                metadata: None,
+                files: USER | PROJECT,
+            }),
+            SettingsPageItem::SettingItem(SettingItem {
+                title: "Editor Image Flip Horizontally",
+                description: "Whether to mirror the image horizontally.",
+                field: Box::new(SettingField {
+                    organization_override: None,
+                    json_path: Some("background_image.editor_and_tools.flip_horizontal"),
+                    pick: |settings_content| {
+                        settings_content
+                            .project
+                            .background_image
+                            .as_ref()?
+                            .editor_and_tools
+                            .as_ref()?
+                            .flip_horizontal
+                            .as_ref()
+                    },
+                    write: |settings_content, value, _| {
+                        settings_content
+                            .project
+                            .background_image
+                            .get_or_insert_default()
+                            .editor_and_tools
+                            .get_or_insert_default()
+                            .flip_horizontal = value;
+                    },
+                }),
+                metadata: None,
+                files: USER | PROJECT,
+            }),
+            SettingsPageItem::SettingItem(SettingItem {
+                title: "Editor Image Flip Vertically",
+                description: "Whether to mirror the image vertically.",
+                field: Box::new(SettingField {
+                    organization_override: None,
+                    json_path: Some("background_image.editor_and_tools.flip_vertical"),
+                    pick: |settings_content| {
+                        settings_content
+                            .project
+                            .background_image
+                            .as_ref()?
+                            .editor_and_tools
+                            .as_ref()?
+                            .flip_vertical
+                            .as_ref()
+                    },
+                    write: |settings_content, value, _| {
+                        settings_content
+                            .project
+                            .background_image
+                            .get_or_insert_default()
+                            .editor_and_tools
+                            .get_or_insert_default()
+                            .flip_vertical = value;
+                    },
+                }),
+                metadata: None,
+                files: USER | PROJECT,
+            }),
+            SettingsPageItem::ActionLink(ActionLink {
+                title: "Empty Frame (No Open Files)".into(),
+                description: Some("Pick an image to show when no files are open.".into()),
+                button_text: "Choose Image…".into(),
+                on_click: Arc::new(|settings_window, _, cx| {
+                    dispatch_to_original_window(
+                        settings_window,
+                        workspace::SelectEmptyFrameBackgroundImage.boxed_clone(),
+                        cx,
+                    );
+                }),
+                files: USER,
+            }),
+            SettingsPageItem::SettingItem(SettingItem {
+                title: "Empty Frame Image Path",
+                description: "Absolute or ~/ path to an image file; empty disables it.",
+                field: Box::new(SettingField {
+                    organization_override: None,
+                    json_path: Some("background_image.empty_frame.path"),
+                    pick: |settings_content| {
+                        settings_content
+                            .project
+                            .background_image
+                            .as_ref()?
+                            .empty_frame
+                            .as_ref()?
+                            .path
+                            .as_ref()
+                    },
+                    write: |settings_content, value, _| {
+                        settings_content
+                            .project
+                            .background_image
+                            .get_or_insert_default()
+                            .empty_frame
+                            .get_or_insert_default()
+                            .path = value;
+                    },
+                }),
+                metadata: None,
+                files: USER | PROJECT,
+            }),
+            SettingsPageItem::SettingItem(SettingItem {
+                title: "Empty Frame Image Opacity",
+                description: "Opacity of the image, from 0 (invisible) to 100 (fully opaque).",
+                field: Box::new(SettingField {
+                    organization_override: None,
+                    json_path: Some("background_image.empty_frame.opacity"),
+                    pick: |settings_content| {
+                        settings_content
+                            .project
+                            .background_image
+                            .as_ref()?
+                            .empty_frame
+                            .as_ref()?
+                            .opacity
+                            .as_ref()
+                    },
+                    write: |settings_content, value, _| {
+                        settings_content
+                            .project
+                            .background_image
+                            .get_or_insert_default()
+                            .empty_frame
+                            .get_or_insert_default()
+                            .opacity = value;
+                    },
+                }),
+                metadata: None,
+                files: USER | PROJECT,
+            }),
+            SettingsPageItem::SettingItem(SettingItem {
+                title: "Empty Frame Image Fill",
+                description: "How the image fills the area: plain, scale or tile.",
+                field: Box::new(SettingField {
+                    organization_override: None,
+                    json_path: Some("background_image.empty_frame.fill"),
+                    pick: |settings_content| {
+                        settings_content
+                            .project
+                            .background_image
+                            .as_ref()?
+                            .empty_frame
+                            .as_ref()?
+                            .fill
+                            .as_ref()
+                    },
+                    write: |settings_content, value, _| {
+                        settings_content
+                            .project
+                            .background_image
+                            .get_or_insert_default()
+                            .empty_frame
+                            .get_or_insert_default()
+                            .fill = value;
+                    },
+                }),
+                metadata: None,
+                files: USER | PROJECT,
+            }),
+            SettingsPageItem::SettingItem(SettingItem {
+                title: "Empty Frame Image Anchor",
+                description: "Where the image is placed when Fill is plain.",
+                field: Box::new(SettingField {
+                    organization_override: None,
+                    json_path: Some("background_image.empty_frame.anchor"),
+                    pick: |settings_content| {
+                        settings_content
+                            .project
+                            .background_image
+                            .as_ref()?
+                            .empty_frame
+                            .as_ref()?
+                            .anchor
+                            .as_ref()
+                    },
+                    write: |settings_content, value, _| {
+                        settings_content
+                            .project
+                            .background_image
+                            .get_or_insert_default()
+                            .empty_frame
+                            .get_or_insert_default()
+                            .anchor = value;
+                    },
+                }),
+                metadata: None,
+                files: USER | PROJECT,
+            }),
+            SettingsPageItem::SettingItem(SettingItem {
+                title: "Empty Frame Image Flip Horizontally",
+                description: "Whether to mirror the image horizontally.",
+                field: Box::new(SettingField {
+                    organization_override: None,
+                    json_path: Some("background_image.empty_frame.flip_horizontal"),
+                    pick: |settings_content| {
+                        settings_content
+                            .project
+                            .background_image
+                            .as_ref()?
+                            .empty_frame
+                            .as_ref()?
+                            .flip_horizontal
+                            .as_ref()
+                    },
+                    write: |settings_content, value, _| {
+                        settings_content
+                            .project
+                            .background_image
+                            .get_or_insert_default()
+                            .empty_frame
+                            .get_or_insert_default()
+                            .flip_horizontal = value;
+                    },
+                }),
+                metadata: None,
+                files: USER | PROJECT,
+            }),
+            SettingsPageItem::SettingItem(SettingItem {
+                title: "Empty Frame Image Flip Vertically",
+                description: "Whether to mirror the image vertically.",
+                field: Box::new(SettingField {
+                    organization_override: None,
+                    json_path: Some("background_image.empty_frame.flip_vertical"),
+                    pick: |settings_content| {
+                        settings_content
+                            .project
+                            .background_image
+                            .as_ref()?
+                            .empty_frame
+                            .as_ref()?
+                            .flip_vertical
+                            .as_ref()
+                    },
+                    write: |settings_content, value, _| {
+                        settings_content
+                            .project
+                            .background_image
+                            .get_or_insert_default()
+                            .empty_frame
+                            .get_or_insert_default()
+                            .flip_vertical = value;
+                    },
+                }),
+                metadata: None,
+                files: USER | PROJECT,
+            }),
+            SettingsPageItem::ActionLink(ActionLink {
+                title: "Clear Background Images".into(),
+                description: Some("Remove the configured background images.".into()),
+                button_text: "Clear".into(),
+                on_click: Arc::new(|settings_window, _, cx| {
+                    dispatch_to_original_window(
+                        settings_window,
+                        workspace::ClearBackgroundImage.boxed_clone(),
+                        cx,
+                    );
+                }),
+                files: USER,
+            }),
+        ]
+    }
+
     let items: Box<[SettingsPageItem]> = concat_sections!(
         theme_section(),
         buffer_font_section(),
@@ -1616,6 +2011,7 @@ fn appearance_page() -> SettingsPage {
         cursor_section(),
         highlighting_section(),
         guides_section(),
+        background_image_section(),
     );
 
     SettingsPage {
@@ -2910,7 +3306,7 @@ fn editor_page() -> SettingsPage {
         ]
     }
 
-    fn toolbar_section() -> [SettingsPageItem; 6] {
+    fn toolbar_section() -> [SettingsPageItem; 8] {
         [
             SettingsPageItem::SectionHeader("Toolbar"),
             SettingsPageItem::SettingItem(SettingItem {
@@ -3033,6 +3429,46 @@ fn editor_page() -> SettingsPage {
                             .toolbar
                             .get_or_insert_default()
                             .code_actions = value;
+                    },
+                }),
+                metadata: None,
+                files: USER,
+            }),
+            SettingsPageItem::SettingItem(SettingItem {
+                title: "Height",
+                description: "Minimum height of the editor toolbar in pixels (24–64). Unset uses the default.",
+                field: Box::new(SettingField {
+                    organization_override: None,
+                    json_path: Some("toolbar.height"),
+                    pick: |settings_content| {
+                        settings_content.editor.toolbar.as_ref()?.height.as_ref()
+                    },
+                    write: |settings_content, value, _| {
+                        settings_content
+                            .editor
+                            .toolbar
+                            .get_or_insert_default()
+                            .height = value;
+                    },
+                }),
+                metadata: None,
+                files: USER,
+            }),
+            SettingsPageItem::SettingItem(SettingItem {
+                title: "Icon Size",
+                description: "Size of the editor toolbar icons in pixels (10–32). Secondary icons scale proportionally. Unset uses the default.",
+                field: Box::new(SettingField {
+                    organization_override: None,
+                    json_path: Some("toolbar.icon_size"),
+                    pick: |settings_content| {
+                        settings_content.editor.toolbar.as_ref()?.icon_size.as_ref()
+                    },
+                    write: |settings_content, value, _| {
+                        settings_content
+                            .editor
+                            .toolbar
+                            .get_or_insert_default()
+                            .icon_size = value;
                     },
                 }),
                 metadata: None,
@@ -4084,7 +4520,7 @@ fn search_and_files_page() -> SettingsPage {
 }
 
 fn window_and_layout_page() -> SettingsPage {
-    fn status_bar_section() -> [SettingsPageItem; 12] {
+    fn status_bar_section() -> [SettingsPageItem; 14] {
         [
             SettingsPageItem::SectionHeader("Status Bar"),
             SettingsPageItem::SettingItem(SettingItem {
@@ -4306,10 +4742,43 @@ fn window_and_layout_page() -> SettingsPage {
                 metadata: None,
                 files: USER,
             }),
+            SettingsPageItem::SettingItem(SettingItem {
+                title: "Height",
+                description: "Minimum height of the status bar in pixels (24–64). Unset uses the default.",
+                field: Box::new(SettingField {
+                    organization_override: None,
+                    json_path: Some("status_bar.height"),
+                    pick: |settings_content| settings_content.status_bar.as_ref()?.height.as_ref(),
+                    write: |settings_content, value, _| {
+                        settings_content.status_bar.get_or_insert_default().height = value;
+                    },
+                }),
+                metadata: None,
+                files: USER,
+            }),
+            SettingsPageItem::SettingItem(SettingItem {
+                title: "Icon Size",
+                description: "Size of the status bar icons in pixels (10–32). Secondary icons scale proportionally. Unset uses the default.",
+                field: Box::new(SettingField {
+                    organization_override: None,
+                    json_path: Some("status_bar.icon_size"),
+                    pick: |settings_content| {
+                        settings_content.status_bar.as_ref()?.icon_size.as_ref()
+                    },
+                    write: |settings_content, value, _| {
+                        settings_content
+                            .status_bar
+                            .get_or_insert_default()
+                            .icon_size = value;
+                    },
+                }),
+                metadata: None,
+                files: USER,
+            }),
         ]
     }
 
-    fn title_bar_section() -> [SettingsPageItem; 12] {
+    fn title_bar_section() -> [SettingsPageItem; 14] {
         [
             SettingsPageItem::SectionHeader("Title Bar"),
             SettingsPageItem::SettingItem(SettingItem {
@@ -4644,10 +5113,40 @@ fn window_and_layout_page() -> SettingsPage {
                 metadata: None,
                 files: USER,
             }),
+            SettingsPageItem::SettingItem(SettingItem {
+                title: "Height",
+                description: "Height of the title bar in pixels (24–64). Unset uses the default.",
+                field: Box::new(SettingField {
+                    organization_override: None,
+                    json_path: Some("title_bar.height"),
+                    pick: |settings_content| settings_content.title_bar.as_ref()?.height.as_ref(),
+                    write: |settings_content, value, _| {
+                        settings_content.title_bar.get_or_insert_default().height = value;
+                    },
+                }),
+                metadata: None,
+                files: USER,
+            }),
+            SettingsPageItem::SettingItem(SettingItem {
+                title: "Icon Size",
+                description: "Size of the title bar icons in pixels (10–32). Secondary icons scale proportionally. Unset uses the default.",
+                field: Box::new(SettingField {
+                    organization_override: None,
+                    json_path: Some("title_bar.icon_size"),
+                    pick: |settings_content| {
+                        settings_content.title_bar.as_ref()?.icon_size.as_ref()
+                    },
+                    write: |settings_content, value, _| {
+                        settings_content.title_bar.get_or_insert_default().icon_size = value;
+                    },
+                }),
+                metadata: None,
+                files: USER,
+            }),
         ]
     }
 
-    fn tab_bar_section() -> [SettingsPageItem; 9] {
+    fn tab_bar_section() -> [SettingsPageItem; 11] {
         [
             SettingsPageItem::SectionHeader("Tab Bar"),
             SettingsPageItem::SettingItem(SettingItem {
@@ -4791,6 +5290,34 @@ fn window_and_layout_page() -> SettingsPage {
                             .tab_bar
                             .get_or_insert_default()
                             .show_pinned_tabs_in_separate_row = value;
+                    },
+                }),
+                metadata: None,
+                files: USER,
+            }),
+            SettingsPageItem::SettingItem(SettingItem {
+                title: "Height",
+                description: "Height of the tab bar and of panel headers in pixels (24–64). Unset uses the default.",
+                field: Box::new(SettingField {
+                    organization_override: None,
+                    json_path: Some("tab_bar.height"),
+                    pick: |settings_content| settings_content.tab_bar.as_ref()?.height.as_ref(),
+                    write: |settings_content, value, _| {
+                        settings_content.tab_bar.get_or_insert_default().height = value;
+                    },
+                }),
+                metadata: None,
+                files: USER,
+            }),
+            SettingsPageItem::SettingItem(SettingItem {
+                title: "Icon Size",
+                description: "Size of the tab bar icons in pixels (10–32). Secondary icons scale proportionally. Unset uses the default.",
+                field: Box::new(SettingField {
+                    organization_override: None,
+                    json_path: Some("tab_bar.icon_size"),
+                    pick: |settings_content| settings_content.tab_bar.as_ref()?.icon_size.as_ref(),
+                    write: |settings_content, value, _| {
+                        settings_content.tab_bar.get_or_insert_default().icon_size = value;
                     },
                 }),
                 metadata: None,
@@ -11340,6 +11867,22 @@ fn show_scrollbar_or_editor(
         .scrollbar
         .as_ref()
         .and_then(|scrollbar| scrollbar.show.as_ref()))
+}
+
+fn dispatch_to_original_window(
+    settings_window: &SettingsWindow,
+    action: Box<dyn Action>,
+    cx: &mut App,
+) {
+    let Some(original_window) = settings_window.original_window else {
+        return;
+    };
+    original_window
+        .update(cx, |_multi_workspace, original_window, cx| {
+            original_window.dispatch_action(action, cx);
+            original_window.activate_window();
+        })
+        .log_err();
 }
 
 fn dynamic_variants<T>() -> &'static [T::Discriminant]

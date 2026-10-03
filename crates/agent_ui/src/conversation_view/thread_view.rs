@@ -4792,6 +4792,12 @@ impl ThreadView {
         h_flex()
             .py_2()
             .bg(editor_bg_color)
+            .child(ui::background_image_layer(
+                ui::BackgroundImageTarget::EditorAndTools,
+                ui::BackgroundImageArea::Window,
+                editor_bg_color,
+                true,
+            ))
             .justify_center()
             .on_action(cx.listener(Self::handle_message_editor_move_up))
             .map(|this| {

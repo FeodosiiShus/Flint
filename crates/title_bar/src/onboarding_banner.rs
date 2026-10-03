@@ -123,6 +123,8 @@ impl Render for OnboardingBanner {
         }
 
         let border_color = cx.theme().colors().editor_foreground.opacity(0.3);
+        let region = ui::ChromeRegion::TitleBar;
+        let icon_size = ui::chrome_icon_size(region, IconSize::XSmall, cx);
         let banner = h_flex()
             .rounded_sm()
             .border_1()
@@ -130,11 +132,12 @@ impl Render for OnboardingBanner {
             .occlude()
             .child(
                 ButtonLike::new("try-a-feature")
+                    .chrome_region(region)
                     .child(
                         h_flex()
                             .h_full()
                             .gap_1()
-                            .child(Icon::new(self.details.icon_name).size(IconSize::XSmall))
+                            .child(Icon::new(self.details.icon_name).size(icon_size))
                             .child(
                                 h_flex()
                                     .gap_0p5()
@@ -158,6 +161,7 @@ impl Render for OnboardingBanner {
                 div().border_l_1().border_color(border_color).child(
                     IconButton::new("close", IconName::Close)
                         .icon_size(IconSize::Indicator)
+                        .chrome_region(region)
                         .on_click(cx.listener(|this, _, _window, cx| {
                             telemetry::event!("Banner Dismissed", source = this.source);
                             this.dismiss(cx)

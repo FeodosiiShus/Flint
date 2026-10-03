@@ -87,6 +87,7 @@ impl Render for GitBlameStatus {
             el.child(
                 Button::new("git-blame-status", text.clone())
                     .label_size(LabelSize::Small)
+                    .chrome_region(ui::ChromeRegion::StatusBar)
                     .start_icon(
                         Icon::new(IconName::FileGit)
                             .size(IconSize::Small)

@@ -9399,6 +9399,12 @@ impl Render for GitPanel {
             .size_full()
             .overflow_hidden()
             .bg(cx.theme().colors().panel_background)
+            .child(ui::background_image_layer(
+                ui::BackgroundImageTarget::EditorAndTools,
+                ui::BackgroundImageArea::Window,
+                cx.theme().colors().panel_background,
+                true,
+            ))
             .child(
                 v_flex()
                     .size_full()
@@ -9558,9 +9564,16 @@ impl Panel for GitPanel {
 }
 
 pub fn panel_editor_container(_window: &mut Window, cx: &mut App) -> Div {
+    let editor_background = cx.theme().colors().editor_background;
     v_flex()
         .size_full()
-        .bg(cx.theme().colors().editor_background)
+        .bg(editor_background)
+        .child(ui::background_image_layer(
+            ui::BackgroundImageTarget::EditorAndTools,
+            ui::BackgroundImageArea::Window,
+            editor_background,
+            true,
+        ))
 }
 
 pub(crate) fn git_commit_editor_style(font_size: gpui::Pixels, cx: &App) -> EditorStyle {

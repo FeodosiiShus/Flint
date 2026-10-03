@@ -644,14 +644,19 @@ impl Render for MergeConflictIndicator {
         .into();
 
         let border_color = cx.theme().colors().text_accent.opacity(0.2);
+        let region = ui::ChromeRegion::StatusBar;
+        let icon_size = ui::chrome_icon_size(region, IconSize::Small, cx);
+        let button_height = ui::chrome_button_height(region, ButtonSize::Default, cx);
 
         h_flex()
             .h(rems_from_px(22_f32))
+            .when_some(button_height, |this, height| this.h(height))
             .rounded_sm()
             .border_1()
             .border_color(border_color)
             .child(
                 ButtonLike::new("update-button")
+                    .chrome_region(region)
                     .tab_index(0isize)
                     .aria_label(message.clone())
                     .child(
@@ -660,7 +665,7 @@ impl Render for MergeConflictIndicator {
                             .gap_1()
                             .child(
                                 Icon::new(IconName::GitMergeConflict)
-                                    .size(IconSize::Small)
+                                    .size(icon_size)
                                     .color(Color::Muted),
                             )
                             .child(Label::new(message).size(LabelSize::Small)),
@@ -681,6 +686,7 @@ impl Render for MergeConflictIndicator {
                 div().border_l_1().border_color(border_color).child(
                     IconButton::new("dismiss-merge-conflicts", IconName::Close)
                         .icon_size(IconSize::XSmall)
+                        .chrome_region(region)
                         .on_click(cx.listener(Self::dismiss)),
                 ),
             )

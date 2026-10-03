@@ -17,8 +17,8 @@ use serde::{Deserialize, Serialize};
 use settings::{Settings, SettingsStore, TerminalDockPosition};
 use std::sync::Arc;
 use ui::{
-    ContextMenu, CountBadge, Divider, DividerColor, IconButton, Tooltip, prelude::*,
-    right_click_menu,
+    BackgroundImageArea, BackgroundImageTarget, ContextMenu, CountBadge, Divider, DividerColor,
+    IconButton, Tooltip, background_image_layer, prelude::*, right_click_menu,
 };
 use util::ResultExt as _;
 
@@ -1351,6 +1351,12 @@ impl Render for Dock {
                     DockPosition::Right => this.border_l_1(),
                     DockPosition::Bottom => this.border_t_1(),
                 })
+                .child(background_image_layer(
+                    BackgroundImageTarget::EditorAndTools,
+                    BackgroundImageArea::Window,
+                    cx.theme().colors().panel_background,
+                    true,
+                ))
                 .child(
                     div()
                         .map(|this| match self.position().axis() {
@@ -1535,6 +1541,7 @@ impl Render for PanelButtons {
                             // tooltip when panel state changes (e.g., via keyboard shortcut)
                             let button = IconButton::new((name, is_active_button as u64), icon)
                                 .icon_size(IconSize::Small)
+                                .chrome_region(ui::ChromeRegion::StatusBar)
                                 .toggle_state(is_active_button)
                                 .tab_index(0isize)
                                 .aria_label(icon_tooltip)

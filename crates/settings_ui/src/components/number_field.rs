@@ -12,8 +12,8 @@ use gpui::{
 };
 
 use settings::{
-    CenteredPaddingSettings, CodeFade, DelayMs, FontSize, FontWeightContent, InactiveOpacity,
-    MinimumContrast, PixelSetting,
+    BackgroundImageOpacity, CenteredPaddingSettings, CodeFade, DelayMs, FontSize,
+    FontWeightContent, InactiveOpacity, MinimumContrast, PixelSetting,
 };
 use ui::prelude::*;
 use zed_actions::editor::{MoveDown, MoveUp};
@@ -122,6 +122,7 @@ impl_newtype_numeric_stepper_float!(InactiveOpacity, 0.1, 0.2, 0.05, 0.0, 1.0);
 impl_newtype_numeric_stepper_float!(MinimumContrast, 1., 10., 0.5, 0.0, 106.0);
 impl_newtype_numeric_stepper_float!(PixelSetting, 1.0, 10.0, 0.5, 0.0, f32::MAX);
 impl_newtype_numeric_stepper_int!(DelayMs, 100, 500, 10, 0, 2000);
+impl_newtype_numeric_stepper_int!(BackgroundImageOpacity, 5, 10, 1, 0, 100);
 impl_newtype_numeric_stepper_float!(
     CenteredPaddingSettings,
     0.05,

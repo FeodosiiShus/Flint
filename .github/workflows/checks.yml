@@ -1,0 +1,76 @@
+name: Checks
+
+on:
+  push:
+    branches:
+      - "**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  CARGO_INCREMENTAL: "0"
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: "1"
+
+jobs:
+  checks:
+    name: Format, check and tests
+    runs-on: macos-26
+    timeout-minutes: 180
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Check Xcode and Metal toolchain
+        run: |
+          xcode-select -p
+          xcodebuild -version
+          xcrun --sdk macosx --show-sdk-version
+          probe_metal() {
+            printf 'kernel void probe(device float *out [[buffer(0)]]) { out[0] = 1.0; }\n' > "${RUNNER_TEMP}/probe.metal"
+            xcrun -sdk macosx metal -c "${RUNNER_TEMP}/probe.metal" -o "${RUNNER_TEMP}/probe.air" &&
+              xcrun -sdk macosx metallib "${RUNNER_TEMP}/probe.air" -o "${RUNNER_TEMP}/probe.metallib"
+          }
+          if ! probe_metal; then
+            xcodebuild -downloadComponent metalToolchain
+            probe_metal
+          fi
+
+      - name: Install Rust toolchain from rust-toolchain.toml
+        run: |
+          rustup toolchain install
+          rustup show active-toolchain
+          rustc --version
+          cargo --version
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Check app crates compile
+        run: cargo check --locked --package zed --package cli
+
+      - name: Run tests for crates changed by Flint
+        run: cargo test --locked --package settings --package release_channel --package cli --package theme_settings
+
+      - name: Run background image tests
+        run: cargo test --locked --package ui --package workspace --lib background_image
+
+      - name: Run chrome size tests
+        run: cargo test --locked --package ui --lib chrome_size

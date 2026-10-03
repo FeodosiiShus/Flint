@@ -450,7 +450,7 @@ impl VariableList {
                         Some(self.render_watcher(entry, *state, window, cx))
                     }
                     DapEntry::Variable(_) => Some(self.render_variable(entry, *state, window, cx)),
-                    DapEntry::Scope(_) => Some(self.render_scope(entry, *state, cx)),
+                    DapEntry::Scope(_) => Some(self.render_scope(entry, *state, window, cx)),
                 }
             })
             .collect()
@@ -1238,7 +1238,7 @@ impl VariableList {
         &self,
         entry: &ListEntry,
         state: EntryState,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let Some(watcher) = &entry.as_watcher() else {
@@ -1254,7 +1254,7 @@ impl VariableList {
             .is_some_and(|selection| selection == &entry.path);
         let var_ref = watcher.variables_reference;
 
-        let colors = get_entry_color(cx);
+        let colors = get_entry_color(window, cx);
         let bg_hover_color = if !is_selected {
             colors.hover
         } else {
@@ -1375,6 +1375,7 @@ impl VariableList {
         &self,
         entry: &ListEntry,
         state: EntryState,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let Some(scope) = entry.as_scope() else {
@@ -1388,7 +1389,7 @@ impl VariableList {
             .as_ref()
             .is_some_and(|selection| selection == &entry.path);
 
-        let colors = get_entry_color(cx);
+        let colors = get_entry_color(window, cx);
         let bg_hover_color = if !is_selected {
             colors.hover
         } else {
@@ -1459,7 +1460,7 @@ impl VariableList {
         let variable_color = self.variable_color(dap.presentation_hint.as_ref(), cx);
 
         let var_ref = dap.variables_reference;
-        let colors = get_entry_color(cx);
+        let colors = get_entry_color(window, cx);
         let is_selected = self
             .selection
             .as_ref()
@@ -1622,11 +1623,17 @@ struct EntryColors {
     marked_active: Hsla,
 }
 
-fn get_entry_color(cx: &Context<VariableList>) -> EntryColors {
+fn get_entry_color(window: &Window, cx: &Context<VariableList>) -> EntryColors {
     let colors = cx.theme().colors();
+    let has_background_image =
+        ui::has_background_image(ui::BackgroundImageTarget::EditorAndTools, window, cx);
 
     EntryColors {
-        default: colors.panel_background,
+        default: if has_background_image {
+            gpui::transparent_black()
+        } else {
+            colors.panel_background
+        },
         hover: colors.ghost_element_hover,
         marked_active: colors.ghost_element_selected,
     }

@@ -131,4 +131,6 @@ pub struct TitleBarSettingsContent {
     ///
     /// Default: "platform_default"
     pub button_layout: Option<WindowButtonLayoutContent>,
+    pub height: Option<u32>,
+    pub icon_size: Option<u32>,
 }

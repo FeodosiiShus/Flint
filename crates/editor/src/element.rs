@@ -5016,14 +5016,39 @@ impl EditorElement {
     }
 
     fn paint_background(&self, layout: &EditorLayout, window: &mut Window, cx: &mut App) {
+        let gutter_bg = cx.theme().colors().editor_gutter_background;
         window.paint_layer(layout.hitbox.bounds, |window| {
-            let scroll_top = layout.position_map.scroll_position.y;
-            let gutter_bg = cx.theme().colors().editor_gutter_background;
             window.paint_quad(fill(layout.gutter_hitbox.bounds, gutter_bg));
             window.paint_quad(fill(
                 layout.position_map.text_hitbox.bounds,
                 self.style.background,
             ));
+        });
+
+        if !matches!(layout.mode, EditorMode::SingleLine) {
+            let image_area = ui::window_background_image_area(window);
+            ui::paint_background_image(
+                layout.gutter_hitbox.bounds,
+                image_area,
+                ui::BackgroundImageTarget::EditorAndTools,
+                gutter_bg,
+                true,
+                window,
+                cx,
+            );
+            ui::paint_background_image(
+                layout.position_map.text_hitbox.bounds,
+                image_area,
+                ui::BackgroundImageTarget::EditorAndTools,
+                self.style.background,
+                true,
+                window,
+                cx,
+            );
+        }
+
+        window.paint_layer(layout.hitbox.bounds, |window| {
+            let scroll_top = layout.position_map.scroll_position.y;
 
             if matches!(
                 layout.mode,
@@ -7147,6 +7172,9 @@ pub fn render_breadcrumb_text(
                     .child(breadcrumbs)
                     .when(multibuffer_header, |this| {
                         this.style(ButtonStyle::Transparent)
+                    })
+                    .when(!multibuffer_header, |this| {
+                        this.chrome_region(ui::ChromeRegion::Toolbar)
                     })
                     .when(!multibuffer_header, |this| {
                         let focus_handle = editor.upgrade().unwrap().focus_handle(&cx);

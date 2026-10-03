@@ -2034,6 +2034,12 @@ impl Render for KeymapEditor {
             .p_2()
             .gap_1()
             .bg(theme.colors().editor_background)
+            .child(ui::background_image_layer(
+                ui::BackgroundImageTarget::EditorAndTools,
+                ui::BackgroundImageArea::Window,
+                theme.colors().editor_background,
+                true,
+            ))
             .child(
                 v_flex()
                     .gap_2()

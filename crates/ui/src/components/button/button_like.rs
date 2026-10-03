@@ -493,6 +493,7 @@ pub struct ButtonLike {
     pub(super) layer: Option<ElevationIndex>,
     tab_index: Option<isize>,
     size: ButtonSize,
+    pub(super) chrome_region: Option<crate::ChromeRegion>,
     rounding: Option<ButtonLikeRounding>,
     pub(super) aria_label: Option<SharedString>,
     aria_description: Option<SharedString>,
@@ -528,6 +529,7 @@ impl ButtonLike {
             width: None,
             height: None,
             size: ButtonSize::Default,
+            chrome_region: None,
             rounding: Some(ButtonLikeRounding::ALL),
             aria_label: None,
             aria_description: None,
@@ -568,6 +570,11 @@ impl ButtonLike {
 
     pub fn height(mut self, height: DefiniteLength) -> Self {
         self.height = Some(height);
+        self
+    }
+
+    pub fn chrome_region(mut self, region: crate::ChromeRegion) -> Self {
+        self.chrome_region = Some(region);
         self
     }
 
@@ -764,6 +771,15 @@ impl RenderOnce for ButtonLike {
             .active_background
             .unwrap_or_else(|| style.active(cx).background);
 
+        let chrome_height = self
+            .chrome_region
+            .filter(|_| self.height.is_none())
+            .and_then(|region| crate::chrome_button_height(region, self.size, cx));
+        let height = match chrome_height {
+            Some(height) => DefiniteLength::from(height),
+            None => self.height.unwrap_or(self.size.rems().into()),
+        };
+
         self.base
             .h_flex()
             .id(self.id.clone())
@@ -797,7 +813,7 @@ impl RenderOnce for ButtonLike {
             .font_ui(cx)
             .group("")
             .flex_none()
-            .h(self.height.unwrap_or(self.size.rems().into()))
+            .h(height)
             .when_some(self.width, |this, width| {
                 this.w(width).justify_center().text_center()
             })

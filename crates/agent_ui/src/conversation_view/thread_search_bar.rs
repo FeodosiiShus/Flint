@@ -879,6 +879,12 @@ impl Render for ThreadSearchBar {
             .w_full()
             .p_1p5()
             .bg(theme.panel_background)
+            .child(ui::background_image_layer(
+                ui::BackgroundImageTarget::EditorAndTools,
+                ui::BackgroundImageArea::Window,
+                theme.panel_background,
+                true,
+            ))
             .border_b_1()
             .border_color(theme.border.opacity(0.6))
             .child(bar_row)

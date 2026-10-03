@@ -1,4 +1,5 @@
 pub mod active_file_name;
+mod background_image;
 pub mod dock;
 pub mod history_manager;
 pub mod invalid_item_view;
@@ -29,6 +30,9 @@ pub mod welcome;
 pub mod workspace_error;
 mod workspace_settings;
 
+pub use background_image::{
+    ClearBackgroundImage, SelectBackgroundImage, SelectEmptyFrameBackgroundImage,
+};
 pub use dock::Panel;
 pub use multi_workspace::{
     CloseWorkspaceSidebar, DraggedSidebar, FocusWorkspaceSidebar, MoveProjectDown,
@@ -149,7 +153,7 @@ pub use toolbar::{
     PaneSearchBarCallbacks, Toolbar, ToolbarItemEvent, ToolbarItemLocation, ToolbarItemView,
 };
 pub use ui;
-use ui::{Window, prelude::*};
+use ui::{BackgroundImageArea, BackgroundImageTarget, Window, background_image_layer, prelude::*};
 use url::Url;
 use util::{
     ResultExt, TryFutureExt,
@@ -159,9 +163,10 @@ use util::{
 };
 use uuid::Uuid;
 pub use workspace_settings::{
-    AccessibleMode, AutosaveSetting, BottomDockLayout, EncodingDisplayOptions, FocusFollowsMouse,
-    RestoreOnStartupBehavior, StatusBarSettings, TabBarSettings, WorkspaceSettings,
-    closing_last_window_quits_app, observe_accessible_mode,
+    AccessibleMode, AutosaveSetting, BackgroundImageLayerSettings, BackgroundImageSettings,
+    BottomDockLayout, EncodingDisplayOptions, FocusFollowsMouse, RestoreOnStartupBehavior,
+    StatusBarSettings, TabBarSettings, WorkspaceSettings, closing_last_window_quits_app,
+    observe_accessible_mode,
 };
 use zed_actions::{Spawn, feedback::FileBugReport, theme::ToggleMode};
 
@@ -1654,6 +1659,7 @@ pub struct Workspace {
     persisted_recent_navigation_history: Vec<PathBuf>,
     last_active_project_path: Option<ProjectPath>,
     restoring_workspace: bool,
+    background_image: background_image::BackgroundImageState,
 }
 
 impl EventEmitter<Event> for Workspace {}
@@ -1760,10 +1766,12 @@ impl Workspace {
                     this.update_window_title(window, cx);
                     this.serialize_workspace(window, cx);
                     this.update_history(cx);
+                    this.refresh_background_images(false, window, cx);
                 }
 
                 &project::Event::WorktreeAdded(id) => {
                     this.update_window_title(window, cx);
+                    this.refresh_background_images(false, window, cx);
                     if this
                         .project()
                         .read(cx)
@@ -2075,11 +2083,21 @@ impl Workspace {
                     })
                 }
             }),
+            cx.observe_window_activation(window, |this, window, cx| {
+                if window.is_window_active() {
+                    this.refresh_background_images(true, window, cx);
+                }
+            }),
+            cx.observe_global_in::<SettingsStore>(window, |this, window, cx| {
+                this.refresh_background_images(false, window, cx);
+            }),
+            cx.on_release(|this, cx| this.release_background_images(cx)),
         ];
 
         cx.defer_in(window, move |this, window, cx| {
             this.update_window_title(window, cx);
             this.show_initial_notifications(cx);
+            this.refresh_background_images(true, window, cx);
         });
 
         let mut center = PaneGroup::new(center_pane.clone());
@@ -2156,6 +2174,7 @@ impl Workspace {
             persisted_recent_navigation_history: Vec::new(),
             last_active_project_path: None,
             restoring_workspace: false,
+            background_image: Default::default(),
         }
     }
 
@@ -8080,6 +8099,9 @@ impl Workspace {
             .on_action(cx.listener(Self::reopen_last_picker))
             .on_action(cx.listener(Self::toggle_edit_predictions_all_files))
             .on_action(cx.listener(Self::toggle_theme_mode))
+            .on_action(cx.listener(Self::select_background_image))
+            .on_action(cx.listener(Self::select_empty_frame_background_image))
+            .on_action(cx.listener(Self::clear_background_image))
             .on_action(cx.listener(|workspace, _: &Unfollow, window, cx| {
                 let pane = workspace.active_pane().clone();
                 workspace.unfollow_in_pane(&pane, window, cx);
@@ -9564,11 +9586,18 @@ impl Render for Workspace {
             self.centered_layout && self.zoomed.is_some() && self.zoomed_position.is_none();
         let render_padding = |size| {
             (size > 0.0).then(|| {
+                let editor_background = cx.theme().colors().editor_background;
                 div()
                     .h_full()
                     .w(relative(size))
-                    .bg(cx.theme().colors().editor_background)
+                    .bg(editor_background)
                     .border_color(cx.theme().colors().pane_group_border)
+                    .child(background_image_layer(
+                        BackgroundImageTarget::EditorAndTools,
+                        BackgroundImageArea::Window,
+                        editor_background,
+                        true,
+                    ))
             })
         };
         let render_centered_paddings = |enabled: bool| {
@@ -9680,6 +9709,12 @@ impl Render for Workspace {
                             .border_t_1()
                             .border_b_1()
                             .border_color(colors.border)
+                            .child(background_image_layer(
+                                BackgroundImageTarget::EditorAndTools,
+                                BackgroundImageArea::Window,
+                                colors.background,
+                                false,
+                            ))
                             .child({
                                 let this = cx.entity();
                                 canvas(
@@ -10034,6 +10069,12 @@ impl Render for Workspace {
                                     .overflow_hidden()
                                     .border_color(colors.border)
                                     .bg(colors.background)
+                                    .child(background_image_layer(
+                                        BackgroundImageTarget::EditorAndTools,
+                                        BackgroundImageArea::Window,
+                                        colors.background,
+                                        true,
+                                    ))
                                     .child(zoomed_element)
                                     .inset_0()
                                     .shadow_lg();

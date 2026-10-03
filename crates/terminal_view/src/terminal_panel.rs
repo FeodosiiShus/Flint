@@ -147,7 +147,9 @@ impl TerminalPanel {
                     .child(
                         PopoverMenu::new("terminal-tab-bar-popover-menu")
                             .trigger_with_tooltip(
-                                IconButton::new("plus", IconName::Plus).icon_size(IconSize::Small),
+                                IconButton::new("plus", IconName::Plus)
+                                    .icon_size(IconSize::Small)
+                                    .chrome_region(ui::ChromeRegion::TabBar),
                                 Tooltip::text("New…"),
                             )
                             .anchor(Anchor::TopRight)
@@ -181,7 +183,8 @@ impl TerminalPanel {
                         PopoverMenu::new("terminal-pane-tab-bar-split")
                             .trigger_with_tooltip(
                                 IconButton::new("terminal-pane-split", IconName::Split)
-                                    .icon_size(IconSize::Small),
+                                    .icon_size(IconSize::Small)
+                                    .chrome_region(ui::ChromeRegion::TabBar),
                                 Tooltip::text("Split Pane"),
                             )
                             .anchor(Anchor::TopRight)
@@ -206,6 +209,7 @@ impl TerminalPanel {
                         let zoomed = pane.is_zoomed();
                         IconButton::new("toggle_zoom", IconName::Maximize)
                             .icon_size(IconSize::Small)
+                            .chrome_region(ui::ChromeRegion::TabBar)
                             .toggle_state(zoomed)
                             .selected_icon(IconName::Minimize)
                             .on_click(cx.listener(|pane, _, window, cx| {
@@ -1433,6 +1437,12 @@ impl Render for FailedToSpawnTerminal {
             .items_center()
             .justify_center()
             .bg(cx.theme().colors().editor_background)
+            .child(ui::background_image_layer(
+                ui::BackgroundImageTarget::EditorAndTools,
+                ui::BackgroundImageArea::Window,
+                cx.theme().colors().editor_background,
+                true,
+            ))
             .child(
                 v_flex()
                     .max_w_112()
@@ -1860,6 +1870,7 @@ impl RenderOnce for InlineAssistTabBarButton {
         let focus_handle = self.focus_handle;
         IconButton::new("terminal_inline_assistant", IconName::ZedAssistant)
             .icon_size(IconSize::Small)
+            .chrome_region(ui::ChromeRegion::TabBar)
             .on_click({
                 let focus_handle = focus_handle.clone();
                 move |_, window, cx| {

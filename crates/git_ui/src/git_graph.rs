@@ -2830,6 +2830,12 @@ impl GitGraph {
             .flex_basis(DefiniteLength::Fraction(
                 self.commit_details_split_state.read(cx).right_ratio(),
             ))
+            .child(ui::background_image_layer(
+                ui::BackgroundImageTarget::EditorAndTools,
+                ui::BackgroundImageArea::Window,
+                cx.theme().colors().editor_background,
+                true,
+            ))
             .child(
                 v_flex()
                     .relative()
@@ -4122,6 +4128,12 @@ impl Render for GitGraph {
             .track_focus(&self.focus_handle)
             .size_full()
             .bg(cx.theme().colors().editor_background)
+            .child(ui::background_image_layer(
+                ui::BackgroundImageTarget::EditorAndTools,
+                ui::BackgroundImageArea::Window,
+                cx.theme().colors().editor_background,
+                true,
+            ))
             .on_action(cx.listener(|this, _: &OpenCommitView, window, cx| {
                 this.open_selected_commit_view(window, cx);
             }))

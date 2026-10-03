@@ -193,6 +193,7 @@ impl Render for QuickActionBar {
                 .child(
                     IconButton::new("toggle_code_actions_icon", IconName::BoltOutlined)
                         .icon_size(IconSize::Small)
+                        .chrome_region(ui::ChromeRegion::Toolbar)
                         .style(ButtonStyle::Subtle)
                         .disabled(!has_available_code_actions)
                         .toggle_state(is_deployed)
@@ -259,6 +260,7 @@ impl Render for QuickActionBar {
                 .trigger_with_tooltip(
                     IconButton::new("toggle_editor_selections_icon", IconName::CursorIBeam)
                         .icon_size(IconSize::Small)
+                        .chrome_region(ui::ChromeRegion::Toolbar)
                         .style(ButtonStyle::Subtle)
                         .toggle_state(self.toggle_selections_handle.is_deployed()),
                     Tooltip::text("Selection Controls"),
@@ -338,6 +340,7 @@ impl Render for QuickActionBar {
                 .trigger_with_tooltip(
                     IconButton::new("toggle_editor_settings_icon", IconName::Filter)
                         .icon_size(IconSize::Small)
+                        .chrome_region(ui::ChromeRegion::Toolbar)
                         .toggle_state(self.toggle_settings_handle.is_deployed()),
                     Tooltip::text("Editor Controls"),
                 )
@@ -761,6 +764,7 @@ impl RenderOnce for QuickActionBarButton {
 
         IconButton::new(self.id.clone(), self.icon)
             .icon_size(IconSize::Small)
+            .chrome_region(ui::ChromeRegion::Toolbar)
             .style(ButtonStyle::Subtle)
             .toggle_state(self.toggled)
             .tooltip(move |_window, cx| {

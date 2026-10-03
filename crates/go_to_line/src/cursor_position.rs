@@ -225,6 +225,7 @@ impl Render for CursorPosition {
             el.child(
                 Button::new("go-to-line-column", text)
                     .label_size(LabelSize::Small)
+                    .chrome_region(ui::ChromeRegion::StatusBar)
                     .tab_index(0isize)
                     .aria_label(format!(
                         "Line {}, column {}",

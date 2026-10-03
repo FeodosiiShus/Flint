@@ -1465,6 +1465,7 @@ impl Render for LspButton {
                     IconButton::new("zed-lsp-tool-button", IconName::BoltOutlined)
                         .when_some(indicator, IconButton::indicator)
                         .icon_size(IconSize::Small)
+                        .chrome_region(ui::ChromeRegion::StatusBar)
                         .tab_index(0isize)
                         .aria_label("Language Servers")
                         .when(is_restricted, |s| s.icon_color(Color::Warning))

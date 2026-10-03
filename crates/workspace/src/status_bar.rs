@@ -9,7 +9,10 @@ use gpui::{
 use settings::{SettingsContent, update_settings_file};
 use std::{any::TypeId, sync::Arc};
 use theme::CLIENT_SIDE_DECORATION_ROUNDING;
-use ui::{ContextMenu, Divider, IconPosition, Indicator, Tooltip, prelude::*, right_click_menu};
+use ui::{
+    BackgroundImageArea, BackgroundImageTarget, ContextMenu, Divider, IconPosition, Indicator,
+    Tooltip, background_image_layer, prelude::*, right_click_menu,
+};
 
 /// Describes how a status-bar item can be hidden by the user.
 ///
@@ -115,6 +118,7 @@ impl Focusable for StatusBar {
 impl Render for StatusBar {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let sidebar = SidebarStatus::query(&self.multi_workspace, cx);
+        let min_height = ui::chrome_height(ui::ChromeRegion::StatusBar, cx);
 
         h_flex()
             .id("status-bar")
@@ -151,6 +155,7 @@ impl Render for StatusBar {
             .justify_between()
             .gap(DynamicSpacing::Base08.rems(cx))
             .p(DynamicSpacing::Base04.rems(cx))
+            .when_some(min_height, |this, height| this.min_h(height))
             .bg(cx.theme().colors().status_bar_background)
             .map(|el| match window.window_decorations() {
                 Decorations::Server => el,
@@ -181,6 +186,12 @@ impl Render for StatusBar {
                     .border_b(px(1.0))
                     .border_color(cx.theme().colors().status_bar_background),
             })
+            .child(background_image_layer(
+                BackgroundImageTarget::EditorAndTools,
+                BackgroundImageArea::Window,
+                cx.theme().colors().status_bar_background,
+                false,
+            ))
             .child(self.render_left_tools(&sidebar, cx))
             .child(self.render_right_tools(&sidebar, cx))
     }
@@ -259,6 +270,7 @@ impl StatusBar {
                     },
                 )
                 .icon_size(IconSize::Small)
+                .chrome_region(ui::ChromeRegion::StatusBar)
                 .tab_index(0isize)
                 .aria_label("Open threads sidebar")
                 .when(has_notifications, |this| {

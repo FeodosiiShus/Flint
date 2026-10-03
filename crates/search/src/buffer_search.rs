@@ -127,6 +127,7 @@ impl Render for BufferSearchBar {
             let collapse_expand_icon_button = |id| {
                 IconButton::new(id, icon)
                     .icon_size(IconSize::Small)
+                    .chrome_region(ui::ChromeRegion::Toolbar)
                     .tooltip(move |_, cx| {
                         Tooltip::for_action_in(
                             tooltip_label,
@@ -283,6 +284,7 @@ impl Render for BufferSearchBar {
                     )
                     .style(ButtonStyle::Subtle)
                     .shape(IconButtonShape::Square)
+                    .chrome_region(ui::ChromeRegion::Toolbar)
                     .when(self.selection_search_enabled.is_some(), |button| {
                         button.style(ButtonStyle::Filled)
                     })

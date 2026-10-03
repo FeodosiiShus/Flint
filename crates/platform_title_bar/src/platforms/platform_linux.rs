@@ -3,6 +3,8 @@ use gpui::{
 };
 use ui::prelude::*;
 
+const WINDOW_CONTROL_SIZE: Pixels = px(20.);
+
 #[derive(IntoElement)]
 pub struct LinuxWindowControls {
     id: &'static str,
@@ -211,8 +213,12 @@ impl RenderOnce for WindowControl {
             WindowControlType::Restore | WindowControlType::Maximize => window.is_resizable(),
             WindowControlType::Close => true,
         };
+        let region = ui::ChromeRegion::TitleBar;
+        let icon_size = ui::chrome_icon_size(region, IconSize::Medium, cx);
+        let scale = ui::chrome_icon_scale(region, cx);
+        let control_size = scale.map(|scale| WINDOW_CONTROL_SIZE * scale.max(1.));
         let icon = svg()
-            .size_4()
+            .size(icon_size.rems())
             .flex_none()
             .path(self.icon.icon().path())
             .text_color(if enabled {
@@ -232,6 +238,7 @@ impl RenderOnce for WindowControl {
             .rounded_2xl()
             .w_5()
             .h_5()
+            .when_some(control_size, |this, size| this.size(size).rounded_full())
             .when(enabled, |this| {
                 this.cursor_pointer()
                     .hover(|this| this.bg(self.style.background_hover))

@@ -25,6 +25,11 @@ pub use system_window_tabs::{
     DraggedWindowTab, MergeAllWindows, MoveTabToNewWindow, ShowNextWindowTab, ShowPreviousWindowTab,
 };
 
+#[cfg(target_os = "macos")]
+const DEFAULT_TRAFFIC_LIGHT_POSITION: gpui::Point<Pixels> = gpui::point(px(9.), px(9.));
+#[cfg(target_os = "macos")]
+const DEFAULT_TITLE_BAR_HEIGHT: Pixels = px(34.);
+
 /// With client-side decorations, the title bar is pulled over the window frame's
 /// border to avoid a transparent gap in the rounded corners, and a border in the
 /// title bar's own color insets its content back by the same amount. Headers that
@@ -56,6 +61,8 @@ pub struct PlatformTitleBar {
     system_window_tabs: Entity<SystemWindowTabs>,
     button_layout: Option<WindowButtonLayout>,
     multi_workspace: Option<WeakEntity<MultiWorkspace>>,
+    #[cfg(target_os = "macos")]
+    traffic_light_y: Option<Pixels>,
 }
 
 impl PlatformTitleBar {
@@ -71,6 +78,8 @@ impl PlatformTitleBar {
             system_window_tabs,
             button_layout: None,
             multi_workspace: None,
+            #[cfg(target_os = "macos")]
+            traffic_light_y: None,
         }
     }
 
@@ -135,6 +144,22 @@ impl PlatformTitleBar {
     pub fn is_multi_workspace_enabled(cx: &App) -> bool {
         !DisableAiSettings::get_global(cx).disable_ai
     }
+
+    #[cfg(target_os = "macos")]
+    fn update_traffic_light_position(&mut self, height: Pixels, window: &Window, cx: &App) {
+        let region = ui::ChromeRegion::TitleBar;
+        let height_overridden = ui::chrome_height(region, cx).is_some();
+        let icon_size_overridden = ui::chrome_icon_scale(region, cx).is_some();
+        let overridden = height_overridden || icon_size_overridden;
+        let default_position = DEFAULT_TRAFFIC_LIGHT_POSITION;
+        let centered_y = default_position.y + (height - DEFAULT_TITLE_BAR_HEIGHT) / 2.;
+        let target_y = overridden.then_some(centered_y);
+        if target_y != self.traffic_light_y {
+            let y = target_y.unwrap_or(default_position.y);
+            window.set_traffic_light_position(gpui::point(default_position.x, y));
+            self.traffic_light_y = target_y;
+        }
+    }
 }
 
 /// Renders the platform-appropriate left-side window controls (e.g. Ubuntu/GNOME close button).
@@ -174,9 +199,10 @@ pub fn render_right_window_controls(
     button_layout: Option<WindowButtonLayout>,
     close_action: Box<dyn Action>,
     window: &Window,
+    cx: &App,
 ) -> Option<AnyElement> {
     let decorations = window.window_decorations();
-    let height = platform_title_bar_height(window);
+    let height = platform_title_bar_height(window, cx);
 
     match PlatformStyle::platform() {
         PlatformStyle::Linux => {
@@ -207,7 +233,9 @@ impl Render for PlatformTitleBar {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let supported_controls = window.window_controls();
         let decorations = window.window_decorations();
-        let height = platform_title_bar_height(window);
+        let height = platform_title_bar_height(window, cx);
+        #[cfg(target_os = "macos")]
+        self.update_traffic_light_position(height, window, cx);
         let titlebar_color = self.title_bar_color(window, cx);
         let close_action = Box::new(workspace::CloseWindow);
         let children = mem::take(&mut self.children);
@@ -265,6 +293,12 @@ impl Render for PlatformTitleBar {
                         },
                     )
             })
+            .child(ui::background_image_layer(
+                ui::BackgroundImageTarget::EditorAndTools,
+                ui::BackgroundImageArea::Window,
+                titlebar_color,
+                false,
+            ))
             .map(|this| {
                 let show_left_controls = !(sidebar.open && sidebar.side == SidebarSide::Left);
 
@@ -331,6 +365,7 @@ impl Render for PlatformTitleBar {
                                     button_layout,
                                     close_action.as_ref().boxed_clone(),
                                     window,
+                                    cx,
                                 )
                             })
                             .flatten(),

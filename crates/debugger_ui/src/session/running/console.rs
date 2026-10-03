@@ -457,6 +457,12 @@ impl Render for Console {
             .size_full()
             .border_2()
             .bg(cx.theme().colors().editor_background)
+            .child(ui::background_image_layer(
+                ui::BackgroundImageTarget::EditorAndTools,
+                ui::BackgroundImageArea::Window,
+                cx.theme().colors().editor_background,
+                true,
+            ))
             .child(self.render_console(cx))
             .when(self.is_running(cx), |this| {
                 this.child(Divider::horizontal()).child(
@@ -466,6 +472,12 @@ impl Render for Console {
                         .p_1()
                         .gap_1()
                         .bg(cx.theme().colors().editor_background)
+                        .child(ui::background_image_layer(
+                            ui::BackgroundImageTarget::EditorAndTools,
+                            ui::BackgroundImageArea::Window,
+                            cx.theme().colors().editor_background,
+                            true,
+                        ))
                         .child(self.render_query_bar(cx))
                         .child(SplitButton::new(
                             ui::ButtonLike::new_rounded_all(ElementId::Name(

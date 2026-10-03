@@ -626,6 +626,7 @@ fn init_renderers(cx: &mut App) {
         .add_basic_renderer::<settings::CenteredPaddingSettings>(render_editable_number_field)
         .add_basic_renderer::<settings::InactiveOpacity>(render_editable_number_field)
         .add_basic_renderer::<settings::MinimumContrast>(render_editable_number_field)
+        .add_basic_renderer::<settings::BackgroundImageOpacity>(render_editable_number_field)
         .add_basic_renderer::<settings::ShowScrollbar>(render_dropdown)
         .add_basic_renderer::<settings::ScrollbarDiagnostics>(render_dropdown)
         .add_basic_renderer::<settings::ShowMinimap>(render_dropdown)
@@ -670,6 +671,8 @@ fn init_renderers(cx: &mut App) {
         .add_basic_renderer::<settings::FullscreenMode>(render_dropdown)
         .add_basic_renderer::<settings::WindowButtonLayoutContentDiscriminants>(render_dropdown)
         .add_basic_renderer::<settings::ScanSymlinksSetting>(render_dropdown)
+        .add_basic_renderer::<settings::BackgroundImageFill>(render_dropdown)
+        .add_basic_renderer::<settings::BackgroundImageAnchor>(render_dropdown)
         .add_basic_renderer::<settings::FontSize>(render_editable_number_field)
         .add_basic_renderer::<settings::OllamaModelName>(render_ollama_model_picker)
         .add_basic_renderer::<settings::SemanticTokens>(render_dropdown)
@@ -893,7 +896,7 @@ fn open_settings_editor_with(
         cx.open_window(
             WindowOptions {
                 titlebar: Some(TitlebarOptions {
-                    title: Some("Zed — Settings".into()),
+                    title: Some("Flint — Settings".into()),
                     appears_transparent: true,
                     traffic_light_position: Some(point(px(12.0), px(12.0))),
                 }),
