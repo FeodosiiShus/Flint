@@ -1419,6 +1419,11 @@ impl<T: ScrollableHandle> Element for ScrollbarElement<T> {
             }),
             |window| {
                 let colors = cx.theme().colors();
+                let shows_background_image = crate::has_background_image(
+                    crate::BackgroundImageTarget::EditorAndTools,
+                    window,
+                    cx,
+                );
 
                 let capture_phase;
 
@@ -1473,7 +1478,11 @@ impl<T: ScrollableHandle> Element for ScrollbarElement<T> {
                         if let Some((track_bounds, colors)) = track_config {
                             let has_border = colors.has_border;
 
-                            let mut track_color = colors.background;
+                            let mut track_color = if shows_background_image {
+                                Hsla::transparent_black()
+                            } else {
+                                colors.background
+                            };
                             if let Some(fade) = autohide_fade
                                 && !has_border
                             {

@@ -15,7 +15,7 @@
   "theme_overrides": {
     "Eva Dark": {
       "background.appearance": "blurred",
-      "background": "#22272fb3",
+      "background": "#16181db3",
       "surface.background": "#21252b00",
       "elevated_surface.background": "#22272f99",
       "element.background": "#282c3499",
@@ -26,9 +26,9 @@
       "tab_bar.background": "#21252b99",
       "tab.inactive_background": "#21252b99",
       "tab.active_background": "#3e588999",
-      "panel.background": "#21252b00",
-      "editor.background": "#282c341a",
-      "editor.gutter.background": "#282c341a",
+      "panel.background": "#21252b",
+      "editor.background": "#282c34",
+      "editor.gutter.background": "#282c34",
       "editor.subheader.background": "#21252b99",
       "terminal.background": "#282c3400",
     },
@@ -72,12 +72,12 @@
   //         "buffer_line_height": {
   //           "custom": 2
   //         },
-  "buffer_line_height": "standard",
+  "buffer_line_height": "comfortable",
   // The name of a font to use for rendering text in the UI
   // You can set this to ".SystemUIFont" to use the system font
   // ".ZedSans" currently aliases to "IBM Plex Sans", but this may
   // change in the future
-  "ui_font_family": ".SystemUIFont",
+  "ui_font_family": "Inter",
   // Set the UI's font fallbacks, this will be merged with the platform's
   // default font fallbacks.
   "ui_font_fallbacks": null,
@@ -915,7 +915,7 @@
     //   "chevron"
     // 3. A disclosure chevron followed by a folder icon:
     //   "both"
-    "folder_indicator": "icon",
+    "folder_indicator": "both",
     // Whether to show the git status in the project panel.
     "git_status": true,
     // Amount of indentation for nested items.

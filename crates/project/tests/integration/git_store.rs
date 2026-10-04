@@ -1758,7 +1758,7 @@ mod git_worktrees {
 mod trust_tests {
     use collections::HashSet;
     use fs::FakeFs;
-    use gpui::TestAppContext;
+    use gpui::{BorrowAppContext, TestAppContext};
     use project::trusted_worktrees::*;
 
     use serde_json::json;
@@ -1773,6 +1773,11 @@ mod trust_tests {
         cx.update(|cx| {
             let settings_store = SettingsStore::test(cx);
             cx.set_global(settings_store);
+            cx.update_global::<SettingsStore, _>(|store, cx| {
+                store.update_user_settings(cx, |settings| {
+                    settings.session.get_or_insert_default().trust_all_worktrees = Some(false);
+                });
+            });
         });
     }
 

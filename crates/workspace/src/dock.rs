@@ -1348,7 +1348,8 @@ impl Render for Dock {
             let islands = workspace_settings.islands;
             let header_settings = workspace_settings.tool_window_headers;
             let position_key = position.key();
-            let header = header_settings.show.then(|| {
+            let hosts_own_pane = entry.panel.pane(cx).is_some();
+            let header = (header_settings.show && !hosts_own_pane).then(|| {
                 render_tool_window_header(
                     position,
                     entry.panel.clone(),
@@ -1689,6 +1690,7 @@ pub mod test {
         pub flexible: bool,
         pub activation_priority: u32,
         pub icon: Option<ui::IconName>,
+        pub pane: Option<Entity<Pane>>,
     }
     actions!(test_only, [ToggleTestPanel]);
 
@@ -1706,6 +1708,7 @@ pub mod test {
                 flexible: false,
                 activation_priority,
                 icon: None,
+                pane: None,
             }
         }
 
@@ -1756,6 +1759,10 @@ pub mod test {
     }
 
     impl Panel for TestPanel {
+        fn pane(&self) -> Option<Entity<Pane>> {
+            self.pane.clone()
+        }
+
         fn activation_focus_handle(&self, cx: &App) -> FocusHandle {
             self.activation_focus_handle
                 .clone()

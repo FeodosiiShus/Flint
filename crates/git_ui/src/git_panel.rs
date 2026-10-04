@@ -14673,6 +14673,14 @@ mod tests {
     #[gpui::test]
     async fn test_history_tab_pane_navigation_focuses_rendered_panel(cx: &mut TestAppContext) {
         init_test(cx);
+        cx.update(|cx| {
+            SettingsStore::update_global(cx, |store, cx| {
+                store.update_user_settings(cx, |settings| {
+                    settings.git_panel.get_or_insert_default().dock =
+                        Some(DockPosition::Right.into());
+                })
+            });
+        });
 
         let (_, _project, workspace, panel, mut cx) =
             setup_git_panel_with_changes(cx, json!({ ".git": {} }), &[]).await;

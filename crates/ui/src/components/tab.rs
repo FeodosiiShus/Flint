@@ -12,6 +12,8 @@ const TAB_BORDER_WIDTH: Pixels = px(1.);
 const ISLAND_TAB_PILL_RADIUS: Pixels = px(6.);
 const ISLAND_TAB_PILL_VERTICAL_INSET: Pixels = px(4.);
 const ISLAND_TAB_ACCENT_FILL_OPACITY: f32 = 0.15;
+const ISLAND_TAB_DIVIDER_WIDTH: Pixels = px(1.);
+const ISLAND_TAB_DIVIDER_HEIGHT_FRACTION: f32 = 0.5;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct IslandTabPillColors {
@@ -56,10 +58,12 @@ pub enum TabCloseSide {
 
 #[derive(IntoElement, RegisterComponent)]
 pub struct Tab {
+    id: ElementId,
     div: Stateful<Div>,
     selected: bool,
     focused: bool,
     islands: bool,
+    trailing_divider: bool,
     position: TabPosition,
     close_side: TabCloseSide,
     start_slot: Option<AnyElement>,
@@ -71,12 +75,14 @@ impl Tab {
     pub fn new(id: impl Into<ElementId>) -> Self {
         let id = id.into();
         Self {
+            id: id.clone(),
             div: div()
                 .id(id.clone())
                 .debug_selector(|| format!("TAB-{}", id)),
             selected: false,
             focused: false,
             islands: false,
+            trailing_divider: false,
             position: TabPosition::First,
             close_side: TabCloseSide::End,
             start_slot: None,
@@ -92,6 +98,11 @@ impl Tab {
 
     pub fn islands(mut self, islands: bool) -> Self {
         self.islands = islands;
+        self
+    }
+
+    pub fn trailing_divider(mut self, trailing_divider: bool) -> Self {
+        self.trailing_divider = trailing_divider;
         self
     }
 
@@ -209,9 +220,15 @@ impl RenderOnce for Tab {
             let pill = island_tab_pill_colors(self.focused, colors);
             let hover_background = colors.ghost_element_hover;
             let transparent_border = colors.border_transparent;
+            let divider_color = colors.border_variant;
+            let container_height = Tab::container_height(cx);
+            let divider_height = (container_height - ISLAND_TAB_PILL_VERTICAL_INSET * 2.)
+                * ISLAND_TAB_DIVIDER_HEIGHT_FRACTION;
+            let divider_top = (container_height - divider_height) * 0.5;
+            let divider_id = self.id;
             return self
                 .div
-                .h(Tab::container_height(cx))
+                .h(container_height)
                 .py(ISLAND_TAB_PILL_VERTICAL_INSET)
                 .px_px()
                 .cursor_pointer()
@@ -228,7 +245,19 @@ impl RenderOnce for Tab {
                                     .hover(move |style| style.bg(hover_background))
                             }
                         }),
-                );
+                )
+                .when(self.trailing_divider, |this| {
+                    this.child(
+                        div()
+                            .absolute()
+                            .top(divider_top)
+                            .right_0()
+                            .w(ISLAND_TAB_DIVIDER_WIDTH)
+                            .h(divider_height)
+                            .bg(divider_color)
+                            .debug_selector(|| format!("TAB_DIVIDER-{}", divider_id)),
+                    )
+                });
         }
 
         self.div

@@ -1175,7 +1175,9 @@ impl TitleBar {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gpui::{Background, Modifiers, TestAppContext, VisualTestContext, point};
+    use gpui::{
+        Background, Modifiers, TestAppContext, UpdateGlobal as _, VisualTestContext, point,
+    };
     use std::{cell::Cell, rc::Rc};
     use util::paths::PathStyle;
     use workspace::AppState;

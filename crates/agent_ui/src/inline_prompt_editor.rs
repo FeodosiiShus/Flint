@@ -161,6 +161,13 @@ impl<T: 'static> Render for PromptEditor<T> {
             .border_y_1()
             .border_color(cx.theme().colors().border)
             .bg(cx.theme().colors().editor_background)
+            .child(ui::background_image_layer(
+                ui::BackgroundImageTarget::EditorAndTools,
+                ui::BackgroundImageArea::Window,
+                cx.theme().colors().editor_background,
+                true,
+                gpui::Corners::default(),
+            ))
             .child(
                 h_flex()
                     .on_action(cx.listener(Self::confirm))
@@ -1016,6 +1023,13 @@ impl<T: 'static> PromptEditor<T> {
             .p_2()
             .pl_1()
             .bg(colors.editor_background)
+            .child(ui::background_image_layer(
+                ui::BackgroundImageTarget::EditorAndTools,
+                ui::BackgroundImageArea::Window,
+                colors.editor_background,
+                true,
+                gpui::Corners::default(),
+            ))
             .child({
                 let settings = ThemeSettings::get_global(cx);
                 let font_size = settings.buffer_font_size(cx);

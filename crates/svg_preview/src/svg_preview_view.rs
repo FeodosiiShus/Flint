@@ -284,6 +284,13 @@ impl Render for SvgPreviewView {
             .track_focus(&self.focus_handle(cx))
             .size_full()
             .bg(cx.theme().colors().editor_background)
+            .child(ui::background_image_layer(
+                ui::BackgroundImageTarget::EditorAndTools,
+                ui::BackgroundImageArea::Window,
+                cx.theme().colors().editor_background,
+                true,
+                gpui::Corners::default(),
+            ))
             .flex()
             .justify_center()
             .items_center()

@@ -15144,6 +15144,46 @@ mod tests {
     }
 
     #[gpui::test]
+    async fn tool_window_header_is_skipped_for_a_panel_hosting_its_own_pane(
+        cx: &mut TestAppContext,
+    ) {
+        let (workspace, [_left_panel, bottom_panel, _right_panel], cx) =
+            tool_window_bar_test_workspace(cx).await;
+        let pane = workspace.update_in(cx, |workspace, window, cx| {
+            cx.new(|cx| {
+                Pane::new(
+                    workspace.weak_handle(),
+                    workspace.project().clone(),
+                    workspace.pane_history_timestamp.clone(),
+                    None,
+                    NewFile.boxed_clone(),
+                    true,
+                    window,
+                    cx,
+                )
+            })
+        });
+        bottom_panel.update(cx, |panel, _| panel.pane = Some(pane));
+
+        open_dock_with_center_focus(&workspace, DockPosition::Bottom, cx);
+        open_dock_with_center_focus(&workspace, DockPosition::Left, cx);
+
+        assert_eq!(
+            cx.debug_bounds("tool_window_header_bottom"),
+            None,
+            "a panel that hosts its own tab strip has no tool window header"
+        );
+        assert!(
+            cx.debug_bounds("tool_window_content_bottom").is_some(),
+            "the pane hosting panel still renders its content"
+        );
+        assert!(
+            cx.debug_bounds("tool_window_header_left").is_some(),
+            "a panel without its own pane keeps the tool window header"
+        );
+    }
+
+    #[gpui::test]
     async fn inactive_window_dims_tool_window_bar_content_only(cx: &mut TestAppContext) {
         let (workspace, _panels, cx) = tool_window_bar_test_workspace(cx).await;
         open_dock_with_center_focus(&workspace, DockPosition::Left, cx);

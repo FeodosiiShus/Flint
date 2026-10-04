@@ -20,6 +20,13 @@ impl Render for TableView {
         let table_with_settings = v_flex()
             .size_full()
             .bg(theme.colors().editor_background)
+            .child(ui::background_image_layer(
+                ui::BackgroundImageTarget::EditorAndTools,
+                ui::BackgroundImageArea::Window,
+                theme.colors().editor_background,
+                true,
+                gpui::Corners::default(),
+            ))
             .track_focus(&self.focus_handle)
             .child({
                 let is_loading = self.is_loading;

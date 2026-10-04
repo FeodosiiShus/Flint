@@ -1332,6 +1332,13 @@ impl Render for MergeView {
             .key_context("MergeView")
             .size_full()
             .bg(cx.theme().colors().editor_background)
+            .child(ui::background_image_layer(
+                ui::BackgroundImageTarget::EditorAndTools,
+                ui::BackgroundImageArea::Window,
+                cx.theme().colors().editor_background,
+                true,
+                gpui::Corners::default(),
+            ))
             .on_action(cx.listener(Self::next_difference))
             .on_action(cx.listener(Self::previous_difference))
             .on_action(cx.listener(Self::accept_left_side))

@@ -2877,6 +2877,13 @@ impl Pane {
         let is_last_item = ix == self.items.len() - 1;
         let is_pinned = self.is_tab_pinned(ix);
         let position_relative_to_active_item = ix.cmp(&self.active_item_index);
+        let strip_last_index = if is_pinned {
+            self.pinned_tab_count.saturating_sub(1)
+        } else {
+            self.items.len().saturating_sub(1)
+        };
+        let has_trailing_divider =
+            tab_has_trailing_divider(ix, self.active_item_index, strip_last_index);
 
         let read_only_toggle = |toggleable: bool| {
             IconButton::new("toggle_read_only", IconName::FileLock)
@@ -2923,6 +2930,7 @@ impl Pane {
             .toggle_state(is_active)
             .focused(pane_focused)
             .islands(WorkspaceSettings::get_global(cx).islands.enabled)
+            .trailing_divider(has_trailing_divider)
             .on_click(cx.listener({
                 let item_handle = item.boxed_clone();
                 move |pane: &mut Self, event: &ClickEvent, window, cx| {
@@ -4415,6 +4423,10 @@ struct HiddenTab {
     item_id: EntityId,
     label: SharedString,
     is_active: bool,
+}
+
+fn tab_has_trailing_divider(index: usize, active_index: usize, strip_last_index: usize) -> bool {
+    index != strip_last_index && index != active_index && index + 1 != active_index
 }
 
 fn hidden_tab_indices(
@@ -9122,6 +9134,169 @@ mod tests {
             cx.debug_bounds("hidden_tabs_button").is_some(),
             "the hidden tabs button should be shown once tabs overflow"
         );
+    }
+
+    const ISLAND_TAB_DIVIDER_SELECTORS: [&str; 10] = [
+        "TAB_DIVIDER-0",
+        "TAB_DIVIDER-1",
+        "TAB_DIVIDER-2",
+        "TAB_DIVIDER-3",
+        "TAB_DIVIDER-4",
+        "TAB_DIVIDER-5",
+        "TAB_DIVIDER-6",
+        "TAB_DIVIDER-7",
+        "TAB_DIVIDER-8",
+        "TAB_DIVIDER-9",
+    ];
+
+    fn set_islands_enabled(cx: &mut TestAppContext, enabled: bool) {
+        cx.update_global(|store: &mut SettingsStore, cx| {
+            store.update_user_settings(cx, |settings| {
+                settings.workspace.islands.get_or_insert_default().enabled = Some(enabled);
+            });
+        });
+    }
+
+    fn painted_island_tab_divider_indices(
+        tab_count: usize,
+        cx: &mut VisualTestContext,
+    ) -> Vec<usize> {
+        ISLAND_TAB_DIVIDER_SELECTORS
+            .into_iter()
+            .take(tab_count)
+            .enumerate()
+            .filter(|(_, selector)| cx.debug_bounds(*selector).is_some())
+            .map(|(index, _)| index)
+            .collect()
+    }
+
+    #[test]
+    fn island_tab_divider_rule_skips_selected_neighbours_and_strip_end() {
+        let dividers = |active_index: usize, strip_last_index: usize| {
+            (0..=strip_last_index)
+                .filter(|index| tab_has_trailing_divider(*index, active_index, strip_last_index))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(dividers(0, 4), vec![1, 2, 3]);
+        assert_eq!(dividers(2, 4), vec![0, 3]);
+        assert_eq!(dividers(4, 4), vec![0, 1, 2]);
+        assert_eq!(dividers(1, 1), Vec::<usize>::new());
+        assert_eq!(dividers(7, 3), vec![0, 1, 2]);
+    }
+
+    #[gpui::test]
+    async fn island_tab_dividers_sit_between_adjacent_unselected_tabs(cx: &mut TestAppContext) {
+        init_test(cx);
+        let fs = FakeFs::new(cx.executor());
+        let project = Project::test(fs, None, cx).await;
+        let (workspace, cx) =
+            cx.add_window_view(|window, cx| Workspace::test_new(project, window, cx));
+        let pane = workspace.read_with(cx, |workspace, _| workspace.active_pane().clone());
+        cx.simulate_resize(size(px(1200.), px(600.)));
+
+        set_labeled_items(&pane, ["A", "B", "C*", "D", "E"], cx);
+        cx.run_until_parked();
+
+        assert_eq!(
+            painted_island_tab_divider_indices(5, cx),
+            vec![0, 3],
+            "only gaps with no selected tab beside them and that are not the strip end get a divider"
+        );
+
+        let tab_bounds = cx.debug_bounds("TAB-0").expect("TAB-0 should be painted");
+        let divider_bounds = cx
+            .debug_bounds("TAB_DIVIDER-0")
+            .expect("the first tab should have a trailing divider");
+        assert_eq!(divider_bounds.size.width, px(1.));
+        assert!(
+            (divider_bounds.right() - tab_bounds.right()).abs() < px(0.5),
+            "the divider sits on the trailing edge of its tab"
+        );
+        assert!(
+            divider_bounds.size.height > px(0.)
+                && divider_bounds.size.height < tab_bounds.size.height * 0.75,
+            "the divider is a short mark, not full height: {divider_bounds:?} in {tab_bounds:?}"
+        );
+        assert!(
+            (divider_bounds.center().y - tab_bounds.center().y).abs() < px(0.5),
+            "the divider is centered vertically in the tab"
+        );
+
+        set_labeled_items(&pane, ["A", "B", "C", "D", "E*"], cx);
+        cx.run_until_parked();
+        assert_eq!(
+            painted_island_tab_divider_indices(5, cx),
+            vec![0, 1, 2],
+            "no divider before the selected last tab or after it"
+        );
+
+        set_labeled_items(&pane, ["A*", "B", "C", "D", "E"], cx);
+        cx.run_until_parked();
+        assert_eq!(
+            painted_island_tab_divider_indices(5, cx),
+            vec![1, 2, 3],
+            "no divider after the selected first tab, none after the last tab"
+        );
+    }
+
+    #[gpui::test]
+    async fn island_tab_dividers_stay_inside_the_pinned_and_unpinned_strips(
+        cx: &mut TestAppContext,
+    ) {
+        init_test(cx);
+        let fs = FakeFs::new(cx.executor());
+        let project = Project::test(fs, None, cx).await;
+        let (workspace, cx) =
+            cx.add_window_view(|window, cx| Workspace::test_new(project, window, cx));
+        let pane = workspace.read_with(cx, |workspace, _| workspace.active_pane().clone());
+        cx.simulate_resize(size(px(1200.), px(600.)));
+
+        let item_a = add_labeled_item(&pane, "A", false, cx);
+        let item_b = add_labeled_item(&pane, "B", false, cx);
+        add_labeled_item(&pane, "C", false, cx);
+        add_labeled_item(&pane, "D", false, cx);
+        add_labeled_item(&pane, "E", false, cx);
+        pane.update_in(cx, |pane, window, cx| {
+            let ix = pane.index_for_item_id(item_a.item_id()).unwrap();
+            pane.pin_tab_at(ix, window, cx);
+            let ix = pane.index_for_item_id(item_b.item_id()).unwrap();
+            pane.pin_tab_at(ix, window, cx);
+        });
+        assert_item_labels(&pane, ["A!", "B!", "C", "D", "E*"], cx);
+        cx.run_until_parked();
+
+        assert_eq!(
+            painted_island_tab_divider_indices(5, cx),
+            vec![0, 2],
+            "the last pinned tab and the last unpinned tab end their strips without a divider"
+        );
+    }
+
+    #[gpui::test]
+    async fn island_tab_dividers_are_absent_when_islands_are_disabled(cx: &mut TestAppContext) {
+        init_test(cx);
+        let fs = FakeFs::new(cx.executor());
+        let project = Project::test(fs, None, cx).await;
+        let (workspace, cx) =
+            cx.add_window_view(|window, cx| Workspace::test_new(project, window, cx));
+        let pane = workspace.read_with(cx, |workspace, _| workspace.active_pane().clone());
+        cx.simulate_resize(size(px(1200.), px(600.)));
+
+        set_labeled_items(&pane, ["A", "B", "C*", "D", "E"], cx);
+        cx.run_until_parked();
+        assert_eq!(painted_island_tab_divider_indices(5, cx), vec![0, 3]);
+
+        set_islands_enabled(cx, false);
+        cx.run_until_parked();
+        assert_eq!(
+            painted_island_tab_divider_indices(5, cx),
+            Vec::<usize>::new(),
+            "the classic tab bar keeps its own borders and draws no island dividers"
+        );
+
+        set_islands_enabled(cx, true);
+        cx.run_until_parked();
+        assert_eq!(painted_island_tab_divider_indices(5, cx), vec![0, 3]);
     }
 
     #[test]
