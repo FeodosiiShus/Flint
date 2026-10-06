@@ -15,7 +15,7 @@ use collections::IndexMap;
 use gpui::{App, Entity};
 use language::{
     CachedLspAdapter, LanguageName, LanguageRegistry, ManifestDelegate, ManifestName, Toolchain,
-    language_settings::AllLanguageSettings,
+    language_settings::{AllLanguageSettings, LanguageSettings},
 };
 use lsp::LanguageServerName;
 use settings::{Settings, SettingsLocation, WorktreeId};
@@ -23,9 +23,10 @@ use std::sync::OnceLock;
 use util::rel_path::RelPath;
 
 use crate::{
-    LanguageServerId, ProjectPath, project_settings::LspSettings,
-    toolchain_store::LocalToolchainStore,
+    LanguageServerId, ProjectPath, lsp_store::server_activation::ServerActivationGate,
+    project_settings::LspSettings, toolchain_store::LocalToolchainStore,
 };
+use worktree::Snapshot;
 
 use super::ManifestTree;
 
@@ -42,6 +43,7 @@ pub struct LanguageServerTree {
     pub(crate) instances: BTreeMap<WorktreeId, ServersForWorktree>,
     languages: Arc<LanguageRegistry>,
     toolchains: Entity<LocalToolchainStore>,
+    activation: Arc<ServerActivationGate>,
 }
 
 /// A node in language server tree represents either:
@@ -125,12 +127,14 @@ impl LanguageServerTree {
         manifest_tree: Entity<ManifestTree>,
         languages: Arc<LanguageRegistry>,
         toolchains: Entity<LocalToolchainStore>,
+        activation: Arc<ServerActivationGate>,
     ) -> Self {
         Self {
             manifest_tree,
             instances: Default::default(),
             languages,
             toolchains,
+            activation,
         }
     }
 
@@ -144,7 +148,7 @@ impl LanguageServerTree {
         cx: &mut App,
     ) -> impl Iterator<Item = LanguageServerId> + 'a {
         let manifest_location = self.manifest_location_for_path(&path, manifest_name, delegate, cx);
-        let adapters = self.adapters_for_language(&manifest_location, &language_name, cx);
+        let adapters = self.adapters_for_language(&manifest_location, &language_name, false, cx);
         self.get_with_adapters(manifest_location, adapters)
     }
 
@@ -158,7 +162,7 @@ impl LanguageServerTree {
         cx: &'a mut App,
     ) -> impl Iterator<Item = LanguageServerTreeNode> + 'a {
         let manifest_location = self.manifest_location_for_path(&path, manifest_name, delegate, cx);
-        let adapters = self.adapters_for_language(&manifest_location, &language_name, cx);
+        let adapters = self.adapters_for_language(&manifest_location, &language_name, true, cx);
         self.init_with_adapters(manifest_location, language_name, adapters, cx)
     }
 
@@ -236,6 +240,7 @@ impl LanguageServerTree {
         &self,
         manifest_location: &ProjectPath,
         language_name: &LanguageName,
+        apply_activation: bool,
         cx: &App,
     ) -> IndexMap<LanguageServerName, (LspSettings, Arc<CachedLspAdapter>)> {
         let settings_location = SettingsLocation {
@@ -257,8 +262,19 @@ impl LanguageServerTree {
             .map(|lsp_adapter| lsp_adapter.name.clone())
             .collect::<Vec<_>>();
 
-        let desired_language_servers =
-            settings.customized_language_servers(&available_language_servers);
+        let desired_language_servers = settings
+            .customized_language_servers(&available_language_servers)
+            .into_iter()
+            .filter(|server_name| {
+                !apply_activation
+                    || self.is_server_active(
+                        manifest_location.worktree_id,
+                        server_name,
+                        &settings,
+                        cx,
+                    )
+            })
+            .collect::<Vec<_>>();
         let adapters_with_settings = desired_language_servers
             .into_iter()
             .filter_map(|desired_adapter| {
@@ -301,6 +317,33 @@ impl LanguageServerTree {
         );
 
         adapters_with_settings
+    }
+
+    fn is_server_active(
+        &self,
+        worktree_id: WorktreeId,
+        server_name: &LanguageServerName,
+        language_settings: &LanguageSettings,
+        cx: &App,
+    ) -> bool {
+        let explicitly_enabled = language_settings.language_servers.iter().any(|configured| {
+            !configured.disabled
+                && LanguageServerName(configured.name.clone().into()) == *server_name
+        });
+        explicitly_enabled
+            || self.activation.is_active(worktree_id, server_name, || {
+                self.worktree_snapshot(worktree_id, cx)
+            })
+    }
+
+    fn worktree_snapshot(&self, worktree_id: WorktreeId, cx: &App) -> Option<Snapshot> {
+        let worktree = self
+            .manifest_tree
+            .read(cx)
+            .worktree_store
+            .read(cx)
+            .worktree_for_id(worktree_id, cx)?;
+        Some(worktree.read(cx).snapshot())
     }
 
     /// Server Tree is built up incrementally via queries for distinct paths of the worktree.
@@ -380,6 +423,7 @@ impl ServerTreeRebase {
             old_tree.manifest_tree.clone(),
             old_tree.languages.clone(),
             old_tree.toolchains.clone(),
+            old_tree.activation.clone(),
         );
         Self {
             old_contents,
@@ -402,7 +446,7 @@ impl ServerTreeRebase {
                 .manifest_location_for_path(&path, manifest_name, &delegate, cx);
         let adapters = self
             .new_tree
-            .adapters_for_language(&manifest, &language_name, cx);
+            .adapters_for_language(&manifest, &language_name, true, cx);
 
         self.new_tree
             .init_with_adapters(manifest, language_name, adapters, cx)

@@ -2419,7 +2419,7 @@
       },
     },
     "JavaScript": {
-      "language_servers": ["vtsls", "eslint", "..."],
+      "language_servers": ["tsgo", "!vtsls", "!typescript-language-server", "eslint", "..."],
       "code_actions_on_format": {
         "source.fixAll.eslint": true,
       },
@@ -2527,7 +2527,7 @@
       },
     },
     "TSX": {
-      "language_servers": ["vtsls", "eslint", "..."],
+      "language_servers": ["tsgo", "!vtsls", "!typescript-language-server", "eslint", "..."],
       "code_actions_on_format": {
         "source.fixAll.eslint": true,
       },
@@ -2541,7 +2541,7 @@
       },
     },
     "TypeScript": {
-      "language_servers": ["vtsls", "eslint", "..."],
+      "language_servers": ["tsgo", "!vtsls", "!typescript-language-server", "eslint", "..."],
       "code_actions_on_format": {
         "source.fixAll.eslint": true,
       },
@@ -2679,6 +2679,42 @@
     //     }
     // }
     "vtsls": {
+      "settings": {
+        "typescript": {
+          "inlayHints": {
+            "parameterNames": {
+              "enabled": "all",
+              "suppressWhenArgumentMatchesName": false,
+            },
+            "parameterTypes": { "enabled": true },
+            "variableTypes": {
+              "enabled": true,
+              "suppressWhenTypeMatchesName": true,
+            },
+            "propertyDeclarationTypes": { "enabled": true },
+            "functionLikeReturnTypes": { "enabled": true },
+            "enumMemberValues": { "enabled": true },
+          },
+        },
+        "javascript": {
+          "inlayHints": {
+            "parameterNames": {
+              "enabled": "all",
+              "suppressWhenArgumentMatchesName": false,
+            },
+            "parameterTypes": { "enabled": true },
+            "variableTypes": {
+              "enabled": true,
+              "suppressWhenTypeMatchesName": true,
+            },
+            "propertyDeclarationTypes": { "enabled": true },
+            "functionLikeReturnTypes": { "enabled": true },
+            "enumMemberValues": { "enabled": true },
+          },
+        },
+      },
+    },
+    "tsgo": {
       "settings": {
         "typescript": {
           "inlayHints": {

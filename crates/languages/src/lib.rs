@@ -28,6 +28,7 @@ mod python;
 mod rust;
 mod tailwind;
 mod tailwindcss;
+mod tsgo;
 mod typescript;
 mod vtsls;
 mod yaml;
@@ -79,6 +80,7 @@ pub fn init(languages: Arc<LanguageRegistry>, fs: Arc<dyn Fs>, node: NodeRuntime
     let rust_lsp_adapter = Arc::new(rust::RustLspAdapter);
     let tailwind_adapter = Arc::new(tailwind::TailwindLspAdapter::new(node.clone()));
     let tailwindcss_adapter = Arc::new(tailwindcss::TailwindCssLspAdapter::new(node.clone()));
+    let tsgo_adapter = Arc::new(tsgo::TsgoLspAdapter::new(node.clone()));
     let typescript_context = Arc::new(typescript::TypeScriptContextProvider::new(fs.clone()));
     let typescript_lsp_adapter = Arc::new(typescript::TypeScriptLspAdapter::new(
         node.clone(),
@@ -180,25 +182,25 @@ pub fn init(languages: Arc<LanguageRegistry>, fs: Arc<dyn Fs>, node: NodeRuntime
         },
         LanguageInfo {
             name: "tsx",
-            adapters: vec![typescript_lsp_adapter.clone(), vtsls_adapter.clone()],
+            adapters: vec![tsgo_adapter.clone()],
             context: Some(typescript_context.clone()),
             ..Default::default()
         },
         LanguageInfo {
             name: "typescript",
-            adapters: vec![typescript_lsp_adapter.clone(), vtsls_adapter.clone()],
+            adapters: vec![tsgo_adapter.clone()],
             context: Some(typescript_context.clone()),
             ..Default::default()
         },
         LanguageInfo {
             name: "javascript",
-            adapters: vec![typescript_lsp_adapter.clone(), vtsls_adapter.clone()],
+            adapters: vec![tsgo_adapter.clone()],
             context: Some(typescript_context),
             ..Default::default()
         },
         LanguageInfo {
             name: "jsdoc",
-            adapters: vec![typescript_lsp_adapter.clone(), vtsls_adapter.clone()],
+            adapters: vec![tsgo_adapter.clone()],
             ..Default::default()
         },
         LanguageInfo {
@@ -260,6 +262,7 @@ pub fn init(languages: Arc<LanguageRegistry>, fs: Arc<dyn Fs>, node: NodeRuntime
         LanguageServerName("eslint".into()),
         eslint_adapter.clone(),
     );
+    languages.register_available_lsp_adapter(LanguageServerName("tsgo".into()), tsgo_adapter);
     languages.register_available_lsp_adapter(LanguageServerName("vtsls".into()), vtsls_adapter);
     languages.register_available_lsp_adapter(
         LanguageServerName("typescript-language-server".into()),
@@ -293,6 +296,28 @@ pub fn init(languages: Arc<LanguageRegistry>, fs: Arc<dyn Fs>, node: NodeRuntime
     for language in eslint_languages {
         languages.register_lsp_adapter(language.into(), eslint_adapter.clone());
     }
+
+    languages.register_server_activation(
+        LanguageServerName::new_static("tailwindcss-language-server"),
+        ServerActivationRule::new(
+            &["**/tailwind.config.{js,cjs,mjs,ts,cts,mts}"],
+            &["tailwindcss", "@tailwindcss/*"],
+        ),
+    );
+
+    languages.register_server_activation(
+        LanguageServerName::new_static("marksman"),
+        ServerActivationRule::new(
+            &[
+                "**/.marksman.toml",
+                "**/.obsidian",
+                "**/mkdocs.yml",
+                "**/mkdocs.yaml",
+                "**/book.toml",
+            ],
+            &[],
+        ),
+    );
 
     let mut subscription = languages.subscribe();
     let mut prev_language_settings = languages.language_settings();

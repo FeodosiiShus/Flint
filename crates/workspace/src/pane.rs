@@ -3734,6 +3734,7 @@ impl Pane {
             .track_scroll(&self.tab_bar_scroll_handle)
             .on_scroll_wheel(cx.listener(|this, _, _, _| {
                 this.suppress_scroll = true;
+                this.tab_bar_scroll_handle.cancel_deferred_scroll();
             }))
             .children(unpinned_tabs)
             .child(self.render_tab_bar_drop_target(tab_count, cx))
@@ -5324,7 +5325,7 @@ mod tests {
     };
     use gpui::{
         AppContext, Axis, Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
-        TestAppContext, VisualTestContext, point, size,
+        ScrollDelta, ScrollWheelEvent, TestAppContext, VisualTestContext, point, px, size,
     };
     use project::FakeFs;
     use settings::SettingsStore;
@@ -9037,9 +9038,11 @@ mod tests {
         cx.simulate_resize(size(px(500.), px(600.)));
 
         add_described_items(&pane, &HIDDEN_TABS_LABELS, cx);
-        pane.update(cx, |pane, cx| {
-            pane.tab_bar_scroll_handle.set_offset(point(px(0.), px(0.)));
-            cx.notify();
+        let tab_bar_bounds = pane.read_with(cx, |pane, _| pane.tab_bar_scroll_handle.bounds());
+        cx.simulate_event(ScrollWheelEvent {
+            position: point(tab_bar_bounds.left() + px(10.), tab_bar_bounds.center().y),
+            delta: ScrollDelta::Pixels(point(px(10000.), px(0.))),
+            ..Default::default()
         });
         cx.run_until_parked();
 

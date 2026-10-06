@@ -898,7 +898,7 @@ mod tests {
 
             assert_eq!(
                 resolved_language_servers(&store, None, "TypeScript"),
-                servers(&["vtsls", "eslint"]),
+                servers(&["tsgo", "eslint"]),
                 "default settings should disable typescript-language-server for TypeScript"
             );
             assert_eq!(
@@ -911,7 +911,7 @@ mod tests {
                 .unwrap();
             assert_eq!(
                 resolved_language_servers(&store, None, "TypeScript"),
-                servers(&["vtsls", "eslint"]),
+                servers(&["tsgo", "eslint"]),
                 "the per-language list should fully replace the user's global list"
             );
             assert_eq!(
@@ -956,7 +956,7 @@ mod tests {
             );
             assert_eq!(
                 resolved_language_servers(&store, root_location, "TypeScript"),
-                servers(&["vtsls", "eslint"]),
+                servers(&["tsgo", "eslint"]),
                 "the per-language list should fully replace the project's global list"
             );
 
@@ -1108,7 +1108,7 @@ mod tests {
             );
             assert_eq!(
                 resolved_language_servers(&store, root_location, "TypeScript"),
-                servers(&["vtsls", "eslint"]),
+                servers(&["tsgo", "eslint"]),
                 "a language with its own list should ignore global lists from every file"
             );
 
@@ -1140,7 +1140,7 @@ mod tests {
             );
             assert_eq!(
                 resolved_language_servers(&store, None, "TypeScript"),
-                servers(&["vtsls", "eslint"]),
+                servers(&["tsgo", "eslint"]),
                 "a global list, exhaustive or not, never applies to languages with their own list"
             );
 

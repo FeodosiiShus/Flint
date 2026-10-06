@@ -4394,6 +4394,16 @@ impl ScrollHandle {
         state.scroll_to_bottom = true;
     }
 
+    /// Discard every pending deferred scroll of this handle: the pending
+    /// [ScrollHandle::scroll_to_item] / [ScrollHandle::scroll_to_top_of_item] target and the
+    /// [ScrollHandle::scroll_to_bottom] flag. Call this when the user takes over scrolling,
+    /// so the next frame doesn't undo their scroll.
+    pub fn cancel_deferred_scroll(&self) {
+        let mut state = self.0.borrow_mut();
+        state.active_item = None;
+        state.scroll_to_bottom = false;
+    }
+
     /// Set the offset explicitly. The offset is the distance from the top left of the
     /// parent container to the top left of the first child.
     /// As you scroll further down the offset becomes more negative.

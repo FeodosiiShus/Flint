@@ -117,6 +117,12 @@ jobs:
       - name: Run language server DOTNET_ROOT tests
         run: cargo test --locked --package project --features project/test-support --lib dotnet_root
 
+      - name: Run TypeScript native language server tests
+        run: cargo test --locked --package languages --lib tsgo
+
+      - name: Run language server activation tests
+        run: cargo test --locked --package project --features project/test-support --lib server_activation
+
       - name: Run zed action and keymap tests
         run: cargo test --locked --package zed --bin zed -- test_action_namespaces test_base_keymap
 

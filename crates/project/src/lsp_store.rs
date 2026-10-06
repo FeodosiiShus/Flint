@@ -23,6 +23,7 @@ pub mod log_store;
 pub mod lsp_ext_command;
 pub mod rust_analyzer_ext;
 mod semantic_tokens;
+pub(crate) mod server_activation;
 pub mod vue_language_server_ext;
 
 use self::code_lens::CodeLensData;
@@ -31,6 +32,7 @@ use self::document_links::DocumentLinksData;
 use self::document_symbols::DocumentSymbolsData;
 use self::dynamic_registration::DynamicRegistrations;
 use self::inlay_hints::BufferInlayHints;
+use self::server_activation::{ProbeRequest, ServerActivationGate};
 use crate::{
     CodeAction, Completion, CompletionDisplayOptions, CompletionResponse, CompletionSource,
     CoreCompletion, Hover, InlayHint, InlayId, LocationLink, LspAction, LspPullDiagnostics,
@@ -346,6 +348,8 @@ pub struct LocalLspStore {
     _subscription: gpui::Subscription,
     _binary_status_task: Task<()>,
     lsp_tree: LanguageServerTree,
+    server_activation: Arc<ServerActivationGate>,
+    _maintain_server_activation: Task<()>,
     registered_buffers: HashMap<BufferId, usize>,
     buffers_opened_in_servers: HashMap<BufferId, HashSet<LanguageServerId>>,
     buffer_pull_diagnostics_result_ids: HashMap<
@@ -4055,6 +4059,7 @@ impl LocalLspStore {
             seed.worktree_id != id_to_remove && !servers_to_remove.contains(&state.id)
         });
         self.lsp_tree.instances.remove(&id_to_remove);
+        self.server_activation.forget_worktree(id_to_remove);
         for server_id_to_remove in &servers_to_remove {
             self.language_server_watched_paths
                 .remove(server_id_to_remove);
@@ -4907,6 +4912,14 @@ impl LspStore {
             (Self::maintain_workspace_config(receiver, cx), sender)
         };
 
+        let (server_activation, probe_requests) = ServerActivationGate::new(languages.clone());
+        let maintain_server_activation = Self::maintain_server_activation(
+            probe_requests,
+            server_activation.clone(),
+            fs.clone(),
+            cx,
+        );
+
         Self {
             mode: LspStoreMode::Local(LocalLspStore {
                 weak: cx.weak_entity(),
@@ -4943,7 +4956,10 @@ impl LspStore {
                     manifest_tree,
                     languages.clone(),
                     toolchain_store.clone(),
+                    server_activation.clone(),
                 ),
+                server_activation,
+                _maintain_server_activation: maintain_server_activation,
                 toolchain_store,
                 registered_buffers: HashMap::default(),
                 buffers_opened_in_servers: HashMap::default(),
@@ -5102,6 +5118,7 @@ impl LspStore {
             }
             WorktreeStoreEvent::WorktreeUpdatedEntries(worktree_id, changes) => {
                 self.invalidate_diagnostic_summaries_for_removed_entries(*worktree_id, changes, cx);
+                self.refresh_server_activation(*worktree_id, changes, cx);
             }
             WorktreeStoreEvent::WorktreeReleased(..)
             | WorktreeStoreEvent::WorktreeOrderChanged
@@ -5149,6 +5166,29 @@ impl LspStore {
 
     fn request_workspace_config_refresh(&mut self) {
         *self._maintain_workspace_config.1.borrow_mut() = ();
+    }
+
+    fn refresh_server_activation(
+        &self,
+        worktree_id: WorktreeId,
+        changes: &UpdatedEntriesSet,
+        cx: &App,
+    ) {
+        let Some(local) = self.as_local() else {
+            return;
+        };
+        let Some(worktree) = self
+            .worktree_store
+            .read(cx)
+            .worktree_for_id(worktree_id, cx)
+        else {
+            return;
+        };
+        local.server_activation.reprobe_affected(
+            worktree_id,
+            changes,
+            &worktree.read(cx).snapshot(),
+        );
     }
 
     pub fn prettier_store(&self) -> Option<Entity<PrettierStore>> {
@@ -9714,6 +9754,40 @@ impl LspStore {
             }
 
             anyhow::Ok(())
+        })
+    }
+
+    fn maintain_server_activation(
+        mut probe_requests: futures::channel::mpsc::UnboundedReceiver<ProbeRequest>,
+        gate: Arc<ServerActivationGate>,
+        fs: Arc<dyn Fs>,
+        cx: &mut Context<Self>,
+    ) -> Task<()> {
+        cx.spawn(async move |this, cx| {
+            while let Some(request) = probe_requests.next().await {
+                let gate = gate.clone();
+                let fs = fs.clone();
+                let this = this.clone();
+                cx.spawn(async move |cx| {
+                    let ProbeRequest {
+                        worktree_id,
+                        server_name,
+                        rule,
+                        snapshot,
+                    } = request;
+                    let active = cx
+                        .background_executor()
+                        .spawn(async move {
+                            server_activation::probe(&rule, &snapshot, fs.as_ref()).await
+                        })
+                        .await;
+                    if gate.record(worktree_id, &server_name, active) {
+                        this.update(cx, |lsp_store, cx| lsp_store.refresh_server_tree(cx))
+                            .ok();
+                    }
+                })
+                .detach();
+            }
         })
     }
 

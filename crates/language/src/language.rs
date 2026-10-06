@@ -18,6 +18,7 @@ pub mod modeline;
 mod outline;
 pub mod proto;
 mod runnable;
+mod server_activation;
 mod syntax_map;
 mod task_context;
 mod text_diff;
@@ -110,6 +111,7 @@ pub use language_registry::{
 };
 pub use lsp::{LanguageServerId, LanguageServerName};
 pub use outline::*;
+pub use server_activation::ServerActivationRule;
 pub use syntax_map::{
     OwnedSyntaxLayer, SyntaxLayer, SyntaxMapMatches, ToTreeSitterPoint, TreeSitterOptions,
 };

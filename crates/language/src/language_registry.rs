@@ -1,9 +1,9 @@
 use crate::available_languages::{AvailableLanguage, LanguageOrigin};
 use crate::{
     CachedLspAdapter, File, Language, LanguageConfig, LanguageId, LanguageMatcher,
-    LanguageServerName, LspAdapter, ManifestName, PLAIN_TEXT, ToolchainLister,
-    available_languages::AvailableLanguages, language_settings::all_language_settings,
-    task_context::ContextProvider, with_parser,
+    LanguageServerName, LspAdapter, ManifestName, PLAIN_TEXT, ServerActivationRule,
+    ToolchainLister, available_languages::AvailableLanguages,
+    language_settings::all_language_settings, task_context::ContextProvider, with_parser,
 };
 use anyhow::{Context as _, Result, anyhow};
 use collections::{FxHashMap, HashMap, HashSet, hash_map};
@@ -51,6 +51,7 @@ struct LanguageRegistryState {
     all_lsp_adapters: HashMap<LanguageServerName, Arc<CachedLspAdapter>>,
     available_lsp_adapters:
         HashMap<LanguageServerName, Arc<dyn Fn() -> Arc<CachedLspAdapter> + 'static + Send + Sync>>,
+    server_activation_rules: HashMap<LanguageServerName, Arc<ServerActivationRule>>,
     loading_languages: HashMap<LanguageId, Vec<oneshot::Sender<Result<Arc<Language>>>>>,
     subscription: (watch::Sender<()>, watch::Receiver<()>),
     theme: Option<Arc<Theme>>,
@@ -126,6 +127,7 @@ impl LanguageRegistry {
                 lsp_adapters: Default::default(),
                 all_lsp_adapters: Default::default(),
                 available_lsp_adapters: HashMap::default(),
+                server_activation_rules: HashMap::default(),
                 subscription: watch::channel(),
                 theme: Default::default(),
                 version: 0,
@@ -273,6 +275,29 @@ impl LanguageRegistry {
             .available_lsp_adapters
             .keys()
             .cloned()
+            .collect()
+    }
+
+    pub fn register_server_activation(&self, name: LanguageServerName, rule: ServerActivationRule) {
+        self.state
+            .write()
+            .server_activation_rules
+            .insert(name, Arc::new(rule));
+    }
+
+    pub fn server_activation_rule(
+        &self,
+        name: &LanguageServerName,
+    ) -> Option<Arc<ServerActivationRule>> {
+        self.state.read().server_activation_rules.get(name).cloned()
+    }
+
+    pub fn server_activation_rules(&self) -> Vec<(LanguageServerName, Arc<ServerActivationRule>)> {
+        self.state
+            .read()
+            .server_activation_rules
+            .iter()
+            .map(|(name, rule)| (name.clone(), rule.clone()))
             .collect()
     }
 
