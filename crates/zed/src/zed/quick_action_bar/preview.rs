@@ -1,59 +1,17 @@
-use editor::{Editor, MultiBuffer};
-use gpui::{AnyElement, Entity, Modifiers};
-use markdown_preview::markdown_preview_view::MarkdownPreviewView;
+use editor::MultiBuffer;
+use gpui::{AnyElement, Modifiers};
 use svg_preview::svg_preview_view::SvgPreviewView;
-use tabular_data_preview::TabularDataPreviewPane;
 use ui::{Tooltip, prelude::*, text_for_keystroke};
 
 use super::QuickActionBar;
 
-enum PreviewTarget {
-    Markdown(Entity<Editor>),
-    Svg(Entity<MultiBuffer>),
-    TabularData(Entity<Editor>),
-}
-
 impl QuickActionBar {
     pub fn render_preview_button(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        // Resolve against this toolbar's own pane item rather than the
-        // workspace's focused item, so each pane's button reflects and
-        // targets the content of the pane it belongs to.
         let active_item = self.active_item.as_ref()?;
-        let editor = active_item.act_as::<Editor>(cx);
-
-        let preview_target = if let Some(editor) = &editor
-            && MarkdownPreviewView::is_markdown_file(editor, cx)
-        {
-            PreviewTarget::Markdown(editor.clone())
-        } else if let Some(buffer) = active_item.act_as::<MultiBuffer>(cx)
-            && SvgPreviewView::is_svg_file(&buffer, cx)
-        {
-            PreviewTarget::Svg(buffer)
-        } else if let Some(editor) = editor
-            && TabularDataPreviewPane::is_tabular_data_file(&editor, cx)
-        {
-            PreviewTarget::TabularData(editor)
-        } else {
+        let buffer = active_item.act_as::<MultiBuffer>(cx)?;
+        if !SvgPreviewView::is_svg_file(&buffer, cx) {
             return None;
-        };
-
-        let (button_id, tooltip_text, open_action_for_tooltip) = match &preview_target {
-            PreviewTarget::Markdown(_) => (
-                "toggle-markdown-preview",
-                "Preview Markdown",
-                &markdown_preview::OpenPreview as &dyn gpui::Action,
-            ),
-            PreviewTarget::Svg(_) => (
-                "toggle-svg-preview",
-                "Preview SVG",
-                &svg_preview::OpenPreview as &dyn gpui::Action,
-            ),
-            PreviewTarget::TabularData(_) => (
-                "toggle-tabular-preview",
-                "Preview Tabular Data",
-                &tabular_data_preview::OpenPreview as &dyn gpui::Action,
-            ),
-        };
+        }
 
         let alt_click = gpui::Keystroke {
             key: "click".into(),
@@ -61,14 +19,14 @@ impl QuickActionBar {
             ..Default::default()
         };
 
-        let button = IconButton::new(button_id, IconName::Eye)
+        let button = IconButton::new("toggle-svg-preview", IconName::Eye)
             .icon_size(IconSize::Small)
             .chrome_region(ui::ChromeRegion::Toolbar)
             .style(ButtonStyle::Subtle)
             .tooltip(move |_window, cx| {
                 Tooltip::with_meta(
-                    tooltip_text,
-                    Some(open_action_for_tooltip),
+                    "Preview SVG",
+                    Some(&svg_preview::OpenPreview as &dyn gpui::Action),
                     format!(
                         "{} to open in a split",
                         text_for_keystroke(&alt_click.modifiers, &alt_click.key, cx)
@@ -83,48 +41,19 @@ impl QuickActionBar {
                     let Some(workspace) = workspace_handle.upgrade() else {
                         return;
                     };
+                    let buffer = buffer.clone();
                     workspace.update(cx, |workspace, cx| {
                         let Some(pane) = workspace.pane_for(active_item.as_ref()) else {
                             return;
                         };
-                        let open_to_the_side = window.modifiers().alt;
-                        match &preview_target {
-                            PreviewTarget::Markdown(editor) => {
-                                let editor = editor.clone();
-                                if open_to_the_side {
-                                    MarkdownPreviewView::open_preview_to_the_side_of_pane(
-                                        workspace, editor, pane, window, cx,
-                                    );
-                                } else {
-                                    MarkdownPreviewView::open_preview_in_pane(
-                                        workspace, editor, pane, window, cx,
-                                    );
-                                }
-                            }
-                            PreviewTarget::Svg(buffer) => {
-                                let buffer = buffer.clone();
-                                if open_to_the_side {
-                                    SvgPreviewView::open_preview_to_the_side_of_pane(
-                                        workspace, buffer, pane, window, cx,
-                                    );
-                                } else {
-                                    SvgPreviewView::open_preview_in_pane(
-                                        workspace, buffer, pane, window, cx,
-                                    );
-                                }
-                            }
-                            PreviewTarget::TabularData(editor) => {
-                                let editor = editor.clone();
-                                if open_to_the_side {
-                                    TabularDataPreviewPane::open_preview_to_the_side_of_pane(
-                                        workspace, editor, pane, window, cx,
-                                    );
-                                } else {
-                                    TabularDataPreviewPane::open_preview_in_pane(
-                                        editor, pane, window, cx,
-                                    );
-                                }
-                            }
+                        if window.modifiers().alt {
+                            SvgPreviewView::open_preview_to_the_side_of_pane(
+                                workspace, buffer, pane, window, cx,
+                            );
+                        } else {
+                            SvgPreviewView::open_preview_in_pane(
+                                workspace, buffer, pane, window, cx,
+                            );
                         }
                     });
                 }

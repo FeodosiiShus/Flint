@@ -2,7 +2,6 @@ mod base_keymap_setting;
 mod content_into_gpui;
 mod editable_setting_control;
 mod editorconfig_store;
-mod granted_write_path;
 mod keymap_file;
 mod settings_file;
 mod settings_store;
@@ -24,9 +23,8 @@ pub mod private {
     pub use inventory;
 }
 
-use gpui::{App, Global};
+use gpui::App;
 
-use crate as settings;
 use std::env;
 use std::{borrow::Cow, fmt, str};
 use util::asset_str;
@@ -38,7 +36,6 @@ pub use editable_setting_control::*;
 pub use editorconfig_store::{
     Editorconfig, EditorconfigEvent, EditorconfigProperties, EditorconfigStore,
 };
-pub use granted_write_path::GrantedWritePath;
 pub use keymap_file::{
     KeyBindingValidator, KeyBindingValidatorRegistration, KeybindSource, KeybindUpdateOperation,
     KeybindUpdateTarget, KeymapFile, KeymapFileLoadResult,
@@ -55,41 +52,12 @@ pub use vscode_import::{VsCodeSettings, VsCodeSettingsSource};
 
 pub use keymap_file::ActionSequence;
 
-#[derive(Clone, Debug, Default, RegisterSetting)]
-pub struct CopilotSettings {
-    pub enterprise_uri: Option<String>,
-}
-
-impl Settings for CopilotSettings {
-    fn from_settings(content: &SettingsContent) -> Self {
-        Self {
-            enterprise_uri: content
-                .copilot
-                .as_ref()
-                .and_then(|copilot| copilot.enterprise_uri.clone()),
-        }
-    }
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub struct ActiveSettingsProfileName(pub String);
-
-impl Global for ActiveSettingsProfileName {}
-
 pub trait UserSettingsContentExt {
-    fn for_profile(&self, cx: &App) -> Option<&SettingsProfile>;
     fn for_release_channel(&self) -> Option<&SettingsContent>;
     fn for_os(&self) -> Option<&SettingsContent>;
 }
 
 impl UserSettingsContentExt for UserSettingsContent {
-    fn for_profile(&self, cx: &App) -> Option<&SettingsProfile> {
-        let Some(active_profile) = cx.try_global::<ActiveSettingsProfileName>() else {
-            return None;
-        };
-        self.profiles.get(&active_profile.0)
-    }
-
     fn for_release_channel(&self) -> Option<&SettingsContent> {
         self.release_channel_overrides
             .get_by_key(release_channel::RELEASE_CHANNEL.dev_name())
@@ -146,7 +114,6 @@ util::fs_embed! {
 pub fn init(cx: &mut App) {
     let settings = SettingsStore::new(cx, &default_settings());
     cx.set_global(settings);
-    SettingsStore::observe_active_settings_profile_name(cx).detach();
 }
 
 pub fn default_settings() -> Cow<'static, str> {
@@ -168,12 +135,6 @@ pub const DEFAULT_KEYMAP_PATH: &str = "keymaps/default-linux.json";
 
 pub fn default_keymap() -> Cow<'static, str> {
     asset_str::<SettingsAssets>(DEFAULT_KEYMAP_PATH)
-}
-
-pub const VIM_KEYMAP_PATH: &str = "keymaps/vim.json";
-
-pub fn vim_keymap() -> Cow<'static, str> {
-    asset_str::<SettingsAssets>(VIM_KEYMAP_PATH)
 }
 
 /// Specific keybinding overrides. Loaded after the base keymap so they win over

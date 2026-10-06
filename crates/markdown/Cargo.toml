@@ -28,7 +28,6 @@ language.workspace = true
 linkify.workspace = true
 log.workspace = true
 markup5ever_rcdom.workspace = true
-mermaid_render = { path = "../mermaid_render" }
 pulldown-cmark.workspace = true
 settings.workspace = true
 smallvec.workspace = true
@@ -44,7 +43,7 @@ assets.workspace = true
 env_logger.workspace = true
 fs = {workspace = true, features = ["test-support"]}
 gpui = { workspace = true, features = ["test-support"] }
-gpui_platform = { workspace = true, features = ["wayland", "x11"] }
+gpui_platform.workspace = true
 image.workspace = true
 indoc.workspace = true
 language = { workspace = true, features = ["test-support"] }

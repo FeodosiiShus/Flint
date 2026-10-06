@@ -32,12 +32,12 @@ use util::{
 use crate::editorconfig_store::EditorconfigStore;
 
 use crate::{
-    ActiveSettingsProfileName, FileTypeMap, FontFamilyName, IconThemeName, LanguageSettingsContent,
-    LanguageToSettingsMap, LspSettings, LspSettingsMap, SemanticTokenRules, ThemeName,
-    UserSettingsContentExt, VsCodeSettings, WorktreeId,
+    FileTypeMap, FontFamilyName, IconThemeName, LanguageSettingsContent, LanguageToSettingsMap,
+    LspSettings, LspSettingsMap, SemanticTokenRules, ThemeName, UserSettingsContentExt,
+    VsCodeSettings, WorktreeId,
     settings_content::{
-        ExtendingSet, ExtensionsSettingsContent, ProfileBase, ProjectSettingsContent,
-        RootUserSettings, SettingsContent, UserSettingsContent, merge_from::MergeFrom,
+        ExtendingSet, ExtensionsSettingsContent, ProjectSettingsContent, RootUserSettings,
+        SettingsContent, UserSettingsContent, merge_from::MergeFrom,
     },
 };
 
@@ -335,14 +335,6 @@ impl SettingsStore {
         this
     }
 
-    pub fn observe_active_settings_profile_name(cx: &mut App) -> gpui::Subscription {
-        cx.observe_global::<ActiveSettingsProfileName>(|cx| {
-            Self::update_global(cx, |store, cx| {
-                store.recompute_values(None, cx);
-            });
-        })
-    }
-
     pub fn update<C, R>(cx: &mut C, f: impl FnOnce(&mut Self, &mut C) -> R) -> R
     where
         C: BorrowAppContext,
@@ -501,13 +493,6 @@ impl SettingsStore {
     /// Get the default settings content as a raw JSON value.
     pub fn raw_default_settings(&self) -> &SettingsContent {
         &self.default_settings
-    }
-
-    /// Get the configured settings profile names.
-    pub fn configured_settings_profiles(&self) -> impl Iterator<Item = &str> {
-        self.user_settings
-            .iter()
-            .flat_map(|settings| settings.profiles.keys().map(|k| k.as_str()))
     }
 
     #[cfg(any(test, feature = "test-support"))]
@@ -1365,7 +1350,7 @@ impl SettingsStore {
     fn recompute_values(
         &mut self,
         changed_local_path: Option<(WorktreeId, &RelPath)>,
-        cx: &mut App,
+        _cx: &mut App,
     ) {
         // Reload the global and local values for every setting.
         let mut project_settings_stack = Vec::<SettingsContent>::new();
@@ -1376,69 +1361,12 @@ impl SettingsStore {
             merged.merge_from_option(self.extension_settings.as_deref());
             merged.merge_from_option(self.global_settings.as_deref());
             if let Some(user_settings) = self.user_settings.as_ref() {
-                let active_profile = user_settings.for_profile(cx);
-                let should_merge_user_settings =
-                    active_profile.is_none_or(|profile| profile.base == ProfileBase::User);
-
-                if should_merge_user_settings {
-                    merged.merge_from(&user_settings.content);
-                    merged.merge_from_option(user_settings.for_release_channel());
-                    merged.merge_from_option(user_settings.for_os());
-                }
-
-                if let Some(profile) = active_profile {
-                    merged.merge_from(&profile.settings);
-                }
+                merged.merge_from(&user_settings.content);
+                merged.merge_from_option(user_settings.for_release_channel());
+                merged.merge_from_option(user_settings.for_os());
             }
             merged.merge_from_option(self.server_settings.as_deref());
 
-            // Merge `disable_ai` from all project/local settings into the global value.
-            // Since `SaturatingBool` uses OR logic, if any project has `disable_ai: true`,
-            // the global value will be true. This allows project-level `disable_ai` to
-            // affect the global setting used by UI elements without file context.
-            for local_settings in self.local_settings.values() {
-                merged
-                    .project
-                    .disable_ai
-                    .merge_from(&local_settings.project.disable_ai);
-            }
-
-            self.merged_settings = Rc::new(merged);
-
-            for setting_value in self.setting_values.values_mut() {
-                let value = setting_value.from_settings(&self.merged_settings);
-                setting_value.set_global_value(value);
-            }
-        } else {
-            // When only a local path changed, we still need to recompute the global
-            // `disable_ai` value since it depends on all local settings.
-            let mut merged = (*self.merged_settings).clone();
-            // Reset disable_ai to compute fresh from base settings
-            merged.project.disable_ai = self.default_settings.project.disable_ai;
-            if let Some(global) = &self.global_settings {
-                merged
-                    .project
-                    .disable_ai
-                    .merge_from(&global.project.disable_ai);
-            }
-            if let Some(user) = &self.user_settings {
-                merged
-                    .project
-                    .disable_ai
-                    .merge_from(&user.content.project.disable_ai);
-            }
-            if let Some(server) = &self.server_settings {
-                merged
-                    .project
-                    .disable_ai
-                    .merge_from(&server.project.disable_ai);
-            }
-            for local_settings in self.local_settings.values() {
-                merged
-                    .project
-                    .disable_ai
-                    .merge_from(&local_settings.project.disable_ai);
-            }
             self.merged_settings = Rc::new(merged);
 
             for setting_value in self.setting_values.values_mut() {
@@ -3167,51 +3095,6 @@ mod tests {
                 &SettingsFile::Default,
             ]
         )
-    }
-
-    #[gpui::test]
-    fn test_agent_profile_tool_schema(cx: &mut App) {
-        SettingsStore::test(cx);
-
-        let schema = SettingsStore::json_schema(&SettingsJsonSchemaParams {
-            language_names: &[],
-            font_names: &[],
-            theme_names: &[],
-            icon_theme_names: &[],
-            lsp_adapter_names: &[],
-            action_names: &[],
-            action_documentation: &HashMap::default(),
-            deprecations: &HashMap::default(),
-            deprecation_messages: &HashMap::default(),
-        });
-        let tools = schema
-            .pointer("/$defs/AgentProfileContent/properties/tools")
-            .expect("agent profile tools schema should exist");
-        let properties = tools
-            .get("properties")
-            .and_then(Value::as_object)
-            .expect("agent profile tools should have named properties");
-        let boolean_schema = serde_json::json!({ "type": "boolean" });
-        for tool_schema in properties.values() {
-            assert_eq!(tool_schema, &boolean_schema);
-        }
-        assert_eq!(tools.get("additionalProperties"), Some(&Value::Bool(false)));
-
-        let defaults: Value = crate::parse_json_with_comments(default_settings().as_ref())
-            .expect("default settings should parse");
-        for profile in ["write", "ask"] {
-            let path = format!("/agent/profiles/{profile}/tools");
-            let default_tools = defaults
-                .pointer(&path)
-                .and_then(Value::as_object)
-                .expect("built-in profile should have tools");
-            for tool_name in default_tools.keys() {
-                assert!(
-                    properties.contains_key(tool_name),
-                    "{profile} tool {tool_name} should be suggested in the schema"
-                );
-            }
-        }
     }
 
     #[gpui::test]

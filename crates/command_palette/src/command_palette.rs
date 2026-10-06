@@ -958,14 +958,6 @@ mod tests {
             humanize_action_name("go_to_line::Deploy"),
             "go to line: deploy"
         );
-        assert_eq!(
-            humanize_action_name("agent::OpenGlobalAGENTS.mdRules"),
-            "agent: open global AGENTS.md rules"
-        );
-        assert_eq!(
-            humanize_action_name("agent::OpenProjectAGENTS.mdRules"),
-            "agent: open project AGENTS.md rules"
-        );
         assert_eq!(humanize_action_name("editor::OpenURL"), "editor: open URL");
         assert_eq!(
             humanize_action_name("editor::OpenURLParser"),

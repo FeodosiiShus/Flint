@@ -145,8 +145,6 @@
     "context": "Workspace",
     "bindings": {
       "alt-x": "command_palette::Toggle", // execute-extended-command
-      "ctrl-x b": "tab_switcher::Toggle", // switch-to-buffer
-      "ctrl-x ctrl-b": "tab_switcher::Toggle", // list-buffers
       // "ctrl-x ctrl-c": "workspace::CloseWindow" // in case you only want to exit the current Zed instance
       "ctrl-x ctrl-c": "zed::Quit", // save-buffers-kill-terminal
       "ctrl-x 5 0": "workspace::CloseWindow", // delete-frame

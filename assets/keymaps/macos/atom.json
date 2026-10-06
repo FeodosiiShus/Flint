@@ -33,7 +33,6 @@
       "ctrl-cmd-up": "editor::MoveLineUp",
       "ctrl-cmd-down": "editor::MoveLineDown",
       "cmd-\\": "workspace::ToggleLeftDock",
-      "ctrl-shift-m": "markdown::OpenPreviewToTheSide",
       "cmd-r": "outline::Toggle",
     },
   },

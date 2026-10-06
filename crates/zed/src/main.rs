@@ -15,7 +15,6 @@ const _: () = assert!(
      Forks: update APP_NAME in crates/paths/src/paths.rs when renaming the binary.",
 );
 
-use agent_ui::AgentPanel;
 use anyhow::{Context as _, Result};
 use clap::Parser;
 use cli::FORCE_CLI_MODE_ENV_VAR_NAME;
@@ -34,7 +33,6 @@ use gpui_platform;
 use gpui_tokio::Tokio;
 use language::LanguageRegistry;
 use project_panel::ProjectPanel;
-use prompt_store::PromptBuilder;
 use remote::RemoteConnectionOptions;
 use reqwest_client::ReqwestClient;
 
@@ -193,12 +191,6 @@ static STARTUP_TIME: OnceLock<Instant> = OnceLock::new();
 fn main() {
     STARTUP_TIME.get_or_init(|| Instant::now());
 
-    // If this process was re-executed as a Linux sandbox helper, run that mode
-    // without returning. Must run before argument parsing: the wrapped command's
-    // args are appended verbatim and would otherwise be misinterpreted as Zed's
-    // own arguments.
-    sandbox::run_sandbox_launcher_if_invoked();
-
     #[cfg(unix)]
     util::prevent_root_execution();
 
@@ -208,20 +200,6 @@ fn main() {
     #[cfg(not(target_os = "windows"))]
     if let Some(socket) = &args.askpass {
         askpass::main(socket);
-        return;
-    }
-
-    #[cfg(target_os = "windows")]
-    if args.record_etw_trace {
-        let Some(etw_socket) = args.etw_socket else {
-            eprintln!("--etw-socket is required for --record-etw-trace");
-            process::exit(1);
-        };
-
-        if let Err(error) = etw_tracing::record_etw_trace(args.etw_zed_pid, &etw_socket) {
-            eprintln!("ETW trace recording failed: {error:#}");
-            process::exit(1);
-        }
         return;
     }
 
@@ -492,7 +470,6 @@ fn main() {
 
         let node_runtime = NodeRuntime::new(client.http_client(), Some(shell_env_loaded_rx), rx);
 
-        debug_adapter_extension::init(extension_host_proxy.clone(), cx);
         languages::init(languages.clone(), fs.clone(), node_runtime.clone(), cx);
         let user_store = cx.new(|cx| UserStore::new(client.clone(), cx));
         let workspace_store = cx.new(|_| WorkspaceStore::default());
@@ -522,14 +499,11 @@ fn main() {
         #[cfg(target_os = "macos")]
         zed::move_to_applications::init(cx);
         project::Project::init(&client, cx);
-        debugger_ui::init(cx);
-        debugger_tools::init(cx);
         feature_flags::FeatureFlagStore::init(cx);
 
-        let installation_id = cx.foreground_executor().block_on(installation_id).ok();
+        cx.foreground_executor().block_on(installation_id).log_err();
         let session = cx.foreground_executor().block_on(session);
 
-        let is_new_install = matches!(&installation_id, Some(IdType::New));
         let app_session = cx.new(|cx| AppSession::new(session, cx));
 
         let app_state = Arc::new(AppState {
@@ -545,7 +519,6 @@ fn main() {
         AppState::set_global(app_state.clone(), cx);
 
         watcher_debug::init(app_state.clone(), cx);
-        dap_adapters::init(cx);
         reliability::init(app_state.workspace_store.clone(), cx);
         extension_host::init(
             extension_host_proxy.clone(),
@@ -563,51 +536,15 @@ fn main() {
             cx.background_executor().clone(),
         );
         command_palette::init(cx);
-        let copilot_chat_configuration = copilot_chat::CopilotChatConfiguration {
-            enterprise_uri: settings::CopilotSettings::get_global(cx)
-                .enterprise_uri
-                .clone(),
-        };
-        let credentials_provider = zed_credentials_provider::global(cx);
-        copilot_chat::init(
-            app_state.client.http_client(),
-            credentials_provider,
-            copilot_chat_configuration,
-            cx,
-        );
-
-        language_model::init(cx);
-        language_models::init(app_state.client.clone(), cx);
-        acp_tools::init(cx);
         zed::remote_debug::init(cx);
         snippet_provider::init(cx);
-        let prompt_builder = PromptBuilder::load(app_state.fs.clone(), stdout_is_a_pty(), cx);
-        project::AgentRegistryStore::init_global(
-            cx,
-            app_state.fs.clone(),
-            app_state.client.http_client(),
-        );
-        agent_ui::init(
-            app_state.fs.clone(),
-            prompt_builder,
-            app_state.languages.clone(),
-            is_new_install,
-            false,
-            cx,
-        );
-        zed::watch_user_agents_md(app_state.fs.clone(), cx);
-
-        repl::init(app_state.fs.clone(), cx);
         recent_projects::init(cx);
-        dev_container::init(cx);
 
         load_embedded_fonts(cx);
         #[cfg(target_os = "linux")]
         prewarm_fonts(cx);
 
         editor::init(cx);
-        image_viewer::init(cx);
-        repl::notebook::init(cx);
         diagnostics::init(cx);
 
         workspace::init(app_state.clone(), cx);
@@ -616,9 +553,7 @@ fn main() {
         go_to_line::init(cx);
         file_finder::init(cx);
         search_everywhere::init(cx);
-        tab_switcher::init(cx);
         outline::init(cx);
-        call_hierarchy::init(cx);
         project_symbols::init(cx);
         project_panel::init(cx);
         outline_panel::init(cx);
@@ -635,31 +570,20 @@ fn main() {
             },
             wrap_div_with_search_actions: search::buffer_search::register_pane_search_actions,
         });
-        vim::init(cx);
         terminal_view::init(cx);
         journal::init(app_state.clone(), cx);
         encoding_selector::init(cx);
         language_selector::init(cx);
         line_ending_selector::init(cx);
         status_widgets::init(cx);
-        lsp_command_selector::init(cx);
-        toolchain_selector::init(cx);
-        theme_selector::init(cx);
-        settings_profile_selector::init(cx);
         language_tools::init(cx);
         git_ui::init(cx);
-        markdown_preview::init(cx);
-        tabular_data_preview::init(cx);
         svg_preview::init(cx);
         settings_ui::init(cx);
         keymap_editor::init(cx);
         extensions_ui::init(cx);
-        inspector_ui::init(app_state.clone(), cx);
         json_schema_store::init(cx);
-        miniprofiler_ui::init(*STARTUP_TIME.get().unwrap(), cx);
         which_key::init(cx);
-        #[cfg(target_os = "windows")]
-        etw_tracing::init(cx);
 
         cx.observe_global::<SettingsStore>({
             move |cx| {
@@ -701,7 +625,7 @@ fn main() {
         #[cfg(debug_assertions)]
         watch_languages(fs.clone(), app_state.languages.clone(), cx);
 
-        let menus = app_menus(cx);
+        let menus = app_menus();
         cx.set_menus(menus);
 
         initialize_workspace(app_state.clone(), cx);
@@ -737,7 +661,6 @@ fn main() {
                 diff_paths,
                 wsl,
                 diff_all: diff_all_mode,
-                dev_container: args.dev_container,
                 ..Default::default()
             })
         }
@@ -805,8 +728,6 @@ fn main() {
 
         let app_state = app_state.clone();
 
-        component_preview::init(app_state.clone(), cx);
-
         cx.spawn(async move |cx| {
             let _first_window_subscription = _first_window_subscription;
             let first_window_placed = first_window_rx.shared();
@@ -855,58 +776,6 @@ fn handle_open_request(request: OpenRequest, app_state: Arc<AppState>, cx: &mut 
                                 category_filter: None,
                                 id: Some(extension_id),
                             }),
-                            cx,
-                        );
-                    })
-                })
-                .detach_and_log_err(cx);
-            }
-            OpenRequestKind::AgentPanel {
-                external_source_prompt,
-            } => {
-                cx.spawn(async move |cx| {
-                    let multi_workspace =
-                        workspace::get_any_active_multi_workspace(app_state, cx.clone()).await?;
-
-                    let panels_task = multi_workspace.update(cx, |multi_workspace, _, cx| {
-                        multi_workspace
-                            .workspace()
-                            .update(cx, |workspace, _| workspace.take_panels_task())
-                    })?;
-                    if let Some(task) = panels_task {
-                        task.await.log_err();
-                    }
-
-                    multi_workspace.update(cx, |multi_workspace, window, cx| {
-                        multi_workspace.workspace().update(cx, |workspace, cx| {
-                            if let Some(panel) = workspace.focus_panel::<AgentPanel>(window, cx) {
-                                panel.update(cx, |panel, cx| {
-                                    panel.new_agent_thread_with_external_source_prompt(
-                                        external_source_prompt,
-                                        window,
-                                        cx,
-                                    );
-                                });
-                            } else {
-                                log::warn!(
-                                    "zed://agent received but the AgentPanel is not registered \
-                                     (is `disable_ai` enabled?)"
-                                );
-                            }
-                        });
-                    })
-                })
-                .detach_and_log_err(cx);
-            }
-            OpenRequestKind::InstallSkill { content } => {
-                cx.spawn(async move |cx| {
-                    let multi_workspace =
-                        workspace::get_any_active_multi_workspace(app_state, cx.clone()).await?;
-
-                    multi_workspace.update(cx, |_multi_workspace, _window, cx| {
-                        settings_ui::open_skill_creator(
-                            settings_ui::pages::SkillCreatorOpenMode::Install { content },
-                            Some(multi_workspace),
                             cx,
                         );
                     })
@@ -1099,7 +968,6 @@ fn handle_open_request(request: OpenRequest, app_state: Arc<AppState>, cx: &mut 
     }
 
     let mut task = None;
-    let dev_container = request.dev_container;
     if !request.open_paths.is_empty() || !request.diff_paths.is_empty() {
         let app_state = app_state.clone();
         let base_open_options = zed::open_options_for_request(
@@ -1115,10 +983,7 @@ fn handle_open_request(request: OpenRequest, app_state: Arc<AppState>, cx: &mut 
                 &request.diff_paths,
                 request.diff_all,
                 app_state,
-                workspace::OpenOptions {
-                    open_in_dev_container: dev_container,
-                    ..base_open_options
-                },
+                base_open_options,
                 cx,
             )
             .await?;
@@ -1141,7 +1006,7 @@ fn handle_open_request(request: OpenRequest, app_state: Arc<AppState>, cx: &mut 
     }
 }
 
-async fn installation_id(db: KeyValueStore) -> Result<IdType> {
+async fn installation_id(db: KeyValueStore) -> Result<()> {
     let legacy_key_name = "device_id".to_string();
     let key_name = "installation_id".to_string();
 
@@ -1149,18 +1014,18 @@ async fn installation_id(db: KeyValueStore) -> Result<IdType> {
     if let Ok(Some(installation_id)) = db.read_kvp(&legacy_key_name) {
         db.write_kvp(key_name, installation_id).await?;
         db.delete_kvp(legacy_key_name).await?;
-        return Ok(IdType::Existing);
+        return Ok(());
     }
 
     if let Ok(Some(_)) = db.read_kvp(&key_name) {
-        return Ok(IdType::Existing);
+        return Ok(());
     }
 
     let installation_id = Uuid::new_v4().to_string();
 
     db.write_kvp(key_name, installation_id).await?;
 
-    Ok(IdType::New)
+    Ok(())
 }
 
 pub(crate) async fn restore_or_create_workspace(
@@ -1466,13 +1331,6 @@ struct Args {
     #[arg(long, value_name = "USER@DISTRO")]
     wsl: Option<String>,
 
-    /// Open the project in a dev container.
-    ///
-    /// Automatically triggers "Reopen in Dev Container" if a `.devcontainer/`
-    /// configuration is found in the project directory.
-    #[arg(long)]
-    dev_container: bool,
-
     /// Instructs zed to run as a dev server on this machine. (not implemented)
     #[arg(long)]
     dev_server_token: Option<String>,
@@ -1502,27 +1360,6 @@ struct Args {
     /// Output current environment variables as JSON to stdout
     #[arg(long, hide = true)]
     printenv: bool,
-
-    /// Record an ETW trace. Must be run as administrator.
-    #[cfg(target_os = "windows")]
-    #[arg(long, hide = true)]
-    record_etw_trace: bool,
-
-    /// The PID of the Zed process to trace for heap analysis.
-    #[cfg(target_os = "windows")]
-    #[arg(long, hide = true)]
-    etw_zed_pid: Option<u32>,
-
-    /// Unix socket path for IPC with the parent Zed process.
-    #[cfg(target_os = "windows")]
-    #[arg(long, hide = true)]
-    etw_socket: Option<PathBuf>,
-}
-
-#[derive(Clone, Debug)]
-enum IdType {
-    New,
-    Existing,
 }
 
 fn parse_url_arg(arg: &str) -> String {

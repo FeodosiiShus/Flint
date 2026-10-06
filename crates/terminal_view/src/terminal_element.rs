@@ -3,10 +3,9 @@ use gpui::{
     AbsoluteLength, AnyElement, App, AvailableSpace, Bounds, ContentMask, DispatchPhase, Element,
     ElementId, Entity, FocusHandle, Font, FontFeatures, FontStyle, FontWeight, GlobalElementId,
     HighlightStyle, Hitbox, Hsla, InputHandler, InteractiveElement, Interactivity, IntoElement,
-    LayoutId, Length, ModifiersChangedEvent, MouseButton, MouseMoveEvent, Pixels,
-    Point as GpuiPoint, StatefulInteractiveElement, StrikethroughStyle, Styled, TextRun, TextStyle,
-    UTF16Selection, UnderlineStyle, WeakEntity, WhiteSpace, Window, div, fill, point, px, relative,
-    size,
+    LayoutId, ModifiersChangedEvent, MouseButton, MouseMoveEvent, Pixels, Point as GpuiPoint,
+    StatefulInteractiveElement, StrikethroughStyle, Styled, TextRun, TextStyle, UTF16Selection,
+    UnderlineStyle, WeakEntity, WhiteSpace, Window, div, fill, point, px, relative, size,
 };
 use itertools::Itertools;
 use language::CursorShape as EditorCursorShape;
@@ -28,7 +27,7 @@ use workspace::Workspace;
 use std::mem;
 use std::{fmt::Debug, rc::Rc};
 
-use crate::{BlockContext, BlockProperties, ContentMode, TerminalMode, TerminalView};
+use crate::{BlockContext, BlockProperties, TerminalView};
 
 /// The information generated during layout that is necessary for painting.
 pub struct LayoutState {
@@ -45,7 +44,6 @@ pub struct LayoutState {
     hyperlink_tooltip: Option<AnyElement>,
     block_below_cursor_element: Option<AnyElement>,
     base_text_style: TextStyle,
-    content_mode: ContentMode,
 }
 
 /// Helper struct for converting terminal cursor points to displayed cursor points.
@@ -398,7 +396,6 @@ pub struct TerminalElement {
     focused: bool,
     cursor_visible: bool,
     interactivity: Interactivity,
-    mode: TerminalMode,
     block_below_cursor: Option<Rc<BlockProperties>>,
 }
 
@@ -419,7 +416,6 @@ impl TerminalElement {
         focused: bool,
         cursor_visible: bool,
         block_below_cursor: Option<Rc<BlockProperties>>,
-        mode: TerminalMode,
     ) -> TerminalElement {
         TerminalElement {
             terminal,
@@ -429,7 +425,6 @@ impl TerminalElement {
             focus: focus.clone(),
             cursor_visible,
             block_below_cursor,
-            mode,
             interactivity: Default::default(),
         }
         .track_focus(&focus)
@@ -943,7 +938,6 @@ impl TerminalElement {
     fn register_mouse_listeners(
         &mut self,
         hitbox: &Hitbox,
-        content_mode: &ContentMode,
         mouse_input_mode: MouseInputMode,
         window: &mut Window,
     ) {
@@ -1059,23 +1053,17 @@ impl TerminalElement {
             });
         }
 
-        if content_mode.is_scrollable() {
-            self.interactivity.on_scroll_wheel({
-                let terminal_view = self.terminal_view.downgrade();
-                move |e, window, cx| {
-                    terminal_view
-                        .update(cx, |terminal_view, cx| {
-                            if matches!(terminal_view.mode, TerminalMode::Standalone)
-                                || terminal_view.focus_handle.is_focused(window)
-                            {
-                                terminal_view.scroll_wheel(e, cx);
-                                cx.notify();
-                            }
-                        })
-                        .ok();
-                }
-            });
-        }
+        self.interactivity.on_scroll_wheel({
+            let terminal_view = self.terminal_view.downgrade();
+            move |e, _window, cx| {
+                terminal_view
+                    .update(cx, |terminal_view, cx| {
+                        terminal_view.scroll_wheel(e, cx);
+                        cx.notify();
+                    })
+                    .ok();
+            }
+        });
     }
 
     fn rem_size(&self, cx: &mut App) -> Option<Pixels> {
@@ -1118,32 +1106,6 @@ impl Element for TerminalElement {
         window: &mut Window,
         cx: &mut App,
     ) -> (LayoutId, Self::RequestLayoutState) {
-        let height: Length = match self.terminal_view.read(cx).content_mode(window, cx) {
-            ContentMode::Inline {
-                displayed_lines,
-                total_lines: _,
-            } => {
-                let rem_size = window.rem_size();
-                let line_height = f32::from(window.text_style().font_size.to_pixels(rem_size))
-                    * TerminalSettings::get_global(cx).line_height.value();
-                // Round up to a whole device pixel to prevent pixel snapping from rounding down,
-                // which would result in the terminal being one row short after flooring.
-                let scale_factor = window.scale_factor().max(1.);
-                let height = displayed_lines as f32 * line_height;
-                px((height * scale_factor).ceil() / scale_factor).into()
-            }
-            ContentMode::Scrollable => {
-                if let TerminalMode::Embedded { .. } = &self.mode {
-                    let term = self.terminal.read(cx);
-                    if !term.scrolled_to_top() && !term.scrolled_to_bottom() && self.focused {
-                        self.interactivity.occlude_mouse();
-                    }
-                }
-
-                relative(1.).into()
-            }
-        };
-
         let layout_id = self.interactivity.request_layout(
             global_id,
             inspector_id,
@@ -1151,7 +1113,7 @@ impl Element for TerminalElement {
             cx,
             |mut style, window, cx| {
                 style.size.width = relative(1.).into();
-                style.size.height = height;
+                style.size.height = relative(1.).into();
 
                 window.request_layout(style, None, cx)
             },
@@ -1206,16 +1168,11 @@ impl Element for TerminalElement {
 
                 let line_height = terminal_settings.line_height.value();
 
-                let font_size = match &self.mode {
-                    TerminalMode::Embedded { .. } => {
-                        window.text_style().font_size.to_pixels(window.rem_size())
-                    }
-                    TerminalMode::Standalone => terminal_settings
-                        .font_size
-                        .map_or(buffer_font_size, |size| {
-                            theme_settings::adjusted_font_size(size, cx)
-                        }),
-                };
+                let font_size = terminal_settings
+                    .font_size
+                    .map_or(buffer_font_size, |size| {
+                        theme_settings::adjusted_font_size(size, cx)
+                    });
 
                 let theme = cx.theme().clone();
 
@@ -1278,36 +1235,33 @@ impl Element for TerminalElement {
                     let mut origin = bounds.origin;
                     origin.x += gutter;
 
-                    if matches!(self.terminal_view.read(cx).mode, TerminalMode::Standalone) {
-                        let should_anchor_to_bottom = {
-                            let content = self.terminal.read(cx).last_content();
-                            content.mode.contains(Modes::ALT_SCREEN)
-                                || (content.scrolled_to_bottom && content.bottom_row_occupied)
-                        };
-                        let scale_factor = window.scale_factor();
-                        let line_height_pixels = px(line_height);
-                        let line_height_device_px = (f32::from(line_height_pixels) * scale_factor)
-                            .round()
-                            .max(1.0) as i32;
-                        let available_height_device_px =
-                            (f32::from(available_height) * scale_factor)
-                                .floor()
-                                .max(0.0) as i32;
+                    let should_anchor_to_bottom = {
+                        let content = self.terminal.read(cx).last_content();
+                        content.mode.contains(Modes::ALT_SCREEN)
+                            || (content.scrolled_to_bottom && content.bottom_row_occupied)
+                    };
+                    let scale_factor = window.scale_factor();
+                    let line_height_pixels = px(line_height);
+                    let line_height_device_px = (f32::from(line_height_pixels) * scale_factor)
+                        .round()
+                        .max(1.0) as i32;
+                    let available_height_device_px = (f32::from(available_height) * scale_factor)
+                        .floor()
+                        .max(0.0) as i32;
 
-                        let rows =
-                            ((available_height_device_px / line_height_device_px) as usize).max(1);
-                        let snapped_height_device_px = (rows as i32) * line_height_device_px;
-                        let padding_device_px =
-                            (available_height_device_px - snapped_height_device_px).max(0);
+                    let rows =
+                        ((available_height_device_px / line_height_device_px) as usize).max(1);
+                    let snapped_height_device_px = (rows as i32) * line_height_device_px;
+                    let padding_device_px =
+                        (available_height_device_px - snapped_height_device_px).max(0);
 
-                        let snapped_height =
-                            px(snapped_height_device_px as f32 / scale_factor.max(1.0));
-                        let padding = px(padding_device_px as f32 / scale_factor.max(1.0));
+                    let snapped_height =
+                        px(snapped_height_device_px as f32 / scale_factor.max(1.0));
+                    let padding = px(padding_device_px as f32 / scale_factor.max(1.0));
 
-                        size.height = snapped_height;
-                        if should_anchor_to_bottom {
-                            origin.y += padding;
-                        }
+                    size.height = snapped_height;
+                    if should_anchor_to_bottom {
+                        origin.y += padding;
                     }
 
                     // Snap to device pixels to avoid subpixel jitter while resizing.
@@ -1387,8 +1341,6 @@ impl Element for TerminalElement {
                 }
 
                 // then have that representation be converted to the appropriate highlight data structure
-
-                let content_mode = self.terminal_view.read(cx).content_mode(window, cx);
 
                 // Calculate the intersection of the terminal's bounds with the current
                 // content mask (the visible viewport after all parent clipping).
@@ -1564,7 +1516,6 @@ impl Element for TerminalElement {
                     hyperlink_tooltip,
                     block_below_cursor_element,
                     base_text_style: text_style,
-                    content_mode,
                 }
             },
         )
@@ -1590,26 +1541,17 @@ impl Element for TerminalElement {
                 let terminal_view = self.terminal_view.read(cx);
                 let scroll_top = terminal_view.scroll_top;
                 let mouse_input_mode = terminal_view.mouse_input_mode();
-                let corner_radii = terminal_view
-                    .background_corner_radii
-                    .unwrap_or_default()
-                    .map(|radius| radius.to_pixels(window.rem_size()))
-                    .clamp_radii_for_quad_size(bounds.size);
-
-                let has_square_corners = gpui::IsZero::is_zero(&corner_radii);
-                window.paint_quad(fill(bounds, layout.background_color).corner_radii(corner_radii));
-                if has_square_corners {
-                    ui::paint_background_image(
-                        bounds,
-                        ui::window_background_image_area(window),
-                        ui::BackgroundImageTarget::EditorAndTools,
-                        layout.background_color,
-                        true,
-                        gpui::Corners::default(),
-                        window,
-                        cx,
-                    );
-                }
+                window.paint_quad(fill(bounds, layout.background_color));
+                ui::paint_background_image(
+                    bounds,
+                    ui::window_background_image_area(window),
+                    ui::BackgroundImageTarget::EditorAndTools,
+                    layout.background_color,
+                    true,
+                    gpui::Corners::default(),
+                    window,
+                    cx,
+                );
 
                 let origin = layout.dimensions.bounds.origin - GpuiPoint::new(px(0.), scroll_top);
                 let scale_factor = window.scale_factor();
@@ -1629,12 +1571,7 @@ impl Element for TerminalElement {
                     workspace: self.workspace.clone(),
                 };
 
-                self.register_mouse_listeners(
-                    &layout.hitbox,
-                    &layout.content_mode,
-                    mouse_input_mode,
-                    window,
-                );
+                self.register_mouse_listeners(&layout.hitbox, mouse_input_mode, window);
                 if window.modifiers().secondary()
                     && bounds.contains(&window.mouse_position())
                     && self.terminal_view.read(cx).hover.is_some()

@@ -176,7 +176,6 @@ pub enum HighlightKey {
     HighlightsTreeView(usize),
     HoverState,
     HoveredLinkState,
-    InlineAssist,
     InputComposition,
     MatchingBracket,
     NavigationOverlay(NavigationOverlayKey),
@@ -187,7 +186,6 @@ pub enum HighlightKey {
     SearchWithinRange,
     SelectedTextHighlight,
     SyntaxTreeView(usize),
-    VimExchange,
 }
 
 pub trait ToDisplayPoint {

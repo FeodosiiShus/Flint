@@ -90,20 +90,20 @@ macro_rules! flattened_deserialize {
             fn deserialize<D: serde::Deserializer<'de>>(
                 deserializer: D,
             ) -> Result<Self, D::Error> {
-                let mut object =
+                let object =
                     serde_json::Map::<String, serde_json::Value>::deserialize(deserializer)?;
                 (|| -> Result<Self, serde_json::Error> {
                     $(
-                        let $option_field =
+                        let ($option_field, object) =
                             $crate::fallible_options::take_option_field(
-                                &mut object,
+                                object,
                                 stringify!($option_field),
                             )?;
                     )*
                     $(
-                        let $default_field =
+                        let ($default_field, object) =
                             $crate::fallible_options::take_default_field(
-                                &mut object,
+                                object,
                                 stringify!($default_field),
                             )?;
                     )*
@@ -122,29 +122,31 @@ macro_rules! flattened_deserialize {
 pub(crate) use flattened_deserialize;
 
 pub(crate) fn take_option_field<T>(
-    object: &mut serde_json::Map<String, serde_json::Value>,
+    mut object: serde_json::Map<String, serde_json::Value>,
     key: &str,
-) -> Result<T, serde_json::Error>
+) -> Result<(T, serde_json::Map<String, serde_json::Value>), serde_json::Error>
 where
     T: serde::de::DeserializeOwned + FallibleOption,
 {
-    match object.remove(key) {
-        None => Ok(T::default()),
-        Some(value) => deserialize(&value),
-    }
+    let field = match object.remove(key) {
+        None => T::default(),
+        Some(value) => deserialize(&value)?,
+    };
+    Ok((field, object))
 }
 
 pub(crate) fn take_default_field<T>(
-    object: &mut serde_json::Map<String, serde_json::Value>,
+    mut object: serde_json::Map<String, serde_json::Value>,
     key: &str,
-) -> Result<T, serde_json::Error>
+) -> Result<(T, serde_json::Map<String, serde_json::Value>), serde_json::Error>
 where
     T: serde::de::DeserializeOwned + Default,
 {
-    match object.remove(key) {
-        None => Ok(T::default()),
-        Some(value) => T::deserialize(&value),
-    }
+    let field = match object.remove(key) {
+        None => T::default(),
+        Some(value) => T::deserialize(&value)?,
+    };
+    Ok((field, object))
 }
 
 pub(crate) fn section<T>(rest: &serde_json::Value) -> Result<T, serde_json::Error>

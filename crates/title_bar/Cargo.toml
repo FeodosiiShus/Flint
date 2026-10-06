@@ -26,11 +26,7 @@ test-support = [
 ]
 
 [dependencies]
-agent_settings.workspace = true
-fs.workspace = true
 platform_title_bar.workspace = true
-command_palette_hooks.workspace = true
-debugger_ui.workspace = true
 
 git_ui_core.workspace = true
 gpui.workspace = true

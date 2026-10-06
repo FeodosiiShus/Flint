@@ -79,15 +79,6 @@ impl merge_from::MergeFrom for AllLanguageSettingsContent {
     }
 }
 
-#[with_fallible_options]
-#[derive(Clone, Debug, Default, Serialize, Deserialize, JsonSchema, MergeFrom, PartialEq)]
-pub struct CopilotSettingsContent {
-    /// Enterprise URI shared by Copilot Chat and edit predictions.
-    ///
-    /// Default: none
-    pub enterprise_uri: Option<String>,
-}
-
 /// Controls the soft-wrapping behavior in the editor.
 #[derive(
     Copy,

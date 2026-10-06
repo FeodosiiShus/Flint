@@ -24,8 +24,8 @@ packages = ["wasmtime-c-api-impl"]
 # Plan-time probe: the git SHA is read here (outside the sandbox) and frozen
 # into the keyed value. zed/build.rs prefers $ZED_COMMIT_SHA over running git,
 # which the sandbox blocks. Release-only; dev builds embed no SHA (the source
-# reads it via option_env!). cli/remote_server build.rs run git directly rather
-# than reading this var, so they are not listed here.
+# reads it via option_env!). cli build.rs runs git directly rather
+# than reading this var, so it is not listed here.
 [env.ZED_COMMIT_SHA]
 command = "git rev-parse HEAD"
 packages = ["zed"]
@@ -48,20 +48,14 @@ gpui = [
     "../../assets/fonts/lilex/Lilex-Regular.ttf",
 ]
 git = ["src/checkpoint.gitignore"]
-git_ui = ["src/commit_message_prompt.txt"]
 editor = ["../grammars/src/**"]
-agent_skills = ["builtin/**"]
-agent_settings = ["src/prompts/**"]
 json_schema_store = ["src/schemas/**"]
 prettier = ["src/prettier_server.js"]
 zed = ["resources/**"]
 zed_extension_api = ["wit/**"]
-gpui_wgpu = ["src/*.wgsl"]
 # Cross-package reads (and, for gpui_apple, its own metal shader source).
 extension_host = ["../extension_api/wit/**"]
 # cbindgen reads the renderer source directly from build.rs to generate shader bindings.
 gpui_apple = ["../gpui/src/**", "src/metal_renderer.rs", "src/shaders.metal"]
-prompt_store = ["../git_ui/src/commit_message_prompt.txt"]
 release_channel = ["../zed/RELEASE_CHANNEL"]
 cli = ["../../script/uninstall.sh"]
-remote_server = ["../zed/Cargo.toml"]

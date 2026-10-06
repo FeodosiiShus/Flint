@@ -9,10 +9,10 @@ use editor::{
     ui_scrollbar_settings_from_raw,
 };
 use gpui::{
-    Action, AnyElement, App, ClipboardEntry, Corners, DismissEvent, Entity, EventEmitter,
-    ExternalPaths, FocusHandle, Focusable, Font, KeyContext, KeyDownEvent, Keystroke, MouseButton,
-    MouseDownEvent, Pixels, Point as GpuiPoint, Rems, Render, ScrollWheelEvent, Styled,
-    Subscription, Task, TaskExt, WeakEntity, actions, anchored, deferred, div,
+    Action, AnyElement, App, ClipboardEntry, DismissEvent, Entity, EventEmitter, ExternalPaths,
+    FocusHandle, Focusable, Font, KeyContext, KeyDownEvent, Keystroke, MouseButton, MouseDownEvent,
+    Pixels, Point as GpuiPoint, Render, ScrollWheelEvent, Styled, Subscription, Task, TaskExt,
+    WeakEntity, actions, anchored, deferred, div,
 };
 use menu;
 use persistence::TerminalDb;
@@ -60,7 +60,6 @@ use workspace::{
         Direction, SearchEvent, SearchOptions, SearchToken, SearchableItem, SearchableItemHandle,
     },
 };
-use zed_actions::{agent::AddSelectionToThread, assistant::InlineAssist};
 
 struct ImeState {
     marked_text: String,
@@ -138,18 +137,7 @@ pub struct TerminalView {
     context_menu: Option<(Entity<ContextMenu>, GpuiPoint<Pixels>, Subscription)>,
     cursor_shape: CursorShape,
     blink_manager: Entity<BlinkManager>,
-    mode: TerminalMode,
-    /// Corner radii for the terminal's background, for when it's embedded in a
-    /// container with rounded corners.
-    ///
-    /// GPUI can't clip children to rounded corners, so without this the square
-    /// background paints over the container's corners. Only the background is
-    /// rounded, terminal content isn't clipped.
-    background_corner_radii: Option<Corners<Rems>>,
     read_only: bool,
-    // Explicit override for whether workspace-specific context menu actions are shown.
-    // When `None`, visibility is derived from `mode` (hidden for embedded terminals).
-    show_workspace_actions: Option<bool>,
     blinking_terminal_enabled: bool,
     needs_serialize: bool,
     custom_title: Option<String>,
@@ -166,40 +154,6 @@ pub struct TerminalView {
     rename_editor_subscription: Option<Subscription>,
     _subscriptions: Vec<Subscription>,
     _terminal_subscriptions: Vec<Subscription>,
-}
-
-#[derive(Default, Clone)]
-pub enum TerminalMode {
-    #[default]
-    Standalone,
-    Embedded {
-        max_lines_when_unfocused: Option<usize>,
-    },
-}
-
-#[derive(Clone)]
-pub enum ContentMode {
-    Scrollable,
-    Inline {
-        displayed_lines: usize,
-        total_lines: usize,
-    },
-}
-
-impl ContentMode {
-    pub fn is_limited(&self) -> bool {
-        match self {
-            ContentMode::Scrollable => false,
-            ContentMode::Inline {
-                displayed_lines,
-                total_lines,
-            } => displayed_lines < total_lines,
-        }
-    }
-
-    pub fn is_scrollable(&self) -> bool {
-        matches!(self, ContentMode::Scrollable)
-    }
 }
 
 #[derive(Debug)]
@@ -298,10 +252,7 @@ impl TerminalView {
             blinking_terminal_enabled: false,
             hover: None,
             hover_tooltip_update: Task::ready(()),
-            mode: TerminalMode::Standalone,
-            background_corner_radii: None,
             read_only: false,
-            show_workspace_actions: None,
             workspace_id,
             show_breadcrumbs: TerminalSettings::get_global(cx).toolbar.breadcrumbs,
             block_below_cursor: None,
@@ -316,28 +267,6 @@ impl TerminalView {
             _subscriptions: subscriptions,
             _terminal_subscriptions: terminal_subscriptions,
         }
-    }
-
-    /// Enable 'embedded' mode where the terminal displays the full content with an optional limit of lines.
-    pub fn set_embedded_mode(
-        &mut self,
-        max_lines_when_unfocused: Option<usize>,
-        cx: &mut Context<Self>,
-    ) {
-        self.mode = TerminalMode::Embedded {
-            max_lines_when_unfocused,
-        };
-        cx.notify();
-    }
-
-    /// Rounds the background without clipping terminal content to the corners.
-    pub fn set_background_corner_radii(
-        &mut self,
-        corner_radii: Option<Corners<Rems>>,
-        cx: &mut Context<Self>,
-    ) {
-        self.background_corner_radii = corner_radii;
-        cx.notify();
     }
 
     pub fn is_read_only(&self) -> bool {
@@ -356,56 +285,6 @@ impl TerminalView {
             MouseInputMode::LocalSelection
         } else {
             MouseInputMode::ReportToTerminal
-        }
-    }
-
-    /// Explicitly override whether workspace-specific context menu actions (e.g. creating or
-    /// closing terminal tabs, inline assist) are shown.
-    ///
-    /// This lets hosts that aren't workspace panes (such as the agent panel) hide these
-    /// actions without `terminal_view` needing to know about those hosts. When never called,
-    /// visibility is derived from the terminal's `mode`.
-    pub fn set_show_workspace_actions(&mut self, show: bool, cx: &mut Context<Self>) {
-        self.show_workspace_actions = Some(show);
-        cx.notify();
-    }
-
-    fn shows_workspace_actions(&self) -> bool {
-        self.show_workspace_actions
-            .unwrap_or_else(|| !matches!(self.mode, TerminalMode::Embedded { .. }))
-    }
-
-    const MAX_EMBEDDED_LINES: usize = 1_000;
-
-    /// Returns the current `ContentMode` depending on the set `TerminalMode` and the current number of lines
-    ///
-    /// Note: Even in embedded mode, the terminal will fallback to scrollable when its content exceeds `MAX_EMBEDDED_LINES`
-    pub fn content_mode(&self, window: &Window, cx: &App) -> ContentMode {
-        match &self.mode {
-            TerminalMode::Standalone => ContentMode::Scrollable,
-            TerminalMode::Embedded {
-                max_lines_when_unfocused,
-            } => {
-                let terminal = self.terminal.read(cx);
-                let total_lines = terminal.total_lines();
-
-                if total_lines > Self::MAX_EMBEDDED_LINES {
-                    ContentMode::Scrollable
-                } else {
-                    let mut displayed_lines = terminal.used_lines().min(total_lines);
-
-                    if !self.focus_handle.is_focused(window)
-                        && let Some(max_lines) = max_lines_when_unfocused
-                    {
-                        displayed_lines = displayed_lines.min(*max_lines)
-                    }
-
-                    ContentMode::Inline {
-                        displayed_lines,
-                        total_lines,
-                    }
-                }
-            }
         }
     }
 
@@ -565,59 +444,34 @@ impl TerminalView {
     pub fn deploy_context_menu(
         &mut self,
         position: GpuiPoint<Pixels>,
-        has_selection: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let assistant_enabled = self
-            .workspace
-            .upgrade()
-            .and_then(|workspace| workspace.read(cx).panel::<TerminalPanel>(cx))
-            .is_some_and(|terminal_panel| terminal_panel.read(cx).assistant_enabled());
         let context_menu = ContextMenu::build(window, cx, |menu, _, _| {
             menu.context(self.focus_handle.clone())
-                .when(self.shows_workspace_actions(), |menu| {
-                    menu.action("New Terminal", Box::new(NewTerminal::default()))
-                        .action(
-                            "New Center Terminal",
-                            Box::new(NewCenterTerminal::default()),
-                        )
-                        .separator()
-                })
+                .action("New Terminal", Box::new(NewTerminal::default()))
+                .action(
+                    "New Center Terminal",
+                    Box::new(NewCenterTerminal::default()),
+                )
+                .separator()
                 .action("Copy", Box::new(Copy))
-                .when(
-                    !self.read_only && !matches!(self.mode, TerminalMode::Embedded { .. }),
-                    |menu| {
-                        menu.action("Paste", Box::new(Paste))
-                            .action("Paste Text", Box::new(PasteText))
-                    },
-                )
-                .action("Select All", Box::new(SelectAll))
-                .when(
-                    !self.read_only && !matches!(self.mode, TerminalMode::Embedded { .. }),
-                    |menu| menu.action("Clear", Box::new(Clear)),
-                )
-                .when(
-                    assistant_enabled && !matches!(self.mode, TerminalMode::Embedded { .. }),
-                    |menu| {
-                        menu.separator()
-                            .when(!self.read_only, |menu| {
-                                menu.action("Inline Assist", Box::new(InlineAssist::default()))
-                            })
-                            .when(has_selection && self.shows_workspace_actions(), |menu| {
-                                menu.action("Add to Agent Thread", Box::new(AddSelectionToThread))
-                            })
-                    },
-                )
-                .when(self.shows_workspace_actions(), |menu| {
-                    menu.separator().action(
-                        "Close Terminal Tab",
-                        Box::new(CloseActiveItem {
-                            save_intent: None,
-                            close_pinned: true,
-                        }),
-                    )
+                .when(!self.read_only, |menu| {
+                    menu.action("Paste", Box::new(Paste))
+                        .action("Paste Text", Box::new(PasteText))
                 })
+                .action("Select All", Box::new(SelectAll))
+                .when(!self.read_only, |menu| {
+                    menu.action("Clear", Box::new(Clear))
+                })
+                .separator()
+                .action(
+                    "Close Terminal Tab",
+                    Box::new(CloseActiveItem {
+                        save_intent: None,
+                        close_pinned: true,
+                    }),
+                )
         });
 
         window.focus(&context_menu.focus_handle(cx), cx);
@@ -891,14 +745,7 @@ impl TerminalView {
     }
 
     pub fn should_show_cursor(&self, focused: bool, cx: &mut Context<Self>) -> bool {
-        // Hide cursor when in embedded mode and not focused (read-only output like Agent panel)
-        if let TerminalMode::Embedded { .. } = &self.mode {
-            if !focused {
-                return false;
-            }
-        }
-
-        // For Standalone mode: always show cursor when not focused or in special modes
+        // Always show cursor when not focused or in special modes
         if !focused
             || self
                 .terminal
@@ -1480,15 +1327,7 @@ impl Render for TerminalView {
                                 terminal.select_word_at_event_position(event);
                             });
                         }
-                        let has_selection = !had_selection
-                            || this
-                                .terminal
-                                .read(cx)
-                                .last_content
-                                .selection_text
-                                .as_ref()
-                                .is_some_and(|text| !text.is_empty());
-                        this.deploy_context_menu(event.position, has_selection, window, cx);
+                        this.deploy_context_menu(event.position, window, cx);
                         cx.notify();
                     }
                 }),
@@ -1499,21 +1338,13 @@ impl Render for TerminalView {
                     .id("terminal-view-container")
                     .size_full()
                     .bg(cx.theme().colors().editor_background)
-                    .when(self.background_corner_radii.is_none(), |this| {
-                        this.child(ui::background_image_layer(
-                            ui::BackgroundImageTarget::EditorAndTools,
-                            ui::BackgroundImageArea::Window,
-                            cx.theme().colors().editor_background,
-                            true,
-                            gpui::Corners::default(),
-                        ))
-                    })
-                    .when_some(self.background_corner_radii, |this, radii| {
-                        this.rounded_tl(radii.top_left)
-                            .rounded_tr(radii.top_right)
-                            .rounded_bl(radii.bottom_left)
-                            .rounded_br(radii.bottom_right)
-                    })
+                    .child(ui::background_image_layer(
+                        ui::BackgroundImageTarget::EditorAndTools,
+                        ui::BackgroundImageArea::Window,
+                        cx.theme().colors().editor_background,
+                        true,
+                        gpui::Corners::default(),
+                    ))
                     .child(TerminalElement::new(
                         terminal_handle,
                         terminal_view_handle,
@@ -1522,22 +1353,18 @@ impl Render for TerminalView {
                         focused,
                         self.should_show_cursor(focused, cx),
                         self.block_below_cursor.clone(),
-                        self.mode.clone(),
                     ))
-                    .when(self.content_mode(window, cx).is_scrollable(), |div| {
-                        let colors = cx.theme().colors();
-                        div.custom_scrollbars(
-                            Scrollbars::for_settings::<TerminalScrollbarSettingsWrapper>()
-                                .show_along(ScrollAxes::Vertical)
-                                .with_stable_track_along(
-                                    ScrollAxes::Vertical,
-                                    colors.editor_background,
-                                )
-                                .tracked_scroll_handle(&self.scroll_handle),
-                            window,
-                            cx,
-                        )
-                    }),
+                    .custom_scrollbars(
+                        Scrollbars::for_settings::<TerminalScrollbarSettingsWrapper>()
+                            .show_along(ScrollAxes::Vertical)
+                            .with_stable_track_along(
+                                ScrollAxes::Vertical,
+                                cx.theme().colors().editor_background,
+                            )
+                            .tracked_scroll_handle(&self.scroll_handle),
+                        window,
+                        cx,
+                    ),
             )
             .children(self.context_menu.as_ref().map(|(menu, position, _)| {
                 deferred(
@@ -3516,103 +3343,6 @@ mod tests {
         let (bounds, draw_size) = draw_standalone_terminal(b"\x1b[?1049h$ ", cx).await;
         assert!(bounds.origin.y > px(0.));
         assert_eq!(bounds.bottom(), draw_size.height);
-    }
-
-    #[gpui::test]
-    async fn test_inline_terminal_displays_all_of_its_lines(cx: &mut TestAppContext) {
-        let (project, workspace) = init_test(cx).await;
-        let terminal = cx.new(|cx| {
-            terminal::TerminalBuilder::new_display_only(
-                CursorShape::default(),
-                terminal::terminal_settings::AlternateScroll::On,
-                None,
-                0,
-                cx.background_executor(),
-                PathStyle::local(),
-            )
-            .subscribe(cx)
-        });
-        let (terminal_view, cx) = cx.add_window_view(|window, cx| {
-            let mut terminal_view = TerminalView::new(
-                terminal.clone(),
-                workspace.downgrade(),
-                None,
-                project.downgrade(),
-                window,
-                cx,
-            );
-            terminal_view.set_embedded_mode(None, cx);
-            terminal_view
-        });
-
-        for _ in 1..=20 {
-            terminal.update(cx, |terminal, cx| {
-                terminal.write_output(b"line\n", cx);
-            });
-            cx.draw(
-                gpui::Point::default(),
-                gpui::size(px(400.), px(100.)),
-                |_, _| terminal_view.clone().into_any_element(),
-            );
-            terminal.read_with(cx, |terminal, _| {
-                assert_eq!(terminal.viewport_lines(), terminal.total_lines());
-            })
-        }
-    }
-
-    #[gpui::test]
-    async fn test_inline_terminal_shrinks_after_clear(cx: &mut TestAppContext) {
-        let (project, workspace) = init_test(cx).await;
-        let terminal = cx.new(|cx| {
-            terminal::TerminalBuilder::new_display_only(
-                CursorShape::default(),
-                terminal::terminal_settings::AlternateScroll::On,
-                None,
-                0,
-                cx.background_executor(),
-                PathStyle::local(),
-            )
-            .subscribe(cx)
-        });
-        let (terminal_view, cx) = cx.add_window_view(|window, cx| {
-            let mut terminal_view = TerminalView::new(
-                terminal.clone(),
-                workspace.downgrade(),
-                None,
-                project.downgrade(),
-                window,
-                cx,
-            );
-            terminal_view.set_embedded_mode(None, cx);
-            terminal_view
-        });
-
-        for _ in 1..=20 {
-            terminal.update(cx, |terminal, cx| {
-                terminal.write_output(b"line\n", cx);
-            });
-            cx.draw(
-                gpui::Point::default(),
-                gpui::size(px(400.), px(100.)),
-                |_, _| terminal_view.clone().into_any_element(),
-            );
-        }
-        terminal.read_with(cx, |terminal, _| {
-            assert_eq!(terminal.total_lines(), 21);
-        });
-
-        terminal.update(cx, |terminal, _| terminal.clear());
-        for _ in 1..=2 {
-            cx.draw(
-                gpui::Point::default(),
-                gpui::size(px(400.), px(100.)),
-                |_, _| terminal_view.clone().into_any_element(),
-            );
-        }
-        terminal.read_with(cx, |terminal, _| {
-            assert_eq!(terminal.total_lines(), 1);
-            assert_eq!(terminal.viewport_lines(), 1);
-        });
     }
 
     #[gpui::test]

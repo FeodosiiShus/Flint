@@ -30,11 +30,13 @@ xattr -dr com.apple.quarantine "/Applications/Flint.app"
 
 The app is built on the `dev` release channel and is named "Flint". It has no auto-update, Zed account sign-in or onboarding flow.
 
+Flint ships none of Zed's built-in AI: no agent panel, threads sidebar, inline assist, language model providers, MCP servers, external agents or commit message generation. It also drops the debugger panel, notebooks (REPL), dev containers, the headless remote server, vim mode, Markdown preview, the image viewer, the theme, tab, toolchain and settings profile pickers, call hierarchy, and every non-macOS platform backend. Use the terminal panel to run AI command-line tools.
+
 ## Background image
 
 Flint can draw a picture behind the editor and the tool windows, like WebStorm's [Background Image](https://www.jetbrains.com/help/webstorm/setting-background-image.html). There are two independent images:
 
-- `editor_and_tools` — behind the editor, tabs, tool windows (project, git, agent, terminal, debugger panels), the title bar and the status bar.
+- `editor_and_tools` — behind the editor, tabs, tool windows (project, git, terminal panels), the title bar and the status bar.
 - `empty_frame` — behind an editor pane that has no open files. Without it, the `editor_and_tools` image shows there.
 
 ### Choosing an image
@@ -105,8 +107,8 @@ Flint can make the title bar, the tab bar, the toolbar, the status bar and the d
 
 - `title_bar.height` — the exact height of the title bar, but never lower than its buttons. With only `title_bar.icon_size` set, the bar grows when needed to keep at least 4px above and below the buttons. On macOS the window buttons (traffic lights) are re-centered vertically.
 - `tab_bar.height` — the exact height of the editor tab bar, but never lower than its buttons. Dock panel headers follow it unless `panel.height` is set.
-- `panel.height` — the exact height of the header and toolbar rows of dock panels (Git, Outline, Debugger, Agent, thread history), but never lower than their buttons. Unset, these rows use the tab bar height.
-- `panel.icon_size` — the icon size of the controls in those header, toolbar and footer rows: in the Git panel View Diff, the filter, Stage All, the branch row and Fetch/Push/Pull, the commit editor buttons, Commit and the last-commit row; the Outline filter row; the Debugger controls; the Agent panel toolbar and thread history toolbar; the thread sidebar's bottom bar. List rows, the terminal panel tabs and the debugger's pane tabs are not affected; the latter two follow `tab_bar`.
+- `panel.height` — the exact height of the header and toolbar rows of dock panels (Git, Outline), but never lower than their buttons. Unset, these rows use the tab bar height.
+- `panel.icon_size` — the icon size of the controls in those header, toolbar and footer rows: in the Git panel View Diff, the filter, Stage All, the branch row and Fetch/Push/Pull, the commit editor buttons, Commit and the last-commit row; the Outline filter row. List rows and the terminal panel tabs are not affected; the terminal panel tabs follow `tab_bar`.
 - `toolbar.height`, `status_bar.height` — the minimum height of the bar. The content is centered vertically, and the bar is never smaller than its content.
 - `icon_size` — the size of the primary icons of the bar (Zed's default is 14px). Secondary icons scale proportionally, so a 12px chevron becomes 12·N/14 for `icon_size` N. Buttons grow to at least the icon size plus 8px, and the bars grow so nothing is clipped. Text keeps the UI font size.
 
@@ -189,7 +191,7 @@ The title bar works like WebStorm's [main toolbar](https://www.jetbrains.com/hel
 - Project widget: a rounded badge with one or two initials of the project name, the name and a ˅. Click it to open the recent projects popover. The badge color is picked from the theme's accent colors by a stable hash of the project name, so a project keeps its color across restarts.
 - Project gradient: like WebStorm's colored project headers, the title bar is tinted with the badge color, fading out from the left edge to the middle. It appears only when a project is open.
 - VCS widget: the branch name, then `↓N ↑M` when the branch is behind or ahead of its upstream (only the non-zero directions are shown), and a ˅. Click it to open the branch picker. The worktree button is hidden by default.
-- Run widget: the label of the last task you ran (or "Run…") with a ˅ that opens the task picker (`task: spawn`), a green ▷ that reruns the last task (`task: rerun`) and a green bug that starts debugging (`debugger: start`).
+- Run widget: the label of the last task you ran (or "Run…") with a ˅ that opens the task picker (`task: spawn`) and a green ▷ that reruns the last task (`task: rerun`).
 - Right edge: a magnifying glass that opens Search Everywhere and a gear that opens the Settings window.
 
 Each widget can be turned off in `settings.json` or in Settings → Window & Layout → Title Bar:
@@ -301,7 +303,7 @@ Flint resolves merge conflicts like WebStorm's [Resolve conflicts](https://www.j
 | Ctrl-Shift-Tab | Focus the opposite pane |
 | Cmd-Shift-D | Show the settings popup |
 
-The shortcuts work in the default and the JetBrains keymaps; inside the merge window they take precedence over the debugger's F7.
+The shortcuts work in the default and the JetBrains keymaps.
 
 ### Setting
 
@@ -324,7 +326,7 @@ Cmd+click (and `Cmd-B`, `Alt-F7` with the JetBrains keymap) goes to a definition
 
 ## Memory and startup
 
-- The Performance Profiler is off by default, including on Flint's `dev` channel, because its trace buffers grow with every task poll on every thread. To turn it on, set `"instrumentation": { "performance_profiler": { "enabled": true } }`.
+- The Performance Profiler window is removed, so the profiler's trace buffers are never collected.
 - Extensions are compiled to native code once and cached in the `.compiled-components` folder inside the extensions work folder, so later launches skip the compilation. Delete the folder to rebuild the cache; a changed or incompatible extension is recompiled by itself.
 - Bundled fonts, themes and settings are embedded uncompressed, so they stay in file-backed memory instead of being unpacked into the heap at launch.
 

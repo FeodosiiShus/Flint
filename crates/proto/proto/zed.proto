@@ -1,7 +1,6 @@
 syntax = "proto3";
 package zed.messages;
 
-import "ai.proto";
 import "app.proto";
 import "buffer.proto";
 import "call.proto";
@@ -389,13 +388,6 @@ message Envelope {
     ResolveToolchain resolve_toolchain = 371;
     ResolveToolchainResponse resolve_toolchain_response = 372;
 
-    GetAgentServerCommand get_agent_server_command = 373;
-    AgentServerCommand agent_server_command = 374;
-
-    ExternalAgentsUpdated external_agents_updated = 375;
-    ExternalAgentLoadingStatusUpdated external_agent_loading_status_updated = 376;
-    NewExternalAgentVersionAvailable new_external_agent_version_available = 377;
-
     StashDrop stash_drop = 378;
     StashApply stash_apply = 379;
 
@@ -424,8 +416,6 @@ message Envelope {
 
     GitDeleteBranch git_delete_branch = 400;
 
-    ExternalExtensionAgentsUpdated external_extension_agents_updated = 401;
-
     GitCreateRemote git_create_remote = 402;
     GitRemoveRemote git_remove_remote = 403;
 
@@ -434,8 +424,6 @@ message Envelope {
 
     FindSearchCandidatesChunk find_search_candidates_chunk = 409;
     FindSearchCandidatesCancelled find_search_candidates_cancelled = 410;
-    GetContextServerCommand get_context_server_command = 411;
-    ContextServerCommand context_server_command = 412;
 
     AllocateWorktreeId allocate_worktree_id = 413;
     AllocateWorktreeIdResponse allocate_worktree_id_response = 414;
@@ -453,9 +441,6 @@ message Envelope {
     GetRemoteProfilingData get_remote_profiling_data = 423;
     GetRemoteProfilingDataResponse get_remote_profiling_data_response = 424;
 
-    SpawnKernel spawn_kernel = 426;
-    SpawnKernelResponse spawn_kernel_response = 427;
-    KillKernel kill_kernel = 428;
     GitRemoveWorktree git_remove_worktree = 431;
     GitRenameWorktree git_rename_worktree = 432;
     GitCreateCheckpoint git_create_checkpoint = 433;
@@ -597,21 +582,3 @@ message FlushBufferedMessages {}
 message FlushBufferedMessagesResponse {}
 
 message RemoteStarted {}
-
-message SpawnKernel {
-  string kernel_name = 1;
-  string working_directory = 2;
-  uint64 project_id = 3;
-  string command = 4;
-  repeated string args = 5;
-}
-
-message SpawnKernelResponse {
-  string kernel_id = 1;
-  string connection_file = 2;
-}
-
-message KillKernel {
-  string kernel_id = 1;
-  uint64 project_id = 2;
-}

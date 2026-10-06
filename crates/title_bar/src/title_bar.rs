@@ -3,7 +3,6 @@ mod title_bar_settings;
 mod toolbar_widgets;
 
 use crate::application_menu::{ApplicationMenu, show_menus};
-use agent_settings::{AgentSettings, WindowLayout};
 use arrayvec::ArrayVec;
 use git_ui_core::worktree_picker::WorktreePicker;
 pub use platform_title_bar::{
@@ -17,8 +16,6 @@ use crate::application_menu::{
     ActivateDirection, ActivateMenuLeft, ActivateMenuRight, OpenApplicationMenu,
 };
 
-use command_palette_hooks::CommandPaletteFilter;
-
 use gpui::{
     AnyElement, App, Context, Entity, Focusable, FontWeight, Hsla, InteractiveElement, IntoElement,
     MouseButton, ParentElement, Render, Styled, Subscription, WeakEntity, Window, actions, div,
@@ -28,9 +25,8 @@ use project::{
     trusted_worktrees::TrustedWorktrees,
 };
 use remote::RemoteConnectionOptions;
-use settings::{Settings as _, SettingsStore};
+use settings::Settings as _;
 
-use std::any::TypeId;
 use std::path::Path;
 use theme::ActiveTheme;
 use title_bar_settings::TitleBarSettings;
@@ -75,23 +71,8 @@ actions!(
     ]
 );
 
-actions!(
-    workspace,
-    [
-        /// Switches to the classic, editor-focused panel layout.
-        UseClassicLayout,
-        /// Switches to the agentic panel layout.
-        UseAgenticLayout,
-    ]
-);
-
 pub fn init(cx: &mut App) {
     platform_title_bar::PlatformTitleBar::init(cx);
-
-    update_layout_action_filter(cx);
-
-    cx.observe_global::<SettingsStore>(update_layout_action_filter)
-        .detach();
 
     cx.observe_new(|workspace: &mut Workspace, window, cx| {
         let Some(window) = window else {
@@ -100,14 +81,6 @@ pub fn init(cx: &mut App) {
         let multi_workspace = workspace.multi_workspace().cloned();
         let item = cx.new(|cx| TitleBar::new("title-bar", workspace, multi_workspace, window, cx));
         workspace.set_titlebar_item(item.into(), window, cx);
-
-        workspace.register_action(|_workspace, _: &UseClassicLayout, _window, cx| {
-            set_window_layout(WindowLayout::Editor(None), cx);
-        });
-
-        workspace.register_action(|_workspace, _: &UseAgenticLayout, _window, cx| {
-            set_window_layout(WindowLayout::Agent(None), cx);
-        });
 
         #[cfg(not(target_os = "macos"))]
         workspace.register_action(|workspace, action: &OpenApplicationMenu, window, cx| {
@@ -156,28 +129,6 @@ pub fn init(cx: &mut App) {
         });
     })
     .detach();
-}
-
-/// Hides or shows the panel layout actions in the command palette based on
-/// whether AI is currently disabled.
-fn update_layout_action_filter(cx: &mut App) {
-    let disable_ai = project::DisableAiSettings::get_global(cx).disable_ai;
-    let layout_actions = [
-        TypeId::of::<UseClassicLayout>(),
-        TypeId::of::<UseAgenticLayout>(),
-    ];
-    CommandPaletteFilter::update_global(cx, |filter, _| {
-        if disable_ai {
-            filter.hide_action_types(&layout_actions);
-        } else {
-            filter.show_action_types(layout_actions.iter());
-        }
-    });
-}
-
-fn set_window_layout(layout: WindowLayout, cx: &App) {
-    let fs = <dyn fs::Fs>::global(cx);
-    drop(AgentSettings::set_layout(layout, fs, cx));
 }
 
 pub struct TitleBar {
@@ -688,18 +639,13 @@ impl TitleBar {
             .multi_workspace
             .as_ref()
             .and_then(|mw| mw.upgrade())
-            .map(|mw| mw.read(cx).sidebar_open())
-            .unwrap_or(false)
-            && PlatformTitleBar::is_multi_workspace_enabled(cx);
-
-        let is_threads_list_view_active = self
-            .multi_workspace
-            .as_ref()
-            .and_then(|mw| mw.upgrade())
-            .map(|mw| mw.read(cx).is_threads_list_view_active(cx))
+            .map(|mw| {
+                let mw = mw.read(cx);
+                mw.sidebar_open() && mw.multi_workspace_enabled()
+            })
             .unwrap_or(false);
 
-        if is_sidebar_open && is_threads_list_view_active {
+        if is_sidebar_open {
             return self
                 .render_recent_projects_popover(name.as_ref(), display_name, cx)
                 .into_any_element();
@@ -892,22 +838,6 @@ impl TitleBar {
                     ))
                     .on_click(|_, window, cx| {
                         window.dispatch_action(Box::new(zed_actions::Rerun::default()), cx)
-                    }),
-            )
-            .child(
-                IconButton::new("run_widget_debug", IconName::Debug)
-                    .shape(IconButtonShape::Square)
-                    .icon_size(IconSize::Small)
-                    .icon_color(Color::Created)
-                    .chrome_region(region)
-                    .tab_index(0isize)
-                    .aria_label("Start Debugging")
-                    .tooltip(Tooltip::for_action_title(
-                        "Start Debugging",
-                        &debugger_ui::Start,
-                    ))
-                    .on_click(|_, window, cx| {
-                        window.dispatch_action(Box::new(debugger_ui::Start), cx)
                     }),
             )
     }
@@ -1178,6 +1108,7 @@ mod tests {
     use gpui::{
         Background, Modifiers, TestAppContext, UpdateGlobal as _, VisualTestContext, point,
     };
+    use settings::SettingsStore;
     use std::{cell::Cell, rc::Rc};
     use util::paths::PathStyle;
     use workspace::AppState;

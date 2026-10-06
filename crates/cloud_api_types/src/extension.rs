@@ -56,7 +56,8 @@ impl ExtensionProvides {
     pub fn is_deprecated(&self) -> bool {
         matches!(
             self,
-            ExtensionProvides::AgentServers
+            ExtensionProvides::ContextServers
+                | ExtensionProvides::AgentServers
                 | ExtensionProvides::SlashCommands
                 | ExtensionProvides::IndexedDocsProviders
         )

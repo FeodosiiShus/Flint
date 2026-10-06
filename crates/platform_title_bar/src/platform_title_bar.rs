@@ -6,7 +6,6 @@ use gpui::{
     MouseButton, ParentElement, StatefulInteractiveElement, Styled, WeakEntity, Window,
     WindowButtonLayout, WindowControlArea, div, px,
 };
-use project::DisableAiSettings;
 use settings::Settings;
 use smallvec::SmallVec;
 use std::mem;
@@ -157,10 +156,6 @@ impl PlatformTitleBar {
             .and_then(|mw| mw.upgrade())
             .map(|mw| mw.read(cx).sidebar_render_state(cx))
             .unwrap_or_default()
-    }
-
-    pub fn is_multi_workspace_enabled(cx: &App) -> bool {
-        !DisableAiSettings::get_global(cx).disable_ai
     }
 
     #[cfg(target_os = "macos")]

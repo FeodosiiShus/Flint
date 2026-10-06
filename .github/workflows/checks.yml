@@ -97,10 +97,10 @@ jobs:
         run: cargo test --locked --package git_ui --lib -- merge_tool git_panel
 
       - name: Run gpui tests
-        run: cargo test --locked --package gpui --package gpui_wgpu
+        run: cargo test --locked --package gpui
 
-      - name: Run islands, tool window bar, tool window header, tab and sound tests
-        run: cargo test --locked --package workspace --package ui --package audio --lib -- tool_window_bar tool_window_header island inactive_window status_bar_hides_panel_buttons workspace_settings tab::tests hidden_tabs test_new_tab_scrolls_into_view_completely test_pinned_tabs_scroll_to_item_uses_correct_index project_gradient sound
+      - name: Run islands, tool window bar, tool window header and tab tests
+        run: cargo test --locked --package workspace --package ui --lib -- tool_window_bar tool_window_header island inactive_window status_bar_hides_panel_buttons workspace_settings tab::tests hidden_tabs test_new_tab_scrolls_into_view_completely test_pinned_tabs_scroll_to_item_uses_correct_index project_gradient
 
       - name: Run islands chrome pixel tests
         run: cargo test --locked --package ui --test islands_chrome_pixels
@@ -127,4 +127,4 @@ jobs:
         run: cargo test --locked --package zed --bin zed -- test_action_namespaces test_base_keymap
 
       - name: Check tests of crates changed by Flint compile
-        run: cargo check --locked --tests --package editor --package vim --package workspace --package agent --package agent_ui --package language_models --package client --package remote_server --package settings_ui --package terminal_view --package sidebar --package debugger_ui --package outline_panel --package language_tools --package diagnostics --package extension_host
+        run: cargo check --locked --tests --package editor --package workspace --package client --package settings_ui --package terminal_view --package outline_panel --package language_tools --package diagnostics --package extension_host

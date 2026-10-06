@@ -1,9 +1,7 @@
 pub mod os_info;
 pub mod user;
-pub mod zed_urls;
 
 use anyhow::Result;
-use credentials_provider::CredentialsProvider;
 use futures::{FutureExt, Stream, TryFutureExt as _, future::BoxFuture, stream::BoxStream};
 use gpui::{App, AsyncApp, Entity, Global, WeakEntity};
 use http_client::{HttpClientWithUrl, read_proxy_from_env};
@@ -79,7 +77,6 @@ pub struct Client {
     id: AtomicU64,
     peer: Arc<Peer>,
     http: Arc<HttpClientWithUrl>,
-    credentials_provider: Arc<dyn CredentialsProvider>,
     state: RwLock<ClientState>,
     handler_set: Mutex<ProtoMessageHandlerSet>,
 }
@@ -242,12 +239,11 @@ impl<T: 'static> Drop for PendingEntitySubscription<T> {
 }
 
 impl Client {
-    pub fn new(http: Arc<HttpClientWithUrl>, cx: &mut App) -> Arc<Self> {
+    pub fn new(http: Arc<HttpClientWithUrl>) -> Arc<Self> {
         Arc::new(Self {
             id: AtomicU64::new(0),
             peer: Peer::new(0),
             http,
-            credentials_provider: zed_credentials_provider::global(cx),
             state: Default::default(),
             handler_set: Default::default(),
         })
@@ -259,7 +255,7 @@ impl Client {
             ZED_SERVER_URL,
             cx.http_client().proxy().cloned(),
         ));
-        Self::new(http, cx)
+        Self::new(http)
     }
 
     pub fn id(&self) -> u64 {
@@ -268,10 +264,6 @@ impl Client {
 
     pub fn http_client(&self) -> Arc<HttpClientWithUrl> {
         self.http.clone()
-    }
-
-    pub fn credentials_provider(&self) -> Arc<dyn CredentialsProvider> {
-        self.credentials_provider.clone()
     }
 
     pub fn set_id(&self, id: u64) -> &Self {
@@ -661,7 +653,7 @@ mod tests {
     #[gpui::test]
     async fn test_subscribing_to_entity(cx: &mut TestAppContext) {
         init_test(cx);
-        let client = cx.update(|cx| Client::new(FakeHttpClient::with_404_response(), cx));
+        let client = Client::new(FakeHttpClient::with_404_response());
 
         let (done_tx1, done_rx1) = async_channel::unbounded();
         let (done_tx2, done_rx2) = async_channel::unbounded();
@@ -729,7 +721,7 @@ mod tests {
     #[gpui::test]
     async fn test_subscribing_after_dropping_subscription(cx: &mut TestAppContext) {
         init_test(cx);
-        let client = cx.update(|cx| Client::new(FakeHttpClient::with_404_response(), cx));
+        let client = Client::new(FakeHttpClient::with_404_response());
 
         let entity = cx.new(|_| TestEntity::default());
         let (done_tx1, _done_rx1) = async_channel::unbounded();
@@ -756,7 +748,7 @@ mod tests {
     #[gpui::test]
     async fn test_dropping_subscription_in_handler(cx: &mut TestAppContext) {
         init_test(cx);
-        let client = cx.update(|cx| Client::new(FakeHttpClient::with_404_response(), cx));
+        let client = Client::new(FakeHttpClient::with_404_response());
 
         let entity = cx.new(|_| TestEntity::default());
         let (done_tx, done_rx) = async_channel::unbounded();

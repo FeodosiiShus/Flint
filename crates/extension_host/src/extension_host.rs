@@ -15,9 +15,9 @@ use collections::{BTreeMap, BTreeSet, FxHashSet, HashMap, HashSet, btree_map};
 pub use extension::ExtensionManifest;
 use extension::extension_builder::{CompileExtensionOptions, ExtensionBuilder};
 use extension::{
-    ExtensionContextServerProxy, ExtensionDebugAdapterProviderProxy, ExtensionEvents,
-    ExtensionGrammarProxy, ExtensionHostProxy, ExtensionLanguageProxy,
-    ExtensionLanguageServerProxy, ExtensionSnippetProxy, ExtensionThemeProxy,
+    ExtensionDebugAdapterProviderProxy, ExtensionEvents, ExtensionGrammarProxy, ExtensionHostProxy,
+    ExtensionLanguageProxy, ExtensionLanguageServerProxy, ExtensionSnippetProxy,
+    ExtensionThemeProxy,
 };
 use fs::{Fs, RemoveOptions, RenameOptions};
 use futures::future::{Shared, join_all};
@@ -597,17 +597,6 @@ impl ExtensionStore {
             .map(|extension| &extension.manifest)
     }
 
-    /// Returns the names of themes provided by extensions.
-    pub fn extension_themes<'a>(
-        &'a self,
-        extension_id: &'a str,
-    ) -> impl Iterator<Item = &'a Arc<str>> {
-        self.extension_index
-            .themes
-            .iter()
-            .filter_map(|(name, theme)| theme.extension.as_ref().eq(extension_id).then_some(name))
-    }
-
     /// Returns the path to the theme file within an extension, if there is an
     /// extension that provides the theme.
     pub fn path_to_extension_theme(&self, theme_name: &str) -> Option<PathBuf> {
@@ -618,23 +607,6 @@ impl ExtensionStore {
                 .join(entry.extension.as_ref())
                 .join(&entry.path),
         )
-    }
-
-    /// Returns the names of icon themes provided by extensions.
-    pub fn extension_icon_themes<'a>(
-        &'a self,
-        extension_id: &'a str,
-    ) -> impl Iterator<Item = &'a Arc<str>> {
-        self.extension_index
-            .icon_themes
-            .iter()
-            .filter_map(|(name, icon_theme)| {
-                icon_theme
-                    .extension
-                    .as_ref()
-                    .eq(extension_id)
-                    .then_some(name)
-            })
     }
 
     /// Returns the path to the icon theme file within an extension, if there is
@@ -1395,9 +1367,6 @@ impl ExtensionStore {
                 }
             }
 
-            for server_id in extension.manifest.context_servers.keys() {
-                self.proxy.unregister_context_server(server_id.clone(), cx);
-            }
             for adapter in extension.manifest.debug_adapters.keys() {
                 self.proxy.unregister_debug_adapter(adapter.clone());
             }
@@ -1674,11 +1643,6 @@ impl ExtensionStore {
                                 language.clone(),
                             );
                         }
-                    }
-
-                    for id in manifest.context_servers.keys() {
-                        this.proxy
-                            .register_context_server(extension.clone(), id.clone(), cx);
                     }
 
                     for (debug_adapter, meta) in &manifest.debug_adapters {

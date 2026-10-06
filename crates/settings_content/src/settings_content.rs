@@ -1,10 +1,8 @@
 mod action;
-mod agent;
 mod editor;
 mod extension;
 mod fallible_options;
 mod language;
-mod language_model;
 pub mod merge_from;
 mod project;
 mod serde_helper;
@@ -14,13 +12,11 @@ mod title_bar;
 mod workspace;
 
 pub use action::{ActionName, ActionWithArguments, CommandAliasTarget};
-pub use agent::*;
 use anyhow::Context;
 pub use editor::*;
 pub use extension::*;
 pub use fallible_options::*;
 pub use language::*;
-pub use language_model::*;
 pub use merge_from::MergeFrom as MergeFromTrait;
 pub use project::*;
 use serde::de::DeserializeOwned;
@@ -33,7 +29,7 @@ pub use theme::*;
 pub use title_bar::*;
 pub use workspace::*;
 
-use collections::{HashMap, IndexMap, IndexSet};
+use collections::{HashMap, IndexSet};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use settings_macros::{MergeFrom, with_fallible_options};
@@ -98,9 +94,8 @@ macro_rules! settings_overrides {
         }
     }
 }
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::hash::Hash;
-use std::sync::Arc;
 pub use util::serde::default_true;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -196,8 +191,6 @@ pub struct SettingsContent {
     /// Settings related to the file finder.
     pub file_finder: Option<FileFinderSettingsContent>,
 
-    pub call_hierarchy: Option<CallHierarchySettingsContent>,
-
     pub git_panel: Option<GitPanelSettingsContent>,
 
     pub tabs: Option<ItemSettingsContent>,
@@ -206,9 +199,6 @@ pub struct SettingsContent {
     pub panel: Option<PanelChromeSettingsContent>,
 
     pub preview_tabs: Option<PreviewTabsSettingsContent>,
-
-    pub agent: Option<AgentSettingsContent>,
-    pub agent_servers: Option<AllAgentServersSettings>,
 
     /// This base keymap settings adjusts the default keybindings in Zed to be similar
     /// to other common code editors. By default, Zed's keymap closely follows VSCode's
@@ -228,13 +218,8 @@ pub struct SettingsContent {
     /// Common language server settings.
     pub global_lsp_settings: Option<GlobalLspSettingsContent>,
 
-    /// The settings for the image viewer.
-    pub image_viewer: Option<ImageViewerSettingsContent>,
-
     /// The settings for the markdown preview.
     pub markdown_preview: Option<MarkdownPreviewSettingsContent>,
-
-    pub repl: Option<ReplSettingsContent>,
 
     /// Whether or not to enable Helix mode.
     ///
@@ -257,10 +242,6 @@ pub struct SettingsContent {
     pub log: Option<HashMap<String, String>>,
 
     pub line_indicator_format: Option<LineIndicatorFormat>,
-
-    pub language_models: Option<AllLanguageModelSettingsContent>,
-
-    pub copilot: Option<CopilotSettingsContent>,
 
     pub outline_panel: Option<OutlinePanelSettingsContent>,
 
@@ -293,9 +274,6 @@ pub struct SettingsContent {
     /// Settings for the which-key popup.
     pub which_key: Option<WhichKeySettingsContent>,
 
-    /// Settings related to Vim mode in Zed.
-    pub vim: Option<VimSettingsContent>,
-
     /// Number of lines to search for modelines at the beginning and end of files.
     /// Modelines contain editor directives (e.g., vim/emacs settings) that configure
     /// the editor behavior for specific files.
@@ -305,33 +283,6 @@ pub struct SettingsContent {
 
     /// Local overrides for feature flags, keyed by flag name.
     pub feature_flags: Option<FeatureFlagsMap>,
-
-    /// Settings for developer-oriented instrumentation tools (profilers,
-    /// tracers, etc.) that can be toggled at runtime.
-    pub instrumentation: Option<InstrumentationSettingsContent>,
-}
-
-/// Configuration for developer-oriented instrumentation tools that collect
-/// diagnostic data about a running Zed instance.
-#[with_fallible_options]
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema, MergeFrom)]
-pub struct InstrumentationSettingsContent {
-    /// Configuration for the performance profiler, accessed via the
-    /// `zed: open performance profiler` action.
-    pub performance_profiler: Option<PerformanceProfilerSettingsContent>,
-}
-
-/// Configuration for the performance profiler which collects timing data
-/// for foreground and background executor tasks.
-#[with_fallible_options]
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema, MergeFrom)]
-pub struct PerformanceProfilerSettingsContent {
-    /// Whether to collect timing data for foreground and background executor
-    /// tasks. Enabling this may lead to increased memory usage, hence it's
-    /// disabled by default for regular builds.
-    ///
-    /// Default: false
-    pub enabled: Option<bool>,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize, MergeFrom)]
@@ -379,14 +330,13 @@ impl SettingsContent {
 fallible_options::flattened_deserialize!(SettingsContent {
     sections: { project, theme, extension, workspace, editor, remote },
     options: {
-        call_hierarchy, command_palette, file_finder, git_panel, tabs, tab_bar, status_bar, panel, preview_tabs, agent,
-        agent_servers, base_keymap, debugger, diagnostics,
+        command_palette, file_finder, git_panel, tabs, tab_bar, status_bar, panel, preview_tabs,
+        base_keymap, debugger, diagnostics,
         git,
-        global_lsp_settings, image_viewer, markdown_preview, repl, helix_mode, hide_mouse,
-        journal, log, line_indicator_format, language_models, copilot, outline_panel, project_panel,
+        global_lsp_settings, markdown_preview, helix_mode, hide_mouse,
+        journal, log, line_indicator_format, outline_panel, project_panel,
         node, proxy, reduce_motion, session, terminal,
-        title_bar, vim_mode, which_key, vim, modeline_lines, feature_flags,
-        instrumentation,
+        title_bar, vim_mode, which_key, modeline_lines, feature_flags,
     },
     defaults: {},
 });
@@ -394,7 +344,7 @@ fallible_options::flattened_deserialize!(SettingsContent {
 fallible_options::flattened_deserialize!(UserSettingsContent {
     sections: { content, release_channel_overrides, platform_overrides },
     options: {},
-    defaults: { profiles },
+    defaults: {},
 });
 
 // These impls are there to optimize builds by avoiding monomorphization downstream. Yes, they're repetitive, but using default impls
@@ -442,35 +392,6 @@ settings_overrides! {
     pub struct PlatformOverrides { macos, linux, windows }
 }
 
-/// Determines what settings a profile starts from before applying its overrides.
-#[derive(
-    Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema, MergeFrom,
-)]
-#[serde(rename_all = "snake_case")]
-pub enum ProfileBase {
-    /// Apply profile settings on top of the user's current settings.
-    #[default]
-    User,
-    /// Apply profile settings on top of Zed's default settings, ignoring user customizations.
-    Default,
-}
-
-/// A named settings profile that can temporarily override settings.
-#[with_fallible_options]
-#[derive(Debug, Default, PartialEq, Clone, Serialize, Deserialize, JsonSchema, MergeFrom)]
-pub struct SettingsProfile {
-    /// What base settings to start from before applying this profile's overrides.
-    ///
-    /// - `user`: Apply on top of user's settings (default)
-    /// - `default`: Apply on top of Zed's default settings, ignoring user customizations
-    #[serde(default)]
-    pub base: ProfileBase,
-
-    /// The settings overrides for this profile.
-    #[serde(default)]
-    pub settings: Box<SettingsContent>,
-}
-
 #[with_fallible_options]
 #[derive(Debug, Default, PartialEq, Clone, Serialize, JsonSchema, MergeFrom)]
 pub struct UserSettingsContent {
@@ -482,9 +403,6 @@ pub struct UserSettingsContent {
 
     #[serde(flatten)]
     pub platform_overrides: PlatformOverrides,
-
-    #[serde(default)]
-    pub profiles: IndexMap<String, SettingsProfile>,
 }
 
 pub struct ExtensionsSettingsContent {
@@ -623,7 +541,7 @@ pub struct GitPanelSettingsContent {
     pub button: Option<bool>,
     /// Where to dock the panel.
     ///
-    /// Default: right (Agentic layout), left (Classic layout)
+    /// Default: left
     pub dock: Option<DockPosition>,
     /// Default width of the panel in pixels.
     ///
@@ -919,125 +837,11 @@ impl ModalWidthContent {
     }
 }
 
-#[with_fallible_options]
-#[derive(Clone, Default, Serialize, Deserialize, JsonSchema, MergeFrom, Debug, PartialEq)]
-pub struct CallHierarchySettingsContent {
-    /// Determines how much space the call hierarchy picker can take up in relation to the available window width.
-    ///
-    /// Default: medium
-    pub modal_max_width: Option<ModalWidthContent>,
-}
-
-#[with_fallible_options]
-#[derive(Clone, Default, Serialize, Deserialize, PartialEq, Debug, JsonSchema, MergeFrom)]
-pub struct VimSettingsContent {
-    pub default_mode: Option<ModeContent>,
-    pub toggle_relative_line_numbers: Option<bool>,
-    pub use_system_clipboard: Option<UseSystemClipboard>,
-    pub use_smartcase_find: Option<bool>,
-    pub use_regex_search: Option<bool>,
-    /// When enabled, the `:substitute` command replaces all matches in a line
-    /// by default. The 'g' flag then toggles this behavior.,
-    pub gdefault: Option<bool>,
-    pub custom_digraphs: Option<HashMap<String, Arc<str>>>,
-    pub highlight_on_yank_duration: Option<u64>,
-    pub cursor_shape: Option<CursorShapeSettings>,
-}
-
-#[derive(
-    Copy,
-    Clone,
-    Default,
-    Serialize,
-    Deserialize,
-    JsonSchema,
-    MergeFrom,
-    PartialEq,
-    Debug,
-    strum::VariantArray,
-    strum::VariantNames,
-)]
-#[serde(rename_all = "snake_case")]
-pub enum ModeContent {
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+pub enum SidebarSide {
     #[default]
-    Normal,
-    Insert,
-}
-
-/// Controls when to use system clipboard.
-#[derive(
-    Copy,
-    Clone,
-    Debug,
-    Serialize,
-    Deserialize,
-    PartialEq,
-    Eq,
-    JsonSchema,
-    MergeFrom,
-    strum::VariantArray,
-    strum::VariantNames,
-)]
-#[serde(rename_all = "snake_case")]
-pub enum UseSystemClipboard {
-    /// Don't use system clipboard.
-    Never,
-    /// Use system clipboard.
-    Always,
-    /// Use system clipboard for yank operations.
-    OnYank,
-}
-
-/// Cursor shape configuration for insert mode in Vim.
-#[derive(
-    Copy,
-    Clone,
-    Debug,
-    Serialize,
-    Deserialize,
-    PartialEq,
-    Eq,
-    JsonSchema,
-    MergeFrom,
-    strum::VariantArray,
-    strum::VariantNames,
-)]
-#[serde(rename_all = "snake_case")]
-pub enum VimInsertModeCursorShape {
-    /// Inherit cursor shape from the editor's base cursor_shape setting.
-    Inherit,
-    /// Vertical bar cursor.
-    Bar,
-    /// Block cursor that surrounds the character.
-    Block,
-    /// Underline cursor.
-    Underline,
-    /// Hollow box cursor.
-    Hollow,
-}
-
-/// The settings for cursor shape.
-#[with_fallible_options]
-#[derive(
-    Copy, Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq, JsonSchema, MergeFrom,
-)]
-pub struct CursorShapeSettings {
-    /// Cursor shape for the normal mode.
-    ///
-    /// Default: block
-    pub normal: Option<CursorShape>,
-    /// Cursor shape for the replace mode.
-    ///
-    /// Default: underline
-    pub replace: Option<CursorShape>,
-    /// Cursor shape for the visual mode.
-    ///
-    /// Default: block
-    pub visual: Option<CursorShape>,
-    /// Cursor shape for the insert mode.
-    ///
-    /// The default value follows the primary cursor_shape.
-    pub insert: Option<VimInsertModeCursorShape>,
+    Left,
+    Right,
 }
 
 /// Settings specific to journaling
@@ -1075,7 +879,7 @@ pub struct OutlinePanelSettingsContent {
     pub default_width: Option<PixelSetting>,
     /// The position of outline panel
     ///
-    /// Default: right (Agentic layout), left (Classic layout)
+    /// Default: left
     pub dock: Option<DockSide>,
     /// Whether to show file icons in the outline panel.
     ///
@@ -1192,63 +996,12 @@ pub struct MarkdownPreviewSettingsContent {
     /// The font size to use for rendering in the markdown preview.
     /// Falls back to the UI font size if unset.
     pub font_size: Option<FontSize>,
-    /// The theme to use for the markdown preview.
-    /// Falls back to the main editor theme if unset.
-    pub theme: Option<ThemeSelection>,
     /// The weight of headings (H1 through H6) in the markdown preview, in CSS
     /// units from 100 to 900. Also applies to rendered Markdown cells in
     /// notebooks, which share the preview typography.
     ///
     /// Default: 600
     pub heading_font_weight: Option<FontWeightContent>,
-    /// Whether to automatically open Markdown files in the preview.
-    ///
-    /// Default: false
-    pub open_markdown_files_in_preview: Option<bool>,
-    /// Whether to limit the width of the rendered markdown content. When
-    /// enabled, content is constrained to `max_width` and centered
-    /// horizontally within the preview pane, for optimal readability.
-    ///
-    /// Default: true
-    pub limit_content_width: Option<bool>,
-    /// The maximum width, in pixels, of the rendered markdown content when
-    /// `limit_content_width` is enabled.
-    ///
-    /// Default: 800
-    pub max_width: Option<PixelSetting>,
-}
-
-/// The settings for the image viewer.
-#[with_fallible_options]
-#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema, MergeFrom, Default, PartialEq)]
-pub struct ImageViewerSettingsContent {
-    /// The unit to use for displaying image file sizes.
-    ///
-    /// Default: "binary"
-    pub unit: Option<ImageFileSizeUnit>,
-}
-
-#[with_fallible_options]
-#[derive(
-    Clone,
-    Copy,
-    Debug,
-    Serialize,
-    Deserialize,
-    JsonSchema,
-    MergeFrom,
-    Default,
-    PartialEq,
-    strum::VariantArray,
-    strum::VariantNames,
-)]
-#[serde(rename_all = "snake_case")]
-pub enum ImageFileSizeUnit {
-    /// Displays file size in binary units (e.g., KiB, MiB).
-    #[default]
-    Binary,
-    /// Displays file size in decimal units (e.g., KB, MB).
-    Decimal,
 }
 
 #[with_fallible_options]
@@ -1256,32 +1009,7 @@ pub enum ImageFileSizeUnit {
 pub struct RemoteSettingsContent {
     pub ssh_connections: Option<Vec<SshConnection>>,
     pub wsl_connections: Option<Vec<WslConnection>>,
-    pub dev_container_connections: Option<Vec<DevContainerConnection>>,
     pub read_ssh_config: Option<bool>,
-    pub use_podman: Option<bool>,
-    /// Whether to build dev container images with BuildKit.
-    ///
-    /// When unset, Zed auto-detects BuildKit by probing for the `buildx` CLI
-    /// plugin. Set to `false` to force the classic Docker builder, which is
-    /// required for Docker-compatible engines that lack an integrated BuildKit
-    /// (e.g. Apple Container via a Docker-API bridge), where BuildKit builds
-    /// cannot resolve locally-built images.
-    ///
-    /// Default: null (auto-detect)
-    pub dev_container_use_buildkit: Option<bool>,
-}
-
-#[with_fallible_options]
-#[derive(
-    Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq, JsonSchema, MergeFrom, Hash,
-)]
-pub struct DevContainerConnection {
-    pub name: String,
-    pub remote_user: String,
-    pub container_id: String,
-    pub use_podman: bool,
-    pub extension_ids: Vec<String>,
-    pub remote_env: BTreeMap<String, String>,
 }
 
 #[with_fallible_options]
@@ -1331,36 +1059,6 @@ pub struct SshPortForwardOption {
     pub local_port: u16,
     pub remote_host: Option<String>,
     pub remote_port: u16,
-}
-
-/// Settings for configuring REPL display and behavior.
-#[with_fallible_options]
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema, MergeFrom)]
-pub struct ReplSettingsContent {
-    /// Maximum number of lines to keep in REPL's scrollback buffer.
-    /// Clamped with [4, 256] range.
-    ///
-    /// Default: 32
-    pub max_lines: Option<usize>,
-    /// Maximum number of columns to keep in REPL's scrollback buffer.
-    /// Clamped with [20, 512] range.
-    ///
-    /// Default: 128
-    pub max_columns: Option<usize>,
-    /// Whether to show small single-line outputs inline instead of in a block.
-    ///
-    /// Default: true
-    pub inline_output: Option<bool>,
-    /// Maximum number of characters for an output to be shown inline.
-    /// Only applies when `inline_output` is true.
-    ///
-    /// Default: 50
-    pub inline_output_max_length: Option<usize>,
-    /// Maximum number of lines of output to display before scrolling.
-    /// Set to 0 to disable output height limits.
-    ///
-    /// Default: 0
-    pub output_max_height_lines: Option<usize>,
 }
 
 /// Settings for configuring the which-key popup behaviour.
@@ -1466,31 +1164,6 @@ impl<T: std::hash::Hash + Eq> From<Vec<T>> for ExtendingSet<T> {
 impl<T: Clone + std::hash::Hash + Eq> merge_from::MergeFrom for ExtendingSet<T> {
     fn merge_from(&mut self, other: &Self) {
         self.0.extend(other.0.iter().cloned());
-    }
-}
-
-// A SaturatingBool in the settings can only ever be set to true,
-// later attempts to set it to false will be ignored.
-//
-// Used by `disable_ai`.
-#[derive(Debug, Default, Copy, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
-pub struct SaturatingBool(pub bool);
-
-impl From<bool> for SaturatingBool {
-    fn from(value: bool) -> Self {
-        SaturatingBool(value)
-    }
-}
-
-impl From<SaturatingBool> for bool {
-    fn from(value: SaturatingBool) -> bool {
-        value.0
-    }
-}
-
-impl merge_from::MergeFrom for SaturatingBool {
-    fn merge_from(&mut self, other: &Self) {
-        self.0 |= other.0
     }
 }
 

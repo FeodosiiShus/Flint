@@ -517,8 +517,7 @@ fn remote_server_binary_unavailable(
         .unwrap_or_else(|| "unknown".to_string());
     anyhow::anyhow!(
         "No remote server binary is available for {} {} (version {version}). \
-         Prebuilt remote server downloads are not supported; set ZED_BUILD_REMOTE_SERVER \
-         to build the remote server locally, or install it on the remote host.",
+         Prebuilt remote server downloads are not supported; install the remote server on the remote host.",
         platform.os,
         platform.arch,
     )

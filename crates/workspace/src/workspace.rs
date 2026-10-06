@@ -36,10 +36,9 @@ pub use background_image::{
 pub use dock::Panel;
 pub use multi_workspace::{
     CloseWorkspaceSidebar, DraggedSidebar, FocusWorkspaceSidebar, MoveProjectDown,
-    MoveProjectToNewWindow, MoveProjectUp, MultiWorkspace, MultiWorkspaceEvent, NewThread,
-    NextProject, NextThread, PreviousProject, PreviousThread, ProjectGroup, ProjectGroupKey,
-    RemovalIntent, SerializedProjectGroupState, Sidebar, SidebarEvent, SidebarHandle,
-    SidebarRenderState, SidebarSide, ToggleWorkspaceSidebar, sidebar_side_context_menu,
+    MoveProjectToNewWindow, MoveProjectUp, MultiWorkspace, MultiWorkspaceEvent, NextProject,
+    PreviousProject, ProjectGroup, ProjectGroupKey, RemovalIntent, SerializedProjectGroupState,
+    Sidebar, SidebarEvent, SidebarHandle, SidebarRenderState, SidebarSide, ToggleWorkspaceSidebar,
 };
 pub use path_list::{PathList, SerializedPathList};
 pub use remote::{
@@ -47,7 +46,6 @@ pub use remote::{
 };
 pub use toast_layer::{ToastAction, ToastLayer, ToastView};
 
-use agent_settings::AgentSettings;
 use anyhow::{Context as _, Result, anyhow};
 use client::{
     Client, ErrorExt, UserStore,
@@ -1413,7 +1411,7 @@ impl AppState {
         <dyn Fs>::set_global(fs.clone(), cx);
         let languages = Arc::new(LanguageRegistry::test(cx.background_executor().clone()));
         let http_client = http_client::FakeHttpClient::with_404_response();
-        let client = Client::new(http_client, cx);
+        let client = Client::new(http_client);
         let session = cx.new(|cx| AppSession::new(Session::test(), cx));
         let user_store = cx.new(|cx| UserStore::new(client.clone(), cx));
         let workspace_store = cx.new(|_| WorkspaceStore::default());
@@ -1625,8 +1623,6 @@ pub struct Workspace {
     scheduled_tasks: Vec<Task<()>>,
     last_open_dock_positions: Vec<DockPosition>,
     removing: bool,
-    open_in_dev_container: bool,
-    _dev_container_task: Option<Task<Result<()>>>,
     _panels_task: Option<Task<Result<()>>>,
     sidebar_focus_handle: Option<FocusHandle>,
     multi_workspace: Option<WeakEntity<MultiWorkspace>>,
@@ -2128,8 +2124,6 @@ impl Workspace {
             multi_workspace,
             active_workspace_id: None,
             active_worktree_creation: ActiveWorktreeCreation::default(),
-            open_in_dev_container: false,
-            _dev_container_task: None,
             deferred_save_items: Vec::new(),
             persisted_recent_navigation_history: Vec::new(),
             last_active_project_path: None,
@@ -2602,13 +2596,6 @@ impl Workspace {
             DockPosition::Bottom => &self.bottom_dock,
             DockPosition::Right => &self.right_dock,
         }
-    }
-
-    pub fn agent_panel_position(&self, cx: &App) -> Option<DockPosition> {
-        self.all_docks().into_iter().find_map(|dock| {
-            let dock = dock.read(cx);
-            dock.has_agent_panel(cx).then_some(dock.position())
-        })
     }
 
     pub fn panel_size_state<T: Panel>(&self, cx: &App) -> Option<dock::PanelSizeState> {
@@ -3322,18 +3309,6 @@ impl Workspace {
 
     pub fn set_debugger_provider(&mut self, provider: impl DebuggerProvider + 'static) {
         self.debugger_provider = Some(Arc::new(provider));
-    }
-
-    pub fn set_open_in_dev_container(&mut self, value: bool) {
-        self.open_in_dev_container = value;
-    }
-
-    pub fn open_in_dev_container(&self) -> bool {
-        self.open_in_dev_container
-    }
-
-    pub fn set_dev_container_task(&mut self, task: Task<Result<()>>) {
-        self._dev_container_task = Some(task);
     }
 
     pub fn debugger_provider(&self) -> Option<Arc<dyn DebuggerProvider>> {
@@ -9813,7 +9788,6 @@ pub struct OpenOptions {
     pub requesting_window: Option<WindowHandle<MultiWorkspace>>,
     pub open_mode: OpenMode,
     pub env: Option<HashMap<String, String>>,
-    pub open_in_dev_container: bool,
 }
 
 impl Default for OpenOptions {
@@ -9827,7 +9801,6 @@ impl Default for OpenOptions {
             requesting_window: None,
             open_mode: OpenMode::default(),
             env: None,
-            open_in_dev_container: false,
         }
     }
 }
@@ -10044,7 +10017,7 @@ pub fn open_paths(
                     window.filter(|window| {
                         window
                             .read(cx)
-                            .is_ok_and(|mw| mw.multi_workspace_enabled(cx))
+                            .is_ok_and(|mw| mw.multi_workspace_enabled())
                     })
                 });
 
@@ -10052,21 +10025,12 @@ pub fn open_paths(
                     open_options.requesting_window = Some(window);
                     window
                         .update(cx, |multi_workspace, _, cx| {
-                            if AgentSettings::get_global(cx).threads_sidebar.auto_open {
-                                multi_workspace.open_sidebar(cx);
-                            } else {
-                                // Opening the sidebar is also what pins the
-                                // workspace we are about to navigate away from,
-                                // so pin it here to keep it in this window.
-                                multi_workspace.retain_active_workspace(cx);
-                            }
+                            multi_workspace.retain_active_workspace(cx);
                         })
                         .log_err();
                 }
             }
         }
-
-        let open_in_dev_container = open_options.open_in_dev_container;
 
         let result = if let Some((existing, target_workspace)) = existing {
             let open_task = existing
@@ -10074,9 +10038,6 @@ pub fn open_paths(
                     window.activate_window();
                     multi_workspace.activate(target_workspace.clone(), None, window, cx);
                     target_workspace.update(cx, |workspace, cx| {
-                        if open_in_dev_container {
-                            workspace.set_open_in_dev_container(true);
-                        }
                         workspace.open_paths(
                             abs_paths,
                             OpenOptions {
@@ -10104,13 +10065,6 @@ pub fn open_paths(
 
             Ok(OpenResult { window: existing, workspace: target_workspace, opened_items: open_task })
         } else {
-            let init = if open_in_dev_container {
-                Some(Box::new(|workspace: &mut Workspace, _window: &mut Window, _cx: &mut Context<Workspace>| {
-                    workspace.set_open_in_dev_container(true);
-                }) as Box<dyn FnOnce(&mut Workspace, &mut Window, &mut Context<Workspace>) + Send>)
-            } else {
-                None
-            };
             let result = cx
                 .update(move |cx| {
                     Workspace::new_local(
@@ -10118,7 +10072,7 @@ pub fn open_paths(
                         app_state.clone(),
                         open_options.requesting_window,
                         open_options.env,
-                        init,
+                        None,
                         open_options.open_mode,
                         cx,
                     )

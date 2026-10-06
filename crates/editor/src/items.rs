@@ -67,9 +67,7 @@ use workspace::{
     item::{FollowEvent, ProjectItemKind},
     searchable::SearchOptions,
 };
-use zed_actions::preview::{
-    markdown::OpenPreview as OpenMarkdownPreview, svg::OpenPreview as OpenSvgPreview,
-};
+use zed_actions::preview::svg::OpenPreview as OpenSvgPreview;
 
 pub const MAX_TAB_TITLE_LEN: usize = 24;
 
@@ -1198,13 +1196,6 @@ impl Item for Editor {
     ) -> Vec<(SharedString, Box<dyn gpui::Action>)> {
         let mut actions = Vec::new();
 
-        let is_markdown = self
-            .buffer()
-            .read(cx)
-            .as_singleton()
-            .and_then(|buffer| buffer.read(cx).language())
-            .is_some_and(|language| language.name().as_ref() == "Markdown");
-
         let is_svg = self
             .buffer()
             .read(cx)
@@ -1215,13 +1206,6 @@ impl Item for Editor {
                     .extension()
                     .is_some_and(|ext| ext.eq_ignore_ascii_case("svg"))
             });
-
-        if is_markdown {
-            actions.push((
-                "Open Markdown Preview".into(),
-                Box::new(OpenMarkdownPreview) as Box<dyn gpui::Action>,
-            ));
-        }
 
         if is_svg {
             actions.push((

@@ -51,7 +51,6 @@
       "cmd-k cmd-u": "editor::ConvertToUpperCase",
       "cmd-k cmd-l": "editor::ConvertToLowerCase",
       "cmd-shift-j": "editor::JoinLines",
-      "shift-alt-m": "markdown::OpenPreviewToTheSide",
       "ctrl-backspace": ["editor::DeleteToPreviousWordStart", { "ignore_newlines": false, "ignore_brackets": false }],
       "ctrl-delete": ["editor::DeleteToNextWordEnd", { "ignore_newlines": false, "ignore_brackets": false }],
       "ctrl-right": "editor::MoveToNextSubwordEnd",
@@ -67,7 +66,7 @@
     },
   },
   {
-    "context": "Editor && !agent_diff",
+    "context": "Editor",
     "bindings": {
       "cmd-k cmd-z": "git::Restore",
     },

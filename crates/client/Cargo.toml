@@ -19,7 +19,6 @@ test-support = ["collections/test-support", "gpui/test-support", "rpc/test-suppo
 anyhow.workspace = true
 async-channel.workspace = true
 collections.workspace = true
-credentials_provider.workspace = true
 futures.workspace = true
 gpui.workspace = true
 http_client.workspace = true
@@ -27,14 +26,12 @@ log.workspace = true
 parking_lot.workspace = true
 postage.workspace = true
 regex.workspace = true
-release_channel.workspace = true
 rpc = { workspace = true, features = ["gpui"] }
 serde.workspace = true
 settings.workspace = true
 text.workspace = true
 url.workspace = true
 util.workspace = true
-zed_credentials_provider.workspace = true
 
 [dev-dependencies]
 collections = { workspace = true, features = ["test-support"] }

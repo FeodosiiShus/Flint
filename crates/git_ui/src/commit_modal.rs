@@ -3,8 +3,7 @@ use crate::git_panel::{
     GitPanel, commit_message_editor, commit_title_exceeds_limit, git_commit_editor_style,
 };
 use crate::git_panel_settings::GitPanelSettings;
-use git::{Amend, Commit, GenerateCommitMessage, Signoff, SkipHooks};
-use project::DisableAiSettings;
+use git::{Amend, Commit, Signoff, SkipHooks};
 use settings::Settings;
 use ui::{
     ButtonLike, ContextMenu, ContextMenuEntry, DocumentationSide, ElevationIndex, KeybindingHint,
@@ -266,22 +265,18 @@ impl CommitModal {
         &self,
         id: impl Into<ElementId>,
         keybinding_target: Option<FocusHandle>,
-        disabled: bool,
         cx: &App,
     ) -> impl IntoElement {
         let menu_open = self.commit_menu_handle.is_deployed();
 
         PopoverMenu::new(id.into())
             .with_handle(self.commit_menu_handle.clone())
-            .trigger(
-                crate::render_split_button_chevron_trigger(
-                    "modal-commit-split-button-right",
-                    menu_open,
-                    None,
-                    cx,
-                )
-                .disabled(disabled),
-            )
+            .trigger(crate::render_split_button_chevron_trigger(
+                "modal-commit-split-button-right",
+                menu_open,
+                None,
+                cx,
+            ))
             .menu({
                 let git_panel_entity = self.git_panel.clone();
                 move |window, cx| {
@@ -350,33 +345,21 @@ impl CommitModal {
     }
 
     pub fn render_footer(&self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let (
-            can_commit,
-            tooltip,
-            commit_label,
-            generate_commit_message,
-            active_repo,
-            commit_options,
-            workspace,
-            is_generating,
-        ) = self.git_panel.update(cx, |git_panel, cx| {
-            let (can_commit, tooltip) = git_panel.configure_commit_button(cx);
-            let title = git_panel.commit_button_title();
-            let generate_commit_message = git_panel.render_generate_commit_message_button(None, cx);
-            let active_repo = git_panel.active_repository.clone();
-            let commit_options = git_panel.commit_options();
-            let is_generating = git_panel.is_generating_commit_message();
-            (
-                can_commit,
-                tooltip,
-                title,
-                generate_commit_message,
-                active_repo,
-                commit_options,
-                git_panel.workspace.clone(),
-                is_generating,
-            )
-        });
+        let (can_commit, tooltip, commit_label, active_repo, commit_options, workspace) =
+            self.git_panel.update(cx, |git_panel, cx| {
+                let (can_commit, tooltip) = git_panel.configure_commit_button(cx);
+                let title = git_panel.commit_button_title();
+                let active_repo = git_panel.active_repository.clone();
+                let commit_options = git_panel.commit_options();
+                (
+                    can_commit,
+                    tooltip,
+                    title,
+                    active_repo,
+                    commit_options,
+                    git_panel.workspace.clone(),
+                )
+            });
 
         let branch = active_repo
             .as_ref()
@@ -431,17 +414,12 @@ impl CommitModal {
             .flex_none()
             .justify_between()
             .child(
-                h_flex()
-                    .gap_1()
-                    .flex_shrink_1()
-                    .overflow_x_hidden()
-                    .child(
-                        h_flex()
-                            .flex_shrink_1()
-                            .overflow_x_hidden()
-                            .child(branch_picker),
-                    )
-                    .children(generate_commit_message),
+                h_flex().gap_1().flex_shrink_1().overflow_x_hidden().child(
+                    h_flex()
+                        .flex_shrink_1()
+                        .overflow_x_hidden()
+                        .child(branch_picker),
+                ),
             )
             .child(
                 h_flex()
@@ -492,7 +470,6 @@ impl CommitModal {
                         self.render_git_commit_menu(
                             format!("split-button-right-{}", commit_label),
                             Some(focus_handle),
-                            is_generating,
                             cx,
                         )
                         .into_any_element(),
@@ -609,13 +586,6 @@ impl Render for CommitModal {
             .on_action(cx.listener(Self::increase_font_size))
             .on_action(cx.listener(Self::decrease_font_size))
             .on_action(cx.listener(Self::reset_font_size))
-            .when(!DisableAiSettings::get_global(cx).disable_ai, |this| {
-                this.on_action(cx.listener(|this, _: &GenerateCommitMessage, _, cx| {
-                    this.git_panel.update(cx, |panel, cx| {
-                        panel.generate_commit_message(cx);
-                    })
-                }))
-            })
             .on_action(
                 cx.listener(|this, _: &zed_actions::git::Branch, window, cx| {
                     this.toggle_branch_selector(window, cx);
