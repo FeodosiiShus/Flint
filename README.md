@@ -81,7 +81,7 @@ Put the same `background_image` object into `<project>/.zed/settings.json`. Proj
 - The `editor_and_tools` image is positioned relative to the whole window, so the editor, panels, terminal, title bar and status bar show parts of one continuous picture. It is drawn under text, selections and highlights. The `empty_frame` image is positioned relative to the empty pane itself.
 - Every surface repaints the image right after its own opaque background, so it stays visible in opaque themes such as One Dark. In the default Eva Dark the docks and the editor have opaque backgrounds, so each island repaints the image over its own fill and `opacity` decides how much of the picture shows; the title bar, status bar, tab bar and terminal backgrounds are translucent, so they are skipped and the picture is drawn once under them, never twice. With both images set and a translucent editor background, the `editor_and_tools` image also shows through an empty pane, mixed with the `empty_frame` image.
 - Pop-ups, menus, modals, notifications and the Settings window are not covered.
-- Images larger than 8192 pixels on the longest side are scaled down when loaded. If you edit the image file in place, Flint reloads it when its window becomes active again.
+- Images larger than 8192 pixels on the longest side are scaled down when loaded. With `fill: "scale"`, an image larger than the biggest connected display (counted at 2x Retina) is also scaled down to the smallest size that still covers it, which saves memory without changing how it looks; `plain` and `tile` images are never resized apart from the 8192 pixel cap. Workspaces and layers that use the same file and settings share one decoded copy. When you connect a larger display, the image is decoded again the next time the window becomes active. If you edit the image file in place, Flint reloads it when its window becomes active again.
 - If the file is missing, unreadable, not an image, or the path is relative, Flint shows an error notification once and removes the image. It tries again when the setting changes or the window becomes active again.
 - Images from a URL are not supported.
 
@@ -321,6 +321,12 @@ Cmd+click (and `Cmd-B`, `Alt-F7` with the JetBrains keymap) goes to a definition
 - Installed automatically on first launch from the extension registry: C# (`csharp`, Roslyn), Java (`java`, jdtls), Swift, Dart, Vue, Svelte, Astro, plus HTML, Dockerfile, TOML, Markdown and `.env`. Other languages, such as Kotlin, PHP or Ruby, get their extension after you accept the install suggestion shown when you open such a file. To skip an automatic install, set it to `false` in your `settings.json`: `"auto_install_extensions": { "swift": false }`.
 - C# needs a .NET runtime. If .NET is installed only in `~/.dotnet` and `DOTNET_ROOT` is not set, Flint passes `DOTNET_ROOT=~/.dotnet` to language servers, so Roslyn starts without extra setup. A `DOTNET_ROOT` or `DOTNET_ROOT_ARM64` you set yourself, in the shell or in `lsp.<server>.binary.env`, always wins.
 - Each server still needs its project files to resolve symbols: `Cargo.toml` for Rust, `compile_commands.json` for C and C++, `go.mod` for Go, a `.csproj` or `.sln` for C#, and a JDK for Java.
+
+## Memory and startup
+
+- The Performance Profiler is off by default, including on Flint's `dev` channel, because its trace buffers grow with every task poll on every thread. To turn it on, set `"instrumentation": { "performance_profiler": { "enabled": true } }`.
+- Extensions are compiled to native code once and cached in the `.compiled-components` folder inside the extensions work folder, so later launches skip the compilation. Delete the folder to rebuild the cache; a changed or incompatible extension is recompiled by itself.
+- Bundled fonts, themes and settings are embedded uncompressed, so they stay in file-backed memory instead of being unpacked into the heap at launch.
 
 ## Licensing
 

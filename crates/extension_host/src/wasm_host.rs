@@ -30,8 +30,10 @@ use node_runtime::NodeRuntime;
 use release_channel::ReleaseChannel;
 use semver::Version;
 use settings::Settings;
+use sha2::{Digest as _, Sha256};
 use std::{
     borrow::Cow,
+    io::Write as _,
     path::{Path, PathBuf},
     sync::{Arc, LazyLock, OnceLock},
     time::Duration,
@@ -608,6 +610,126 @@ fn cache_store() -> Arc<IncrementalCompilationCache> {
     CACHE_STORE.clone()
 }
 
+const COMPILED_COMPONENT_CACHE_DIRECTORY: &str = ".compiled-components";
+const COMPILED_COMPONENT_FILE_EXTENSION: &str = "cwasm";
+const COMPILED_COMPONENT_DIGEST_HEX_LENGTH: usize = 64;
+
+fn compile_component(engine: &Engine, wasm_bytes: &[u8]) -> Result<Component> {
+    Component::from_binary(engine, wasm_bytes)
+        .map_err(anyhow::Error::from)
+        .context("failed to compile wasm component")
+}
+
+fn compile_component_with_disk_cache(
+    engine: &Engine,
+    cache_directory: &Path,
+    extension_id: &str,
+    wasm_bytes: &[u8],
+) -> Result<Component> {
+    let cache_path = compiled_component_cache_path(cache_directory, extension_id, wasm_bytes);
+    if cache_path.is_file() {
+        match load_trusted_precompiled_component(engine, &cache_path) {
+            Ok(component) => return Ok(component),
+            Err(error) => log::warn!(
+                "ignoring unusable compiled component cache {cache_path:?} for extension {extension_id}: {error:#}"
+            ),
+        }
+    }
+
+    let component = compile_component(engine, wasm_bytes)?;
+    if let Err(error) =
+        store_compiled_component(cache_directory, &cache_path, extension_id, &component)
+    {
+        log::warn!("failed to cache compiled component for extension {extension_id}: {error:#}");
+    }
+    Ok(component)
+}
+
+fn load_trusted_precompiled_component(engine: &Engine, cache_path: &Path) -> Result<Component> {
+    let serialized = std::fs::read(cache_path).context("failed to read compiled wasm component")?;
+    let loaded = unsafe { Component::deserialize(engine, &serialized) };
+    loaded
+        .map_err(anyhow::Error::from)
+        .context("failed to load compiled wasm component")
+}
+
+fn store_compiled_component(
+    cache_directory: &Path,
+    cache_path: &Path,
+    extension_id: &str,
+    component: &Component,
+) -> Result<()> {
+    let serialized = component
+        .serialize()
+        .map_err(anyhow::Error::from)
+        .context("failed to serialize compiled wasm component")?;
+    std::fs::create_dir_all(cache_directory)
+        .context("failed to create compiled component cache directory")?;
+    let mut temporary_file = tempfile::NamedTempFile::new_in(cache_directory)
+        .context("failed to create temporary compiled component file")?;
+    temporary_file
+        .write_all(&serialized)
+        .context("failed to write temporary compiled component file")?;
+    temporary_file
+        .as_file()
+        .sync_all()
+        .context("failed to sync temporary compiled component file")?;
+    temporary_file
+        .persist(cache_path)
+        .map_err(|error| error.error)
+        .context("failed to move compiled component into place")?;
+    remove_superseded_compiled_components(cache_directory, cache_path, extension_id)
+}
+
+fn remove_superseded_compiled_components(
+    cache_directory: &Path,
+    current_cache_path: &Path,
+    extension_id: &str,
+) -> Result<()> {
+    for entry in std::fs::read_dir(cache_directory)
+        .context("failed to list compiled component cache directory")?
+    {
+        let path = entry
+            .context("failed to read compiled component cache entry")?
+            .path();
+        let is_superseded =
+            path != current_cache_path && is_compiled_component_of_extension(&path, extension_id);
+        if !is_superseded {
+            continue;
+        }
+        if let Err(error) = std::fs::remove_file(&path) {
+            log::warn!("failed to remove superseded compiled component {path:?}: {error}");
+        }
+    }
+    Ok(())
+}
+
+fn compiled_component_cache_path(
+    cache_directory: &Path,
+    extension_id: &str,
+    wasm_bytes: &[u8],
+) -> PathBuf {
+    let digest = format!("{:x}", Sha256::digest(wasm_bytes));
+    cache_directory.join(format!(
+        "{extension_id}-{digest}.{COMPILED_COMPONENT_FILE_EXTENSION}"
+    ))
+}
+
+fn is_compiled_component_of_extension(path: &Path, extension_id: &str) -> bool {
+    path.file_name()
+        .and_then(|file_name| file_name.to_str())
+        .and_then(|file_name| file_name.strip_prefix(extension_id))
+        .and_then(|rest| rest.strip_prefix('-'))
+        .and_then(|rest| {
+            rest.strip_suffix(COMPILED_COMPONENT_FILE_EXTENSION)
+                .and_then(|digest| digest.strip_suffix('.'))
+        })
+        .is_some_and(|digest| {
+            digest.len() == COMPILED_COMPONENT_DIGEST_HEX_LENGTH
+                && digest.bytes().all(|byte| byte.is_ascii_hexdigit())
+        })
+}
+
 impl WasmHost {
     pub fn new(
         fs: Arc<dyn Fs>,
@@ -655,12 +777,20 @@ impl WasmHost {
         let compile_task = {
             let manifest_id = manifest.id.clone();
             let engine = this.engine.clone();
+            let cache_directory = (!this.fs.is_fake())
+                .then(|| this.work_dir.join(COMPILED_COMPONENT_CACHE_DIRECTORY));
 
             executor.spawn(async move {
                 let zed_api_version = parse_wasm_extension_version(&manifest_id, &wasm_bytes)?;
-                let component = Component::from_binary(&engine, &wasm_bytes)
-                    .map_err(anyhow::Error::from)
-                    .context("failed to compile wasm component")?;
+                let component = match &cache_directory {
+                    Some(cache_directory) => compile_component_with_disk_cache(
+                        &engine,
+                        cache_directory,
+                        &manifest_id,
+                        &wasm_bytes,
+                    )?,
+                    None => compile_component(&engine, &wasm_bytes)?,
+                };
 
                 anyhow::Ok((zed_api_version, component))
             })

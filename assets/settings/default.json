@@ -2890,7 +2890,7 @@
     // "theme": "Andromeda"
     "instrumentation": {
       "performance_profiler": {
-        "enabled": true,
+        "enabled": false,
       },
     },
   },

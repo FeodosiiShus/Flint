@@ -1,11 +1,11 @@
 use std::{
     io::Cursor,
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{Arc, LazyLock, Weak},
 };
 
 use anyhow::{Context as _, Result, bail};
-use collections::HashSet;
+use collections::{HashMap, HashSet};
 use fs::{Fs, MTime};
 use gpui::{App, AppContext as _, Context, PathPromptOptions, RenderImage, Window, WindowId};
 use image::{DynamicImage, ImageDecoder, ImageFormat, ImageReader, RgbaImage};
@@ -31,6 +31,7 @@ gpui::actions!(
 );
 
 const MAX_BACKGROUND_IMAGE_SIDE: u32 = 8192;
+const MAX_DISPLAY_BACKING_SCALE_FACTOR: f32 = 2.0;
 const MIN_TILED_BACKGROUND_IMAGE_SIDE: u32 = 256;
 const BACKGROUND_IMAGE_TARGETS: [BackgroundImageTarget; 2] = [
     BackgroundImageTarget::EditorAndTools,
@@ -41,6 +42,12 @@ const SUPPORTED_BACKGROUND_IMAGE_EXTENSIONS: &[&str] = &[
     "pgm", "ppm", "hdr", "exr", "dds", "ff",
 ];
 
+type CoverTarget = (u32, u32);
+
+static DECODED_BACKGROUND_IMAGES: LazyLock<
+    futures::lock::Mutex<HashMap<BackgroundImageKey, Weak<RenderImage>>>,
+> = LazyLock::new(|| futures::lock::Mutex::new(HashMap::default()));
+
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 struct BackgroundImageKey {
     path: PathBuf,
@@ -49,10 +56,15 @@ struct BackgroundImageKey {
     flip_horizontal: bool,
     flip_vertical: bool,
     tile_expanded: bool,
+    cover_target: Option<CoverTarget>,
 }
 
 impl BackgroundImageKey {
-    fn new(layer: &BackgroundImageLayerSettings, mtime: MTime) -> Self {
+    fn new(
+        layer: &BackgroundImageLayerSettings,
+        mtime: MTime,
+        cover_target: Option<CoverTarget>,
+    ) -> Self {
         Self {
             path: layer.path.clone(),
             mtime,
@@ -60,6 +72,7 @@ impl BackgroundImageKey {
             flip_horizontal: layer.flip_horizontal,
             flip_vertical: layer.flip_vertical,
             tile_expanded: layer.fill == BackgroundImageFill::Tile,
+            cover_target,
         }
     }
 }
@@ -149,7 +162,7 @@ impl Workspace {
         self.background_image.settings = Some(settings);
         self.publish_background_images(window, cx);
         for image in retired_images {
-            cx.drop_image(image, Some(&mut *window));
+            drop_unshared_background_image(image, Some(&mut *window), cx);
         }
     }
 
@@ -171,16 +184,17 @@ impl Workspace {
     }
 
     pub(crate) fn release_background_images(&mut self, cx: &mut App) {
+        let owns_window_chrome = self.owns_window_chrome();
         let images = self.background_image.take_images();
         if let Some(window_id) = self.background_image.published_window.take() {
             let holds_own_images = BackgroundImageLayers::window(window_id, cx)
                 .is_some_and(|published| holds_any_image(published, &images));
-            if holds_own_images {
+            if owns_window_chrome && holds_own_images {
                 BackgroundImageLayers::remove_window(window_id, cx);
             }
         }
         for image in images {
-            cx.drop_image(image, None);
+            drop_unshared_background_image(image, None, cx);
         }
     }
 
@@ -291,7 +305,17 @@ impl Workspace {
             return state.loaded.take().map(|loaded| loaded.image);
         };
         let cached_key = state.loaded.as_ref().map(|loaded| loaded.key.clone());
-        let load = cx.background_spawn(load_background_image(fs, layer.clone(), cached_key));
+        let cover_target = if layer.fill == BackgroundImageFill::Scale {
+            scale_cover_target(window, cx)
+        } else {
+            None
+        };
+        let load = cx.background_spawn(load_background_image(
+            fs,
+            layer.clone(),
+            cached_key,
+            cover_target,
+        ));
         state._load_task = Some(cx.spawn_in(window, async move |this, cx| {
             let result = load.await;
             this.update_in(cx, |this, window, cx| {
@@ -327,7 +351,7 @@ impl Workspace {
         };
         self.publish_background_images(window, cx);
         if let Some(retired_image) = retired_image {
-            cx.drop_image(retired_image.image, Some(window));
+            drop_unshared_background_image(retired_image.image, Some(window), cx);
         }
         if let Some(message) = error_message {
             self.show_notification(background_image_notification_id(target), cx, |cx| {
@@ -363,6 +387,65 @@ fn holds_any_image(published: &ui::WindowBackgroundImages, images: &[Arc<RenderI
         .into_iter()
         .filter_map(|target| published.layer(target))
         .any(|layer| images.iter().any(|image| Arc::ptr_eq(image, &layer.image)))
+}
+
+fn drop_unshared_background_image(
+    image: Arc<RenderImage>,
+    window: Option<&mut Window>,
+    cx: &mut App,
+) {
+    if Arc::strong_count(&image) == 1 {
+        cx.drop_image(image, window);
+    }
+}
+
+fn scale_cover_target(window: &Window, cx: &App) -> Option<CoverTarget> {
+    let viewport_size = window.viewport_size();
+    let window_scale_factor = window.scale_factor();
+    let mut width = f32::from(viewport_size.width) * window_scale_factor;
+    let mut height = f32::from(viewport_size.height) * window_scale_factor;
+    for display in cx.displays() {
+        let display_size = display.bounds().size;
+        width = width.max(f32::from(display_size.width) * MAX_DISPLAY_BACKING_SCALE_FACTOR);
+        height = height.max(f32::from(display_size.height) * MAX_DISPLAY_BACKING_SCALE_FACTOR);
+    }
+    Some((pixel_count(width)?, pixel_count(height)?))
+}
+
+fn pixel_count(value: f32) -> Option<u32> {
+    if !value.is_finite() || value < 1.0 {
+        return None;
+    }
+    Some(value.ceil() as u32)
+}
+
+fn cover_dimensions(source: (u32, u32), target: CoverTarget) -> Option<(u32, u32)> {
+    let (source_width, source_height) = source;
+    let (target_width, target_height) = target;
+    if source_width == 0 || source_height == 0 || target_width == 0 || target_height == 0 {
+        return None;
+    }
+    let width_driven = u64::from(target_width) * u64::from(source_height)
+        >= u64::from(target_height) * u64::from(source_width);
+    let (width, height) = if width_driven {
+        if target_width >= source_width {
+            return None;
+        }
+        let height =
+            (u64::from(source_height) * u64::from(target_width)).div_ceil(u64::from(source_width));
+        (u64::from(target_width), height)
+    } else {
+        if target_height >= source_height {
+            return None;
+        }
+        let width =
+            (u64::from(source_width) * u64::from(target_height)).div_ceil(u64::from(source_height));
+        (width, u64::from(target_height))
+    };
+    Some((
+        u32::try_from(width).ok()?.max(1),
+        u32::try_from(height).ok()?.max(1),
+    ))
 }
 
 fn background_image_mode(fill: BackgroundImageFill) -> ui::BackgroundImageMode {
@@ -407,6 +490,7 @@ async fn load_background_image(
     fs: Arc<dyn Fs>,
     layer: BackgroundImageLayerSettings,
     cached_key: Option<BackgroundImageKey>,
+    cover_target: Option<CoverTarget>,
 ) -> Result<BackgroundImageLoad> {
     validate_background_image_path(&layer.path)?;
     let metadata = fs
@@ -417,25 +501,36 @@ async fn load_background_image(
     if metadata.is_dir {
         bail!("Background image is a directory: {}", layer.path.display());
     }
-    let key = BackgroundImageKey::new(&layer, metadata.mtime);
+    let key = BackgroundImageKey::new(&layer, metadata.mtime, cover_target);
     if cached_key.as_ref() == Some(&key) {
         return Ok(BackgroundImageLoad::Unchanged);
+    }
+    let mut decoded_images = DECODED_BACKGROUND_IMAGES.lock().await;
+    decoded_images.retain(|_, image| image.strong_count() > 0);
+    if let Some(image) = decoded_images.get(&key).and_then(Weak::upgrade) {
+        return Ok(BackgroundImageLoad::Loaded(LoadedBackgroundImage {
+            key,
+            image,
+        }));
     }
     let bytes = fs
         .load_bytes(&layer.path)
         .await
         .with_context(|| format!("Failed to read background image {}", layer.path.display()))?;
-    let image = decode_background_image(&bytes, &layer)
+    let image = decode_background_image(&bytes, &layer, cover_target)
         .with_context(|| format!("Failed to decode background image {}", layer.path.display()))?;
+    let image = Arc::new(image);
+    decoded_images.insert(key.clone(), Arc::downgrade(&image));
     Ok(BackgroundImageLoad::Loaded(LoadedBackgroundImage {
         key,
-        image: Arc::new(image),
+        image,
     }))
 }
 
 fn decode_background_image(
     bytes: &[u8],
     layer: &BackgroundImageLayerSettings,
+    cover_target: Option<CoverTarget>,
 ) -> Result<RenderImage> {
     let mut reader = ImageReader::new(Cursor::new(bytes))
         .with_guessed_format()
@@ -450,7 +545,13 @@ fn decode_background_image(
     if image.width() == 0 || image.height() == 0 {
         bail!("image has no pixels");
     }
-    if image.width().max(image.height()) > MAX_BACKGROUND_IMAGE_SIDE {
+    let cover = cover_target
+        .filter(|_| layer.fill == BackgroundImageFill::Scale)
+        .and_then(|target| cover_dimensions((image.width(), image.height()), target))
+        .filter(|&(width, height)| width.max(height) <= MAX_BACKGROUND_IMAGE_SIDE);
+    if let Some((width, height)) = cover {
+        image = image.resize_exact(width, height, image::imageops::FilterType::Triangle);
+    } else if image.width().max(image.height()) > MAX_BACKGROUND_IMAGE_SIDE {
         image = image.resize(
             MAX_BACKGROUND_IMAGE_SIDE,
             MAX_BACKGROUND_IMAGE_SIDE,
@@ -517,7 +618,7 @@ mod tests {
     };
     use util::rel_path::RelPath;
 
-    use super::{decode_background_image, validate_background_image_path};
+    use super::{cover_dimensions, decode_background_image, validate_background_image_path};
     use crate::{BackgroundImageLayerSettings, BackgroundImageSettings};
 
     fn layer_settings(
@@ -658,6 +759,7 @@ mod tests {
         let image = decode_background_image(
             &encode_png(source),
             &layer_settings(50, BackgroundImageFill::Scale, true),
+            None,
         );
 
         let bytes = image
@@ -674,6 +776,7 @@ mod tests {
         let tiled = decode_background_image(
             &bytes,
             &layer_settings(100, BackgroundImageFill::Tile, false),
+            None,
         );
         assert_eq!(
             tiled.as_ref().ok().map(|image| image.size(0)),
@@ -686,12 +789,129 @@ mod tests {
         let scaled = decode_background_image(
             &bytes,
             &layer_settings(100, BackgroundImageFill::Scale, false),
+            None,
         );
         assert_eq!(
             scaled.as_ref().ok().map(|image| image.size(0)),
             Some(Size {
                 width: DevicePixels(3),
                 height: DevicePixels(2),
+            })
+        );
+    }
+
+    #[test]
+    fn test_background_image_cover_dimensions_keep_aspect_and_cover_target() {
+        assert_eq!(
+            cover_dimensions((5120, 2880), (2560, 1440)),
+            Some((2560, 1440))
+        );
+        assert_eq!(
+            cover_dimensions((4000, 3000), (1000, 1000)),
+            Some((1334, 1000))
+        );
+        assert_eq!(
+            cover_dimensions((3000, 4000), (1000, 1000)),
+            Some((1000, 1334))
+        );
+
+        let cases = [
+            ((5120, 2880), (3024, 1964)),
+            ((6000, 4000), (2560, 1600)),
+            ((1001, 501), (500, 250)),
+            ((3, 2), (1, 1)),
+            ((9999, 7), (3, 5)),
+        ];
+        for (source, target) in cases {
+            let Some((width, height)) = cover_dimensions(source, target) else {
+                panic!("{source:?} should shrink to cover {target:?}");
+            };
+            assert!(width >= target.0 && height >= target.1);
+            assert!(width <= source.0 && height <= source.1);
+            let tolerance = u64::from(source.0.max(source.1));
+            assert!(
+                (u64::from(width) * u64::from(source.1))
+                    .abs_diff(u64::from(height) * u64::from(source.0))
+                    <= tolerance,
+                "{source:?} to {width}x{height} should keep the aspect ratio"
+            );
+        }
+    }
+
+    #[test]
+    fn test_background_image_cover_dimensions_round_up() {
+        assert_eq!(cover_dimensions((1001, 501), (500, 250)), Some((500, 251)));
+        assert_eq!(cover_dimensions((9999, 7), (3, 5)), Some((7143, 5)));
+    }
+
+    #[test]
+    fn test_background_image_cover_dimensions_never_upscale() {
+        assert_eq!(cover_dimensions((100, 100), (200, 200)), None);
+        assert_eq!(cover_dimensions((100, 100), (100, 100)), None);
+        assert_eq!(cover_dimensions((4000, 500), (1000, 1000)), None);
+        assert_eq!(cover_dimensions((500, 4000), (1000, 1000)), None);
+        assert_eq!(cover_dimensions((0, 100), (50, 50)), None);
+        assert_eq!(cover_dimensions((100, 100), (0, 50)), None);
+    }
+
+    #[test]
+    fn test_background_image_decode_scale_downsizes_to_cover_target() {
+        let bytes = encode_png(RgbaImage::from_pixel(400, 200, Rgba([10, 20, 30, 255])));
+
+        let image = decode_background_image(
+            &bytes,
+            &layer_settings(100, BackgroundImageFill::Scale, false),
+            Some((100, 100)),
+        );
+        assert_eq!(
+            image.as_ref().ok().map(|image| image.size(0)),
+            Some(Size {
+                width: DevicePixels(200),
+                height: DevicePixels(100),
+            })
+        );
+
+        let not_larger = decode_background_image(
+            &bytes,
+            &layer_settings(100, BackgroundImageFill::Scale, false),
+            Some((400, 200)),
+        );
+        assert_eq!(
+            not_larger.as_ref().ok().map(|image| image.size(0)),
+            Some(Size {
+                width: DevicePixels(400),
+                height: DevicePixels(200),
+            })
+        );
+    }
+
+    #[test]
+    fn test_background_image_decode_plain_and_tile_ignore_cover_target() {
+        let wide = encode_png(RgbaImage::from_pixel(400, 200, Rgba([10, 20, 30, 255])));
+        let plain = decode_background_image(
+            &wide,
+            &layer_settings(100, BackgroundImageFill::Plain, false),
+            Some((100, 100)),
+        );
+        assert_eq!(
+            plain.as_ref().ok().map(|image| image.size(0)),
+            Some(Size {
+                width: DevicePixels(400),
+                height: DevicePixels(200),
+            })
+        );
+
+        let small = encode_png(RgbaImage::from_pixel(3, 2, Rgba([10, 20, 30, 255])));
+        let tiled = decode_background_image(
+            &small,
+            &layer_settings(100, BackgroundImageFill::Tile, false),
+            Some((1, 1)),
+        );
+        assert_eq!(
+            tiled.as_ref().ok().map(|image| image.size(0)),
+            Some(Size {
+                width: DevicePixels(258),
+                height: DevicePixels(256),
             })
         );
     }

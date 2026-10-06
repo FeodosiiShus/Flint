@@ -34,7 +34,16 @@ fn extension_benchmarks(c: &mut Criterion) {
 
     group.bench_function(BenchmarkId::from_parameter(1), |b| {
         b.iter_batched(
-            || wasm_bytes.clone(),
+            || {
+                let cache_directory = extensions_dir
+                    .path()
+                    .join("work")
+                    .join(".compiled-components");
+                if cache_directory.exists() {
+                    std::fs::remove_dir_all(&cache_directory).unwrap();
+                }
+                wasm_bytes.clone()
+            },
             |wasm_bytes| {
                 let _extension = cx
                     .foreground_executor()

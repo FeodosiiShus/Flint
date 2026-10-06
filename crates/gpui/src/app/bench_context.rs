@@ -1502,6 +1502,7 @@ mod tests {
         });
         run_task_to_completion(&foreground_executor, setup_task);
 
+        let trace_scope_started_at = Instant::now();
         let trace_scope = TraceScope::start(journal.collector());
 
         let measured_task = foreground_executor.spawn(async move {
@@ -1510,6 +1511,20 @@ mod tests {
         run_task_to_completion(&foreground_executor, measured_task);
 
         let events = trace_scope.finish();
+        let leaked_poll_count = events
+            .foreground_events()
+            .filter(|event| {
+                matches!(
+                    event,
+                    ForegroundEvent::TaskPoll(timing) if timing.start < trace_scope_started_at
+                )
+            })
+            .count();
+        assert_eq!(
+            leaked_poll_count, 0,
+            "a poll that started before the trace scope must not be traced"
+        );
+
         let report = BenchReport::default();
         report.record_foreground_events(events.foreground_events());
 
@@ -1517,13 +1532,8 @@ mod tests {
             .foreground_work()
             .expect("the measured task's poll should be reported");
         assert!(
-            summary.max < Duration::from_millis(40),
-            "setup work's 80ms poll must not leak into the measured summary, got {:?}",
-            summary.max
-        );
-        assert!(
-            summary.total < Duration::from_millis(40),
-            "setup work's 80ms poll must not leak into the measured total, got {:?}",
+            summary.total >= Duration::from_millis(9),
+            "expected the measured poll to be included in the total, got {:?}",
             summary.total
         );
     }
