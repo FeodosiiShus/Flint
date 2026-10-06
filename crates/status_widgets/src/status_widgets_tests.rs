@@ -2,7 +2,7 @@ use std::{cell::RefCell, rc::Rc, sync::Arc};
 
 use editor::Editor;
 use fs::Fs;
-use gpui::{Entity, TestAppContext, VisualTestContext, px};
+use gpui::{AppContext as _, BorrowAppContext as _, Entity, TestAppContext, VisualTestContext, px};
 use language::{Point, rust_lang};
 use project::{FakeFs, Project, ProjectEntryId, ProjectPath, WorktreeId};
 use serde_json::json;
