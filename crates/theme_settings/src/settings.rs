@@ -754,3 +754,304 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod default_look_tests {
+    use super::*;
+    use ::settings::RootUserSettings as _;
+    use ::theme::ThemeColors;
+    use gpui::{Hsla, WindowBackgroundAppearance};
+
+    const EVA_DARK: &str = "Eva Dark";
+
+    macro_rules! named_colors {
+        ($colors:expr, $($field:ident),+ $(,)?) => {
+            vec![$((stringify!($field), $colors.$field)),+]
+        };
+    }
+
+    fn default_settings() -> ::settings::UserSettingsContent {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../assets/settings/default.json"
+        );
+        let text = std::fs::read_to_string(path).expect("default.json is readable");
+        ::settings::UserSettingsContent::parse_json_with_comments(&text)
+            .expect("default.json parses")
+    }
+
+    fn default_eva_dark_overrides() -> ::settings::ThemeStyleContent {
+        default_settings()
+            .content
+            .theme
+            .theme_overrides
+            .get(EVA_DARK)
+            .expect("default.json overrides Eva Dark")
+            .clone()
+    }
+
+    fn plain_eva_dark() -> Theme {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../assets/themes/eva/eva.json"
+        );
+        let bytes = std::fs::read(path).expect("eva.json is readable");
+        let family = crate::deserialize_user_theme(&bytes).expect("eva.json parses");
+        crate::refine_theme_family(family)
+            .themes
+            .into_iter()
+            .find(|theme| &*theme.name == EVA_DARK)
+            .expect("eva.json defines Eva Dark")
+    }
+
+    fn effective_eva_dark() -> Theme {
+        let mut theme = plain_eva_dark();
+        ThemeSettings::modify_theme(&mut theme, &default_eva_dark_overrides());
+        theme
+    }
+
+    fn painted_chrome(colors: &ThemeColors) -> Vec<(&'static str, Hsla)> {
+        named_colors!(
+            colors,
+            background,
+            panel_background,
+            editor_background,
+            elevated_surface_background,
+            surface_background,
+            toolbar_background,
+            title_bar_background,
+            title_bar_inactive_background,
+            status_bar_background,
+            tab_bar_background,
+            tab_inactive_background,
+            tab_active_background,
+            element_background,
+            drop_target_border,
+        )
+    }
+
+    fn code_palette(colors: &ThemeColors) -> Vec<(&'static str, Hsla)> {
+        named_colors!(
+            colors,
+            editor_foreground,
+            editor_background,
+            editor_gutter_background,
+            editor_subheader_background,
+            editor_active_line_background,
+            editor_highlighted_line_background,
+            editor_debugger_active_line_background,
+            editor_line_number,
+            editor_active_line_number,
+            editor_hover_line_number,
+            editor_invisible,
+            editor_wrap_guide,
+            editor_active_wrap_guide,
+            editor_indent_guide,
+            editor_indent_guide_active,
+            editor_document_highlight_read_background,
+            editor_document_highlight_write_background,
+            editor_document_highlight_bracket_background,
+            editor_diff_hunk_added_background,
+            editor_diff_hunk_added_hollow_background,
+            editor_diff_hunk_added_hollow_border,
+            editor_diff_hunk_deleted_background,
+            editor_diff_hunk_deleted_hollow_background,
+            editor_diff_hunk_deleted_hollow_border,
+            terminal_foreground,
+            terminal_bright_foreground,
+            terminal_dim_foreground,
+            terminal_ansi_background,
+            terminal_ansi_black,
+            terminal_ansi_bright_black,
+            terminal_ansi_dim_black,
+            terminal_ansi_red,
+            terminal_ansi_bright_red,
+            terminal_ansi_dim_red,
+            terminal_ansi_green,
+            terminal_ansi_bright_green,
+            terminal_ansi_dim_green,
+            terminal_ansi_yellow,
+            terminal_ansi_bright_yellow,
+            terminal_ansi_dim_yellow,
+            terminal_ansi_blue,
+            terminal_ansi_bright_blue,
+            terminal_ansi_dim_blue,
+            terminal_ansi_magenta,
+            terminal_ansi_bright_magenta,
+            terminal_ansi_dim_magenta,
+            terminal_ansi_cyan,
+            terminal_ansi_bright_cyan,
+            terminal_ansi_dim_cyan,
+            terminal_ansi_white,
+            terminal_ansi_bright_white,
+            terminal_ansi_dim_white,
+            version_control_added,
+            version_control_deleted,
+            version_control_modified,
+            version_control_renamed,
+            version_control_conflict,
+            version_control_ignored,
+            version_control_word_added,
+            version_control_word_deleted,
+            version_control_conflict_marker_ours,
+            version_control_conflict_marker_theirs,
+        )
+    }
+
+    #[test]
+    fn default_eva_dark_window_is_opaque() {
+        let theme = effective_eva_dark();
+
+        assert_eq!(
+            theme.window_background_appearance(),
+            WindowBackgroundAppearance::Opaque,
+            "window background appearance"
+        );
+        for (key, color) in painted_chrome(theme.colors()) {
+            assert!(
+                color.is_opaque(),
+                "{key} must be fully opaque, got alpha {}",
+                color.a
+            );
+        }
+        assert_eq!(
+            theme.colors().terminal_background.a,
+            0.0,
+            "terminal_background must stay fully transparent so the terminal does not repaint the background image"
+        );
+    }
+
+    #[test]
+    fn default_eva_dark_islands_are_darker_than_the_frame() {
+        let theme = effective_eva_dark();
+        let colors = theme.colors();
+
+        assert!(
+            colors.panel_background.l < colors.background.l,
+            "panel_background lightness {} must be below background lightness {}",
+            colors.panel_background.l,
+            colors.background.l
+        );
+        assert!(
+            colors.ghost_element_hover.a > 0.0,
+            "ghost_element_hover must be visible"
+        );
+        assert!(
+            colors.ghost_element_active.a > colors.ghost_element_hover.a,
+            "ghost_element_active alpha {} must exceed ghost_element_hover alpha {}",
+            colors.ghost_element_active.a,
+            colors.ghost_element_hover.a
+        );
+        assert!(
+            colors.element_selected != colors.element_hover,
+            "element_selected must differ from element_hover"
+        );
+        assert!(
+            colors.element_selected != colors.ghost_element_hover,
+            "element_selected must differ from ghost_element_hover"
+        );
+        assert!(
+            colors.text_accent.is_opaque(),
+            "text_accent paints the focused tool window button and must be opaque"
+        );
+    }
+
+    #[test]
+    fn default_eva_dark_overrides_leave_the_code_palette_to_eva() {
+        let plain = plain_eva_dark();
+        let effective = effective_eva_dark();
+
+        assert!(
+            effective.colors().panel_background != plain.colors().panel_background,
+            "the overrides must actually be applied to the chrome"
+        );
+
+        let plain_palette = code_palette(plain.colors());
+        let effective_palette = code_palette(effective.colors());
+        assert_eq!(plain_palette.len(), effective_palette.len());
+        for ((key, plain_color), (_, effective_color)) in
+            plain_palette.iter().zip(effective_palette.iter())
+        {
+            assert!(
+                plain_color == effective_color,
+                "{key} must come from Eva: expected {plain_color:?}, got {effective_color:?}"
+            );
+        }
+        assert_eq!(
+            effective.colors().editor_code_lens_foreground,
+            plain.colors().editor_code_lens_foreground,
+            "editor_code_lens_foreground"
+        );
+
+        assert!(
+            effective.status() == plain.status(),
+            "status colours must come from Eva"
+        );
+        assert!(
+            effective.players() == plain.players(),
+            "player colours must come from Eva"
+        );
+        assert!(
+            effective.syntax() == plain.syntax(),
+            "syntax theme must come from Eva"
+        );
+        for capture_name in ["keyword", "string", "function", "comment"] {
+            let effective_style = effective.syntax().style_for_name(capture_name);
+            assert!(
+                effective_style.is_some(),
+                "Eva defines a style for {capture_name}"
+            );
+            assert!(
+                effective_style == plain.syntax().style_for_name(capture_name),
+                "syntax style for {capture_name} must come from Eva"
+            );
+        }
+    }
+
+    #[test]
+    fn default_eva_dark_accents_give_nine_distinct_opaque_project_colours() {
+        let theme = effective_eva_dark();
+        let accents = &theme.accents().0;
+
+        assert_eq!(accents.len(), 9, "accent count");
+        for (index, accent) in accents.iter().enumerate() {
+            assert!(accent.is_opaque(), "accent {index} must be opaque");
+            for (other_index, other) in accents.iter().enumerate().skip(index + 1) {
+                assert!(
+                    accent != other,
+                    "accents {index} and {other_index} must be distinct"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn default_eva_dark_split_dividers_are_visible_on_the_editor() {
+        let theme = effective_eva_dark();
+        let colors = theme.colors();
+
+        assert!(
+            (colors.pane_group_border.l - colors.editor_background.l).abs() >= 0.05,
+            "pane_group_border lightness {} must differ from editor_background lightness {} by at least 0.05",
+            colors.pane_group_border.l,
+            colors.editor_background.l
+        );
+    }
+
+    #[test]
+    fn default_overrides_only_target_eva_dark() {
+        let settings = default_settings();
+        let overrides = &settings.content.theme.theme_overrides;
+
+        assert!(
+            overrides.contains_key(EVA_DARK),
+            "default.json must override Eva Dark"
+        );
+        assert_eq!(
+            overrides.len(),
+            1,
+            "only Eva Dark may be overridden by default, found {:?}",
+            overrides.keys().collect::<Vec<_>>()
+        );
+    }
+}

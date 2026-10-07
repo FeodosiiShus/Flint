@@ -108,6 +108,7 @@ pub struct ToolWindowBarsSettings {
     pub show: bool,
     pub icon_size: Pixels,
     pub show_names: bool,
+    pub icon_style: settings::ToolWindowIconStyle,
 }
 
 impl ToolWindowBarsSettings {
@@ -124,6 +125,7 @@ impl ToolWindowBarsSettings {
                 TOOL_WINDOW_BAR_ICON_SIZE_RANGE,
             ),
             show_names: content.and_then(|bars| bars.show_names).unwrap_or(false),
+            icon_style: content.and_then(|bars| bars.icon_style).unwrap_or_default(),
         }
     }
 
@@ -510,6 +512,7 @@ mod tests {
                 show: true,
                 icon_size: px(20.),
                 show_names: false,
+                icon_style: settings::ToolWindowIconStyle::Jetbrains,
             }
         );
         assert_eq!(bars.bar_width(), px(40.));
@@ -525,6 +528,7 @@ mod tests {
             show: Some(false),
             icon_size: Some(11),
             show_names: Some(true),
+            icon_style: Some(settings::ToolWindowIconStyle::Zed),
         };
         let bars = ToolWindowBarsSettings::from_content(Some(&too_small), None);
         assert_eq!(
@@ -533,6 +537,7 @@ mod tests {
                 show: false,
                 icon_size: px(12.),
                 show_names: true,
+                icon_style: settings::ToolWindowIconStyle::Zed,
             }
         );
 
@@ -543,6 +548,33 @@ mod tests {
         let bars = ToolWindowBarsSettings::from_content(Some(&too_large), Some(UiDensity::Compact));
         assert_eq!(bars.icon_size, px(32.));
         assert_eq!(bars.bar_width(), px(52.));
+    }
+
+    #[test]
+    fn tool_window_bar_icon_style_defaults_to_jetbrains_when_content_is_missing() {
+        let bars = ToolWindowBarsSettings::from_content(None, None);
+        assert_eq!(bars.icon_style, settings::ToolWindowIconStyle::Jetbrains);
+    }
+
+    #[test]
+    fn tool_window_bar_icon_style_honours_explicit_zed_value() {
+        let content = ToolWindowBarsSettingsContent {
+            icon_style: Some(settings::ToolWindowIconStyle::Zed),
+            ..ToolWindowBarsSettingsContent::default()
+        };
+        let bars = ToolWindowBarsSettings::from_content(Some(&content), None);
+        assert_eq!(bars.icon_style, settings::ToolWindowIconStyle::Zed);
+    }
+
+    #[test]
+    fn tool_window_bar_icon_style_keeps_default_when_only_icon_size_is_set() {
+        let content = ToolWindowBarsSettingsContent {
+            icon_size: Some(24),
+            ..ToolWindowBarsSettingsContent::default()
+        };
+        let bars = ToolWindowBarsSettings::from_content(Some(&content), None);
+        assert_eq!(bars.icon_size, px(24.));
+        assert_eq!(bars.icon_style, settings::ToolWindowIconStyle::Jetbrains);
     }
 
     #[test]

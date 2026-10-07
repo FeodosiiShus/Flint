@@ -286,6 +286,16 @@ pub enum IconName {
     ToolTerminal,
     ToolThink,
     ToolWeb,
+    ToolWindowMore,
+    ToolWindowMoreCompact,
+    ToolWindowProject,
+    ToolWindowProjectCompact,
+    ToolWindowStructure,
+    ToolWindowStructureCompact,
+    ToolWindowTerminal,
+    ToolWindowTerminalCompact,
+    ToolWindowVcs,
+    ToolWindowVcsCompact,
     Trash,
     Triangle,
     TriangleRight,
@@ -359,5 +369,48 @@ mod tests {
         }
 
         Ok(())
+    }
+
+    #[test]
+    fn test_tool_window_icons_have_expected_sizes() {
+        let asset_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../assets");
+
+        for icon in IconName::iter() {
+            let file_stem: &'static str = (&icon).into();
+            if !file_stem.starts_with("tool_window_") {
+                continue;
+            }
+            let size = if file_stem.ends_with("_compact") {
+                16
+            } else {
+                20
+            };
+            let expected_attributes =
+                format!("width=\"{size}\" height=\"{size}\" viewBox=\"0 0 {size} {size}\"");
+            let svg = std::fs::read_to_string(asset_path.join(&*icon.path()))
+                .expect("failed to read tool window icon");
+            assert!(
+                svg.contains(&expected_attributes),
+                "Icon {icon:?} does not declare {expected_attributes}",
+            );
+        }
+    }
+
+    #[test]
+    fn test_tool_window_icons_come_in_standard_and_compact_pairs() {
+        for icon in IconName::iter() {
+            let file_stem: &'static str = (&icon).into();
+            if !file_stem.starts_with("tool_window_") {
+                continue;
+            }
+            let twin_stem = match file_stem.strip_suffix("_compact") {
+                Some(standard_stem) => standard_stem.to_string(),
+                None => format!("{file_stem}_compact"),
+            };
+            assert!(
+                twin_stem.parse::<IconName>().is_ok(),
+                "Icon {icon:?} has no twin variant for {twin_stem}",
+            );
+        }
     }
 }

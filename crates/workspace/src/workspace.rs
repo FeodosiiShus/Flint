@@ -14449,6 +14449,10 @@ mod tests {
             assert!(settings.tool_window_bars.show);
             assert!(!settings.tool_window_bars.show_names);
             assert_eq!(settings.tool_window_bars.icon_size, px(20.));
+            assert_eq!(
+                settings.tool_window_bars.icon_style,
+                settings::ToolWindowIconStyle::Jetbrains
+            );
         });
 
         cx.update_global(|store: &mut SettingsStore, cx| {

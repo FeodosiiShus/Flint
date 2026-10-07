@@ -81,7 +81,7 @@ Put the same `background_image` object into `<project>/.zed/settings.json`. Proj
 ### How it behaves
 
 - The `editor_and_tools` image is positioned relative to the whole window, so the editor, panels, terminal, title bar and status bar show parts of one continuous picture. It is drawn under text, selections and highlights. The `empty_frame` image is positioned relative to the empty pane itself.
-- Every surface repaints the image right after its own opaque background, so it stays visible in opaque themes such as One Dark. In the default Eva Dark the docks and the editor have opaque backgrounds, so each island repaints the image over its own fill and `opacity` decides how much of the picture shows; the title bar, status bar, tab bar and terminal backgrounds are translucent, so they are skipped and the picture is drawn once under them, never twice. With both images set and a translucent editor background, the `editor_and_tools` image also shows through an empty pane, mixed with the `empty_frame` image.
+- Every opaque surface repaints the image right after its own background, so it stays visible in opaque themes such as One Dark. In the default look the frame (title bar, tool window bars, status bar and gaps), the docks, the editor and the toolbar are all opaque, so each of them repaints the image over its own fill and `opacity` decides how much of the picture shows. Only `terminal.background` is transparent, so the terminal draws the picture once, through its container. With both images set and an editor background that is not opaque, the `editor_and_tools` image also shows through an empty pane, mixed with the `empty_frame` image.
 - Pop-ups, menus, modals, notifications and the Settings window are not covered.
 - Images larger than 8192 pixels on the longest side are scaled down when loaded. With `fill: "scale"`, an image larger than the biggest connected display (counted at 2x Retina) is also scaled down to the smallest size that still covers it, which saves memory without changing how it looks; `plain` and `tile` images are never resized apart from the 8192 pixel cap. Workspaces and layers that use the same file and settings share one decoded copy. When you connect a larger display, the image is decoded again the next time the window becomes active. If you edit the image file in place, Flint reloads it when its window becomes active again.
 - If the file is missing, unreadable, not an image, or the path is relative, Flint shows an error notification once and removes the image. It tries again when the setting changes or the window becomes active again.
@@ -148,7 +148,7 @@ Flint can make the title bar, the tab bar, the toolbar, the status bar and the d
 Flint uses WebStorm's [Islands](https://plugins.jetbrains.com/docs/intellij/supporting-islands-theme.html) layout by default:
 
 - The title bar, the tool window bars, the gaps and the status bar share one window background (the theme's `background` color), with no borders between them.
-- The left dock, the right dock, the bottom dock and the editor area are separate rounded islands. Docks use the theme's `panel.background`, the editor area uses `editor.background`. Dock resize handles sit in the gaps. In the default Eva Dark the window background is darker than the island fills (`background` `#16181db3`, docks `#21252b`, editor `#282c34`), so the islands stand out from the gaps; the terminal background stays transparent and shows the dock fill.
+- The left dock, the right dock, the bottom dock and the editor area are separate rounded islands. Docks use the theme's `panel.background`, the editor area uses `editor.background`. Dock resize handles sit in the gaps. In the default look the frame `#26282c` is lighter than the docks `#191a1c`, and the editor island keeps Eva's `#282c34`, so the islands stand out from the gaps; the terminal body shows the editor colour.
 - Editor tabs: the tab bar has the editor background and no borders. The active tab is a rounded pill with an accent border and a light accent fill while its pane is focused, and a plain border otherwise. Inactive tabs show only their text, with a thin vertical divider between neighbouring tabs: none next to the active tab and none after the last tab of a strip (the pinned tabs and the other tabs are separate strips).
 - Tool window bars run down the left and right window edges. The left bar shows the left dock panels, a separator, a "More Tool Windows" button (a menu of every panel, including panels whose button is hidden), and the bottom dock panels at the bottom. The right bar shows the right dock panels. Click an icon to show or hide its panel; right-click it to move the panel to another dock or hide its button. A filled background marks an open panel, an accent background a focused one. While the bars are shown, the status bar no longer has panel buttons.
 - The right bar disappears when no right dock panel has a button, so it never leaves an empty strip. The editor island then keeps exactly the islands gap to the window edge, the same as on every other side.
@@ -157,14 +157,15 @@ Flint uses WebStorm's [Islands](https://plugins.jetbrains.com/docs/intellij/supp
 
 ```json
 "islands": { "enabled": true, "gap": null, "corner_radius": null, "dim_inactive_window": true },
-"tool_window_bars": { "show": true, "icon_size": null, "show_names": false },
+"tool_window_bars": { "show": true, "icon_size": null, "show_names": false, "icon_style": "jetbrains" },
 "tool_window_headers": { "show": true, "always_show_actions": false }
 ```
 
 - `islands.gap` — distance between islands in pixels, 0–16. Unset: 4, or 3 with `"unstable.ui_density": "compact"`.
 - `islands.corner_radius` — island corner radius in pixels, 0–24. Unset: 10, or 8 in compact density.
 - `islands.dim_inactive_window` — dim the frame content of an inactive window. Works only with islands enabled.
-- `tool_window_bars.icon_size` — bar icon size in pixels, 12–32; the bar is 20px wider than the icon. Unset: 20, or 16 in compact density.
+- `tool_window_bars.icon_size` — bar icon size in pixels, 12–32; the bar is 20px wider than the icon. Unset: 20, or 16 in compact density. These are the IntelliJ Platform sizes: 20×20 and, in Compact Mode, 16×16.
+- `tool_window_bars.icon_style` — `"jetbrains"` (default) draws the IntelliJ Platform tool window icons: Project, Git (the IntelliJ "Version Control" icon), Structure for the Outline panel, Terminal and the "…" of More Tool Windows. `"zed"` returns to Zed's own icons. The artwork has two drawings, a 20×20 one and a 16×16 one with a thinner stroke, like IntelliJ; sizes below 18px use the 16×16 drawing and the others the 20×20 drawing, scaled to `icon_size`.
 - `tool_window_bars.show_names` — show the panel name under each icon.
 - `tool_window_headers.show` — show the header row. `false` returns to panels without a common header.
 - `tool_window_headers.always_show_actions` — show ⋮ and — all the time, like WebStorm's "Always show tool window header icons".
@@ -172,6 +173,44 @@ Flint uses WebStorm's [Islands](https://plugins.jetbrains.com/docs/intellij/supp
 - Settings window: Window & Layout → Islands, Tool Window Bars and Tool Window Headers.
 - WebStorm-like defaults that come with it: `tabs.file_icons: true`, `tab_bar.show_nav_history_buttons: false`, and the Git and Outline panels docked on the left.
 - Not implemented: WebStorm's split tool windows under the bar separator and the bottom-right bar group, because a Flint dock shows one panel at a time.
+
+## Default look: Islands Dark chrome on the Eva theme
+
+- The default look is the chrome of JetBrains' Islands Dark theme (`ManyIslandsDark.theme.json`, intellij-community commit `0ad391f70a62eabbec6db656f473e1284e1110a9`) on top of the Eva Dark theme, like IntelliJ's Islands Dark UI theme with the Eva editor colour scheme. The theme is still named "Eva Dark".
+- Chrome copied from Islands Dark: the frame, tool window islands, title bar, tool window bars, status bar, popups and menus, hover, pressed and selected states, borders, text and icon colours, the scrollbar thumb and the drop target.
+- Stays Eva: editor colours and gutter, syntax, terminal palette, players, git and diagnostic status colours and search highlight. `assets/themes/eva/eva.json` is unchanged.
+- Where it lives: the `theme_overrides."Eva Dark"` block of the bundled default settings. A `theme_overrides."Eva Dark"` in your own `settings.json` merges key by key over it, so override the key to change any colour. The exception is the `accents` list: a `theme_overrides."Eva Dark"` block in your `settings.json` replaces it with an empty list unless you repeat `accents` in that block.
+- `background.appearance` is now `opaque`, because Islands Dark is opaque.
+- To restore the previous Eva look, override the keys in `settings.json`.
+
+| Surface | Colour | IntelliJ key |
+|---|---|---|
+| Frame: title bar, tool window bars, status bar, gaps | `#26282c` | `main-window-bg` |
+| Tool window islands | `#191a1c` | `tool-window-bg` |
+| Editor island and tab bar | `#282c34` (Eva editor background) | none, kept from Eva |
+| Popups and menus | `#26282c`, border `#33353b` | `popup-bg`, `popup-border` |
+| Control border | `#40434a` | `control-border` |
+| Hover | `#ffffff17` | `toolbar-bg-hovered` |
+| Pressed and open tool window button | `#ffffff29` | `toolbar-bg-pressed` |
+| Tree and list hover | `#ffffff10` | `selection-bg-hovered` |
+| Selection | `#2a4371` | `selection-bg-active` |
+| Focused tool window button, accent and focus border | `#3871e1`, white icon on the focused button | `blue-80` |
+| Text: default, muted, secondary, disabled | `#d1d3d9`, `#9fa2a8`, `#73767c`, `#4c4f56` | `text-default`, `text-muted`, `text-secondary`, `text-disabled` |
+| Icons: default, disabled | `#c3c5cb`, `#5f6269` | `icon-default-stroke`, `icon-disabled` |
+| Scrollbar thumb, hovered thumb, dragged thumb | `#80808059`, `#8080808c`, `#808080c0` | `ScrollBar.thumbColor`, `ScrollBar.hoverThumbColor`; the dragged thumb colour is Flint's, IntelliJ has none |
+| Drop target area | `#366acf4d` | `ToolWindow.DragAndDrop.areaBackground` |
+
+- The nine project colours are `#e08855`, `#b08b14`, `#a1a359`, `#3b92b8`, `#3574f0`, `#c84d8f`, `#955ae0`, `#24a394` and `#5fad65` (IntelliJ `Color1`–`Color9` `Avatar.Start`). They are the theme `accents`, so the project badge and the title bar gradient (the accent at 35% opacity over `#26282c`) match IntelliJ. The same list is the palette of the bracket pair colours while bracket colorization is on (`colorize_brackets`; Flint adjusts each colour for contrast and may reorder them) and of the lanes of the Git graph.
+
+### Known differences from IntelliJ
+
+- The active tab pill border is the accent `#3871e1`; IntelliJ draws `#2e4d89` on `#233558`.
+- The editor island uses Eva's editor background, not `#191a1c`.
+- Heights and icon sizes are the unchanged Zed and Flint defaults. The IntelliJ values can be set with existing settings: `"title_bar": { "height": 40, "icon_size": 20 }` (main toolbar header 40, button icon 20) and `"panel": { "height": 41 }` (tool window header 41).
+- IntelliJ's `Island.borderWidth` is 6; the Flint gap default of 4 is left as is.
+- Split dividers between editor panes use `border` (`#40434a`), not IntelliJ's `#26282c`, which is invisible on Eva's editor background.
+- Filled buttons that sit on the modal layer (the Restricted Mode and disconnected-project dialogs) have the same colour as the dialog, because IntelliJ's popup colour `#26282c` equals the frame colour; only their label and their pressed state are visible.
+- Hover highlights use IntelliJ's translucent white, so they are fainter than Eva's solid blue; the sticky excerpt header keeps an opaque fill while hovered.
 
 ## Editor tabs, project panel and scrollbar
 
@@ -335,3 +374,5 @@ Cmd+click (and `Cmd-B`, `Alt-F7` with the JetBrains keymap) goes to a definition
 Zed source code is licensed under GPL-3.0-or-later, with Apache-2.0 components where marked; see [LICENSE-GPL](LICENSE-GPL) and [LICENSE-APACHE](LICENSE-APACHE).
 
 Third-party licenses are generated by [`cargo-about`](https://github.com/EmbarkStudios/cargo-about) from [`script/licenses/zed-licenses.toml`](script/licenses/zed-licenses.toml) during bundling and embedded in the app. The build fails if a dependency's license is not in the accepted list.
+
+The `assets/icons/tool_window_*.svg` files are unmodified copies of [JetBrains/intellij-community](https://github.com/JetBrains/intellij-community) icons (commit `0ad391f70a62eabbec6db656f473e1284e1110a9`), licensed under Apache-2.0, each keeping its original JetBrains copyright header. Sources: `platform/icons/src/expui/toolwindows/{project,vcs,structure}.svg`, `platform/icons/src/expui/general/moreHorizontal.svg` and `plugins/terminal/resources/icons/expui/toolwindow/terminal.svg`; the 20×20 drawing is the `@20x20` file and the 16×16 drawing is the file without the suffix. JetBrains and IntelliJ names and logos are trademarks of JetBrains s.r.o. The default colours in `theme_overrides."Eva Dark"` are taken from `platform/platform-resources/src/themes/islands/ManyIslandsDark.theme.json` of the same commit, Apache-2.0.

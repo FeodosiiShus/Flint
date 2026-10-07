@@ -618,6 +618,28 @@ pub struct ToolWindowBarsSettingsContent {
     pub show: Option<bool>,
     pub icon_size: Option<u32>,
     pub show_names: Option<bool>,
+    pub icon_style: Option<ToolWindowIconStyle>,
+}
+
+#[derive(
+    Copy,
+    Clone,
+    Debug,
+    Eq,
+    PartialEq,
+    Default,
+    Serialize,
+    Deserialize,
+    JsonSchema,
+    MergeFrom,
+    strum::VariantNames,
+    strum::VariantArray,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolWindowIconStyle {
+    #[default]
+    Jetbrains,
+    Zed,
 }
 
 #[with_fallible_options]

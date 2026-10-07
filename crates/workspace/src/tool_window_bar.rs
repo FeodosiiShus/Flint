@@ -5,7 +5,7 @@ use gpui::{
     Action, Anchor, AnyElement, App, Context, Entity, FocusHandle, Focusable, Hsla, IntoElement,
     ParentElement, Render, Role, SharedString, Styled, Subscription, Window, div, px, rems,
 };
-use settings::{Settings, SettingsStore};
+use settings::{Settings, SettingsStore, ToolWindowIconStyle};
 use std::sync::Arc;
 use theme::ThemeColors;
 use ui::{
@@ -19,6 +19,7 @@ const BAR_VERTICAL_PADDING: Pixels = px(4.);
 const BUTTON_GAP: Pixels = px(4.);
 const NAMED_BUTTON_VERTICAL_PADDING: Pixels = px(4.);
 const LIGHT_BACKGROUND_LUMINANCE: f32 = 0.55;
+const COMPACT_ICON_SIZE_LIMIT: Pixels = px(18.);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ToolWindowBarSide {
@@ -224,7 +225,7 @@ impl ToolWindowBar {
         let panel = button.panel;
         let dock = button.dock;
         let badge = button.badge;
-        let icon = button.icon;
+        let icon = tool_window_icon(button.icon, settings);
 
         let trigger = div()
             .id(("tool-window-button", panel_id))
@@ -314,13 +315,16 @@ impl ToolWindowBar {
                         }))
                     })
                     .trigger_with_tooltip(
-                        IconButton::new("tool-window-more-button", IconName::Ellipsis)
-                            .size(ButtonSize::Large)
-                            .icon_size(icon_size)
-                            .icon_color(Color::Muted)
-                            .width(button_side)
-                            .disabled(!has_panels)
-                            .aria_label("More Tool Windows"),
+                        IconButton::new(
+                            "tool-window-more-button",
+                            tool_window_icon(IconName::Ellipsis, settings),
+                        )
+                        .size(ButtonSize::Large)
+                        .icon_size(icon_size)
+                        .icon_color(Color::Muted)
+                        .width(button_side)
+                        .disabled(!has_panels)
+                        .aria_label("More Tool Windows"),
                         Tooltip::text("More Tool Windows"),
                     ),
             )
@@ -444,6 +448,26 @@ impl Render for ToolWindowBar {
     }
 }
 
+fn tool_window_icon(icon: IconName, settings: &ToolWindowBarsSettings) -> IconName {
+    if settings.icon_style == ToolWindowIconStyle::Zed {
+        return icon;
+    }
+    let compact = settings.icon_size < COMPACT_ICON_SIZE_LIMIT;
+    match (icon, compact) {
+        (IconName::FileTree, false) => IconName::ToolWindowProject,
+        (IconName::FileTree, true) => IconName::ToolWindowProjectCompact,
+        (IconName::GitBranch, false) => IconName::ToolWindowVcs,
+        (IconName::GitBranch, true) => IconName::ToolWindowVcsCompact,
+        (IconName::ListTree, false) => IconName::ToolWindowStructure,
+        (IconName::ListTree, true) => IconName::ToolWindowStructureCompact,
+        (IconName::TerminalAlt, false) => IconName::ToolWindowTerminal,
+        (IconName::TerminalAlt, true) => IconName::ToolWindowTerminalCompact,
+        (IconName::Ellipsis, false) => IconName::ToolWindowMore,
+        (IconName::Ellipsis, true) => IconName::ToolWindowMoreCompact,
+        _ => icon,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -499,5 +523,114 @@ mod tests {
             gpui::black(),
             "a light yellow accent takes a black icon"
         );
+    }
+
+    fn bars_settings(icon_size: f32, icon_style: ToolWindowIconStyle) -> ToolWindowBarsSettings {
+        ToolWindowBarsSettings {
+            show: true,
+            icon_size: px(icon_size),
+            show_names: false,
+            icon_style,
+        }
+    }
+
+    #[test]
+    fn tool_window_icon_maps_zed_icons_to_standard_artwork_at_default_size() {
+        let settings = bars_settings(20., ToolWindowIconStyle::Jetbrains);
+        for (zed_icon, expected) in [
+            (IconName::FileTree, IconName::ToolWindowProject),
+            (IconName::GitBranch, IconName::ToolWindowVcs),
+            (IconName::ListTree, IconName::ToolWindowStructure),
+            (IconName::TerminalAlt, IconName::ToolWindowTerminal),
+            (IconName::Ellipsis, IconName::ToolWindowMore),
+        ] {
+            assert_eq!(
+                tool_window_icon(zed_icon, &settings),
+                expected,
+                "{zed_icon:?} at 20px maps to its standard artwork"
+            );
+        }
+    }
+
+    #[test]
+    fn tool_window_icon_switches_to_compact_artwork_below_the_size_limit() {
+        let standard_and_compact = [
+            (
+                IconName::FileTree,
+                IconName::ToolWindowProject,
+                IconName::ToolWindowProjectCompact,
+            ),
+            (
+                IconName::GitBranch,
+                IconName::ToolWindowVcs,
+                IconName::ToolWindowVcsCompact,
+            ),
+            (
+                IconName::ListTree,
+                IconName::ToolWindowStructure,
+                IconName::ToolWindowStructureCompact,
+            ),
+            (
+                IconName::TerminalAlt,
+                IconName::ToolWindowTerminal,
+                IconName::ToolWindowTerminalCompact,
+            ),
+            (
+                IconName::Ellipsis,
+                IconName::ToolWindowMore,
+                IconName::ToolWindowMoreCompact,
+            ),
+        ];
+        for (zed_icon, standard, compact) in standard_and_compact {
+            for icon_size in [16., 17.] {
+                let settings = bars_settings(icon_size, ToolWindowIconStyle::Jetbrains);
+                assert_eq!(
+                    tool_window_icon(zed_icon, &settings),
+                    compact,
+                    "{zed_icon:?} at {icon_size}px maps to its compact artwork"
+                );
+            }
+            for icon_size in [18., 20., 32.] {
+                let settings = bars_settings(icon_size, ToolWindowIconStyle::Jetbrains);
+                assert_eq!(
+                    tool_window_icon(zed_icon, &settings),
+                    standard,
+                    "{zed_icon:?} at {icon_size}px maps to its standard artwork"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn tool_window_icon_keeps_zed_icons_in_zed_style() {
+        for icon_size in [12., 16., 18., 20., 32.] {
+            let settings = bars_settings(icon_size, ToolWindowIconStyle::Zed);
+            for zed_icon in [
+                IconName::FileTree,
+                IconName::GitBranch,
+                IconName::ListTree,
+                IconName::TerminalAlt,
+                IconName::Ellipsis,
+                IconName::Plus,
+            ] {
+                assert_eq!(
+                    tool_window_icon(zed_icon, &settings),
+                    zed_icon,
+                    "{zed_icon:?} at {icon_size}px stays unchanged in zed style"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn tool_window_icon_keeps_icons_outside_the_mapping_in_jetbrains_style() {
+        for icon_size in [16., 20.] {
+            let settings = bars_settings(icon_size, ToolWindowIconStyle::Jetbrains);
+            assert_eq!(
+                tool_window_icon(IconName::Plus, &settings),
+                IconName::Plus,
+                "an unmapped icon at {icon_size}px stays unchanged in jetbrains style"
+            );
+        }
     }
 }

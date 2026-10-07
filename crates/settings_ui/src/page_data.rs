@@ -5138,7 +5138,7 @@ fn window_and_layout_page() -> SettingsPage {
         ]
     }
 
-    fn tool_window_bars_section() -> [SettingsPageItem; 4] {
+    fn tool_window_bars_section() -> [SettingsPageItem; 5] {
         [
             SettingsPageItem::SectionHeader("Tool Window Bars"),
             SettingsPageItem::SettingItem(SettingItem {
@@ -5184,6 +5184,30 @@ fn window_and_layout_page() -> SettingsPage {
                             .tool_window_bars
                             .get_or_insert_default()
                             .icon_size = value;
+                    },
+                }),
+                metadata: None,
+                files: USER,
+            }),
+            SettingsPageItem::SettingItem(SettingItem {
+                title: "Icon Style",
+                description: "Artwork of the tool window bar icons: JetBrains uses the IntelliJ Platform icons, Zed uses Zed's own icons.",
+                field: Box::new(SettingField {
+                    json_path: Some("tool_window_bars.icon_style"),
+                    pick: |settings_content| {
+                        settings_content
+                            .workspace
+                            .tool_window_bars
+                            .as_ref()?
+                            .icon_style
+                            .as_ref()
+                    },
+                    write: |settings_content, value, _| {
+                        settings_content
+                            .workspace
+                            .tool_window_bars
+                            .get_or_insert_default()
+                            .icon_style = value;
                     },
                 }),
                 metadata: None,

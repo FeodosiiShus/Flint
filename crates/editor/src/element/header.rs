@@ -764,7 +764,11 @@ pub(crate) fn render_buffer_header(
                 .when(show_header_background, |s| {
                     s.bg(colors.editor_subheader_background)
                 })
-                .hover(|s| s.bg(colors.element_hover))
+                .hover(|s| {
+                    s.bg(colors
+                        .editor_subheader_background
+                        .blend(colors.element_hover))
+                })
                 .map(|header| {
                     let editor = editor.clone();
                     let buffer_id = for_excerpt.buffer_id();
