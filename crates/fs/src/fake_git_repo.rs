@@ -13,10 +13,12 @@ use git::{
     blame::Blame,
     repository::{
         AskPassDelegate, Branch, CommitData, CommitDataReader, CommitDetails, CommitOptions,
-        CreateWorktreeTarget, FetchOptions, FileHistoryChangedFileSets, GRAPH_CHUNK_SIZE,
-        GitRepository, GitRepositoryCheckpoint, InitialGraphCommitData, LogOrder, LogSource,
-        PushOptions, RefEdit, Remote, RepoPath, ResetMode, SearchCommitArgs, Worktree,
-        commit_hash_search_query,
+        CommitSummary, CreateWorktreeTarget, FetchOptions, FileHistoryChangedFileSets,
+        GRAPH_CHUNK_SIZE, GitFailure, GitFailureKind, GitRepository, GitRepositoryCheckpoint,
+        InitialGraphCommitData, LogOrder, LogSource, MergeOutcome, PushOptions, RebaseAction,
+        RebaseOutcome, RefEdit, Remote, RemoteCommandOutput, RepoPath, RepositoryOperation,
+        ResetMode, SearchCommitArgs, Tag, Upstream, UpstreamTracking, UpstreamTrackingStatus,
+        Worktree, commit_hash_search_query,
     },
     stash::GitStash,
     status::{
@@ -85,6 +87,15 @@ pub struct FakeGitRepositoryState {
     pub stash_entries: GitStash,
     pub commit_template: Option<GitCommitTemplate>,
     pub blob_read_gate: Option<FakeBlobReadGate>,
+    pub tags: Vec<Tag>,
+    pub upstreams: HashMap<String, Upstream>,
+    pub recent_branches: Vec<String>,
+    pub ref_histories: HashMap<String, Vec<CommitSummary>>,
+    pub merge_conflicts: HashMap<String, Vec<(RepoPath, FakeConflictStages)>>,
+    pub rebase_conflicts: HashMap<String, Vec<(RepoPath, FakeConflictStages)>>,
+    pub rebase_session: Option<FakeRebaseSession>,
+    pub simulated_failures: HashMap<FakeGitOperation, FakeGitFailure>,
+    pub pushed_tags: Vec<(String, String)>,
 }
 
 impl FakeGitRepositoryState {
@@ -115,6 +126,15 @@ impl FakeGitRepositoryState {
             commit_history: Vec::new(),
             stash_entries: Default::default(),
             commit_template: None,
+            tags: Vec::new(),
+            upstreams: Default::default(),
+            recent_branches: Vec::new(),
+            ref_histories: Default::default(),
+            merge_conflicts: Default::default(),
+            rebase_conflicts: Default::default(),
+            rebase_session: None,
+            simulated_failures: Default::default(),
+            pushed_tags: Vec::new(),
         }
     }
 }
@@ -172,6 +192,622 @@ impl FakeConflictStages {
 fn parse_stage_revision(revision: &str) -> Option<(&str, &str)> {
     let (stage, path) = revision.strip_prefix(':')?.split_once(':')?;
     matches!(stage, "1" | "2" | "3").then_some((stage, path))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum FakeGitOperation {
+    Checkout,
+    CreateBranch,
+    Merge,
+    Rebase,
+    ResetHard,
+    DeleteRemoteBranch,
+    FastForwardBranch,
+    PushTag,
+}
+
+#[derive(Debug, Clone)]
+pub struct FakeGitFailure {
+    pub kind: GitFailureKind,
+    pub message: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct FakeRebaseSession {
+    pub original_branch: Option<String>,
+    pub upstream: Option<String>,
+}
+
+type ConflictFiles = Vec<(RepoPath, Option<Vec<u8>>)>;
+
+fn git_failure(kind: GitFailureKind, message: impl Into<String>) -> anyhow::Error {
+    anyhow::Error::new(GitFailure {
+        kind,
+        message: message.into(),
+    })
+}
+
+fn simulated_failure(state: &FakeGitRepositoryState, operation: FakeGitOperation) -> Result<()> {
+    match state.simulated_failures.get(&operation) {
+        Some(failure) => Err(git_failure(failure.kind.clone(), failure.message.clone())),
+        None => Ok(()),
+    }
+}
+
+fn ensure_no_unmerged_paths(state: &FakeGitRepositoryState, message: &str) -> Result<()> {
+    if state.unmerged_paths.is_empty() {
+        Ok(())
+    } else {
+        Err(git_failure(GitFailureKind::UnmergedFiles, message))
+    }
+}
+
+pub(crate) fn strip_ref_prefix(revision: &str) -> &str {
+    revision
+        .strip_prefix("refs/heads/")
+        .or_else(|| revision.strip_prefix("refs/remotes/"))
+        .or_else(|| revision.strip_prefix("refs/tags/"))
+        .unwrap_or(revision)
+}
+
+pub(crate) fn full_ref_name(branch_key: &str) -> String {
+    if branch_key.starts_with("refs/") {
+        branch_key.to_string()
+    } else if branch_key.contains('/') {
+        format!("refs/remotes/{branch_key}")
+    } else {
+        format!("refs/heads/{branch_key}")
+    }
+}
+
+fn local_branch_storage_key(name: &str) -> String {
+    if name.contains('/') {
+        format!("refs/heads/{name}")
+    } else {
+        name.to_string()
+    }
+}
+
+fn local_branch_key(state: &FakeGitRepositoryState, name: &str) -> Option<String> {
+    let full = format!("refs/heads/{name}");
+    if state.branches.contains(&full) {
+        return Some(full);
+    }
+    (!name.contains('/') && !name.starts_with("refs/") && state.branches.contains(name))
+        .then(|| name.to_string())
+}
+
+fn remote_branch_key(state: &FakeGitRepositoryState, name: &str) -> Option<String> {
+    let full = format!("refs/remotes/{name}");
+    if state.branches.contains(&full) {
+        return Some(full);
+    }
+    (name.contains('/') && !name.starts_with("refs/") && state.branches.contains(name))
+        .then(|| name.to_string())
+}
+
+fn tag_sha(state: &FakeGitRepositoryState, name: &str) -> Option<String> {
+    state
+        .tags
+        .iter()
+        .find(|tag| &*tag.name == name)
+        .map(|tag| tag.commit_sha.to_string())
+}
+
+fn local_branch_tip(state: &FakeGitRepositoryState, name: &str) -> String {
+    if state.current_branch_name.as_deref() == Some(name)
+        && let Some(sha) = state.refs.get("HEAD")
+    {
+        return sha.clone();
+    }
+    let full = format!("refs/heads/{name}");
+    state
+        .refs
+        .get(&full)
+        .cloned()
+        .unwrap_or_else(|| format!("fake-tip-{full}"))
+}
+
+fn remote_branch_tip(state: &FakeGitRepositoryState, name: &str) -> String {
+    let full = format!("refs/remotes/{name}");
+    state
+        .refs
+        .get(&full)
+        .cloned()
+        .unwrap_or_else(|| format!("fake-tip-{full}"))
+}
+
+fn peel_revision(revision: &str) -> &str {
+    revision
+        .strip_suffix("^{commit}")
+        .or_else(|| revision.strip_suffix("^0"))
+        .unwrap_or(revision)
+}
+
+fn revision_sha(state: &FakeGitRepositoryState, revision: &str) -> Option<String> {
+    let revision = peel_revision(revision);
+    if let Some(sha) = state.refs.get(revision) {
+        return Some(sha.clone());
+    }
+    if let Some(name) = revision.strip_prefix("refs/heads/") {
+        return local_branch_key(state, name).map(|_| local_branch_tip(state, name));
+    }
+    if let Some(name) = revision.strip_prefix("refs/remotes/") {
+        return remote_branch_key(state, name).map(|_| remote_branch_tip(state, name));
+    }
+    if let Some(name) = revision.strip_prefix("refs/tags/") {
+        return tag_sha(state, name);
+    }
+    if let Some(sha) = tag_sha(state, revision) {
+        return Some(sha);
+    }
+    if local_branch_key(state, revision).is_some() {
+        return Some(local_branch_tip(state, revision));
+    }
+    if remote_branch_key(state, revision).is_some() {
+        return Some(remote_branch_tip(state, revision));
+    }
+    let is_known_commit = state
+        .commit_history
+        .iter()
+        .any(|snapshot| snapshot.sha == revision)
+        || state
+            .graph_commits
+            .iter()
+            .any(|commit| commit.sha.to_string() == revision)
+        || state
+            .ref_histories
+            .values()
+            .flatten()
+            .any(|commit| &*commit.sha == revision);
+    is_known_commit.then(|| revision.to_string())
+}
+
+fn current_history_key(state: &FakeGitRepositoryState) -> String {
+    state
+        .current_branch_name
+        .clone()
+        .unwrap_or_else(|| "HEAD".to_string())
+}
+
+fn ref_history(state: &FakeGitRepositoryState, revision: &str) -> Vec<CommitSummary> {
+    let revision = peel_revision(revision);
+    let key = if revision == "HEAD" {
+        current_history_key(state)
+    } else {
+        strip_ref_prefix(revision).to_string()
+    };
+    state.ref_histories.get(&key).cloned().unwrap_or_default()
+}
+
+fn set_current_history(state: &mut FakeGitRepositoryState, history: Vec<CommitSummary>) {
+    let key = current_history_key(state);
+    state.ref_histories.insert(key, history);
+}
+
+fn set_current_tip(state: &mut FakeGitRepositoryState, sha: String) {
+    if let Some(branch) = state.current_branch_name.clone() {
+        state
+            .refs
+            .insert(format!("refs/heads/{branch}"), sha.clone());
+    }
+    state.refs.insert("HEAD".into(), sha);
+}
+
+fn short_sha(sha: &str) -> &str {
+    sha.get(..7).unwrap_or(sha)
+}
+
+fn note_checkout(state: &mut FakeGitRepositoryState, destination: Option<&str>) {
+    if let Some(previous) = state.current_branch_name.clone()
+        && destination != Some(previous.as_str())
+        && let Some(head) = state.refs.get("HEAD").cloned()
+    {
+        state.refs.insert(format!("refs/heads/{previous}"), head);
+    }
+    if let Some(destination) = destination {
+        state.recent_branches.retain(|name| name != destination);
+        state.recent_branches.insert(0, destination.to_string());
+    }
+}
+
+fn clear_merge_markers(state: &mut FakeGitRepositoryState) {
+    for marker in ["MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD"] {
+        state.refs.remove(marker);
+    }
+    state.merge_message = None;
+}
+
+fn switch_to_branch(state: &mut FakeGitRepositoryState, name: &str) {
+    let tip = local_branch_tip(state, name);
+    note_checkout(state, Some(name));
+    state.current_branch_name = Some(name.to_string());
+    state.refs.insert("HEAD".into(), tip);
+    clear_merge_markers(state);
+}
+
+fn detach_head_at(state: &mut FakeGitRepositoryState, revision: &str, sha: String) {
+    let history = ref_history(state, revision);
+    note_checkout(state, None);
+    state.current_branch_name = None;
+    state.ref_histories.insert("HEAD".to_string(), history);
+    state.refs.insert("HEAD".into(), sha);
+    clear_merge_markers(state);
+}
+
+fn forget_branch(state: &mut FakeGitRepositoryState, key: &str) {
+    let full = full_ref_name(key);
+    let short = strip_ref_prefix(&full).to_string();
+    state.refs.remove(&full);
+    state.ref_histories.remove(&short);
+    if full.starts_with("refs/remotes/") {
+        for upstream in state.upstreams.values_mut() {
+            if &*upstream.ref_name == full.as_str() {
+                upstream.tracking = UpstreamTracking::Gone;
+            }
+        }
+    } else {
+        state.upstreams.remove(&short);
+        state.recent_branches.retain(|name| *name != short);
+    }
+}
+
+fn apply_conflicts(
+    state: &mut FakeGitRepositoryState,
+    conflicts: Vec<(RepoPath, FakeConflictStages)>,
+) -> ConflictFiles {
+    let mut files = Vec::with_capacity(conflicts.len());
+    for (path, stages) in conflicts {
+        state
+            .unmerged_paths
+            .insert(path.clone(), stages.unmerged_status());
+        state.index_contents.remove(&path);
+        match &stages.ours {
+            Some(ours) => state.head_contents.insert(path.clone(), ours.clone()),
+            None => state.head_contents.remove(&path),
+        };
+        files.push((path.clone(), stages.conflict_text()));
+        state.conflict_stages.insert(path, stages);
+    }
+    files
+}
+
+fn conflict_summary(paths: &[RepoPath], trailer: &str) -> String {
+    let mut output = String::new();
+    for path in paths {
+        let path = path.as_unix_str();
+        output.push_str(&format!(
+            "Auto-merging {path}\nCONFLICT (content): Merge conflict in {path}\n"
+        ));
+    }
+    output.push_str(trailer);
+    output
+}
+
+fn merge_subject(state: &FakeGitRepositoryState, reference: &str) -> String {
+    let name = strip_ref_prefix(reference);
+    let is_remote_tracking = local_branch_key(state, name).is_none()
+        && tag_sha(state, name).is_none()
+        && remote_branch_key(state, name).is_some();
+    if is_remote_tracking {
+        format!("Merge remote-tracking branch '{name}'")
+    } else {
+        format!("Merge branch '{name}'")
+    }
+}
+
+fn rewind_commit_history(
+    state: &mut FakeGitRepositoryState,
+    commit: &str,
+) -> Result<FakeCommitSnapshot> {
+    let pop_count = if commit == "HEAD~" || commit == "HEAD^" {
+        1
+    } else if let Some(suffix) = commit.strip_prefix("HEAD~") {
+        suffix
+            .parse::<usize>()
+            .with_context(|| format!("Invalid HEAD~ offset: {commit}"))?
+    } else {
+        match state
+            .commit_history
+            .iter()
+            .rposition(|entry| entry.sha == commit)
+        {
+            Some(index) => state.commit_history.len() - index,
+            None => anyhow::bail!("Unknown commit ref: {commit}"),
+        }
+    };
+
+    if pop_count == 0 || pop_count > state.commit_history.len() {
+        anyhow::bail!(
+            "Cannot reset {pop_count} commit(s): only {} in history",
+            state.commit_history.len()
+        );
+    }
+
+    let target_index = state.commit_history.len() - pop_count;
+    let snapshot = state.commit_history[target_index].clone();
+    state.commit_history.truncate(target_index);
+    Ok(snapshot)
+}
+
+fn fake_merge(
+    state: &mut FakeGitRepositoryState,
+    reference: &str,
+) -> Result<(MergeOutcome, ConflictFiles)> {
+    if state.refs.contains_key("MERGE_HEAD") {
+        return Err(git_failure(
+            GitFailureKind::UnmergedFiles,
+            "fatal: You have not concluded your merge (MERGE_HEAD exists).\nPlease, commit your changes before you merge.",
+        ));
+    }
+    ensure_no_unmerged_paths(
+        state,
+        "error: Merging is not possible because you have unmerged files.\nhint: Fix them up in the work tree, and then use 'git add/rm <file>'\nhint: as appropriate to mark resolution and make a commit.\nfatal: Exiting because of an unresolved conflict.",
+    )?;
+    let Some(target_sha) = revision_sha(state, reference) else {
+        return Err(git_failure(
+            GitFailureKind::Other,
+            format!("merge: {reference} - not something we can merge"),
+        ));
+    };
+    simulated_failure(state, FakeGitOperation::Merge)?;
+
+    if let Some(conflicts) = state
+        .merge_conflicts
+        .get(strip_ref_prefix(reference))
+        .cloned()
+    {
+        let paths = conflicts
+            .iter()
+            .map(|(path, _)| path.clone())
+            .collect::<Vec<_>>();
+        let subject = merge_subject(state, reference);
+        let files = apply_conflicts(state, conflicts);
+        state.refs.insert("MERGE_HEAD".into(), target_sha);
+        let conflict_lines = paths
+            .iter()
+            .map(|path| format!("#\t{}\n", path.as_unix_str()))
+            .collect::<String>();
+        state.merge_message = Some(format!("{subject}\n\n# Conflicts:\n{conflict_lines}"));
+        let output = conflict_summary(
+            &paths,
+            "Automatic merge failed; fix conflicts and then commit the result.\n",
+        );
+        return Ok((MergeOutcome::Conflicted { output }, files));
+    }
+
+    let head_sha = state.refs.get("HEAD").cloned().unwrap_or_default();
+    let head_history = ref_history(state, "HEAD");
+    let target_history = ref_history(state, reference);
+    let head_ids = head_history
+        .iter()
+        .map(|commit| commit.sha.clone())
+        .collect::<HashSet<SharedString>>();
+    let missing = target_history
+        .iter()
+        .filter(|commit| !head_ids.contains(&commit.sha))
+        .cloned()
+        .collect::<Vec<_>>();
+    let already_up_to_date = if target_history.is_empty() {
+        target_sha == head_sha
+    } else {
+        missing.is_empty()
+    };
+    if already_up_to_date {
+        return Ok((MergeOutcome::AlreadyUpToDate, Vec::new()));
+    }
+
+    let target_ids = target_history
+        .iter()
+        .map(|commit| commit.sha.clone())
+        .collect::<HashSet<SharedString>>();
+    let is_fast_forward = head_history
+        .iter()
+        .all(|commit| target_ids.contains(&commit.sha));
+    if is_fast_forward {
+        let output = format!(
+            "Updating {}..{}\nFast-forward\n",
+            short_sha(&head_sha),
+            short_sha(&target_sha)
+        );
+        set_current_history(state, target_history);
+        set_current_tip(state, target_sha);
+        return Ok((MergeOutcome::Merged { output }, Vec::new()));
+    }
+
+    let merge_commit = CommitSummary {
+        sha: format!(
+            "fake-merge-{}-{}",
+            strip_ref_prefix(reference),
+            head_history.len()
+        )
+        .into(),
+        subject: merge_subject(state, reference).into(),
+        commit_timestamp: head_history
+            .first()
+            .map_or(0, |commit| commit.commit_timestamp),
+        author_name: SharedString::default(),
+        has_parent: true,
+    };
+    let merge_sha = merge_commit.sha.to_string();
+    let mut merged_history = vec![merge_commit];
+    merged_history.extend(missing);
+    merged_history.extend(head_history);
+    set_current_history(state, merged_history);
+    set_current_tip(state, merge_sha);
+    Ok((
+        MergeOutcome::Merged {
+            output: "Merge made by the 'ort' strategy.\n".to_string(),
+        },
+        Vec::new(),
+    ))
+}
+
+fn complete_rebase(state: &mut FakeGitRepositoryState, session: &FakeRebaseSession) -> String {
+    if let Some(branch) = &session.original_branch {
+        state.current_branch_name = Some(branch.clone());
+    }
+    state.rebase_session = None;
+    state.refs.remove("REBASE_HEAD");
+    let target = match &session.original_branch {
+        Some(branch) => format!("refs/heads/{branch}"),
+        None => "detached HEAD".to_string(),
+    };
+    let Some(upstream) = &session.upstream else {
+        return format!("Successfully rebased and updated {target}.\n");
+    };
+
+    let head_history = ref_history(state, "HEAD");
+    let upstream_history = ref_history(state, upstream);
+    let head_ids = head_history
+        .iter()
+        .map(|commit| commit.sha.clone())
+        .collect::<HashSet<SharedString>>();
+    let upstream_ids = upstream_history
+        .iter()
+        .map(|commit| commit.sha.clone())
+        .collect::<HashSet<SharedString>>();
+    let is_up_to_date = if upstream_history.is_empty() {
+        revision_sha(state, upstream).as_deref() == state.refs.get("HEAD").map(String::as_str)
+    } else {
+        upstream_history
+            .iter()
+            .all(|commit| head_ids.contains(&commit.sha))
+    };
+    if is_up_to_date {
+        return match &session.original_branch {
+            Some(branch) => format!("Current branch {branch} is up to date.\n"),
+            None => "HEAD is up to date.\n".to_string(),
+        };
+    }
+
+    let replayed = head_history
+        .into_iter()
+        .filter(|commit| !upstream_ids.contains(&commit.sha))
+        .collect::<Vec<_>>();
+    let tip = replayed
+        .first()
+        .map(|commit| commit.sha.to_string())
+        .or_else(|| revision_sha(state, upstream));
+    let mut rebased_history = replayed;
+    rebased_history.extend(upstream_history);
+    set_current_history(state, rebased_history);
+    if let Some(tip) = tip {
+        set_current_tip(state, tip);
+    }
+    format!("Successfully rebased and updated {target}.\n")
+}
+
+fn continue_rebase(
+    state: &mut FakeGitRepositoryState,
+    require_resolved_paths: bool,
+) -> Result<(RebaseOutcome, ConflictFiles)> {
+    let Some(session) = state.rebase_session.clone() else {
+        return Err(git_failure(
+            GitFailureKind::Other,
+            "fatal: No rebase in progress?",
+        ));
+    };
+    if require_resolved_paths {
+        ensure_no_unmerged_paths(
+            state,
+            "error: Committing is not possible because you have unmerged files.\nhint: Fix them up in the work tree, and then use 'git add/rm <file>'\nhint: as appropriate to mark resolution and make a commit.\nfatal: Exiting because of an unresolved conflict.",
+        )?;
+    }
+    simulated_failure(state, FakeGitOperation::Rebase)?;
+    state.unmerged_paths.clear();
+    state.conflict_stages.clear();
+    let output = complete_rebase(state, &session);
+    Ok((RebaseOutcome::Completed { output }, Vec::new()))
+}
+
+fn fake_rebase(
+    state: &mut FakeGitRepositoryState,
+    action: RebaseAction,
+) -> Result<(RebaseOutcome, ConflictFiles)> {
+    match action {
+        RebaseAction::Start { upstream, branch } => {
+            let upstream = if upstream == "HEAD" {
+                state.current_branch_name.clone().unwrap_or(upstream)
+            } else {
+                upstream
+            };
+            if state.rebase_session.is_some() {
+                return Err(git_failure(
+                    GitFailureKind::Other,
+                    "fatal: It seems that there is already a rebase-merge directory, and\nI wonder if you are in the middle of another rebase.",
+                ));
+            }
+            ensure_no_unmerged_paths(
+                state,
+                "error: Rebasing is not possible because you have unmerged files.",
+            )?;
+            let Some(upstream_sha) = revision_sha(state, &upstream) else {
+                return Err(git_failure(
+                    GitFailureKind::Other,
+                    format!("fatal: invalid upstream '{upstream}'"),
+                ));
+            };
+            if let Some(branch) = &branch
+                && local_branch_key(state, branch).is_none()
+            {
+                return Err(git_failure(
+                    GitFailureKind::Other,
+                    format!("fatal: invalid reference: {branch}"),
+                ));
+            }
+            simulated_failure(state, FakeGitOperation::Rebase)?;
+            if let Some(branch) = &branch {
+                switch_to_branch(state, branch);
+            }
+            let session = FakeRebaseSession {
+                original_branch: state.current_branch_name.clone(),
+                upstream: Some(upstream.clone()),
+            };
+            let Some(conflicts) = state
+                .rebase_conflicts
+                .get(strip_ref_prefix(&upstream))
+                .cloned()
+            else {
+                let output = complete_rebase(state, &session);
+                return Ok((RebaseOutcome::Completed { output }, Vec::new()));
+            };
+            let paths = conflicts
+                .iter()
+                .map(|(path, _)| path.clone())
+                .collect::<Vec<_>>();
+            let files = apply_conflicts(state, conflicts);
+            let history = ref_history(state, "HEAD");
+            state.ref_histories.insert("HEAD".to_string(), history);
+            state.current_branch_name = None;
+            let rebase_head = state.refs.get("HEAD").cloned().unwrap_or(upstream_sha);
+            state.refs.insert("REBASE_HEAD".into(), rebase_head.clone());
+            state.rebase_session = Some(session);
+            let trailer = format!(
+                "error: could not apply {}\nhint: Resolve all conflicts manually, mark them as resolved with\nhint: \"git add/rm <conflicted_files>\", then run \"git rebase --continue\".\nhint: You can instead skip this commit: run \"git rebase --skip\".\nhint: To abort and get back to the state before \"git rebase\", run \"git rebase --abort\".\n",
+                short_sha(&rebase_head)
+            );
+            let output = conflict_summary(&paths, &trailer);
+            Ok((RebaseOutcome::Conflicted { output }, files))
+        }
+        RebaseAction::Continue => continue_rebase(state, true),
+        RebaseAction::Skip => continue_rebase(state, false),
+        RebaseAction::Abort => {
+            let Some(session) = state.rebase_session.take() else {
+                return Err(git_failure(
+                    GitFailureKind::Other,
+                    "fatal: No rebase in progress?",
+                ));
+            };
+            if let Some(branch) = session.original_branch {
+                state.current_branch_name = Some(branch);
+            }
+            state.unmerged_paths.clear();
+            state.conflict_stages.clear();
+            state.refs.remove("REBASE_HEAD");
+            Ok((RebaseOutcome::Aborted, Vec::new()))
+        }
+    }
 }
 
 #[derive(Clone, Default, Debug)]
@@ -292,6 +928,35 @@ impl FakeGitRepository {
             }
             Ok(())
         })
+    }
+
+    async fn write_conflict_files(&self, files: ConflictFiles) -> Result<()> {
+        let working_directory = self
+            .dot_git_path
+            .parent()
+            .context("repository has no working directory")?
+            .to_path_buf();
+        for (path, conflict_text) in files {
+            let absolute_path = working_directory.join(path.as_std_path());
+            match conflict_text {
+                Some(conflict_text) => {
+                    self.fs
+                        .write_file_internal(&absolute_path, conflict_text, false)?
+                }
+                None => {
+                    self.fs
+                        .remove_file(
+                            &absolute_path,
+                            RemoveOptions {
+                                recursive: false,
+                                ignore_if_not_exists: true,
+                            },
+                        )
+                        .await?
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Scans `.git/worktrees/*/gitdir` to find the admin entry directory for a
@@ -492,33 +1157,7 @@ impl GitRepository for FakeGitRepository {
         _env: Arc<HashMap<String, String>>,
     ) -> BoxFuture<'_, Result<()>> {
         self.with_state_async(true, move |state| {
-            let pop_count = if commit == "HEAD~" || commit == "HEAD^" {
-                1
-            } else if let Some(suffix) = commit.strip_prefix("HEAD~") {
-                suffix
-                    .parse::<usize>()
-                    .with_context(|| format!("Invalid HEAD~ offset: {commit}"))?
-            } else {
-                match state
-                    .commit_history
-                    .iter()
-                    .rposition(|entry| entry.sha == commit)
-                {
-                    Some(index) => state.commit_history.len() - index,
-                    None => anyhow::bail!("Unknown commit ref: {commit}"),
-                }
-            };
-
-            if pop_count == 0 || pop_count > state.commit_history.len() {
-                anyhow::bail!(
-                    "Cannot reset {pop_count} commit(s): only {} in history",
-                    state.commit_history.len()
-                );
-            }
-
-            let target_index = state.commit_history.len() - pop_count;
-            let snapshot = state.commit_history[target_index].clone();
-            state.commit_history.truncate(target_index);
+            let snapshot = rewind_commit_history(state, &commit)?;
 
             match mode {
                 ResetMode::Soft => {
@@ -707,11 +1346,19 @@ impl GitRepository for FakeGitRepository {
                     } else {
                         format!("refs/heads/{branch_name}").into()
                     };
+                    let local_name = branch_name
+                        .strip_prefix("refs/heads/")
+                        .or_else(|| (!branch_name.contains('/')).then_some(branch_name.as_str()));
+                    let is_head = current_branch.as_deref().is_some_and(|current| {
+                        local_name == Some(current) || branch_name == current
+                    });
                     Branch {
-                        is_head: Some(branch_name) == current_branch.as_ref(),
+                        is_head,
                         ref_name,
                         most_recent_commit: None,
-                        upstream: None,
+                        upstream: local_name
+                            .and_then(|local_name| state.upstreams.get(local_name))
+                            .cloned(),
                     }
                 })
                 .collect::<Vec<_>>();
@@ -1104,6 +1751,11 @@ impl GitRepository for FakeGitRepository {
 
     fn change_branch(&self, name: String) -> BoxFuture<'_, Result<()>> {
         self.with_state_async(true, |state| {
+            simulated_failure(state, FakeGitOperation::Checkout)?;
+            note_checkout(state, Some(&name));
+            if let Some(tip) = state.refs.get(&format!("refs/heads/{name}")).cloned() {
+                state.refs.insert("HEAD".into(), tip);
+            }
             state.current_branch_name = Some(name);
             Ok(())
         })
@@ -1127,10 +1779,36 @@ impl GitRepository for FakeGitRepository {
 
     fn rename_branch(&self, branch: String, new_name: String) -> BoxFuture<'_, Result<()>> {
         self.with_state_async(true, move |state| {
-            if !state.branches.remove(&branch) {
+            let key = if state.branches.contains(&branch) {
+                Some(branch.clone())
+            } else {
+                local_branch_key(state, &branch)
+            };
+            let Some(key) = key else {
                 bail!("no such branch: {branch}");
+            };
+            state.branches.remove(&key);
+            let new_key = if key.starts_with("refs/heads/") {
+                local_branch_storage_key(&new_name)
+            } else {
+                new_name.clone()
+            };
+            state.branches.insert(new_key.clone());
+            let old_full = full_ref_name(&key);
+            if let Some(sha) = state.refs.remove(&old_full) {
+                state.refs.insert(full_ref_name(&new_key), sha);
             }
-            state.branches.insert(new_name.clone());
+            if let Some(history) = state.ref_histories.remove(&branch) {
+                state.ref_histories.insert(new_name.clone(), history);
+            }
+            if let Some(upstream) = state.upstreams.remove(&branch) {
+                state.upstreams.insert(new_name.clone(), upstream);
+            }
+            for recent in &mut state.recent_branches {
+                if *recent == branch {
+                    *recent = new_name.clone();
+                }
+            }
             if state.current_branch_name == Some(branch) {
                 state.current_branch_name = Some(new_name);
             }
@@ -1140,21 +1818,492 @@ impl GitRepository for FakeGitRepository {
 
     fn delete_branch(
         &self,
-        _is_remote: bool,
+        is_remote: bool,
         name: String,
         force: bool,
     ) -> BoxFuture<'_, Result<()>> {
         self.with_state_async(true, move |state| {
             if !force && state.branches_requiring_force_delete.contains(&name) {
-                bail!(
-                    "error: The branch '{name}' is not fully merged.\nIf you are sure you want to delete it, run 'git branch -D {name}'."
-                );
+                return Err(git_failure(
+                    GitFailureKind::BranchNotFullyMerged,
+                    format!(
+                        "error: The branch '{name}' is not fully merged.\nIf you are sure you want to delete it, run 'git branch -D {name}'."
+                    ),
+                ));
             }
-            if !state.branches.remove(&name) {
+            let key = if state.branches.contains(&name) {
+                Some(name.clone())
+            } else if is_remote {
+                remote_branch_key(state, &name)
+            } else {
+                local_branch_key(state, &name)
+            };
+            let Some(key) = key else {
                 bail!("no such branch: {name}");
-            }
+            };
+            state.branches.remove(&key);
+            forget_branch(state, &key);
             state.branches_requiring_force_delete.remove(&name);
             Ok(())
+        })
+    }
+
+    fn tags(&self) -> BoxFuture<'_, Result<Vec<Tag>>> {
+        self.with_state_async(false, |state| Ok(state.tags.clone()))
+    }
+
+    fn recent_branches(&self, limit: usize) -> BoxFuture<'_, Result<Vec<SharedString>>> {
+        self.with_state_async(false, move |state| {
+            let state = &*state;
+            let mut recent = Vec::<SharedString>::new();
+            for name in &state.recent_branches {
+                if recent.len() >= limit {
+                    break;
+                }
+                let already_listed = recent.iter().any(|listed| &**listed == name.as_str());
+                if !already_listed && local_branch_key(state, name).is_some() {
+                    recent.push(name.clone().into());
+                }
+            }
+            Ok(recent)
+        })
+    }
+
+    fn commits_between(
+        &self,
+        base: String,
+        head: String,
+        limit: usize,
+    ) -> BoxFuture<'_, Result<Vec<CommitSummary>>> {
+        self.with_state_async(false, move |state| {
+            let state = &*state;
+            for revision in [&base, &head] {
+                if revision_sha(state, revision).is_none() {
+                    return Err(git_failure(
+                        GitFailureKind::RevisionNotFound,
+                        format!("fatal: bad revision '{revision}'"),
+                    ));
+                }
+            }
+            let base_ids = ref_history(state, &base)
+                .into_iter()
+                .map(|commit| commit.sha)
+                .collect::<HashSet<SharedString>>();
+            Ok(ref_history(state, &head)
+                .into_iter()
+                .filter(|commit| !base_ids.contains(&commit.sha))
+                .take(limit)
+                .collect())
+        })
+    }
+
+    fn operation_in_progress(&self) -> BoxFuture<'_, Result<Option<RepositoryOperation>>> {
+        self.with_state_async(false, |state| {
+            let operation = if state.rebase_session.is_some() {
+                Some(RepositoryOperation::Rebase)
+            } else if state.refs.contains_key("MERGE_HEAD") {
+                Some(RepositoryOperation::Merge)
+            } else if state.refs.contains_key("CHERRY_PICK_HEAD") {
+                Some(RepositoryOperation::CherryPick)
+            } else if state.refs.contains_key("REVERT_HEAD") {
+                Some(RepositoryOperation::Revert)
+            } else {
+                None
+            };
+            Ok(operation)
+        })
+    }
+
+    fn checkout_detached(&self, revision: String) -> BoxFuture<'_, Result<()>> {
+        self.with_state_async(true, move |state| {
+            let Some(sha) = revision_sha(state, &revision) else {
+                return Err(git_failure(
+                    GitFailureKind::RevisionNotFound,
+                    format!("fatal: invalid reference: {revision}"),
+                ));
+            };
+            ensure_no_unmerged_paths(state, "error: you need to resolve your current index first")?;
+            simulated_failure(state, FakeGitOperation::Checkout)?;
+            detach_head_at(state, &revision, sha);
+            Ok(())
+        })
+    }
+
+    fn checkout_force(&self, name: String) -> BoxFuture<'_, Result<()>> {
+        self.with_state_async(true, move |state| {
+            if local_branch_key(state, &name).is_some() {
+                switch_to_branch(state, &name);
+            } else if let Some(sha) = revision_sha(state, &name) {
+                detach_head_at(state, &name, sha);
+            } else {
+                return Err(git_failure(
+                    GitFailureKind::Other,
+                    format!("error: pathspec '{name}' did not match any file(s) known to git"),
+                ));
+            }
+            state.index_contents = state.head_contents.clone();
+            state.unmerged_paths.clear();
+            state.conflict_stages.clear();
+            Ok(())
+        })
+    }
+
+    fn create_branch_at(
+        &self,
+        name: String,
+        start_point: String,
+        checkout: bool,
+        overwrite: bool,
+    ) -> BoxFuture<'_, Result<()>> {
+        self.with_state_async(true, move |state| {
+            simulated_failure(state, FakeGitOperation::CreateBranch)?;
+            if checkout {
+                simulated_failure(state, FakeGitOperation::Checkout)?;
+            }
+            let existing_key = local_branch_key(state, &name);
+            if existing_key.is_some() && !overwrite {
+                return Err(git_failure(
+                    GitFailureKind::Other,
+                    format!("fatal: a branch named '{name}' already exists"),
+                ));
+            }
+            let Some(start_sha) = revision_sha(state, &start_point) else {
+                return Err(git_failure(
+                    GitFailureKind::Other,
+                    format!("fatal: not a valid object name: '{start_point}'"),
+                ));
+            };
+            let is_current = state.current_branch_name.as_deref() == Some(name.as_str());
+            let checkout = checkout || (overwrite && is_current);
+            let tracked_remote = if local_branch_key(state, &start_point).is_none()
+                && tag_sha(state, &start_point).is_none()
+            {
+                remote_branch_key(state, &start_point).map(|key| full_ref_name(&key))
+            } else {
+                None
+            };
+            let history = ref_history(state, &start_point);
+
+            if existing_key.is_none() {
+                state.branches.insert(local_branch_storage_key(&name));
+            }
+            state
+                .refs
+                .insert(format!("refs/heads/{name}"), start_sha.clone());
+            state.ref_histories.insert(name.clone(), history);
+            if let Some(remote_ref) = tracked_remote {
+                state.upstreams.insert(
+                    name.clone(),
+                    Upstream {
+                        ref_name: remote_ref.into(),
+                        tracking: UpstreamTracking::Tracked(UpstreamTrackingStatus {
+                            ahead: 0,
+                            behind: 0,
+                        }),
+                    },
+                );
+            }
+            if checkout {
+                note_checkout(state, Some(&name));
+                state.current_branch_name = Some(name);
+                state.refs.insert("HEAD".into(), start_sha);
+                clear_merge_markers(state);
+            }
+            Ok(())
+        })
+    }
+
+    fn set_upstream(&self, branch: String, upstream: Option<String>) -> BoxFuture<'_, Result<()>> {
+        self.with_state_async(true, move |state| {
+            if local_branch_key(state, &branch).is_none() {
+                return Err(git_failure(
+                    GitFailureKind::Other,
+                    format!("fatal: branch '{branch}' does not exist"),
+                ));
+            }
+            let Some(upstream) = upstream else {
+                state.upstreams.remove(&branch);
+                return Ok(());
+            };
+            let ref_name = if let Some(key) = remote_branch_key(state, &upstream) {
+                full_ref_name(&key)
+            } else if local_branch_key(state, &upstream).is_some() {
+                format!("refs/heads/{upstream}")
+            } else {
+                return Err(git_failure(
+                    GitFailureKind::Other,
+                    format!("fatal: the requested upstream branch '{upstream}' does not exist"),
+                ));
+            };
+            state.upstreams.insert(
+                branch,
+                Upstream {
+                    ref_name: ref_name.into(),
+                    tracking: UpstreamTracking::Tracked(UpstreamTrackingStatus {
+                        ahead: 0,
+                        behind: 0,
+                    }),
+                },
+            );
+            Ok(())
+        })
+    }
+
+    fn merge(
+        &self,
+        reference: String,
+        _env: Arc<HashMap<String, String>>,
+    ) -> BoxFuture<'_, Result<MergeOutcome>> {
+        async move {
+            let (outcome, conflict_files) = self
+                .with_state_async(true, move |state| fake_merge(state, &reference))
+                .await?;
+            self.write_conflict_files(conflict_files).await?;
+            Ok(outcome)
+        }
+        .boxed()
+    }
+
+    fn merge_abort(&self, _env: Arc<HashMap<String, String>>) -> BoxFuture<'_, Result<()>> {
+        self.with_state_async(true, |state| {
+            if !state.refs.contains_key("MERGE_HEAD") {
+                return Err(git_failure(
+                    GitFailureKind::Other,
+                    "fatal: There is no merge to abort (MERGE_HEAD missing).",
+                ));
+            }
+            clear_merge_markers(state);
+            state.unmerged_paths.clear();
+            state.conflict_stages.clear();
+            Ok(())
+        })
+    }
+
+    fn rebase(
+        &self,
+        action: RebaseAction,
+        _env: Arc<HashMap<String, String>>,
+    ) -> BoxFuture<'_, Result<RebaseOutcome>> {
+        async move {
+            let (outcome, conflict_files) = self
+                .with_state_async(true, move |state| fake_rebase(state, action))
+                .await?;
+            self.write_conflict_files(conflict_files).await?;
+            Ok(outcome)
+        }
+        .boxed()
+    }
+
+    fn reset_hard(
+        &self,
+        commit: String,
+        _env: Arc<HashMap<String, String>>,
+    ) -> BoxFuture<'_, Result<()>> {
+        self.with_state_async(true, move |state| {
+            simulated_failure(state, FakeGitOperation::ResetHard)?;
+            let rewinds_history = commit.starts_with("HEAD~")
+                || commit == "HEAD^"
+                || state.commit_history.iter().any(|entry| entry.sha == commit);
+            if rewinds_history {
+                let snapshot = rewind_commit_history(state, &commit)?;
+                state.head_contents = snapshot.head_contents;
+                set_current_tip(state, snapshot.sha);
+            } else {
+                let Some(sha) = revision_sha(state, &commit) else {
+                    return Err(git_failure(
+                        GitFailureKind::RevisionNotFound,
+                        format!(
+                            "fatal: ambiguous argument '{commit}': unknown revision or path not in the working tree."
+                        ),
+                    ));
+                };
+                let history = ref_history(state, &commit);
+                set_current_history(state, history);
+                set_current_tip(state, sha);
+            }
+            state.index_contents = state.head_contents.clone();
+            state.unmerged_paths.clear();
+            state.conflict_stages.clear();
+            clear_merge_markers(state);
+            Ok(())
+        })
+    }
+
+    fn delete_remote_branch(
+        &self,
+        remote: String,
+        branch: String,
+        _askpass: AskPassDelegate,
+        _env: Arc<HashMap<String, String>>,
+        _cx: AsyncApp,
+    ) -> BoxFuture<'_, Result<RemoteCommandOutput>> {
+        self.with_state_async(true, move |state| {
+            simulated_failure(state, FakeGitOperation::DeleteRemoteBranch)?;
+            let tracking_name = format!("{remote}/{branch}");
+            let Some(key) = remote_branch_key(state, &tracking_name) else {
+                return Ok(RemoteCommandOutput {
+                    stdout: String::new(),
+                    stderr: String::new(),
+                });
+            };
+            state.branches.remove(&key);
+            forget_branch(state, &key);
+            Ok(RemoteCommandOutput {
+                stdout: String::new(),
+                stderr: format!("To {remote}\n - [deleted]         {branch}\n"),
+            })
+        })
+    }
+
+    fn fast_forward_branch(
+        &self,
+        remote: String,
+        remote_branch: String,
+        local_branch: String,
+        _askpass: AskPassDelegate,
+        _env: Arc<HashMap<String, String>>,
+        _cx: AsyncApp,
+    ) -> BoxFuture<'_, Result<RemoteCommandOutput>> {
+        self.with_state_async(true, move |state| {
+            simulated_failure(state, FakeGitOperation::FastForwardBranch)?;
+            let tracking_name = format!("{remote}/{remote_branch}");
+            let Some(remote_key) = remote_branch_key(state, &tracking_name) else {
+                return Err(git_failure(
+                    GitFailureKind::Other,
+                    format!("fatal: couldn't find remote ref {remote_branch}"),
+                ));
+            };
+            if state.current_branch_name.as_deref() == Some(local_branch.as_str()) {
+                return Err(git_failure(
+                    GitFailureKind::Other,
+                    format!(
+                        "fatal: refusing to fetch into current branch refs/heads/{local_branch} of non-bare repository"
+                    ),
+                ));
+            }
+            let local_exists = local_branch_key(state, &local_branch).is_some();
+            let local_sha = local_exists.then(|| local_branch_tip(state, &local_branch));
+            let remote_sha = remote_branch_tip(state, &tracking_name);
+            let local_history = ref_history(state, &local_branch);
+            let remote_history = ref_history(state, &tracking_name);
+            let remote_ids = remote_history
+                .iter()
+                .map(|commit| commit.sha.clone())
+                .collect::<HashSet<SharedString>>();
+            let is_fast_forward = local_history
+                .iter()
+                .all(|commit| remote_ids.contains(&commit.sha));
+            if !is_fast_forward {
+                return Err(git_failure(
+                    GitFailureKind::Other,
+                    format!(
+                        " ! [rejected]        {remote_branch} -> {local_branch}  (non-fast-forward)\nerror: some local refs could not be updated"
+                    ),
+                ));
+            }
+
+            if !local_exists {
+                state
+                    .branches
+                    .insert(local_branch_storage_key(&local_branch));
+            }
+            state
+                .refs
+                .insert(format!("refs/heads/{local_branch}"), remote_sha.clone());
+            state
+                .ref_histories
+                .insert(local_branch.clone(), remote_history);
+            let remote_ref = full_ref_name(&remote_key);
+            if let Some(upstream) = state.upstreams.get_mut(&local_branch)
+                && &*upstream.ref_name == remote_ref.as_str()
+            {
+                upstream.tracking = UpstreamTracking::Tracked(UpstreamTrackingStatus {
+                    ahead: 0,
+                    behind: 0,
+                });
+            }
+            let stderr = match local_sha {
+                Some(local_sha) => format!(
+                    "   {}..{}  {remote_branch} -> {local_branch}\n",
+                    short_sha(&local_sha),
+                    short_sha(&remote_sha)
+                ),
+                None => format!(" * [new branch]      {remote_branch} -> {local_branch}\n"),
+            };
+            Ok(RemoteCommandOutput {
+                stdout: String::new(),
+                stderr,
+            })
+        })
+    }
+
+    fn delete_tag(&self, name: String) -> BoxFuture<'_, Result<()>> {
+        self.with_state_async(true, move |state| {
+            let Some(position) = state.tags.iter().position(|tag| *tag.name == *name) else {
+                return Err(git_failure(
+                    GitFailureKind::Other,
+                    format!("error: tag '{name}' not found."),
+                ));
+            };
+            state.tags.remove(position);
+            Ok(())
+        })
+    }
+
+    fn create_tag(&self, name: String, target: String) -> BoxFuture<'_, Result<()>> {
+        self.with_state_async(true, move |state| {
+            if state.tags.iter().any(|tag| *tag.name == *name) {
+                return Err(git_failure(
+                    GitFailureKind::Other,
+                    format!("fatal: tag '{name}' already exists"),
+                ));
+            }
+            let Some(sha) = revision_sha(state, &target) else {
+                return Err(git_failure(
+                    GitFailureKind::Other,
+                    format!("fatal: Failed to resolve '{target}' as a valid ref."),
+                ));
+            };
+            let history = ref_history(state, &target);
+            state.ref_histories.insert(name.clone(), history);
+            state.tags.insert(
+                0,
+                Tag {
+                    name: name.into(),
+                    commit_sha: sha.into(),
+                },
+            );
+            Ok(())
+        })
+    }
+
+    fn push_tag(
+        &self,
+        remote: String,
+        tag: String,
+        _askpass: AskPassDelegate,
+        _env: Arc<HashMap<String, String>>,
+        _cx: AsyncApp,
+    ) -> BoxFuture<'_, Result<RemoteCommandOutput>> {
+        self.with_state_async(true, move |state| {
+            simulated_failure(state, FakeGitOperation::PushTag)?;
+            if !state.tags.iter().any(|existing| *existing.name == *tag) {
+                return Err(git_failure(
+                    GitFailureKind::Other,
+                    format!("error: src refspec refs/tags/{tag} does not match any"),
+                ));
+            }
+            let entry = (remote.clone(), tag.clone());
+            let stderr = if state.pushed_tags.contains(&entry) {
+                "Everything up-to-date\n".to_string()
+            } else {
+                state.pushed_tags.push(entry);
+                format!("To {remote}\n * [new tag]         {tag} -> {tag}\n")
+            };
+            Ok(RemoteCommandOutput {
+                stdout: String::new(),
+                stderr,
+            })
         })
     }
 

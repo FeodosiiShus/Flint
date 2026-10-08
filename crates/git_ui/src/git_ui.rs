@@ -39,7 +39,10 @@ const CHEVRON_BUTTON_SIZE: f32 = 20.;
 
 pub mod branch_diff;
 mod branch_indicator;
+pub mod branch_operations;
 pub mod branch_picker;
+mod branch_refs;
+pub mod branches_popup;
 mod commit_context_menu;
 mod commit_modal;
 pub mod commit_tooltip;
@@ -49,7 +52,6 @@ mod diff_multibuffer;
 pub mod git_graph;
 pub mod git_panel;
 mod git_panel_settings;
-pub mod git_picker;
 mod git_runtime_diagnostics;
 pub mod merge_tool;
 pub mod multi_diff_view;
@@ -74,15 +76,7 @@ pub fn init(cx: &mut App) {
 
     git_ui_core::set_branch_picker_builder(
         |workspace, repository, window, cx| {
-            let picker = git_picker::popover(
-                workspace,
-                repository,
-                git_picker::GitPickerTab::Branches,
-                gpui::rems(34.),
-                window,
-                cx,
-            );
-            cx.new(|cx| git_ui_core::GitPickerPopover::new(picker, cx))
+            branches_popup::popover(workspace, repository, window, cx)
         },
         cx,
     );
@@ -119,7 +113,7 @@ pub fn init(cx: &mut App) {
         CommitModal::register(workspace);
         git_panel::register(workspace);
         repository_selector::register(workspace);
-        git_picker::register(workspace);
+        register_branch_popup_actions(workspace);
 
         workspace.register_action(
             |workspace, action: &zed_actions::CreateWorktree, window, cx| {
@@ -188,6 +182,7 @@ pub fn init(cx: &mut App) {
             return;
         }
         if !project.is_via_collab() {
+            register_branch_operation_actions(workspace);
             workspace.register_action(
                 |workspace, _: &zed_actions::git::CreatePullRequest, window, cx| {
                     if let Some(panel) = workspace.panel::<git_panel::GitPanel>(cx) {
@@ -371,6 +366,63 @@ pub fn init(cx: &mut App) {
         );
     })
     .detach();
+}
+
+fn register_branch_popup_actions(workspace: &mut Workspace) {
+    workspace.register_action(|workspace, _: &zed_actions::git::Branch, window, cx| {
+        branches_popup::open_modal(workspace, window, cx);
+    });
+    workspace.register_action(|workspace, _: &zed_actions::git::Switch, window, cx| {
+        branches_popup::open_modal(workspace, window, cx);
+    });
+    workspace.register_action(
+        |workspace, _: &zed_actions::git::CheckoutBranch, window, cx| {
+            branches_popup::open_modal(workspace, window, cx);
+        },
+    );
+    workspace.register_action(stash_picker::open);
+}
+
+fn register_branch_operation_actions(workspace: &mut Workspace) {
+    workspace.register_action(|workspace, _: &git::UpdateProject, window, cx| {
+        if let Some(context) = active_branch_context(workspace, cx) {
+            window.defer(cx, move |window, cx| {
+                branch_operations::integrate::update_project(context, window, cx);
+            });
+        }
+    });
+    workspace.register_action(|workspace, _: &git::NewBranch, window, cx| {
+        if let Some(context) = active_branch_context(workspace, cx) {
+            window.defer(cx, move |window, cx| {
+                branch_operations::checkout::new_branch(context, window, cx);
+            });
+        }
+    });
+    workspace.register_action(|workspace, _: &git::CheckoutTagOrRevision, window, cx| {
+        if let Some(context) = active_branch_context(workspace, cx) {
+            window.defer(cx, move |window, cx| {
+                branch_operations::checkout::checkout_tag_or_revision(context, window, cx);
+            });
+        }
+    });
+    workspace.register_action(|workspace, _: &git::PushDialog, window, cx| {
+        if let Some(context) = active_branch_context(workspace, cx) {
+            window.defer(cx, move |window, cx| {
+                branch_operations::manage::push_current(context, window, cx);
+            });
+        }
+    });
+}
+
+fn active_branch_context(
+    workspace: &Workspace,
+    cx: &App,
+) -> Option<branch_operations::BranchContext> {
+    let repository = workspace.project().read(cx).active_repository(cx)?;
+    Some(branch_operations::BranchContext::new(
+        workspace.weak_handle(),
+        repository,
+    ))
 }
 
 fn open_file_diff(

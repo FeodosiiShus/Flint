@@ -426,6 +426,82 @@ pub fn render_modifiers(
     )
 }
 
+#[derive(Clone)]
+enum KeyOrIcon {
+    Key(&'static str),
+    Plus,
+    Icon(IconName),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ModifierKey {
+    Function,
+    Control,
+    Alt,
+    Platform,
+    Shift,
+}
+
+fn enabled_modifier_keys(modifiers: &Modifiers, platform_style: PlatformStyle) -> Vec<ModifierKey> {
+    let display_order = match platform_style {
+        PlatformStyle::Mac => [
+            ModifierKey::Function,
+            ModifierKey::Control,
+            ModifierKey::Alt,
+            ModifierKey::Shift,
+            ModifierKey::Platform,
+        ],
+        PlatformStyle::Linux | PlatformStyle::Windows => [
+            ModifierKey::Function,
+            ModifierKey::Control,
+            ModifierKey::Alt,
+            ModifierKey::Platform,
+            ModifierKey::Shift,
+        ],
+    };
+    display_order
+        .into_iter()
+        .filter(|modifier| match modifier {
+            ModifierKey::Function => modifiers.function,
+            ModifierKey::Control => modifiers.control,
+            ModifierKey::Alt => modifiers.alt,
+            ModifierKey::Platform => modifiers.platform,
+            ModifierKey::Shift => modifiers.shift,
+        })
+        .collect()
+}
+
+fn modifier_key_or_icon(
+    modifier: ModifierKey,
+    platform_style: PlatformStyle,
+    style: KeyBindingStyle,
+) -> KeyOrIcon {
+    let mac_modifier = |icon, label| match style {
+        KeyBindingStyle::Default => KeyOrIcon::Icon(icon),
+        KeyBindingStyle::Label => KeyOrIcon::Key(label),
+    };
+
+    match (platform_style, modifier) {
+        (PlatformStyle::Mac, ModifierKey::Function) => mac_modifier(IconName::Control, "Fn"),
+        (PlatformStyle::Mac, ModifierKey::Control) => mac_modifier(IconName::Control, "⌃"),
+        (PlatformStyle::Mac, ModifierKey::Alt) => mac_modifier(IconName::Option, "⌥"),
+        (PlatformStyle::Mac, ModifierKey::Platform) => mac_modifier(IconName::Command, "⌘"),
+        (PlatformStyle::Mac, ModifierKey::Shift) => mac_modifier(IconName::Shift, "⇧"),
+        (PlatformStyle::Linux | PlatformStyle::Windows, ModifierKey::Function) => {
+            KeyOrIcon::Key("Fn")
+        }
+        (PlatformStyle::Linux | PlatformStyle::Windows, ModifierKey::Control) => {
+            KeyOrIcon::Key("Ctrl")
+        }
+        (PlatformStyle::Linux | PlatformStyle::Windows, ModifierKey::Alt) => KeyOrIcon::Key("Alt"),
+        (PlatformStyle::Linux, ModifierKey::Platform) => KeyOrIcon::Key("Super"),
+        (PlatformStyle::Windows, ModifierKey::Platform) => KeyOrIcon::Key("Win"),
+        (PlatformStyle::Linux | PlatformStyle::Windows, ModifierKey::Shift) => {
+            KeyOrIcon::Key("Shift")
+        }
+    }
+}
+
 fn render_modifiers_with_style(
     modifiers: &Modifiers,
     platform_style: PlatformStyle,
@@ -434,74 +510,9 @@ fn render_modifiers_with_style(
     trailing_separator: bool,
     style: KeyBindingStyle,
 ) -> impl Iterator<Item = AnyElement> {
-    #[derive(Clone)]
-    enum KeyOrIcon {
-        Key(&'static str),
-        Plus,
-        Icon(IconName),
-    }
-
-    struct Modifier {
-        enabled: bool,
-        mac: KeyOrIcon,
-        linux: KeyOrIcon,
-        windows: KeyOrIcon,
-    }
-
-    let mac_modifier = |icon, label| match style {
-        KeyBindingStyle::Default => KeyOrIcon::Icon(icon),
-        KeyBindingStyle::Label => KeyOrIcon::Key(label),
-    };
-
-    let table = {
-        use KeyOrIcon::*;
-
-        [
-            Modifier {
-                enabled: modifiers.function,
-                mac: mac_modifier(IconName::Control, "Fn"),
-                linux: Key("Fn"),
-                windows: Key("Fn"),
-            },
-            Modifier {
-                enabled: modifiers.control,
-                mac: mac_modifier(IconName::Control, "⌃"),
-                linux: Key("Ctrl"),
-                windows: Key("Ctrl"),
-            },
-            Modifier {
-                enabled: modifiers.alt,
-                mac: mac_modifier(IconName::Option, "⌥"),
-                linux: Key("Alt"),
-                windows: Key("Alt"),
-            },
-            Modifier {
-                enabled: modifiers.platform,
-                mac: mac_modifier(IconName::Command, "⌘"),
-                linux: Key("Super"),
-                windows: Key("Win"),
-            },
-            Modifier {
-                enabled: modifiers.shift,
-                mac: mac_modifier(IconName::Shift, "⇧"),
-                linux: Key("Shift"),
-                windows: Key("Shift"),
-            },
-        ]
-    };
-
-    let filtered = table
+    let platform_keys = enabled_modifier_keys(modifiers, platform_style)
         .into_iter()
-        .filter(|modifier| modifier.enabled)
-        .collect::<Vec<_>>();
-
-    let platform_keys = filtered
-        .into_iter()
-        .map(move |modifier| match platform_style {
-            PlatformStyle::Mac => Some(modifier.mac),
-            PlatformStyle::Linux => Some(modifier.linux),
-            PlatformStyle::Windows => Some(modifier.windows),
-        });
+        .map(move |modifier| Some(modifier_key_or_icon(modifier, platform_style, style)));
 
     let separator = match platform_style {
         PlatformStyle::Mac => None,
@@ -951,5 +962,65 @@ mod tests {
             ),
             "Shift-PageUp".to_string()
         );
+    }
+
+    #[test]
+    fn test_mac_modifier_glyphs_follow_apple_order() {
+        let all_modifiers = Modifiers {
+            function: true,
+            control: true,
+            alt: true,
+            platform: true,
+            shift: true,
+        };
+        assert_eq!(
+            enabled_modifier_keys(&all_modifiers, PlatformStyle::Mac),
+            vec![
+                ModifierKey::Function,
+                ModifierKey::Control,
+                ModifierKey::Alt,
+                ModifierKey::Shift,
+                ModifierKey::Platform,
+            ]
+        );
+        assert_eq!(
+            enabled_modifier_keys(&Modifiers::command_shift(), PlatformStyle::Mac),
+            vec![ModifierKey::Shift, ModifierKey::Platform]
+        );
+        let option_command = Modifiers {
+            alt: true,
+            platform: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            enabled_modifier_keys(&option_command, PlatformStyle::Mac),
+            vec![ModifierKey::Alt, ModifierKey::Platform]
+        );
+    }
+
+    #[test]
+    fn test_linux_and_windows_modifier_order_is_unchanged() {
+        for platform_style in [PlatformStyle::Linux, PlatformStyle::Windows] {
+            assert_eq!(
+                enabled_modifier_keys(&Modifiers::command_shift(), platform_style),
+                vec![ModifierKey::Platform, ModifierKey::Shift]
+            );
+        }
+    }
+
+    #[test]
+    fn test_mac_modifier_labels_render_apple_symbols() {
+        let labels = [
+            (ModifierKey::Control, "⌃"),
+            (ModifierKey::Alt, "⌥"),
+            (ModifierKey::Shift, "⇧"),
+            (ModifierKey::Platform, "⌘"),
+        ];
+        for (modifier, expected) in labels {
+            match modifier_key_or_icon(modifier, PlatformStyle::Mac, KeyBindingStyle::Label) {
+                KeyOrIcon::Key(label) => assert_eq!(label, expected),
+                KeyOrIcon::Plus | KeyOrIcon::Icon(_) => panic!("expected a text label"),
+            }
+        }
     }
 }

@@ -33,7 +33,7 @@ mod workspace_settings;
 pub use background_image::{
     ClearBackgroundImage, SelectBackgroundImage, SelectEmptyFrameBackgroundImage,
 };
-pub use dock::Panel;
+pub use dock::{Panel, PanelHeaderAction};
 pub use multi_workspace::{
     CloseWorkspaceSidebar, DraggedSidebar, FocusWorkspaceSidebar, MoveProjectDown,
     MoveProjectToNewWindow, MoveProjectUp, MultiWorkspace, MultiWorkspaceEvent, NextProject,
@@ -11152,7 +11152,12 @@ fn load_legacy_panel_size(
 
 #[cfg(test)]
 mod tests {
-    use std::{cell::RefCell, rc::Rc, sync::Arc, time::Duration};
+    use std::{
+        cell::{Cell, RefCell},
+        rc::Rc,
+        sync::Arc,
+        time::Duration,
+    };
 
     use super::*;
     use crate::{
@@ -15006,6 +15011,284 @@ mod tests {
             cx.debug_bounds("tool_window_header_options_left").is_some()
                 && cx.debug_bounds("tool_window_header_hide_left").is_some(),
             "always_show_actions shows the actions without hover or focus"
+        );
+    }
+
+    actions!(
+        tool_window_header_test,
+        [FirstPanelHeaderAction, SecondPanelHeaderAction]
+    );
+
+    async fn tool_window_header_action_test_workspace(
+        cx: &mut TestAppContext,
+    ) -> (
+        Entity<Workspace>,
+        Rc<Cell<usize>>,
+        Rc<Cell<usize>>,
+        &mut VisualTestContext,
+    ) {
+        init_test(cx);
+        let fs = FakeFs::new(cx.executor());
+        let project = Project::test(fs, [], cx).await;
+        let (multi_workspace, cx) =
+            cx.add_window_view(|window, cx| MultiWorkspace::test_new(project, window, cx));
+        let workspace =
+            multi_workspace.read_with(cx, |multi_workspace, _| multi_workspace.workspace().clone());
+        let first_runs = Rc::new(Cell::new(0));
+        let second_runs = Rc::new(Cell::new(0));
+        let first_runs_for_handler = first_runs.clone();
+        let second_runs_for_handler = second_runs.clone();
+        workspace.update_in(cx, |workspace, window, cx| {
+            workspace.register_action(move |_, _: &FirstPanelHeaderAction, _, _| {
+                first_runs_for_handler.set(first_runs_for_handler.get() + 1);
+            });
+            workspace.register_action(move |_, _: &SecondPanelHeaderAction, _, _| {
+                second_runs_for_handler.set(second_runs_for_handler.get() + 1);
+            });
+            let mut panel = TestPanel::new_with_header_actions(
+                DockPosition::Left,
+                100,
+                vec![
+                    PanelHeaderAction::new(
+                        "first",
+                        IconName::FileTree,
+                        "First Action",
+                        FirstPanelHeaderAction.boxed_clone(),
+                    ),
+                    PanelHeaderAction::new(
+                        "second",
+                        IconName::ListTree,
+                        "Second Action",
+                        SecondPanelHeaderAction.boxed_clone(),
+                    ),
+                ],
+                cx,
+            );
+            panel.icon = Some(IconName::FileTree);
+            let panel = cx.new(|_| panel);
+            workspace.add_panel(panel, window, cx);
+        });
+        cx.run_until_parked();
+        (workspace, first_runs, second_runs, cx)
+    }
+
+    #[gpui::test]
+    async fn tool_window_header_panel_actions_precede_options_and_hide(cx: &mut TestAppContext) {
+        let (workspace, _first_runs, _second_runs, cx) =
+            tool_window_header_action_test_workspace(cx).await;
+        open_dock_with_center_focus(&workspace, DockPosition::Left, cx);
+
+        let header = cx
+            .debug_bounds("tool_window_header_left")
+            .expect("the open left dock has a header");
+        cx.simulate_mouse_move(header.center(), None, gpui::Modifiers::none());
+        let first = cx
+            .debug_bounds("tool_window_header_action_first_left")
+            .expect("hovering the dock reveals the first panel action");
+        let second = cx
+            .debug_bounds("tool_window_header_action_second_left")
+            .expect("hovering the dock reveals the second panel action");
+        let options = cx
+            .debug_bounds("tool_window_header_options_left")
+            .expect("hovering the dock reveals the options button");
+        let hide = cx
+            .debug_bounds("tool_window_header_hide_left")
+            .expect("hovering the dock reveals the hide button");
+
+        for (name, bounds) in [
+            ("first", first),
+            ("second", second),
+            ("options", options),
+            ("hide", hide),
+        ] {
+            assert!(
+                header.contains(&bounds.center()),
+                "the {name} button sits in the header: header {header:?}, button {bounds:?}"
+            );
+        }
+        assert!(
+            first.right() <= second.left(),
+            "the panel actions keep their declared order"
+        );
+        assert!(
+            second.right() <= options.left(),
+            "the panel actions come before the options button"
+        );
+        assert!(
+            options.right() <= hide.left(),
+            "the hide button stays the last header action"
+        );
+    }
+
+    #[gpui::test]
+    async fn tool_window_header_panel_actions_follow_hover_focus_or_setting(
+        cx: &mut TestAppContext,
+    ) {
+        let (workspace, _first_runs, _second_runs, cx) =
+            tool_window_header_action_test_workspace(cx).await;
+        open_dock_with_center_focus(&workspace, DockPosition::Left, cx);
+
+        let header = cx
+            .debug_bounds("tool_window_header_left")
+            .expect("the open left dock has a header");
+        let center = cx
+            .debug_bounds("center_island")
+            .expect("islands are enabled by default");
+        assert_eq!(
+            cx.debug_bounds("tool_window_header_action_first_left"),
+            None,
+            "the panel actions stay hidden while the dock is neither hovered nor focused"
+        );
+        assert_eq!(
+            cx.debug_bounds("tool_window_header_action_second_left"),
+            None,
+            "every panel action stays hidden while the dock is neither hovered nor focused"
+        );
+
+        cx.simulate_mouse_move(header.center(), None, gpui::Modifiers::none());
+        assert!(
+            cx.debug_bounds("tool_window_header_action_first_left")
+                .is_some()
+                && cx
+                    .debug_bounds("tool_window_header_action_second_left")
+                    .is_some(),
+            "hovering the dock reveals the panel actions"
+        );
+
+        cx.simulate_mouse_move(center.center(), None, gpui::Modifiers::none());
+        assert_eq!(
+            cx.debug_bounds("tool_window_header_action_first_left"),
+            None,
+            "leaving the dock hides the panel actions again"
+        );
+
+        cx.simulate_click(header.center(), gpui::Modifiers::none());
+        cx.simulate_mouse_move(center.center(), None, gpui::Modifiers::none());
+        assert!(
+            cx.debug_bounds("tool_window_header_action_first_left")
+                .is_some()
+                && cx
+                    .debug_bounds("tool_window_header_action_second_left")
+                    .is_some(),
+            "a focused dock keeps its panel actions visible without hover"
+        );
+
+        workspace.update_in(cx, |workspace, window, cx| {
+            let center_focus = workspace.active_pane().focus_handle(cx);
+            window.focus(&center_focus, cx);
+        });
+        cx.run_until_parked();
+        assert_eq!(
+            cx.debug_bounds("tool_window_header_action_first_left"),
+            None,
+            "moving focus out of the dock hides the panel actions"
+        );
+
+        cx.update(|_, cx| {
+            SettingsStore::update_global(cx, |store, cx| {
+                store.update_user_settings(cx, |settings| {
+                    settings
+                        .workspace
+                        .tool_window_headers
+                        .get_or_insert_default()
+                        .always_show_actions = Some(true);
+                });
+            });
+        });
+        cx.run_until_parked();
+        assert!(
+            cx.debug_bounds("tool_window_header_action_first_left")
+                .is_some()
+                && cx
+                    .debug_bounds("tool_window_header_action_second_left")
+                    .is_some(),
+            "always_show_actions shows the panel actions without hover or focus"
+        );
+    }
+
+    #[gpui::test]
+    async fn tool_window_header_panel_action_click_reaches_workspace_and_keeps_dock_focus(
+        cx: &mut TestAppContext,
+    ) {
+        let (workspace, first_runs, second_runs, cx) =
+            tool_window_header_action_test_workspace(cx).await;
+        open_dock_with_center_focus(&workspace, DockPosition::Left, cx);
+
+        workspace.update_in(cx, |workspace, window, cx| {
+            let dock_focus = workspace.left_dock().read(cx).focus_handle(cx);
+            assert!(
+                !dock_focus.contains_focused(window, cx),
+                "focus starts in the center"
+            );
+        });
+
+        let header = cx
+            .debug_bounds("tool_window_header_left")
+            .expect("the open left dock has a header");
+        cx.simulate_mouse_move(header.center(), None, gpui::Modifiers::none());
+        let first = cx
+            .debug_bounds("tool_window_header_action_first_left")
+            .expect("hovering the dock reveals the first panel action");
+        let second = cx
+            .debug_bounds("tool_window_header_action_second_left")
+            .expect("hovering the dock reveals the second panel action");
+
+        cx.simulate_click(first.center(), gpui::Modifiers::none());
+        cx.run_until_parked();
+        assert_eq!(
+            (first_runs.get(), second_runs.get()),
+            (1, 0),
+            "clicking the first action runs its workspace handler exactly once"
+        );
+        workspace.update_in(cx, |workspace, window, cx| {
+            let dock_focus = workspace.left_dock().read(cx).focus_handle(cx);
+            assert!(
+                dock_focus.contains_focused(window, cx),
+                "clicking a header action leaves focus inside the dock"
+            );
+        });
+
+        cx.simulate_click(second.center(), gpui::Modifiers::none());
+        cx.run_until_parked();
+        assert_eq!(
+            (first_runs.get(), second_runs.get()),
+            (1, 1),
+            "clicking the second action runs only its own workspace handler"
+        );
+        workspace.update_in(cx, |workspace, window, cx| {
+            let dock_focus = workspace.left_dock().read(cx).focus_handle(cx);
+            assert!(
+                dock_focus.contains_focused(window, cx),
+                "focus stays inside the dock after every header action"
+            );
+        });
+    }
+
+    #[gpui::test]
+    async fn tool_window_header_without_panel_actions_renders_no_action_buttons(
+        cx: &mut TestAppContext,
+    ) {
+        let (workspace, _panels, cx) = tool_window_bar_test_workspace(cx).await;
+        open_dock_with_center_focus(&workspace, DockPosition::Left, cx);
+
+        let header = cx
+            .debug_bounds("tool_window_header_left")
+            .expect("the open left dock has a header");
+        cx.simulate_mouse_move(header.center(), None, gpui::Modifiers::none());
+        assert!(
+            cx.debug_bounds("tool_window_header_options_left").is_some()
+                && cx.debug_bounds("tool_window_header_hide_left").is_some(),
+            "hovering the dock reveals the options and hide buttons"
+        );
+        assert_eq!(
+            cx.debug_bounds("tool_window_header_action_first_left"),
+            None,
+            "a panel without header actions renders no action button"
+        );
+        assert_eq!(
+            cx.debug_bounds("tool_window_header_action_second_left"),
+            None,
+            "a panel without header actions renders no action button"
         );
     }
 

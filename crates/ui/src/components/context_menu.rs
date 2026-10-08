@@ -242,6 +242,7 @@ pub struct ContextMenu {
     /// re-selects the first item before the next on_hover(true) clears it.
     /// Always true when accessibility support is disabled.
     suppress_focus_selection: bool,
+    opaque_background: bool,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq)]
@@ -368,6 +369,7 @@ impl ContextMenu {
                     submenu_trigger_mouse_down: false,
                     ignore_blur_until: None,
                     suppress_focus_selection: !window.is_a11y_enabled(),
+                    opaque_background: false,
                 },
                 window,
                 cx,
@@ -439,6 +441,7 @@ impl ContextMenu {
                 submenu_trigger_mouse_down: false,
                 ignore_blur_until: None,
                 suppress_focus_selection: !window.is_a11y_enabled(),
+                opaque_background: self.opaque_background,
             },
             window,
             cx,
@@ -872,6 +875,11 @@ impl ContextMenu {
         self
     }
 
+    pub fn opaque_background(mut self) -> Self {
+        self.opaque_background = true;
+        self
+    }
+
     pub fn spacing(mut self, spacing: ListItemSpacing) -> Self {
         self.spacing = spacing;
         self
@@ -1225,10 +1233,11 @@ impl ContextMenu {
     fn create_submenu(
         builder: Rc<dyn Fn(ContextMenu, &mut Window, &mut Context<ContextMenu>) -> ContextMenu>,
         parent_entity: Entity<ContextMenu>,
+        opaque_background: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> (Entity<ContextMenu>, Subscription) {
-        let submenu = Self::build_submenu(builder, parent_entity, window, cx);
+        let submenu = Self::build_submenu(builder, parent_entity, opaque_background, window, cx);
 
         let dismiss_subscription = cx.subscribe(&submenu, |this, submenu, _: &DismissEvent, cx| {
             let should_dismiss_parent = submenu.read(cx).clicked;
@@ -1246,6 +1255,7 @@ impl ContextMenu {
     fn build_submenu(
         builder: Rc<dyn Fn(ContextMenu, &mut Window, &mut Context<ContextMenu>) -> ContextMenu>,
         parent_entity: Entity<ContextMenu>,
+        opaque_background: bool,
         window: &mut Window,
         cx: &mut App,
     ) -> Entity<ContextMenu> {
@@ -1283,6 +1293,7 @@ impl ContextMenu {
                 submenu_trigger_mouse_down: false,
                 ignore_blur_until: None,
                 suppress_focus_selection: !window.is_a11y_enabled(),
+                opaque_background,
             };
 
             menu = (builder)(menu, window, cx);
@@ -1321,7 +1332,7 @@ impl ContextMenu {
         }
 
         let (submenu, dismiss_subscription) =
-            Self::create_submenu(builder, cx.entity(), window, cx);
+            Self::create_submenu(builder, cx.entity(), self.opaque_background, window, cx);
 
         let flip_left = self
             .main_menu_observed_bounds
@@ -2197,6 +2208,7 @@ impl ContextMenu {
             submenu_trigger_mouse_down: false,
             ignore_blur_until: None,
             suppress_focus_selection: !window.is_a11y_enabled(),
+            opaque_background: false,
         }
     }
 }
@@ -2270,12 +2282,16 @@ impl Render for ContextMenu {
         };
 
         let aside = self.documentation_aside.clone();
+        let aside_is_opaque = self.opaque_background;
         let render_aside = |aside: DocumentationAside, cx: &mut Context<Self>| {
+            let opaque_aside_background =
+                aside_is_opaque.then(|| cx.theme().colors().elevated_surface_background.alpha(1.0));
             WithRemSize::new(ui_font_size)
                 .occlude()
                 .font_family(ui_font_family.clone())
                 .line_height(line_height)
                 .elevation_2(cx)
+                .when_some(opaque_aside_background, |this, color| this.bg(color))
                 .w_full()
                 .p_2()
                 .overflow_hidden()
@@ -2286,6 +2302,9 @@ impl Render for ContextMenu {
 
         let render_menu = |cx: &mut Context<Self>, window: &mut Window| {
             let bounds_cell = self.main_menu_observed_bounds.clone();
+            let opaque_background = self
+                .opaque_background
+                .then(|| cx.theme().colors().elevated_surface_background.alpha(1.0));
             let menu_bounds_measure = canvas(
                 {
                     move |bounds, _window, _cx| {
@@ -2304,6 +2323,7 @@ impl Render for ContextMenu {
                 .font_family(ui_font_family.clone())
                 .line_height(line_height)
                 .elevation_2(cx)
+                .when_some(opaque_background, |this, color| this.bg(color))
                 .flex()
                 .flex_row()
                 .flex_shrink_0()

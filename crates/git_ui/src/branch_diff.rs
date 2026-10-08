@@ -1,4 +1,5 @@
 use crate::{
+    branch_operations::ref_diff,
     branch_picker,
     diff_multibuffer::DiffMultibuffer,
     project_diff::{self, CompareWithBranch, DeployBranchDiff, ProjectDiff},
@@ -146,7 +147,10 @@ impl BranchDiff {
         let selected_branch = workspace.active_item_as::<Self>(cx).and_then(|item| {
             match item.read(cx).diff_base(cx) {
                 DiffBase::Merge { base_ref } => Some(base_ref.clone()),
-                DiffBase::Head | DiffBase::Index | DiffBase::Staged => None,
+                DiffBase::Head
+                | DiffBase::Index
+                | DiffBase::Staged
+                | DiffBase::WorkingTree { .. } => None,
             }
         });
         let workspace_handle = workspace.weak_handle();
@@ -311,23 +315,42 @@ impl BranchDiff {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
+        Self::new_with_diff_base(
+            project,
+            workspace,
+            DiffBase::Merge { base_ref },
+            repo,
+            branch_diff,
+            window,
+            cx,
+        )
+    }
+
+    pub(crate) fn new_with_diff_base(
+        project: Entity<Project>,
+        workspace: Entity<Workspace>,
+        diff_base: DiffBase,
+        repo: Option<Entity<Repository>>,
+        branch_diff: Option<Entity<diff_buffer_list::DiffBufferList>>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let empty_label = match &diff_base {
+            DiffBase::WorkingTree { .. } => "No differences",
+            DiffBase::Head | DiffBase::Index | DiffBase::Staged | DiffBase::Merge { .. } => {
+                "No changes"
+            }
+        };
         let branch_diff = branch_diff.unwrap_or_else(|| {
             let git_store = project.read(cx).git_store().clone();
-            cx.new(|cx| {
-                diff_buffer_list::DiffBufferList::new(
-                    DiffBase::Merge { base_ref },
-                    git_store,
-                    repo,
-                    cx,
-                )
-            })
+            cx.new(|cx| diff_buffer_list::DiffBufferList::new(diff_base, git_store, repo, cx))
         });
         let branch_diff_for_addon = branch_diff.clone();
         let diff = cx.new(|cx| {
             DiffMultibuffer::new(
                 branch_diff,
                 Capability::ReadWrite,
-                "No changes",
+                empty_label,
                 move |editor, cx| {
                     editor.set_diff_hunk_renderer(Some(Arc::new(HiddenDiffHunkRenderer)), cx);
                     editor.rhs_editor().update(cx, move |rhs_editor, _cx| {
@@ -426,6 +449,9 @@ impl Item for BranchDiff {
     fn tab_content_text(&self, _detail: usize, cx: &App) -> SharedString {
         match self.diff_base(cx) {
             DiffBase::Merge { base_ref } => format!("Changes since {}", base_ref).into(),
+            DiffBase::WorkingTree { base_ref } => {
+                ref_diff::working_tree_diff_title(base_ref).into()
+            }
             DiffBase::Head | DiffBase::Index | DiffBase::Staged => "Changes".into(),
         }
     }
@@ -472,17 +498,18 @@ impl Item for BranchDiff {
         let Some(workspace) = self.workspace.upgrade() else {
             return Task::ready(None);
         };
-        let DiffBase::Merge { base_ref } = self.diff_base(cx).clone() else {
+        let diff_base = self.diff_base(cx).clone();
+        if !diff_base.uses_tree_diff() {
             return Task::ready(None);
-        };
+        }
         let repo = self.repo(cx);
         let project = self.project.clone();
         let branch_diff = self.diff.read(cx).branch_diff().clone();
         Task::ready(Some(cx.new(|cx| {
-            Self::new_with_base_ref(
+            Self::new_with_diff_base(
                 project,
                 workspace,
-                base_ref,
+                diff_base,
                 repo,
                 Some(branch_diff),
                 window,
@@ -606,13 +633,13 @@ impl SerializableItem for BranchDiff {
         let db = project_diff::persistence::ProjectDiffDb::global(cx);
         window.spawn(cx, async move |cx| {
             let diff_base = db.get_project_diff_base(item_id, workspace_id)?;
-            let DiffBase::Merge { base_ref } = diff_base else {
-                anyhow::bail!("expected a merge base for a branch diff");
-            };
+            if !diff_base.uses_tree_diff() {
+                anyhow::bail!("expected a tree diff base for a branch diff");
+            }
             let workspace = workspace.upgrade().context("workspace gone")?;
             cx.update(|window, cx| {
                 cx.new(|cx| {
-                    Self::new_with_base_ref(project, workspace, base_ref, None, None, window, cx)
+                    Self::new_with_diff_base(project, workspace, diff_base, None, None, window, cx)
                 })
             })
         })
@@ -626,10 +653,10 @@ impl SerializableItem for BranchDiff {
         cx: &mut Context<Self>,
     ) -> Option<Task<Result<()>>> {
         let workspace_id = workspace.database_id()?;
-        let DiffBase::Merge { base_ref } = self.diff_base(cx).clone() else {
+        let diff_base = self.diff_base(cx).clone();
+        if !diff_base.uses_tree_diff() {
             return None;
-        };
-        let diff_base = DiffBase::Merge { base_ref };
+        }
         let db = project_diff::persistence::ProjectDiffDb::global(cx);
         Some(cx.background_spawn(async move {
             db.save_project_diff_base(item_id, workspace_id, diff_base)
@@ -1141,7 +1168,10 @@ mod tests {
             let active_item = workspace.active_item_as::<BranchDiff>(cx).unwrap();
             let active_base_ref = match active_item.read(cx).diff_base(cx) {
                 DiffBase::Merge { base_ref } => base_ref.to_string(),
-                DiffBase::Head | DiffBase::Index | DiffBase::Staged => {
+                DiffBase::Head
+                | DiffBase::Index
+                | DiffBase::Staged
+                | DiffBase::WorkingTree { .. } => {
                     panic!("expected active item to be a branch diff")
                 }
             };
@@ -1149,7 +1179,10 @@ mod tests {
                 .items_of_type::<BranchDiff>(cx)
                 .filter_map(|item| match item.read(cx).diff_base(cx) {
                     DiffBase::Merge { base_ref } => Some(base_ref.to_string()),
-                    DiffBase::Head | DiffBase::Index | DiffBase::Staged => None,
+                    DiffBase::Head
+                    | DiffBase::Index
+                    | DiffBase::Staged
+                    | DiffBase::WorkingTree { .. } => None,
                 })
                 .collect::<Vec<_>>();
             (active_base_ref, base_refs)

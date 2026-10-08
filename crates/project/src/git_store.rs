@@ -39,10 +39,11 @@ use git::{
     parse_git_remote_url,
     repository::{
         Branch, BranchesScanResult, CommitData, CommitDetails, CommitFileStatus, CommitOptions,
-        CreateWorktreeTarget, DiffStatType, DiffType, FetchOptions, FileHistoryChangedFileSets,
-        GitCommitTemplate, GitRepository, GitRepositoryCheckpoint, InitialGraphCommitData,
-        LogOrder, LogSource, PushOptions, Remote, RemoteCommandOutput, RepoPath, ResetMode,
-        SearchCommitArgs, UpstreamTrackingStatus, Worktree as GitWorktree, delete_branch_flag,
+        CommitSummary, CreateWorktreeTarget, DiffStatType, DiffType, FetchOptions,
+        FileHistoryChangedFileSets, GitCommitTemplate, GitRepository, GitRepositoryCheckpoint,
+        InitialGraphCommitData, LogOrder, LogSource, MergeOutcome, PushOptions, RebaseAction,
+        RebaseOutcome, Remote, RemoteCommandOutput, RepoPath, RepositoryOperation, ResetMode,
+        SearchCommitArgs, Tag, UpstreamTrackingStatus, Worktree as GitWorktree, delete_branch_flag,
         is_binary_content,
     },
     stash::{GitStash, StashEntry},
@@ -9941,6 +9942,393 @@ impl Repository {
 
                         Ok(())
                     }
+                }
+            },
+        )
+    }
+
+    fn downstream_updates_tx(&self, cx: &App) -> Option<mpsc::UnboundedSender<DownstreamUpdate>> {
+        self.git_store()
+            .and_then(|git_store| match &git_store.read(cx).state {
+                GitStoreState::Local { downstream, .. } => downstream
+                    .as_ref()
+                    .map(|downstream| downstream.updates_tx.clone()),
+                _ => None,
+            })
+    }
+
+    pub fn tags(&mut self) -> oneshot::Receiver<Result<Vec<Tag>>> {
+        self.send_job("tags", None, move |repo, _cx| async move {
+            match repo {
+                RepositoryState::Local(LocalRepositoryState { backend, .. }) => {
+                    backend.tags().await
+                }
+                RepositoryState::Remote(_) => Err(anyhow!(
+                    "listing tags is not supported for remote repositories"
+                )),
+            }
+        })
+    }
+
+    pub fn recent_branches(
+        &mut self,
+        limit: usize,
+    ) -> oneshot::Receiver<Result<Vec<SharedString>>> {
+        self.send_job("recent_branches", None, move |repo, _cx| async move {
+            match repo {
+                RepositoryState::Local(LocalRepositoryState { backend, .. }) => {
+                    backend.recent_branches(limit).await
+                }
+                RepositoryState::Remote(_) => Err(anyhow!(
+                    "listing recent branches is not supported for remote repositories"
+                )),
+            }
+        })
+    }
+
+    pub fn commits_between(
+        &mut self,
+        base: String,
+        head: String,
+        limit: usize,
+    ) -> oneshot::Receiver<Result<Vec<CommitSummary>>> {
+        self.send_job("commits_between", None, move |repo, _cx| async move {
+            match repo {
+                RepositoryState::Local(LocalRepositoryState { backend, .. }) => {
+                    backend.commits_between(base, head, limit).await
+                }
+                RepositoryState::Remote(_) => Err(anyhow!(
+                    "listing commits between revisions is not supported for remote repositories"
+                )),
+            }
+        })
+    }
+
+    pub fn operation_in_progress(
+        &mut self,
+    ) -> oneshot::Receiver<Result<Option<RepositoryOperation>>> {
+        self.send_job("operation_in_progress", None, move |repo, _cx| async move {
+            match repo {
+                RepositoryState::Local(LocalRepositoryState { backend, .. }) => {
+                    backend.operation_in_progress().await
+                }
+                RepositoryState::Remote(_) => Err(anyhow!(
+                    "detecting an ongoing operation is not supported for remote repositories"
+                )),
+            }
+        })
+    }
+
+    pub fn checkout_detached(&mut self, revision: String) -> oneshot::Receiver<Result<()>> {
+        self.send_job(
+            "checkout_detached",
+            Some(format!("git checkout --detach {revision}").into()),
+            move |repo, _cx| async move {
+                match repo {
+                    RepositoryState::Local(LocalRepositoryState { backend, .. }) => {
+                        backend.checkout_detached(revision).await
+                    }
+                    RepositoryState::Remote(_) => Err(anyhow!(
+                        "checking out a revision is not supported for remote repositories"
+                    )),
+                }
+            },
+        )
+    }
+
+    pub fn checkout_force(&mut self, name: String) -> oneshot::Receiver<Result<()>> {
+        self.send_job(
+            "checkout_force",
+            Some(format!("git checkout --force {name}").into()),
+            move |repo, _cx| async move {
+                match repo {
+                    RepositoryState::Local(LocalRepositoryState { backend, .. }) => {
+                        backend.checkout_force(name).await
+                    }
+                    RepositoryState::Remote(_) => Err(anyhow!(
+                        "force checkout is not supported for remote repositories"
+                    )),
+                }
+            },
+        )
+    }
+
+    pub fn create_branch_at(
+        &mut self,
+        name: String,
+        start_point: String,
+        checkout: bool,
+        overwrite: bool,
+    ) -> oneshot::Receiver<Result<()>> {
+        self.send_job(
+            "create_branch_at",
+            Some(format!("git branch {name} {start_point}").into()),
+            move |repo, _cx| async move {
+                match repo {
+                    RepositoryState::Local(LocalRepositoryState { backend, .. }) => {
+                        backend
+                            .create_branch_at(name, start_point, checkout, overwrite)
+                            .await
+                    }
+                    RepositoryState::Remote(_) => Err(anyhow!(
+                        "creating a branch at a start point is not supported for remote repositories"
+                    )),
+                }
+            },
+        )
+    }
+
+    pub fn set_upstream(
+        &mut self,
+        branch: String,
+        upstream: Option<String>,
+    ) -> oneshot::Receiver<Result<()>> {
+        let status = match &upstream {
+            Some(upstream) => format!("git branch --set-upstream-to={upstream} {branch}"),
+            None => format!("git branch --unset-upstream {branch}"),
+        };
+        self.send_job(
+            "set_upstream",
+            Some(status.into()),
+            move |repo, _cx| async move {
+                match repo {
+                    RepositoryState::Local(LocalRepositoryState { backend, .. }) => {
+                        backend.set_upstream(branch, upstream).await
+                    }
+                    RepositoryState::Remote(_) => Err(anyhow!(
+                        "changing the upstream branch is not supported for remote repositories"
+                    )),
+                }
+            },
+        )
+    }
+
+    pub fn merge(&mut self, reference: String) -> oneshot::Receiver<Result<MergeOutcome>> {
+        self.send_job(
+            "merge",
+            Some(format!("git merge {reference}").into()),
+            move |repo, _cx| async move {
+                match repo {
+                    RepositoryState::Local(LocalRepositoryState {
+                        backend,
+                        environment,
+                        ..
+                    }) => backend.merge(reference, environment.clone()).await,
+                    RepositoryState::Remote(_) => {
+                        Err(anyhow!("merging is not supported for remote repositories"))
+                    }
+                }
+            },
+        )
+    }
+
+    pub fn merge_abort(&mut self) -> oneshot::Receiver<Result<()>> {
+        self.send_job(
+            "merge_abort",
+            Some("git merge --abort".into()),
+            move |repo, _cx| async move {
+                match repo {
+                    RepositoryState::Local(LocalRepositoryState {
+                        backend,
+                        environment,
+                        ..
+                    }) => backend.merge_abort(environment.clone()).await,
+                    RepositoryState::Remote(_) => Err(anyhow!(
+                        "aborting a merge is not supported for remote repositories"
+                    )),
+                }
+            },
+        )
+    }
+
+    pub fn rebase(&mut self, action: RebaseAction) -> oneshot::Receiver<Result<RebaseOutcome>> {
+        let status = match &action {
+            RebaseAction::Start { upstream, .. } => format!("git rebase {upstream}"),
+            RebaseAction::Continue => "git rebase --continue".to_string(),
+            RebaseAction::Skip => "git rebase --skip".to_string(),
+            RebaseAction::Abort => "git rebase --abort".to_string(),
+        };
+        self.send_job("rebase", Some(status.into()), move |repo, _cx| async move {
+            match repo {
+                RepositoryState::Local(LocalRepositoryState {
+                    backend,
+                    environment,
+                    ..
+                }) => backend.rebase(action, environment.clone()).await,
+                RepositoryState::Remote(_) => {
+                    Err(anyhow!("rebasing is not supported for remote repositories"))
+                }
+            }
+        })
+    }
+
+    pub fn reset_hard(&mut self, commit: String) -> oneshot::Receiver<Result<()>> {
+        self.send_job(
+            "reset_hard",
+            Some(format!("git reset --hard {commit}").into()),
+            move |repo, _cx| async move {
+                match repo {
+                    RepositoryState::Local(LocalRepositoryState {
+                        backend,
+                        environment,
+                        ..
+                    }) => backend.reset_hard(commit, environment.clone()).await,
+                    RepositoryState::Remote(_) => Err(anyhow!(
+                        "hard reset is not supported for remote repositories"
+                    )),
+                }
+            },
+        )
+    }
+
+    pub fn delete_remote_branch(
+        &mut self,
+        remote: String,
+        branch: String,
+        askpass: AskPassDelegate,
+        cx: &mut App,
+    ) -> oneshot::Receiver<Result<RemoteCommandOutput>> {
+        let updates_tx = self.downstream_updates_tx(cx);
+        let this = self.this.clone();
+        self.send_job(
+            "delete_remote_branch",
+            Some(format!("git push {remote} --delete {branch}").into()),
+            move |repo, mut cx| async move {
+                match repo {
+                    RepositoryState::Local(LocalRepositoryState {
+                        backend,
+                        environment,
+                        ..
+                    }) => {
+                        let result = backend
+                            .delete_remote_branch(
+                                remote,
+                                branch,
+                                askpass,
+                                environment.clone(),
+                                cx.clone(),
+                            )
+                            .await;
+                        if result.is_ok() {
+                            Self::refresh_branch_list(&this, backend, updates_tx, &mut cx).await?;
+                        }
+                        result
+                    }
+                    RepositoryState::Remote(_) => Err(anyhow!(
+                        "deleting a remote branch is not supported for remote repositories"
+                    )),
+                }
+            },
+        )
+    }
+
+    pub fn fast_forward_branch(
+        &mut self,
+        remote: String,
+        remote_branch: String,
+        local_branch: String,
+        askpass: AskPassDelegate,
+        cx: &mut App,
+    ) -> oneshot::Receiver<Result<RemoteCommandOutput>> {
+        let updates_tx = self.downstream_updates_tx(cx);
+        let this = self.this.clone();
+        self.send_job(
+            "fast_forward_branch",
+            Some(format!("git fetch {remote} {remote_branch}:{local_branch}").into()),
+            move |repo, mut cx| async move {
+                match repo {
+                    RepositoryState::Local(LocalRepositoryState {
+                        backend,
+                        environment,
+                        ..
+                    }) => {
+                        let result = backend
+                            .fast_forward_branch(
+                                remote,
+                                remote_branch,
+                                local_branch,
+                                askpass,
+                                environment.clone(),
+                                cx.clone(),
+                            )
+                            .await;
+                        if result.is_ok() {
+                            Self::refresh_branch_list(&this, backend, updates_tx, &mut cx).await?;
+                        }
+                        result
+                    }
+                    RepositoryState::Remote(_) => Err(anyhow!(
+                        "fast-forwarding a branch is not supported for remote repositories"
+                    )),
+                }
+            },
+        )
+    }
+
+    pub fn delete_tag(&mut self, name: String) -> oneshot::Receiver<Result<()>> {
+        self.send_job(
+            "delete_tag",
+            Some(format!("git tag -d {name}").into()),
+            move |repo, _cx| async move {
+                match repo {
+                    RepositoryState::Local(LocalRepositoryState { backend, .. }) => {
+                        backend.delete_tag(name).await
+                    }
+                    RepositoryState::Remote(_) => Err(anyhow!(
+                        "deleting a tag is not supported for remote repositories"
+                    )),
+                }
+            },
+        )
+    }
+
+    pub fn create_tag(&mut self, name: String, target: String) -> oneshot::Receiver<Result<()>> {
+        self.send_job(
+            "create_tag",
+            Some(format!("git tag {name} {target}").into()),
+            move |repo, _cx| async move {
+                match repo {
+                    RepositoryState::Local(LocalRepositoryState { backend, .. }) => {
+                        backend.create_tag(name, target).await
+                    }
+                    RepositoryState::Remote(_) => Err(anyhow!(
+                        "creating a tag is not supported for remote repositories"
+                    )),
+                }
+            },
+        )
+    }
+
+    pub fn push_tag(
+        &mut self,
+        remote: String,
+        tag: String,
+        askpass: AskPassDelegate,
+        cx: &mut App,
+    ) -> oneshot::Receiver<Result<RemoteCommandOutput>> {
+        let updates_tx = self.downstream_updates_tx(cx);
+        let this = self.this.clone();
+        self.send_job(
+            "push_tag",
+            Some(format!("git push {remote} refs/tags/{tag}").into()),
+            move |repo, mut cx| async move {
+                match repo {
+                    RepositoryState::Local(LocalRepositoryState {
+                        backend,
+                        environment,
+                        ..
+                    }) => {
+                        let result = backend
+                            .push_tag(remote, tag, askpass, environment.clone(), cx.clone())
+                            .await;
+                        if result.is_ok() {
+                            Self::refresh_branch_list(&this, backend, updates_tx, &mut cx).await?;
+                        }
+                        result
+                    }
+                    RepositoryState::Remote(_) => Err(anyhow!(
+                        "pushing a tag is not supported for remote repositories"
+                    )),
                 }
             },
         )

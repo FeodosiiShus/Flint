@@ -1068,7 +1068,7 @@ impl TitleBar {
                             format!("Currently Checked Out: {}", branch_tooltip_label)
                         };
                         Tooltip::with_meta(
-                            "Branch & Stash",
+                            "Git Branches",
                             Some(&zed_actions::git::Branch),
                             meta,
                             cx,

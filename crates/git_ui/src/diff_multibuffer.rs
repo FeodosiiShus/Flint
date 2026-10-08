@@ -882,7 +882,11 @@ impl Render for DiffMultibuffer {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let is_empty = self.multibuffer.read(cx).is_empty();
         let is_loading = self.branch_diff.read(cx).is_tree_base_loading() || !self._task.is_ready();
-        let empty_label = self.empty_label.clone();
+        let empty_label = if self.branch_diff.read(cx).tree_diff_error().is_some() {
+            SharedString::from("Could not load diff")
+        } else {
+            self.empty_label.clone()
+        };
 
         div()
             .track_focus(&self.focus_handle)

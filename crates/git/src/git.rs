@@ -143,6 +143,10 @@ actions!(
         AddToGitInfoExclude,
         /// Copies the current branch name to the clipboard.
         CopyBranchName,
+        UpdateProject,
+        NewBranch,
+        CheckoutTagOrRevision,
+        PushDialog,
     ]
 );
 

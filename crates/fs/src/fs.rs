@@ -55,12 +55,18 @@ mod fake_git_repo;
 #[cfg(feature = "test-support")]
 use collections::{BTreeMap, btree_map};
 #[cfg(feature = "test-support")]
-pub use fake_git_repo::FakeBlobReadGate;
+pub use fake_git_repo::{FakeBlobReadGate, FakeGitOperation};
 #[cfg(feature = "test-support")]
-use fake_git_repo::{FakeCommitDataEntry, FakeConflictStages, FakeGitRepositoryState};
+use fake_git_repo::{
+    FakeCommitDataEntry, FakeConflictStages, FakeGitFailure, FakeGitRepositoryState,
+    FakeRebaseSession,
+};
 #[cfg(feature = "test-support")]
 use git::{
-    repository::{CommitData, InitialGraphCommitData, RepoPath, Worktree, repo_path},
+    repository::{
+        CommitData, CommitSummary, GitFailureKind, InitialGraphCommitData, RepoPath,
+        RepositoryOperation, Tag, UpstreamTracking, Worktree, repo_path,
+    },
     status::{FileStatus, StatusCode, TrackedStatus, UnmergedStatus},
 };
 #[cfg(feature = "test-support")]
@@ -2314,6 +2320,196 @@ impl FakeFs {
                 .extend(branches.iter().map(ToString::to_string));
         })
         .unwrap();
+    }
+
+    pub fn insert_tags(&self, dot_git: &Path, tags: &[(&str, &str)]) {
+        self.with_git_state(dot_git, true, |state| {
+            for (name, commit_sha) in tags {
+                state.tags.retain(|tag| &*tag.name != *name);
+                state.tags.push(Tag {
+                    name: SharedString::from(*name),
+                    commit_sha: SharedString::from(*commit_sha),
+                });
+            }
+        })
+        .unwrap();
+    }
+
+    pub fn set_upstream_for_repo(
+        &self,
+        dot_git: &Path,
+        branch: &str,
+        upstream: &str,
+        tracking: UpstreamTracking,
+    ) {
+        self.with_git_state(dot_git, true, |state| {
+            state.upstreams.insert(
+                branch.to_string(),
+                git::repository::Upstream {
+                    ref_name: SharedString::from(fake_git_repo::full_ref_name(upstream)),
+                    tracking,
+                },
+            );
+        })
+        .unwrap();
+    }
+
+    pub fn clear_upstream_for_repo(&self, dot_git: &Path, branch: &str) {
+        self.with_git_state(dot_git, true, |state| {
+            state.upstreams.remove(branch);
+        })
+        .unwrap();
+    }
+
+    pub fn set_recent_branches_for_repo(&self, dot_git: &Path, branches: &[&str]) {
+        self.with_git_state(dot_git, true, |state| {
+            state.recent_branches = branches.iter().map(ToString::to_string).collect();
+        })
+        .unwrap();
+    }
+
+    pub fn set_ref_for_repo(&self, dot_git: &Path, ref_name: &str, sha: &str) {
+        self.with_git_state(dot_git, true, |state| {
+            state.refs.insert(ref_name.to_string(), sha.to_string());
+        })
+        .unwrap();
+    }
+
+    pub fn set_ref_history_for_repo(
+        &self,
+        dot_git: &Path,
+        ref_name: &str,
+        commits: Vec<CommitSummary>,
+    ) {
+        self.with_git_state(dot_git, true, |state| {
+            state.ref_histories.insert(
+                fake_git_repo::strip_ref_prefix(ref_name).to_string(),
+                commits,
+            );
+        })
+        .unwrap();
+    }
+
+    pub fn set_merge_conflict_for_repo(
+        &self,
+        dot_git: &Path,
+        reference: &str,
+        path: &str,
+        base: Option<&str>,
+        ours: Option<&str>,
+        theirs: Option<&str>,
+    ) {
+        let stages = FakeConflictStages {
+            base: base.map(|text| text.as_bytes().to_vec()),
+            ours: ours.map(|text| text.as_bytes().to_vec()),
+            theirs: theirs.map(|text| text.as_bytes().to_vec()),
+        };
+        self.with_git_state(dot_git, false, |state| {
+            state
+                .merge_conflicts
+                .entry(fake_git_repo::strip_ref_prefix(reference).to_string())
+                .or_default()
+                .push((repo_path(path), stages));
+        })
+        .unwrap();
+    }
+
+    pub fn set_rebase_conflict_for_repo(
+        &self,
+        dot_git: &Path,
+        upstream: &str,
+        path: &str,
+        base: Option<&str>,
+        ours: Option<&str>,
+        theirs: Option<&str>,
+    ) {
+        let stages = FakeConflictStages {
+            base: base.map(|text| text.as_bytes().to_vec()),
+            ours: ours.map(|text| text.as_bytes().to_vec()),
+            theirs: theirs.map(|text| text.as_bytes().to_vec()),
+        };
+        self.with_git_state(dot_git, false, |state| {
+            state
+                .rebase_conflicts
+                .entry(fake_git_repo::strip_ref_prefix(upstream).to_string())
+                .or_default()
+                .push((repo_path(path), stages));
+        })
+        .unwrap();
+    }
+
+    pub fn clear_conflict_plans_for_repo(&self, dot_git: &Path) {
+        self.with_git_state(dot_git, false, |state| {
+            state.merge_conflicts.clear();
+            state.rebase_conflicts.clear();
+        })
+        .unwrap();
+    }
+
+    pub fn set_operation_in_progress_for_repo(
+        &self,
+        dot_git: &Path,
+        operation: Option<RepositoryOperation>,
+    ) {
+        self.with_git_state(dot_git, true, |state| {
+            state.rebase_session = None;
+            for marker in ["MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD"] {
+                state.refs.remove(marker);
+            }
+            match operation {
+                Some(RepositoryOperation::Merge) => {
+                    state
+                        .refs
+                        .insert("MERGE_HEAD".into(), Self::FAKE_MERGE_HEAD_SHA.into());
+                }
+                Some(RepositoryOperation::Rebase) => {
+                    state.rebase_session = Some(FakeRebaseSession {
+                        original_branch: state.current_branch_name.clone(),
+                        upstream: None,
+                    });
+                }
+                Some(RepositoryOperation::CherryPick) => {
+                    state
+                        .refs
+                        .insert("CHERRY_PICK_HEAD".into(), Self::FAKE_MERGE_HEAD_SHA.into());
+                }
+                Some(RepositoryOperation::Revert) => {
+                    state
+                        .refs
+                        .insert("REVERT_HEAD".into(), Self::FAKE_MERGE_HEAD_SHA.into());
+                }
+                None => {}
+            }
+        })
+        .unwrap();
+    }
+
+    pub fn set_simulated_git_failure_for_repo(
+        &self,
+        dot_git: &Path,
+        operation: FakeGitOperation,
+        failure: Option<(GitFailureKind, &str)>,
+    ) {
+        self.with_git_state(dot_git, false, |state| match failure {
+            Some((kind, message)) => {
+                state.simulated_failures.insert(
+                    operation,
+                    FakeGitFailure {
+                        kind,
+                        message: message.to_string(),
+                    },
+                );
+            }
+            None => {
+                state.simulated_failures.remove(&operation);
+            }
+        })
+        .unwrap();
+    }
+
+    pub fn pushed_tags_for_repo(&self, dot_git: &Path) -> Vec<(String, String)> {
+        self.with_git_state(dot_git, false, |state| state.pushed_tags.clone())
+            .unwrap()
     }
 
     pub async fn add_linked_worktree_for_repo(

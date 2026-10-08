@@ -1,9 +1,9 @@
-use crate::branch_picker::{self, BranchList};
 use crate::git_panel::{
     GitPanel, commit_message_editor, commit_title_exceeds_limit, git_commit_editor_style,
 };
 use crate::git_panel_settings::GitPanelSettings;
 use git::{Amend, Commit, Signoff, SkipHooks};
+use git_ui_core::GitPickerPopover;
 use settings::Settings;
 use ui::{
     ButtonLike, ContextMenu, ContextMenuEntry, DocumentationSide, ElevationIndex, KeybindingHint,
@@ -65,7 +65,7 @@ pub struct CommitModal {
     commit_editor: Entity<Editor>,
     restore_dock: RestoreDock,
     properties: ModalContainerProperties,
-    branch_list_handle: PopoverMenuHandle<BranchList>,
+    branch_list_handle: PopoverMenuHandle<GitPickerPopover>,
     commit_menu_handle: PopoverMenuHandle<ContextMenu>,
 }
 
@@ -380,13 +380,7 @@ impl CommitModal {
 
         let branch_picker = PopoverMenu::new("popover-button")
             .menu(move |window, cx| {
-                Some(branch_picker::popover(
-                    workspace.clone(),
-                    false,
-                    active_repo.clone(),
-                    window,
-                    cx,
-                ))
+                git_ui_core::build_branch_picker(workspace.clone(), active_repo.clone(), window, cx)
             })
             .with_handle(self.branch_list_handle.clone())
             .trigger_with_tooltip(

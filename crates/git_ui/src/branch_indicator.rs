@@ -102,7 +102,7 @@ impl Render for BranchIndicator {
                     ),
                 move |_window, cx| {
                     Tooltip::with_meta(
-                        "Branch & Stash",
+                        "Git Branches",
                         Some(&zed_actions::git::Branch),
                         tooltip_meta.clone(),
                         cx,

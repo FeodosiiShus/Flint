@@ -7038,6 +7038,203 @@ async fn test_reveal_in_project_panel_fallback(cx: &mut gpui::TestAppContext) {
     });
 }
 
+const SELECT_OPENED_FILE_COLLAPSED_TREE: &[&str] = &[
+    "v project_root",
+    "    > dir_1",
+    "    > dir_2",
+    "      root_file.rs",
+];
+
+const SELECT_OPENED_FILE_REVEALED_TREE: &[&str] = &[
+    "v project_root",
+    "    v dir_1",
+    "        v nested_dir",
+    "              file_a.rs  <== selected  <== marked",
+    "              file_b.rs",
+    "          file_1.rs",
+    "    > dir_2",
+    "      root_file.rs",
+];
+
+async fn setup_select_opened_file_panel(
+    cx: &mut TestAppContext,
+) -> (Entity<Workspace>, Entity<ProjectPanel>, VisualTestContext) {
+    init_test_with_editor(cx);
+    cx.update(|cx| {
+        cx.update_global::<SettingsStore, _>(|store, cx| {
+            store.update_user_settings(cx, |settings| {
+                settings
+                    .project_panel
+                    .get_or_insert_default()
+                    .auto_reveal_entries = Some(false);
+            });
+        })
+    });
+
+    let fs = FakeFs::new(cx.executor());
+    fs.insert_tree(
+        path!("/project_root"),
+        json!({
+            "dir_1": {
+                "nested_dir": {
+                    "file_a.rs": "",
+                    "file_b.rs": "",
+                },
+                "file_1.rs": "",
+            },
+            "dir_2": {
+                "file_2.rs": "",
+            },
+            "root_file.rs": "",
+        }),
+    )
+    .await;
+
+    let project = Project::test(fs, [path!("/project_root").as_ref()], cx).await;
+    let window = cx.add_window(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
+    let workspace = window
+        .read_with(cx, |mw, _| mw.workspace().clone())
+        .unwrap();
+    let mut visual_cx = VisualTestContext::from_window(window.into(), cx);
+    let panel = workspace.update_in(&mut visual_cx, |workspace, window, cx| {
+        let panel = ProjectPanel::new(workspace, window, cx);
+        workspace.add_panel(panel.clone(), window, cx);
+        workspace.open_panel::<ProjectPanel>(window, cx);
+        panel
+    });
+    visual_cx.run_until_parked();
+    (workspace, panel, visual_cx)
+}
+
+async fn open_nested_file_for_select_opened_file(
+    workspace: &Entity<Workspace>,
+    cx: &mut VisualTestContext,
+) {
+    workspace
+        .update_in(cx, |workspace, window, cx| {
+            let worktree_id = workspace.worktrees(cx).next().unwrap().read(cx).id();
+            let project_path = ProjectPath {
+                worktree_id,
+                path: rel_path("dir_1/nested_dir/file_a.rs").into(),
+            };
+            workspace.open_path(project_path, None, true, window, cx)
+        })
+        .await
+        .unwrap();
+    cx.run_until_parked();
+}
+
+fn panel_is_focused_for_select_opened_file(
+    panel: &Entity<ProjectPanel>,
+    cx: &mut VisualTestContext,
+) -> bool {
+    panel.update_in(cx, |panel, window, cx| {
+        panel.focus_handle(cx).is_focused(window)
+    })
+}
+
+#[gpui::test]
+async fn test_select_opened_file_reveals_active_file_when_panel_is_focused(
+    cx: &mut gpui::TestAppContext,
+) {
+    let (workspace, panel, mut visual_cx) = setup_select_opened_file_panel(cx).await;
+    let cx = &mut visual_cx;
+    open_nested_file_for_select_opened_file(&workspace, cx).await;
+
+    panel.update_in(cx, |panel, window, cx| {
+        panel.focus_handle(cx).focus(window, cx);
+    });
+    cx.run_until_parked();
+    assert_eq!(
+        visible_entries_as_strings(&panel, 0..20, cx),
+        SELECT_OPENED_FILE_COLLAPSED_TREE,
+        "The opened file is hidden because auto reveal is disabled"
+    );
+    assert!(
+        panel_is_focused_for_select_opened_file(&panel, cx),
+        "Project panel should be focused before dispatching the action"
+    );
+
+    cx.dispatch_action(SelectOpenedFile);
+    cx.run_until_parked();
+    assert_eq!(
+        visible_entries_as_strings(&panel, 0..20, cx),
+        SELECT_OPENED_FILE_REVEALED_TREE,
+        "Select Opened File should expand the ancestors and select the opened file"
+    );
+    assert!(
+        panel_is_focused_for_select_opened_file(&panel, cx),
+        "Project panel should stay focused after selecting the opened file"
+    );
+}
+
+#[gpui::test]
+async fn test_select_opened_file_reveals_active_file_when_center_pane_is_focused(
+    cx: &mut gpui::TestAppContext,
+) {
+    let (workspace, panel, mut visual_cx) = setup_select_opened_file_panel(cx).await;
+    let cx = &mut visual_cx;
+    open_nested_file_for_select_opened_file(&workspace, cx).await;
+
+    workspace.update_in(cx, |workspace, window, cx| {
+        workspace.focus_center_pane(window, cx);
+    });
+    cx.run_until_parked();
+    assert_eq!(
+        visible_entries_as_strings(&panel, 0..20, cx),
+        SELECT_OPENED_FILE_COLLAPSED_TREE,
+        "The opened file is hidden because auto reveal is disabled"
+    );
+    assert!(
+        !panel_is_focused_for_select_opened_file(&panel, cx),
+        "Project panel should not be focused while the center pane has focus"
+    );
+
+    cx.dispatch_action(SelectOpenedFile);
+    cx.run_until_parked();
+    assert_eq!(
+        visible_entries_as_strings(&panel, 0..20, cx),
+        SELECT_OPENED_FILE_REVEALED_TREE,
+        "Select Opened File should work while the center pane has focus"
+    );
+    assert!(
+        panel_is_focused_for_select_opened_file(&panel, cx),
+        "Project panel should be focused after selecting the opened file"
+    );
+}
+
+#[gpui::test]
+async fn test_select_opened_file_without_active_item_focuses_panel(cx: &mut gpui::TestAppContext) {
+    let (workspace, panel, mut visual_cx) = setup_select_opened_file_panel(cx).await;
+    let cx = &mut visual_cx;
+
+    workspace.update_in(cx, |workspace, window, cx| {
+        workspace.focus_center_pane(window, cx);
+    });
+    assert!(
+        workspace.update(cx, |workspace, cx| workspace.active_item(cx).is_none()),
+        "Workspace should not have an active item."
+    );
+    assert!(
+        !panel_is_focused_for_select_opened_file(&panel, cx),
+        "Project panel should not be focused while the center pane has focus"
+    );
+    let tree_before_dispatch = visible_entries_as_strings(&panel, 0..20, cx);
+
+    cx.dispatch_action(SelectOpenedFile);
+    cx.run_until_parked();
+
+    assert!(
+        panel_is_focused_for_select_opened_file(&panel, cx),
+        "Project panel should be focused even when there is no active item"
+    );
+    assert_eq!(
+        visible_entries_as_strings(&panel, 0..20, cx),
+        tree_before_dispatch,
+        "Without an active item the tree should stay unchanged"
+    );
+}
+
 #[gpui::test]
 async fn test_creating_excluded_entries(cx: &mut gpui::TestAppContext) {
     init_test(cx);

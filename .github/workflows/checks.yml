@@ -96,6 +96,12 @@ jobs:
       - name: Run merge tool and git panel tests
         run: cargo test --locked --package git_ui --lib -- merge_tool git_panel
 
+      - name: Run Git Branches popup tests
+        run: cargo test --locked --package git_ui --lib -- branches_popup branch_operations branch_refs
+
+      - name: Run keybinding glyph tests
+        run: cargo test --locked --package ui --lib keybinding
+
       - name: Run gpui tests
         run: cargo test --locked --package gpui
 
@@ -110,6 +116,9 @@ jobs:
 
       - name: Run project panel rounded selection tests
         run: cargo test --locked --package project_panel --lib rounded_selection
+
+      - name: Run project panel select opened file tests
+        run: cargo test --locked --package project_panel --lib select_opened_file
 
       - name: Run editor rounded scrollbar thumb tests
         run: cargo test --locked --package editor --lib rounded_thumb

@@ -34,6 +34,40 @@ pub enum PanelEvent {
 
 pub use proto::PanelId;
 
+pub struct PanelHeaderAction {
+    pub id: &'static str,
+    pub icon: ui::IconName,
+    pub tooltip: &'static str,
+    pub action: Box<dyn Action>,
+}
+
+impl PanelHeaderAction {
+    pub fn new(
+        id: &'static str,
+        icon: ui::IconName,
+        tooltip: &'static str,
+        action: Box<dyn Action>,
+    ) -> Self {
+        Self {
+            id,
+            icon,
+            tooltip,
+            action,
+        }
+    }
+}
+
+impl Clone for PanelHeaderAction {
+    fn clone(&self) -> Self {
+        Self {
+            id: self.id,
+            icon: self.icon,
+            tooltip: self.tooltip,
+            action: self.action.boxed_clone(),
+        }
+    }
+}
+
 pub trait Panel: Focusable + EventEmitter<PanelEvent> + Render + Sized {
     fn persistent_name() -> &'static str;
     fn panel_key() -> &'static str;
@@ -99,6 +133,9 @@ pub trait Panel: Focusable + EventEmitter<PanelEvent> + Render + Sized {
     fn hide_button_setting(&self, _: &App) -> Option<HideStatusItem> {
         None
     }
+    fn header_actions(&self, _window: &Window, _cx: &App) -> Vec<PanelHeaderAction> {
+        Vec::new()
+    }
 }
 
 pub trait PanelHandle: Send + Sync {
@@ -131,6 +168,7 @@ pub trait PanelHandle: Send + Sync {
     fn activation_priority(&self, cx: &App) -> u32;
     fn enabled(&self, cx: &App) -> bool;
     fn hide_button_setting(&self, cx: &App) -> Option<HideStatusItem>;
+    fn header_actions(&self, window: &Window, cx: &App) -> Vec<PanelHeaderAction>;
     fn move_to_next_position(&self, window: &mut Window, cx: &mut App) {
         let current_position = self.position(window, cx);
         let next_position = [
@@ -262,6 +300,10 @@ where
 
     fn hide_button_setting(&self, cx: &App) -> Option<HideStatusItem> {
         self.read(cx).hide_button_setting(cx)
+    }
+
+    fn header_actions(&self, window: &Window, cx: &App) -> Vec<PanelHeaderAction> {
+        self.read(cx).header_actions(window, cx)
     }
 }
 
@@ -1677,6 +1719,7 @@ pub mod test {
         pub activation_priority: u32,
         pub icon: Option<ui::IconName>,
         pub pane: Option<Entity<Pane>>,
+        pub header_actions: Vec<PanelHeaderAction>,
     }
     actions!(test_only, [ToggleTestPanel]);
 
@@ -1695,6 +1738,7 @@ pub mod test {
                 activation_priority,
                 icon: None,
                 pane: None,
+                header_actions: Vec::new(),
             }
         }
 
@@ -1706,6 +1750,18 @@ pub mod test {
         ) -> Self {
             Self {
                 icon: Some(icon),
+                ..Self::new(position, activation_priority, cx)
+            }
+        }
+
+        pub fn new_with_header_actions(
+            position: DockPosition,
+            activation_priority: u32,
+            header_actions: Vec<PanelHeaderAction>,
+            cx: &mut App,
+        ) -> Self {
+            Self {
+                header_actions,
                 ..Self::new(position, activation_priority, cx)
             }
         }
@@ -1830,6 +1886,10 @@ pub mod test {
 
         fn activation_priority(&self) -> u32 {
             self.activation_priority
+        }
+
+        fn header_actions(&self, _window: &Window, _cx: &App) -> Vec<PanelHeaderAction> {
+            self.header_actions.clone()
         }
     }
 

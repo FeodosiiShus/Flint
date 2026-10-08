@@ -1,5 +1,5 @@
-use crate::dock::{Dock, DockPosition, PanelHandle, panel_context_menu};
-use gpui::{Action, Anchor, Entity, FocusHandle, FontWeight};
+use crate::dock::{Dock, DockPosition, PanelHandle, PanelHeaderAction, panel_context_menu};
+use gpui::{Action, Anchor, ElementId, Entity, FocusHandle, FontWeight};
 use std::sync::Arc;
 use ui::{ChromeRegion, IconButtonShape, PopoverMenu, Tooltip, prelude::*, right_click_menu};
 
@@ -48,6 +48,37 @@ pub(crate) fn render_tool_window_header(
             Tooltip::text("Options"),
         );
 
+    let header_action_buttons = panel
+        .header_actions(window, cx)
+        .into_iter()
+        .map(|header_action| {
+            let PanelHeaderAction {
+                id,
+                icon,
+                tooltip,
+                action,
+            } = header_action;
+            let tooltip_action = action.boxed_clone();
+            let dock_focus_handle = dock_focus_handle.clone();
+            let button = IconButton::new(
+                (ElementId::from(("tool-window-header-action", panel_id)), id),
+                icon,
+            )
+            .shape(IconButtonShape::Square)
+            .icon_size(IconSize::Small)
+            .chrome_region(ChromeRegion::Panel)
+            .aria_label(tooltip)
+            .tooltip(move |_window, cx| Tooltip::for_action(tooltip, &*tooltip_action, cx))
+            .on_click(move |_, window, cx| {
+                window.focus(&dock_focus_handle, cx);
+                window.dispatch_action(action.boxed_clone(), cx);
+            });
+            div()
+                .debug_selector(move || format!("tool_window_header_action_{id}_{position_key}"))
+                .child(button)
+        })
+        .collect::<Vec<_>>();
+
     let hide_button = IconButton::new(("tool-window-header-hide", panel_id), IconName::Dash)
         .shape(IconButtonShape::Square)
         .icon_size(IconSize::Small)
@@ -65,6 +96,7 @@ pub(crate) fn render_tool_window_header(
         .when(!show_actions, |this| {
             this.visible_on_hover(TOOL_WINDOW_GROUP)
         })
+        .children(header_action_buttons)
         .child(
             div()
                 .debug_selector(move || format!("tool_window_header_options_{position_key}"))

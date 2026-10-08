@@ -50,45 +50,6 @@ actions!(
     ]
 );
 
-pub fn checkout_branch(
-    workspace: &mut Workspace,
-    _: &zed_actions::git::CheckoutBranch,
-    window: &mut Window,
-    cx: &mut Context<Workspace>,
-) {
-    open(workspace, &zed_actions::git::Branch, window, cx);
-}
-
-pub fn switch(
-    workspace: &mut Workspace,
-    _: &zed_actions::git::Switch,
-    window: &mut Window,
-    cx: &mut Context<Workspace>,
-) {
-    open(workspace, &zed_actions::git::Branch, window, cx);
-}
-
-pub fn open(
-    workspace: &mut Workspace,
-    _: &zed_actions::git::Branch,
-    window: &mut Window,
-    cx: &mut Context<Workspace>,
-) {
-    let workspace_handle = workspace.weak_handle();
-    let repository = workspace.project().read(cx).active_repository(cx);
-
-    workspace.toggle_modal(window, cx, |window, cx| {
-        BranchList::new(
-            workspace_handle,
-            repository,
-            BranchListStyle::Modal,
-            rems(34.),
-            window,
-            cx,
-        )
-    })
-}
-
 pub fn popover(
     workspace: WeakEntity<Workspace>,
     modal_style: bool,
@@ -156,17 +117,6 @@ pub fn select_modal(
 }
 
 pub type SelectBranchCallback = Arc<dyn Fn(Branch, &mut Window, &mut App)>;
-
-pub fn create_embedded(
-    workspace: WeakEntity<Workspace>,
-    repository: Option<Entity<Repository>>,
-    width: Rems,
-    show_footer: bool,
-    window: &mut Window,
-    cx: &mut Context<BranchList>,
-) -> BranchList {
-    BranchList::new_embedded(workspace, repository, width, show_footer, window, cx)
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum BranchListStyle {
@@ -376,33 +326,6 @@ impl BranchList {
             _subscriptions: subscriptions,
             embedded,
         }
-    }
-
-    fn new_embedded(
-        workspace: WeakEntity<Workspace>,
-        repository: Option<Entity<Repository>>,
-        width: Rems,
-        show_footer: bool,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> Self {
-        let mut this = Self::new_inner(
-            workspace,
-            repository,
-            BranchListStyle::Modal,
-            width,
-            true,
-            window,
-            cx,
-        );
-        this.picker.update(cx, |picker, _| {
-            picker.delegate.show_footer = show_footer;
-        });
-        this._subscriptions
-            .push(cx.subscribe(&this.picker, |_, _, _, cx| {
-                cx.emit(DismissEvent);
-            }));
-        this
     }
 
     pub fn handle_modifiers_changed(

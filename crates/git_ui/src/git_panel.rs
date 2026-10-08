@@ -14,10 +14,10 @@ use crate::remote_output::{self, RemoteAction, SuccessMessage};
 use crate::solo_diff_view::SoloDiffView;
 use crate::staged_diff::StagedDiff;
 use crate::unstaged_diff::UnstagedDiff;
-use crate::{branch_picker, picker_prompt, render_remote_button};
 use crate::{
     git_panel_settings::GitPanelSettings, git_status_icon, repository_selector::RepositorySelector,
 };
+use crate::{picker_prompt, render_remote_button};
 use anyhow::Context as _;
 use askpass::AskPassDelegate;
 use collections::{BTreeMap, HashMap, HashSet};
@@ -9070,7 +9070,7 @@ impl RenderOnce for PanelRepoFooter {
             .menu(move |window, cx| {
                 let workspace = workspace.clone()?;
                 let repo = repo.clone().flatten();
-                Some(branch_picker::popover(workspace, false, repo, window, cx))
+                git_ui_core::build_branch_picker(workspace, repo, window, cx)
             })
             .trigger_with_tooltip(
                 branch_selector_button,

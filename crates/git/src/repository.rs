@@ -289,6 +289,481 @@ impl Branch {
 }
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
+pub struct Tag {
+    pub name: SharedString,
+    pub commit_sha: SharedString,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RepositoryOperation {
+    Merge,
+    Rebase,
+    CherryPick,
+    Revert,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum MergeOutcome {
+    AlreadyUpToDate,
+    Merged { output: String },
+    Conflicted { output: String },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RebaseAction {
+    Start {
+        upstream: String,
+        branch: Option<String>,
+    },
+    Continue,
+    Skip,
+    Abort,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RebaseOutcome {
+    Completed { output: String },
+    Conflicted { output: String },
+    Aborted,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum GitFailureKind {
+    LocalChangesWouldBeOverwritten { files: Vec<String> },
+    UntrackedFilesWouldBeOverwritten { files: Vec<String> },
+    UnmergedFiles,
+    BranchNotFullyMerged,
+    BranchCheckedOutInWorktree { path: String },
+    RevisionNotFound,
+    Other,
+}
+
+#[derive(Debug, Error)]
+#[error("{message}")]
+pub struct GitFailure {
+    pub kind: GitFailureKind,
+    pub message: String,
+}
+
+const LOCAL_CHANGES_OVERWRITTEN_MARKERS: [&str; 2] = [
+    "Your local changes to the following files would be overwritten by checkout",
+    "Your local changes to the following files would be overwritten by merge",
+];
+const UNTRACKED_FILES_OVERWRITTEN_MARKERS: [&str; 2] = [
+    "The following untracked working tree files would be overwritten by checkout",
+    "The following untracked working tree files would be overwritten by merge",
+];
+const UNMERGED_FILES_MARKERS: [&str; 4] = [
+    "you need to resolve your current index first",
+    "needs merge",
+    "unmerged files",
+    "is unmerged",
+];
+const REVISION_NOT_FOUND_MARKERS: [&str; 9] = [
+    "invalid reference",
+    "did not match any",
+    "not a valid",
+    "unknown revision",
+    "is not a commit and a branch",
+    "bad revision",
+    "failed to resolve",
+    "not something we can merge",
+    "invalid upstream",
+];
+const INVALID_BRANCH_NAME_MESSAGE: &str = "is not a valid branch name";
+const WORKTREE_CONFLICT_MARKERS: [&str; 2] = [" checked out at '", " used by worktree at '"];
+const ALREADY_UP_TO_DATE_MARKERS: [&str; 2] = ["Already up to date", "Already up-to-date"];
+const MERGE_HEAD_FILE: &str = "MERGE_HEAD";
+const CHERRY_PICK_HEAD_FILE: &str = "CHERRY_PICK_HEAD";
+const REVERT_HEAD_FILE: &str = "REVERT_HEAD";
+const REBASE_APPLYING_MARKER: &str = "applying";
+const REMOTE_REF_MISSING_MESSAGE: &str = "remote ref does not exist";
+const NO_UPSTREAM_MESSAGE: &str = "has no upstream information";
+const RECENT_BRANCHES_REFLOG_DEPTH: &str = "200";
+
+pub fn classify_git_failure(stderr: &str) -> GitFailureKind {
+    if let Some(files) = files_listed_after_marker(stderr, &LOCAL_CHANGES_OVERWRITTEN_MARKERS) {
+        return GitFailureKind::LocalChangesWouldBeOverwritten { files };
+    }
+    if let Some(files) = files_listed_after_marker(stderr, &UNTRACKED_FILES_OVERWRITTEN_MARKERS) {
+        return GitFailureKind::UntrackedFilesWouldBeOverwritten { files };
+    }
+    let lowered = stderr.to_lowercase();
+    if mentions_any(&lowered, &UNMERGED_FILES_MARKERS) {
+        return GitFailureKind::UnmergedFiles;
+    }
+    if lowered.contains("not fully merged") {
+        return GitFailureKind::BranchNotFullyMerged;
+    }
+    if let Some(path) = checked_out_worktree_path(stderr) {
+        return GitFailureKind::BranchCheckedOutInWorktree { path };
+    }
+    let revision_candidate = lowered.replace(INVALID_BRANCH_NAME_MESSAGE, "");
+    if mentions_any(&revision_candidate, &REVISION_NOT_FOUND_MARKERS) {
+        return GitFailureKind::RevisionNotFound;
+    }
+    GitFailureKind::Other
+}
+
+fn mentions_any(haystack: &str, markers: &[&str]) -> bool {
+    markers.iter().any(|marker| haystack.contains(marker))
+}
+
+fn files_listed_after_marker(stderr: &str, markers: &[&str]) -> Option<Vec<String>> {
+    let mut lines = stderr.lines();
+    lines.find(|line| mentions_any(line, markers))?;
+    Some(
+        lines
+            .map_while(|line| line.strip_prefix('\t'))
+            .map(str::to_owned)
+            .collect(),
+    )
+}
+
+fn checked_out_worktree_path(stderr: &str) -> Option<String> {
+    WORKTREE_CONFLICT_MARKERS.iter().find_map(|marker| {
+        let (_, after_marker) = stderr.split_once(marker)?;
+        let (path, _) = after_marker.split_once('\'')?;
+        Some(path.to_string())
+    })
+}
+
+fn into_git_failure(error: anyhow::Error) -> anyhow::Error {
+    if error.is::<GitFailure>() {
+        return error;
+    }
+    let message = error.to_string();
+    let kind = match error.downcast_ref::<GitBinaryCommandError>() {
+        Some(command_error) => classify_git_failure(&command_error.stderr),
+        None => classify_git_failure(&message),
+    };
+    anyhow::Error::new(GitFailure { kind, message })
+}
+
+fn git_failure_from_output(output: &Output) -> anyhow::Error {
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let message = if stderr.trim().is_empty() {
+        stdout.trim()
+    } else {
+        stderr.trim()
+    };
+    anyhow::Error::new(GitFailure {
+        kind: classify_git_failure(&stderr),
+        message: message.to_string(),
+    })
+}
+
+fn revision_not_found(message: String) -> anyhow::Error {
+    anyhow::Error::new(GitFailure {
+        kind: GitFailureKind::RevisionNotFound,
+        message,
+    })
+}
+
+fn ensure_git_success(output: Output) -> Result<Output> {
+    if output.status.success() {
+        Ok(output)
+    } else {
+        Err(git_failure_from_output(&output))
+    }
+}
+
+fn joined_output(output: &Output) -> String {
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    [stdout.trim(), stderr.trim()]
+        .into_iter()
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn remote_output(output: &Output) -> RemoteCommandOutput {
+    RemoteCommandOutput {
+        stdout: String::from_utf8_lossy(&output.stdout).to_string(),
+        stderr: String::from_utf8_lossy(&output.stderr).to_string(),
+    }
+}
+
+fn classify_task<T: Send + 'static>(task: Task<Result<T>>) -> BoxFuture<'static, Result<T>> {
+    async move { task.await.map_err(into_git_failure) }.boxed()
+}
+
+fn probe_operation_in_progress(git_dir: &Path) -> Option<RepositoryOperation> {
+    let rebase_apply_dir = git_dir.join(crate::REBASE_APPLY_DIR);
+    let rebase_in_progress = git_dir.join(crate::REBASE_MERGE_DIR).is_dir()
+        || (rebase_apply_dir.is_dir() && !rebase_apply_dir.join(REBASE_APPLYING_MARKER).exists());
+    if rebase_in_progress {
+        Some(RepositoryOperation::Rebase)
+    } else if git_dir.join(MERGE_HEAD_FILE).is_file() {
+        Some(RepositoryOperation::Merge)
+    } else if git_dir.join(CHERRY_PICK_HEAD_FILE).is_file() {
+        Some(RepositoryOperation::CherryPick)
+    } else if git_dir.join(REVERT_HEAD_FILE).is_file() {
+        Some(RepositoryOperation::Revert)
+    } else {
+        None
+    }
+}
+
+fn parse_tags(output: &str) -> Vec<Tag> {
+    output
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.split('\0');
+            let name = fields.next()?.strip_prefix("refs/tags/")?;
+            let object_sha = fields.next()?;
+            let peeled_sha = fields.next().unwrap_or_default();
+            let commit_sha = if peeled_sha.is_empty() {
+                object_sha
+            } else {
+                peeled_sha
+            };
+            Some(Tag {
+                name: name.to_string().into(),
+                commit_sha: commit_sha.to_string().into(),
+            })
+        })
+        .collect()
+}
+
+fn parse_recent_branches(
+    reflog_subjects: &str,
+    existing_branches: &HashSet<&str>,
+    limit: usize,
+) -> Vec<SharedString> {
+    let mut seen = HashSet::new();
+    let mut recent = Vec::new();
+    for subject in reflog_subjects.lines() {
+        if recent.len() >= limit {
+            break;
+        }
+        let Some(movement) = subject.strip_prefix("checkout: moving from ") else {
+            continue;
+        };
+        let Some((_, destination)) = movement.rsplit_once(" to ") else {
+            continue;
+        };
+        if existing_branches.contains(destination) && seen.insert(destination) {
+            recent.push(SharedString::from(destination.to_string()));
+        }
+    }
+    recent
+}
+
+fn parse_commit_summaries(output: &str) -> Vec<CommitSummary> {
+    output
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.split('\0');
+            let sha = fields.next()?;
+            let subject = fields.next()?;
+            let commit_timestamp = fields.next()?.parse::<i64>().ok()?;
+            let author_name = fields.next()?;
+            let parents = fields.next().unwrap_or_default();
+            Some(CommitSummary {
+                sha: sha.to_string().into(),
+                subject: subject.to_string().into(),
+                commit_timestamp,
+                author_name: author_name.to_string().into(),
+                has_parent: !parents.trim().is_empty(),
+            })
+        })
+        .collect()
+}
+
+async fn current_branch_name(git: &GitBinary) -> Result<Option<String>> {
+    let output = git
+        .build_stable_command(&["symbolic-ref", "--quiet", "--short", "HEAD"])
+        .output()
+        .await?;
+    if output.status.success() {
+        Ok(Some(
+            String::from_utf8_lossy(&output.stdout).trim().to_string(),
+        ))
+    } else {
+        Ok(None)
+    }
+}
+
+async fn has_unmerged_files(git: &GitBinary, env: &HashMap<String, String>) -> Result<bool> {
+    let output = git
+        .build_stable_command_with_env(&["ls-files", "--unmerged", "-z"], env)
+        .output()
+        .await?;
+    Ok(output.status.success() && !output.stdout.is_empty())
+}
+
+async fn qualify_ambiguous_reference(
+    git: &GitBinary,
+    reference: String,
+    env: &HashMap<String, String>,
+) -> Result<String> {
+    if reference.starts_with("refs/") {
+        return Ok(reference);
+    }
+    let candidates = ["refs/heads/", "refs/remotes/", "refs/tags/"]
+        .map(|namespace| format!("{namespace}{reference}"));
+    let mut args = vec![
+        "for-each-ref".to_string(),
+        "--format=%(refname)".to_string(),
+    ];
+    args.extend(candidates.iter().cloned());
+    let output = ensure_git_success(
+        git.build_stable_command_with_env(&args, env)
+            .output()
+            .await?,
+    )?;
+    let listed = String::from_utf8_lossy(&output.stdout);
+    let existing = candidates
+        .iter()
+        .filter(|candidate| listed.lines().any(|line| line == candidate.as_str()))
+        .collect::<Vec<_>>();
+    match existing.as_slice() {
+        [first, _, ..] => Ok((*first).clone()),
+        _ => Ok(reference),
+    }
+}
+
+async fn merge_in_worktree(
+    git: Result<GitBinary>,
+    git_dir: PathBuf,
+    reference: String,
+    env: Arc<HashMap<String, String>>,
+) -> Result<MergeOutcome> {
+    let git = git?;
+    let reference = qualify_ambiguous_reference(&git, reference, &env).await?;
+    let merge_was_in_progress = git_dir.join(MERGE_HEAD_FILE).exists();
+    let unmerged_before_merge = has_unmerged_files(&git, &env).await?;
+    let output = git
+        .build_stable_command_with_env(&["merge", "--no-edit", &reference], &env)
+        .output()
+        .await?;
+    if output.status.success() {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        if mentions_any(&stdout, &ALREADY_UP_TO_DATE_MARKERS) {
+            return Ok(MergeOutcome::AlreadyUpToDate);
+        }
+        return Ok(MergeOutcome::Merged {
+            output: joined_output(&output),
+        });
+    }
+    let could_have_started = !merge_was_in_progress && !unmerged_before_merge;
+    if could_have_started {
+        let conflicted =
+            git_dir.join(MERGE_HEAD_FILE).exists() || has_unmerged_files(&git, &env).await?;
+        if conflicted {
+            return Ok(MergeOutcome::Conflicted {
+                output: joined_output(&output),
+            });
+        }
+    }
+    Err(git_failure_from_output(&output))
+}
+
+async fn rebase_in_worktree(
+    git: Result<GitBinary>,
+    git_dir: PathBuf,
+    action: RebaseAction,
+    env: Arc<HashMap<String, String>>,
+) -> Result<RebaseOutcome> {
+    let git = git?;
+    let starts_rebase = matches!(action, RebaseAction::Start { .. });
+    let args = match &action {
+        RebaseAction::Start { upstream, branch } => {
+            let mut args = vec!["rebase".to_string(), upstream.clone()];
+            args.extend(branch.iter().cloned());
+            args
+        }
+        RebaseAction::Continue => vec!["rebase".to_string(), "--continue".to_string()],
+        RebaseAction::Skip => vec!["rebase".to_string(), "--skip".to_string()],
+        RebaseAction::Abort => vec!["rebase".to_string(), "--abort".to_string()],
+    };
+    let rebase_was_in_progress =
+        probe_operation_in_progress(&git_dir) == Some(RepositoryOperation::Rebase);
+    let output = git
+        .build_stable_command_with_env(&args, &env)
+        .env("GIT_EDITOR", "true")
+        .output()
+        .await?;
+    if matches!(action, RebaseAction::Abort) {
+        ensure_git_success(output)?;
+        return Ok(RebaseOutcome::Aborted);
+    }
+    if output.status.success() {
+        return Ok(RebaseOutcome::Completed {
+            output: joined_output(&output),
+        });
+    }
+    let rebase_in_progress =
+        probe_operation_in_progress(&git_dir) == Some(RepositoryOperation::Rebase);
+    let rejected_before_starting = starts_rebase && rebase_was_in_progress;
+    if rebase_in_progress && !rejected_before_starting {
+        return Ok(RebaseOutcome::Conflicted {
+            output: joined_output(&output),
+        });
+    }
+    Err(git_failure_from_output(&output))
+}
+
+async fn run_network_git(
+    git: &GitBinary,
+    args: &[String],
+    env: &Arc<HashMap<String, String>>,
+    ask_pass: AskPassDelegate,
+    executor: BackgroundExecutor,
+) -> Result<RemoteCommandOutput> {
+    let mut command = git.build_command(args);
+    command
+        .envs(env.iter())
+        .env("LC_ALL", "C")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    run_git_command(env.clone(), ask_pass, command, executor).await
+}
+
+async fn delete_remote_branch_in_worktree(
+    git: Result<GitBinary>,
+    remote: String,
+    branch: String,
+    ask_pass: AskPassDelegate,
+    env: Arc<HashMap<String, String>>,
+    executor: BackgroundExecutor,
+) -> Result<RemoteCommandOutput> {
+    let git = git?;
+    let delete_args = vec![
+        "push".to_string(),
+        remote.clone(),
+        "--delete".to_string(),
+        branch,
+    ];
+    match run_network_git(&git, &delete_args, &env, ask_pass, executor).await {
+        Err(error) if error.to_string().contains(REMOTE_REF_MISSING_MESSAGE) => {
+            let output = ensure_git_success(
+                git.build_stable_command_with_env(&["remote", "prune", &remote], &env)
+                    .output()
+                    .await?,
+            )?;
+            Ok(remote_output(&output))
+        }
+        result => result,
+    }
+}
+
+async fn run_network_git_checked(
+    git: Result<GitBinary>,
+    args: Vec<String>,
+    ask_pass: AskPassDelegate,
+    env: Arc<HashMap<String, String>>,
+    executor: BackgroundExecutor,
+) -> Result<RemoteCommandOutput> {
+    let git = git?;
+    run_network_git(&git, &args, &env, ask_pass, executor).await
+}
+
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct Worktree {
     pub path: PathBuf,
     pub ref_name: Option<SharedString>,
@@ -865,6 +1340,73 @@ pub trait GitRepository: Send + Sync {
         force: bool,
     ) -> BoxFuture<'_, Result<()>>;
 
+    fn tags(&self) -> BoxFuture<'_, Result<Vec<Tag>>>;
+    fn recent_branches(&self, limit: usize) -> BoxFuture<'_, Result<Vec<SharedString>>>;
+    fn commits_between(
+        &self,
+        base: String,
+        head: String,
+        limit: usize,
+    ) -> BoxFuture<'_, Result<Vec<CommitSummary>>>;
+    fn operation_in_progress(&self) -> BoxFuture<'_, Result<Option<RepositoryOperation>>>;
+
+    fn checkout_detached(&self, revision: String) -> BoxFuture<'_, Result<()>>;
+    fn checkout_force(&self, name: String) -> BoxFuture<'_, Result<()>>;
+    fn create_branch_at(
+        &self,
+        name: String,
+        start_point: String,
+        checkout: bool,
+        overwrite: bool,
+    ) -> BoxFuture<'_, Result<()>>;
+    fn set_upstream(&self, branch: String, upstream: Option<String>) -> BoxFuture<'_, Result<()>>;
+
+    fn merge(
+        &self,
+        reference: String,
+        env: Arc<HashMap<String, String>>,
+    ) -> BoxFuture<'_, Result<MergeOutcome>>;
+    fn merge_abort(&self, env: Arc<HashMap<String, String>>) -> BoxFuture<'_, Result<()>>;
+    fn rebase(
+        &self,
+        action: RebaseAction,
+        env: Arc<HashMap<String, String>>,
+    ) -> BoxFuture<'_, Result<RebaseOutcome>>;
+    fn reset_hard(
+        &self,
+        commit: String,
+        env: Arc<HashMap<String, String>>,
+    ) -> BoxFuture<'_, Result<()>>;
+
+    fn delete_remote_branch(
+        &self,
+        remote: String,
+        branch: String,
+        askpass: AskPassDelegate,
+        env: Arc<HashMap<String, String>>,
+        cx: AsyncApp,
+    ) -> BoxFuture<'_, Result<RemoteCommandOutput>>;
+    fn fast_forward_branch(
+        &self,
+        remote: String,
+        remote_branch: String,
+        local_branch: String,
+        askpass: AskPassDelegate,
+        env: Arc<HashMap<String, String>>,
+        cx: AsyncApp,
+    ) -> BoxFuture<'_, Result<RemoteCommandOutput>>;
+
+    fn delete_tag(&self, name: String) -> BoxFuture<'_, Result<()>>;
+    fn create_tag(&self, name: String, target: String) -> BoxFuture<'_, Result<()>>;
+    fn push_tag(
+        &self,
+        remote: String,
+        tag: String,
+        askpass: AskPassDelegate,
+        env: Arc<HashMap<String, String>>,
+        cx: AsyncApp,
+    ) -> BoxFuture<'_, Result<RemoteCommandOutput>>;
+
     fn worktrees(&self) -> BoxFuture<'_, Result<Vec<Worktree>>>;
 
     /// Returns the creation time of a linked worktree's git metadata
@@ -1305,6 +1847,24 @@ impl RealGitRepository {
             self.executor.clone(),
             self.is_trusted(),
         )
+    }
+
+    fn network_git_binary(
+        &self,
+        operation: &str,
+        executor: BackgroundExecutor,
+    ) -> Result<GitBinary> {
+        let git_binary_path = self
+            .system_git_binary_path
+            .clone()
+            .with_context(|| format!("git not found on $PATH, can't {operation}"))?;
+        Ok(GitBinary::new(
+            git_binary_path,
+            self.command_directory(),
+            self.path(),
+            executor,
+            self.is_trusted(),
+        ))
     }
 
     fn edit_ref(&self, edit: RefEdit) -> BoxFuture<'_, Result<()>> {
@@ -2365,56 +2925,53 @@ impl GitRepository for RealGitRepository {
 
     fn change_branch(&self, name: String) -> BoxFuture<'_, Result<()>> {
         let git_binary = self.git_binary_in_worktree();
-        self.executor
-            .spawn(async move {
-                let git_binary = git_binary?;
-                let local_ref = format!("refs/heads/{name}");
+        classify_task(self.executor.spawn(async move {
+            let git_binary = git_binary?;
+            let local_ref = format!("refs/heads/{name}");
+            if git_binary
+                .run(&["show-ref", "--verify", "--quiet", &local_ref])
+                .await
+                .is_ok()
+            {
+                git_binary.run_stable(&["checkout", &name]).await?;
+                return anyhow::Ok(());
+            }
+
+            let remote_ref = format!("refs/remotes/{name}");
+            if git_binary
+                .run(&["show-ref", "--verify", "--quiet", &remote_ref])
+                .await
+                .is_ok()
+            {
+                let name = match git_binary.run(&["symbolic-ref", &remote_ref]).await {
+                    Ok(resolved) => resolved
+                        .strip_prefix("refs/remotes/")
+                        .map(str::to_owned)
+                        .unwrap_or(name),
+                    Err(_) => name,
+                };
+                let (_, branch_name) = name.split_once('/').context("Unexpected branch format")?;
+                let local_branch_ref = format!("refs/heads/{branch_name}");
                 if git_binary
-                    .run(&["show-ref", "--verify", "--quiet", &local_ref])
+                    .run(&["show-ref", "--verify", "--quiet", &local_branch_ref])
                     .await
                     .is_ok()
                 {
-                    git_binary.run(&["checkout", &name]).await?;
-                    return anyhow::Ok(());
+                    git_binary
+                        .run(&["branch", "--set-upstream-to", &name, branch_name])
+                        .await?;
+                } else {
+                    git_binary
+                        .run(&["branch", "--track", branch_name, &name])
+                        .await?;
                 }
 
-                let remote_ref = format!("refs/remotes/{name}");
-                if git_binary
-                    .run(&["show-ref", "--verify", "--quiet", &remote_ref])
-                    .await
-                    .is_ok()
-                {
-                    let name = match git_binary.run(&["symbolic-ref", &remote_ref]).await {
-                        Ok(resolved) => resolved
-                            .strip_prefix("refs/remotes/")
-                            .map(str::to_owned)
-                            .unwrap_or(name),
-                        Err(_) => name,
-                    };
-                    let (_, branch_name) =
-                        name.split_once('/').context("Unexpected branch format")?;
-                    let local_branch_ref = format!("refs/heads/{branch_name}");
-                    if git_binary
-                        .run(&["show-ref", "--verify", "--quiet", &local_branch_ref])
-                        .await
-                        .is_ok()
-                    {
-                        git_binary
-                            .run(&["branch", "--set-upstream-to", &name, branch_name])
-                            .await?;
-                    } else {
-                        git_binary
-                            .run(&["branch", "--track", branch_name, &name])
-                            .await?;
-                    }
+                git_binary.run_stable(&["checkout", branch_name]).await?;
+                return anyhow::Ok(());
+            }
 
-                    git_binary.run(&["checkout", branch_name]).await?;
-                    return anyhow::Ok(());
-                }
-
-                anyhow::bail!("Branch '{}' not found", name);
-            })
-            .boxed()
+            Err(revision_not_found(format!("Branch '{name}' not found")))
+        }))
     }
 
     fn create_branch(
@@ -2462,14 +3019,341 @@ impl GitRepository for RealGitRepository {
     ) -> BoxFuture<'_, Result<()>> {
         let git_binary = self.git_binary_in_worktree();
 
+        classify_task(self.executor.spawn(async move {
+            let git_binary = git_binary?;
+            let flag = delete_branch_flag(is_remote, force);
+            git_binary.run_stable(&["branch", flag, &name]).await?;
+            anyhow::Ok(())
+        }))
+    }
+
+    fn tags(&self) -> BoxFuture<'_, Result<Vec<Tag>>> {
+        let git = self.git_binary();
+        classify_task(self.executor.spawn(async move {
+            let output = ensure_git_success(
+                git.build_stable_command(&[
+                    "for-each-ref",
+                    "--sort=-creatordate",
+                    "--format=%(refname)%00%(objectname)%00%(*objectname)",
+                    "refs/tags",
+                ])
+                .output()
+                .await?,
+            )?;
+            anyhow::Ok(parse_tags(&String::from_utf8_lossy(&output.stdout)))
+        }))
+    }
+
+    fn recent_branches(&self, limit: usize) -> BoxFuture<'_, Result<Vec<SharedString>>> {
+        let git = self.git_binary();
+        classify_task(self.executor.spawn(async move {
+            if limit == 0 {
+                return anyhow::Ok(Vec::new());
+            }
+            let reflog = git
+                .build_stable_command(&[
+                    "reflog",
+                    "show",
+                    "--format=%gs",
+                    "-n",
+                    RECENT_BRANCHES_REFLOG_DEPTH,
+                    "HEAD",
+                ])
+                .output()
+                .await?;
+            if !reflog.status.success() {
+                return anyhow::Ok(Vec::new());
+            }
+            let local_refs = ensure_git_success(
+                git.build_stable_command(&["for-each-ref", "--format=%(refname)", "refs/heads"])
+                    .output()
+                    .await?,
+            )?;
+            let local_refs = String::from_utf8_lossy(&local_refs.stdout);
+            let existing_branches = local_refs
+                .lines()
+                .filter_map(|line| line.strip_prefix("refs/heads/"))
+                .collect::<HashSet<_>>();
+            anyhow::Ok(parse_recent_branches(
+                &String::from_utf8_lossy(&reflog.stdout),
+                &existing_branches,
+                limit,
+            ))
+        }))
+    }
+
+    fn commits_between(
+        &self,
+        base: String,
+        head: String,
+        limit: usize,
+    ) -> BoxFuture<'_, Result<Vec<CommitSummary>>> {
+        let git = self.git_binary();
+        classify_task(self.executor.spawn(async move {
+            let range = format!("{base}..{head}");
+            let limit = limit.to_string();
+            let output = ensure_git_success(
+                git.build_stable_command(&[
+                    "log",
+                    "--format=%H%x00%s%x00%ct%x00%an%x00%P",
+                    "-n",
+                    &limit,
+                    &range,
+                    "--",
+                ])
+                .output()
+                .await?,
+            )?;
+            anyhow::Ok(parse_commit_summaries(&String::from_utf8_lossy(
+                &output.stdout,
+            )))
+        }))
+    }
+
+    fn operation_in_progress(&self) -> BoxFuture<'_, Result<Option<RepositoryOperation>>> {
+        let git_dir = self.path();
         self.executor
-            .spawn(async move {
-                let git_binary = git_binary?;
-                let flag = delete_branch_flag(is_remote, force);
-                git_binary.run(&["branch", flag, &name]).await?;
-                anyhow::Ok(())
-            })
+            .spawn(async move { anyhow::Ok(probe_operation_in_progress(&git_dir)) })
             .boxed()
+    }
+
+    fn checkout_detached(&self, revision: String) -> BoxFuture<'_, Result<()>> {
+        let git = self.git_binary_in_worktree();
+        classify_task(self.executor.spawn(async move {
+            let git = git?;
+            let commit_expression = format!("{revision}^{{commit}}");
+            let resolved = git
+                .build_stable_command(&[
+                    "rev-parse",
+                    "--verify",
+                    "--quiet",
+                    "--end-of-options",
+                    &commit_expression,
+                ])
+                .output()
+                .await?;
+            if !resolved.status.success() {
+                return Err(revision_not_found(format!(
+                    "Revision '{revision}' not found"
+                )));
+            }
+            let sha = String::from_utf8_lossy(&resolved.stdout).trim().to_string();
+            ensure_git_success(
+                git.build_stable_command(&["checkout", "--detach", &sha, "--"])
+                    .output()
+                    .await?,
+            )?;
+            anyhow::Ok(())
+        }))
+    }
+
+    fn checkout_force(&self, name: String) -> BoxFuture<'_, Result<()>> {
+        let git = self.git_binary_in_worktree();
+        classify_task(self.executor.spawn(async move {
+            let git = git?;
+            ensure_git_success(
+                git.build_stable_command(&["checkout", "--force", &name, "--"])
+                    .output()
+                    .await?,
+            )?;
+            anyhow::Ok(())
+        }))
+    }
+
+    fn create_branch_at(
+        &self,
+        name: String,
+        start_point: String,
+        checkout: bool,
+        overwrite: bool,
+    ) -> BoxFuture<'_, Result<()>> {
+        let git = self.git_binary_in_worktree();
+        classify_task(self.executor.spawn(async move {
+            let git = git?;
+            let overwrites_current_branch = !checkout
+                && overwrite
+                && current_branch_name(&git).await?.as_deref() == Some(name.as_str());
+            let args: Vec<&str> = if checkout || overwrites_current_branch {
+                let flag = if overwrite { "-B" } else { "-b" };
+                vec!["checkout", flag, &name, &start_point, "--"]
+            } else if overwrite {
+                vec!["branch", "-f", &name, &start_point]
+            } else {
+                vec!["branch", &name, &start_point]
+            };
+            ensure_git_success(git.build_stable_command(&args).output().await?)?;
+            anyhow::Ok(())
+        }))
+    }
+
+    fn set_upstream(&self, branch: String, upstream: Option<String>) -> BoxFuture<'_, Result<()>> {
+        let git = self.git_binary_in_worktree();
+        classify_task(self.executor.spawn(async move {
+            let git = git?;
+            match upstream {
+                Some(upstream) => {
+                    let set_upstream_to = format!("--set-upstream-to={upstream}");
+                    ensure_git_success(
+                        git.build_stable_command(&["branch", &set_upstream_to, &branch])
+                            .output()
+                            .await?,
+                    )?;
+                }
+                None => {
+                    let output = git
+                        .build_stable_command(&["branch", "--unset-upstream", &branch])
+                        .output()
+                        .await?;
+                    let had_no_upstream =
+                        String::from_utf8_lossy(&output.stderr).contains(NO_UPSTREAM_MESSAGE);
+                    if !output.status.success() && !had_no_upstream {
+                        return Err(git_failure_from_output(&output));
+                    }
+                }
+            }
+            anyhow::Ok(())
+        }))
+    }
+
+    fn merge(
+        &self,
+        reference: String,
+        env: Arc<HashMap<String, String>>,
+    ) -> BoxFuture<'_, Result<MergeOutcome>> {
+        let git = self.git_binary_in_worktree();
+        let git_dir = self.path();
+        classify_task(
+            self.executor
+                .spawn(merge_in_worktree(git, git_dir, reference, env)),
+        )
+    }
+
+    fn merge_abort(&self, env: Arc<HashMap<String, String>>) -> BoxFuture<'_, Result<()>> {
+        let git = self.git_binary_in_worktree();
+        classify_task(self.executor.spawn(async move {
+            let git = git?;
+            ensure_git_success(
+                git.build_stable_command_with_env(&["merge", "--abort"], &env)
+                    .output()
+                    .await?,
+            )?;
+            anyhow::Ok(())
+        }))
+    }
+
+    fn rebase(
+        &self,
+        action: RebaseAction,
+        env: Arc<HashMap<String, String>>,
+    ) -> BoxFuture<'_, Result<RebaseOutcome>> {
+        let git = self.git_binary_in_worktree();
+        let git_dir = self.path();
+        classify_task(
+            self.executor
+                .spawn(rebase_in_worktree(git, git_dir, action, env)),
+        )
+    }
+
+    fn reset_hard(
+        &self,
+        commit: String,
+        env: Arc<HashMap<String, String>>,
+    ) -> BoxFuture<'_, Result<()>> {
+        let git = self.git_binary_in_worktree();
+        classify_task(self.executor.spawn(async move {
+            let git = git?;
+            ensure_git_success(
+                git.build_stable_command_with_env(&["reset", "--hard", &commit, "--"], &env)
+                    .output()
+                    .await?,
+            )?;
+            anyhow::Ok(())
+        }))
+    }
+
+    fn delete_remote_branch(
+        &self,
+        remote: String,
+        branch: String,
+        ask_pass: AskPassDelegate,
+        env: Arc<HashMap<String, String>>,
+        cx: AsyncApp,
+    ) -> BoxFuture<'_, Result<RemoteCommandOutput>> {
+        let executor = cx.background_executor().clone();
+        let git = self.network_git_binary("delete a remote branch", executor.clone());
+        async move {
+            delete_remote_branch_in_worktree(git, remote, branch, ask_pass, env, executor)
+                .await
+                .map_err(into_git_failure)
+        }
+        .boxed()
+    }
+
+    fn fast_forward_branch(
+        &self,
+        remote: String,
+        remote_branch: String,
+        local_branch: String,
+        ask_pass: AskPassDelegate,
+        env: Arc<HashMap<String, String>>,
+        cx: AsyncApp,
+    ) -> BoxFuture<'_, Result<RemoteCommandOutput>> {
+        let executor = cx.background_executor().clone();
+        let git = self.network_git_binary("fast-forward a branch", executor.clone());
+        let args = vec![
+            "fetch".to_string(),
+            remote,
+            format!("{remote_branch}:{local_branch}"),
+        ];
+        async move {
+            run_network_git_checked(git, args, ask_pass, env, executor)
+                .await
+                .map_err(into_git_failure)
+        }
+        .boxed()
+    }
+
+    fn delete_tag(&self, name: String) -> BoxFuture<'_, Result<()>> {
+        let git = self.git_binary();
+        classify_task(self.executor.spawn(async move {
+            ensure_git_success(
+                git.build_stable_command(&["tag", "-d", &name])
+                    .output()
+                    .await?,
+            )?;
+            anyhow::Ok(())
+        }))
+    }
+
+    fn create_tag(&self, name: String, target: String) -> BoxFuture<'_, Result<()>> {
+        let git = self.git_binary();
+        classify_task(self.executor.spawn(async move {
+            ensure_git_success(
+                git.build_stable_command(&["tag", &name, &target])
+                    .output()
+                    .await?,
+            )?;
+            anyhow::Ok(())
+        }))
+    }
+
+    fn push_tag(
+        &self,
+        remote: String,
+        tag: String,
+        ask_pass: AskPassDelegate,
+        env: Arc<HashMap<String, String>>,
+        cx: AsyncApp,
+    ) -> BoxFuture<'_, Result<RemoteCommandOutput>> {
+        let executor = cx.background_executor().clone();
+        let git = self.network_git_binary("push a tag", executor.clone());
+        let args = vec!["push".to_string(), remote, format!("refs/tags/{tag}")];
+        async move {
+            run_network_git_checked(git, args, ask_pass, env, executor)
+                .await
+                .map_err(into_git_failure)
+        }
+        .boxed()
     }
 
     fn blame(
@@ -2745,12 +3629,15 @@ impl GitRepository for RealGitRepository {
                 if let Some(index) = index {
                     args.push(format!("stash@{{{}}}", index));
                 }
-                let output = git.build_command(&args).envs(env.iter()).output().await?;
+                let output = git
+                    .build_stable_command_with_env(&args, &env)
+                    .output()
+                    .await?;
 
                 anyhow::ensure!(
                     output.status.success(),
                     "Failed to stash pop:\n{}",
-                    String::from_utf8_lossy(&output.stderr)
+                    joined_output(&output)
                 );
                 Ok(())
             })
@@ -2770,12 +3657,15 @@ impl GitRepository for RealGitRepository {
                 if let Some(index) = index {
                     args.push(format!("stash@{{{}}}", index));
                 }
-                let output = git.build_command(&args).envs(env.iter()).output().await?;
+                let output = git
+                    .build_stable_command_with_env(&args, &env)
+                    .output()
+                    .await?;
 
                 anyhow::ensure!(
                     output.status.success(),
                     "Failed to apply stash:\n{}",
-                    String::from_utf8_lossy(&output.stderr)
+                    joined_output(&output)
                 );
                 Ok(())
             })
@@ -4111,6 +5001,43 @@ impl GitBinary {
         }
         command.envs(&self.envs);
         command
+    }
+
+    fn build_stable_command<S>(&self, args: &[S]) -> util::command::Command
+    where
+        S: AsRef<OsStr>,
+    {
+        self.build_stable_command_with_env(args, &HashMap::default())
+    }
+
+    fn build_stable_command_with_env<S>(
+        &self,
+        args: &[S],
+        env: &HashMap<String, String>,
+    ) -> util::command::Command
+    where
+        S: AsRef<OsStr>,
+    {
+        let mut command = self.build_command(args);
+        command.envs(env.iter());
+        command.env("LC_ALL", "C").env("GIT_TERMINAL_PROMPT", "0");
+        command
+    }
+
+    async fn run_stable<S>(&self, args: &[S]) -> Result<String>
+    where
+        S: AsRef<OsStr>,
+    {
+        let output = self.build_stable_command(args).output().await?;
+        anyhow::ensure!(
+            output.status.success(),
+            GitBinaryCommandError {
+                stdout: String::from_utf8_lossy(&output.stdout).to_string(),
+                stderr: String::from_utf8_lossy(&output.stderr).to_string(),
+                status: output.status,
+            }
+        );
+        Ok(String::from_utf8(output.stdout)?)
     }
 }
 
@@ -7268,5 +8195,1420 @@ mod tests {
             remote_urls.get("upstream").unwrap(),
             "/Users/user/My Projects/upstream.git"
         );
+    }
+
+    fn open_real_repository(path: &Path, cx: &TestAppContext) -> RealGitRepository {
+        RealGitRepository::new(&path.join(".git"), None, Some("git".into()), cx.executor()).unwrap()
+    }
+
+    fn commit_file(path: &Path, file: &str, contents: &str, message: &str) {
+        fs::write(path.join(file), contents).unwrap();
+        git_command(path, ["add", file]);
+        git_command(path, ["commit", "-m", message]);
+    }
+
+    fn init_repo_with_base_commit(path: &Path) {
+        git_init_repo(path);
+        commit_file(path, "file.txt", "base\n", "base");
+    }
+
+    fn init_repo_with_conflicting_branches(path: &Path) {
+        init_repo_with_base_commit(path);
+        git_command(path, ["checkout", "-b", "feature"]);
+        commit_file(path, "file.txt", "feature\n", "feature change");
+        git_command(path, ["checkout", "main"]);
+        commit_file(path, "file.txt", "main\n", "main change");
+    }
+
+    fn init_repo_with_diverged_branches(path: &Path) {
+        init_repo_with_base_commit(path);
+        git_command(path, ["checkout", "-b", "feature"]);
+        commit_file(path, "feature.txt", "feature\n", "feature change");
+        git_command(path, ["checkout", "main"]);
+        commit_file(path, "main.txt", "main\n", "main change");
+    }
+
+    fn failure_kind(error: &anyhow::Error) -> GitFailureKind {
+        error
+            .downcast_ref::<GitFailure>()
+            .expect("error should be a GitFailure")
+            .kind
+            .clone()
+    }
+
+    fn noop_askpass(cx: &TestAppContext) -> AskPassDelegate {
+        AskPassDelegate::new(&mut cx.to_async(), |_, _, _| {})
+    }
+
+    fn current_branch_of(path: &Path) -> String {
+        git_command_output(path, ["branch", "--show-current"])
+    }
+
+    #[test]
+    fn test_classify_git_failure_extracts_files_blocking_checkout_and_merge() {
+        assert_eq!(
+            classify_git_failure(
+                "error: Your local changes to the following files would be overwritten by checkout:\n\tsrc/a.rs\n\tb.txt\nPlease commit your changes or stash them before you switch branches.\nAborting\n"
+            ),
+            GitFailureKind::LocalChangesWouldBeOverwritten {
+                files: vec!["src/a.rs".to_string(), "b.txt".to_string()]
+            }
+        );
+        assert_eq!(
+            classify_git_failure(
+                "error: Your local changes to the following files would be overwritten by merge:\n\tfile.txt\nPlease commit your changes or stash them before you merge.\nAborting\n"
+            ),
+            GitFailureKind::LocalChangesWouldBeOverwritten {
+                files: vec!["file.txt".to_string()]
+            }
+        );
+        assert_eq!(
+            classify_git_failure(
+                "error: The following untracked working tree files would be overwritten by checkout:\n\tnew file.txt\nPlease move or remove them before you switch branches.\nAborting\n"
+            ),
+            GitFailureKind::UntrackedFilesWouldBeOverwritten {
+                files: vec!["new file.txt".to_string()]
+            }
+        );
+        assert_eq!(
+            classify_git_failure(
+                "error: The following untracked working tree files would be overwritten by merge:\n\ta.txt\n\tb.txt\nPlease move or remove them before you merge.\nAborting\n"
+            ),
+            GitFailureKind::UntrackedFilesWouldBeOverwritten {
+                files: vec!["a.txt".to_string(), "b.txt".to_string()]
+            }
+        );
+    }
+
+    #[test]
+    fn test_classify_git_failure_recognises_unmerged_index_states() {
+        for stderr in [
+            "error: you need to resolve your current index first\n",
+            "file.txt: needs merge\nerror: you need to resolve your current index first\n",
+            "error: Committing is not possible because you have unmerged files.\n",
+            "error: path 'file.txt' is unmerged\n",
+        ] {
+            assert_eq!(
+                classify_git_failure(stderr),
+                GitFailureKind::UnmergedFiles,
+                "stderr: {stderr}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_classify_git_failure_recognises_unmerged_branch_deletion() {
+        assert_eq!(
+            classify_git_failure(
+                "error: The branch 'topic' is not fully merged.\nIf you are sure you want to delete it, run 'git branch -D topic'.\n"
+            ),
+            GitFailureKind::BranchNotFullyMerged
+        );
+    }
+
+    #[test]
+    fn test_classify_git_failure_extracts_worktree_path_from_both_git_wordings() {
+        assert_eq!(
+            classify_git_failure("fatal: 'main' is already checked out at '/tmp/linked tree'\n"),
+            GitFailureKind::BranchCheckedOutInWorktree {
+                path: "/tmp/linked tree".to_string()
+            }
+        );
+        assert_eq!(
+            classify_git_failure("fatal: 'main' is already used by worktree at '/tmp/linked'\n"),
+            GitFailureKind::BranchCheckedOutInWorktree {
+                path: "/tmp/linked".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn test_classify_git_failure_extracts_worktree_path_from_other_worktree_wordings() {
+        for (stderr, expected_path) in [
+            (
+                "error: cannot delete branch 'f2' used by worktree at '/private/tmp/rv2/r'\n",
+                "/private/tmp/rv2/r",
+            ),
+            (
+                "fatal: cannot force update the branch 'linked' used by worktree at '/tmp/a b'\n",
+                "/tmp/a b",
+            ),
+            (
+                "fatal: refusing to fetch into branch 'refs/heads/main' checked out at '/tmp/linked'\n",
+                "/tmp/linked",
+            ),
+        ] {
+            assert_eq!(
+                classify_git_failure(stderr),
+                GitFailureKind::BranchCheckedOutInWorktree {
+                    path: expected_path.to_string()
+                },
+                "stderr: {stderr}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_classify_git_failure_recognises_failed_merge_rebase_and_reset_targets() {
+        for stderr in [
+            "fatal: bad revision 'main..nosuch'\n",
+            "fatal: Failed to resolve 'nosuch' as a valid revision.\n",
+            "merge: nosuch - not something we can merge\n",
+            "fatal: invalid upstream 'nosuch'\n",
+        ] {
+            assert_eq!(
+                classify_git_failure(stderr),
+                GitFailureKind::RevisionNotFound,
+                "stderr: {stderr}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_classify_git_failure_does_not_treat_invalid_branch_names_as_missing_revisions() {
+        for stderr in [
+            "fatal: 'a b' is not a valid branch name\n",
+            "fatal: 'a..b' is not a valid branch name\nhint: See 'git help check-ref-format'\n",
+        ] {
+            assert_eq!(
+                classify_git_failure(stderr),
+                GitFailureKind::Other,
+                "stderr: {stderr}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_classify_git_failure_recognises_missing_revisions() {
+        for stderr in [
+            "fatal: invalid reference: nope\n",
+            "error: pathspec 'nope' did not match any file(s) known to git\n",
+            "fatal: Not a valid object name nope\n",
+            "fatal: ambiguous argument 'a..b': unknown revision or path not in the working tree.\n",
+            "fatal: 'nope' is not a commit and a branch 'new' cannot be created from it\n",
+        ] {
+            assert_eq!(
+                classify_git_failure(stderr),
+                GitFailureKind::RevisionNotFound,
+                "stderr: {stderr}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_classify_git_failure_falls_back_to_other() {
+        assert_eq!(classify_git_failure(""), GitFailureKind::Other);
+        assert_eq!(
+            classify_git_failure(
+                "fatal: unable to access 'https://example.com/': Could not resolve host\n"
+            ),
+            GitFailureKind::Other
+        );
+    }
+
+    #[test]
+    fn test_parse_tags_prefers_the_peeled_commit_of_annotated_tags() {
+        let output = "refs/tags/v2\0tagobject\0commitb\nrefs/tags/v1\0commita\0\nrefs/heads/x\0z\0\nrefs/tags/broken\n";
+        assert_eq!(
+            parse_tags(output),
+            vec![
+                Tag {
+                    name: "v2".into(),
+                    commit_sha: "commitb".into()
+                },
+                Tag {
+                    name: "v1".into(),
+                    commit_sha: "commita".into()
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn test_parse_recent_branches_deduplicates_filters_and_limits() {
+        let reflog = "checkout: moving from gone to main\n\
+            checkout: moving from feature to gone\n\
+            commit: something\n\
+            checkout: moving from 0123abc to feature\n\
+            checkout: moving from main to feature\n\
+            checkout: moving from feature to main\n\
+            checkout: moving from main to 0123abc\n\
+            checkout: moving from main to other\n";
+        let existing = HashSet::from(["main", "feature", "other"]);
+        assert_eq!(
+            parse_recent_branches(reflog, &existing, 10),
+            vec![
+                SharedString::from("main"),
+                SharedString::from("feature"),
+                SharedString::from("other"),
+            ]
+        );
+        assert_eq!(
+            parse_recent_branches(reflog, &existing, 2),
+            vec![SharedString::from("main"), SharedString::from("feature")]
+        );
+        assert!(parse_recent_branches(reflog, &existing, 0).is_empty());
+        assert!(parse_recent_branches("", &existing, 5).is_empty());
+    }
+
+    #[test]
+    fn test_parse_commit_summaries_detects_root_commits_and_skips_malformed_lines() {
+        let output = "sha2\0second\0200\0Ann\0sha1\nsha1\0first\0100\0Bob\0\nmalformed\nsha3\0bad time\0abc\0Eve\0sha2\n";
+        let summaries = parse_commit_summaries(output);
+        assert_eq!(summaries.len(), 2);
+        assert_eq!(&*summaries[0].sha, "sha2");
+        assert_eq!(&*summaries[0].subject, "second");
+        assert_eq!(summaries[0].commit_timestamp, 200);
+        assert_eq!(&*summaries[0].author_name, "Ann");
+        assert!(summaries[0].has_parent);
+        assert_eq!(&*summaries[1].sha, "sha1");
+        assert!(!summaries[1].has_parent);
+    }
+
+    #[test]
+    fn test_probe_operation_in_progress_priorities() {
+        let git_dir = tempfile::tempdir().unwrap();
+        let git_dir = git_dir.path();
+        assert_eq!(probe_operation_in_progress(git_dir), None);
+
+        fs::write(git_dir.join("REVERT_HEAD"), "sha").unwrap();
+        assert_eq!(
+            probe_operation_in_progress(git_dir),
+            Some(RepositoryOperation::Revert)
+        );
+
+        fs::write(git_dir.join("CHERRY_PICK_HEAD"), "sha").unwrap();
+        assert_eq!(
+            probe_operation_in_progress(git_dir),
+            Some(RepositoryOperation::CherryPick)
+        );
+
+        fs::write(git_dir.join("MERGE_HEAD"), "sha").unwrap();
+        assert_eq!(
+            probe_operation_in_progress(git_dir),
+            Some(RepositoryOperation::Merge)
+        );
+
+        fs::create_dir(git_dir.join("rebase-merge")).unwrap();
+        assert_eq!(
+            probe_operation_in_progress(git_dir),
+            Some(RepositoryOperation::Rebase)
+        );
+        fs::remove_dir(git_dir.join("rebase-merge")).unwrap();
+
+        fs::create_dir(git_dir.join("rebase-apply")).unwrap();
+        assert_eq!(
+            probe_operation_in_progress(git_dir),
+            Some(RepositoryOperation::Rebase)
+        );
+
+        fs::write(git_dir.join("rebase-apply").join("applying"), "").unwrap();
+        assert_eq!(
+            probe_operation_in_progress(git_dir),
+            Some(RepositoryOperation::Merge)
+        );
+    }
+
+    #[gpui::test]
+    async fn test_tags_peel_annotated_tags_and_keep_names_that_collide_with_branches(
+        cx: &mut TestAppContext,
+    ) {
+        disable_git_global_config();
+        cx.executor().allow_parking();
+
+        let repo_dir = tempfile::tempdir().unwrap();
+        init_repo_with_base_commit(repo_dir.path());
+        let base_sha = git_command_output(repo_dir.path(), ["rev-parse", "HEAD"]);
+        git_command(repo_dir.path(), ["tag", "lightweight"]);
+        commit_file(repo_dir.path(), "file.txt", "second\n", "second");
+        let second_sha = git_command_output(repo_dir.path(), ["rev-parse", "HEAD"]);
+        git_command(
+            repo_dir.path(),
+            ["tag", "-a", "annotated", "-m", "annotated tag"],
+        );
+        git_command(repo_dir.path(), ["branch", "collides"]);
+        git_command(repo_dir.path(), ["tag", "collides", &base_sha]);
+
+        let repository = open_real_repository(repo_dir.path(), cx);
+        let mut tags = repository.tags().await.unwrap();
+        tags.sort_by_key(|tag| tag.name.to_string());
+
+        assert_eq!(
+            tags,
+            vec![
+                Tag {
+                    name: "annotated".into(),
+                    commit_sha: second_sha.into()
+                },
+                Tag {
+                    name: "collides".into(),
+                    commit_sha: base_sha.clone().into()
+                },
+                Tag {
+                    name: "lightweight".into(),
+                    commit_sha: base_sha.into()
+                },
+            ]
+        );
+    }
+
+    #[gpui::test]
+    async fn test_tags_is_empty_without_tags(cx: &mut TestAppContext) {
+        disable_git_global_config();
+        cx.executor().allow_parking();
+
+        let repo_dir = tempfile::tempdir().unwrap();
+        init_repo_with_base_commit(repo_dir.path());
+
+        let repository = open_real_repository(repo_dir.path(), cx);
+        assert!(repository.tags().await.unwrap().is_empty());
+    }
+
+    #[gpui::test]
+    async fn test_create_and_delete_tag(cx: &mut TestAppContext) {
+        disable_git_global_config();
+        cx.executor().allow_parking();
+
+        let repo_dir = tempfile::tempdir().unwrap();
+        init_repo_with_base_commit(repo_dir.path());
+        let base_sha = git_command_output(repo_dir.path(), ["rev-parse", "HEAD"]);
+
+        let repository = open_real_repository(repo_dir.path(), cx);
+        repository
+            .create_tag("v1".to_string(), "HEAD".to_string())
+            .await
+            .unwrap();
+        let tags = repository.tags().await.unwrap();
+        assert_eq!(tags.len(), 1);
+        assert_eq!(&*tags[0].name, "v1");
+        assert_eq!(&*tags[0].commit_sha, base_sha);
+
+        assert!(
+            repository
+                .create_tag("v1".to_string(), "HEAD".to_string())
+                .await
+                .is_err(),
+            "creating an existing tag must fail instead of moving it"
+        );
+
+        repository.delete_tag("v1".to_string()).await.unwrap();
+        assert!(repository.tags().await.unwrap().is_empty());
+        let error = repository
+            .delete_tag("v1".to_string())
+            .await
+            .expect_err("deleting a missing tag must fail");
+        assert!(error.downcast_ref::<GitFailure>().is_some());
+    }
+
+    #[gpui::test]
+    async fn test_recent_branches_follow_reflog_and_skip_deleted_branches(cx: &mut TestAppContext) {
+        disable_git_global_config();
+        cx.executor().allow_parking();
+
+        let repo_dir = tempfile::tempdir().unwrap();
+        init_repo_with_base_commit(repo_dir.path());
+        git_command(repo_dir.path(), ["branch", "a"]);
+        git_command(repo_dir.path(), ["branch", "b"]);
+        for branch in ["a", "b", "main", "a"] {
+            git_command(repo_dir.path(), ["checkout", branch]);
+        }
+        git_command(repo_dir.path(), ["checkout", "-b", "gone"]);
+        git_command(repo_dir.path(), ["checkout", "main"]);
+        git_command(repo_dir.path(), ["branch", "-D", "gone"]);
+
+        let repository = open_real_repository(repo_dir.path(), cx);
+        assert_eq!(
+            repository.recent_branches(10).await.unwrap(),
+            vec![
+                SharedString::from("main"),
+                SharedString::from("a"),
+                SharedString::from("b"),
+            ]
+        );
+        assert_eq!(
+            repository.recent_branches(2).await.unwrap(),
+            vec![SharedString::from("main"), SharedString::from("a")]
+        );
+        assert!(repository.recent_branches(0).await.unwrap().is_empty());
+    }
+
+    #[gpui::test]
+    async fn test_recent_branches_is_empty_for_repository_without_commits(cx: &mut TestAppContext) {
+        disable_git_global_config();
+        cx.executor().allow_parking();
+
+        let repo_dir = tempfile::tempdir().unwrap();
+        git_init_repo(repo_dir.path());
+
+        let repository = open_real_repository(repo_dir.path(), cx);
+        assert!(repository.recent_branches(5).await.unwrap().is_empty());
+    }
+
+    #[gpui::test]
+    async fn test_commits_between_lists_only_the_range_and_marks_root_commits(
+        cx: &mut TestAppContext,
+    ) {
+        disable_git_global_config();
+        cx.executor().allow_parking();
+
+        let repo_dir = tempfile::tempdir().unwrap();
+        init_repo_with_base_commit(repo_dir.path());
+        git_command(repo_dir.path(), ["checkout", "-b", "feature"]);
+        commit_file(repo_dir.path(), "a.txt", "a\n", "feature one");
+        commit_file(repo_dir.path(), "b.txt", "b\n", "feature two");
+        let feature_sha = git_command_output(repo_dir.path(), ["rev-parse", "HEAD"]);
+        git_command(repo_dir.path(), ["checkout", "main"]);
+        git_command(repo_dir.path(), ["checkout", "--orphan", "unrelated"]);
+        git_command(
+            repo_dir.path(),
+            ["commit", "--allow-empty", "-m", "unrelated root"],
+        );
+
+        let repository = open_real_repository(repo_dir.path(), cx);
+        let ahead = repository
+            .commits_between("main".to_string(), "feature".to_string(), 10)
+            .await
+            .unwrap();
+        assert_eq!(
+            ahead
+                .iter()
+                .map(|commit| commit.subject.to_string())
+                .collect::<Vec<_>>(),
+            vec!["feature two".to_string(), "feature one".to_string()]
+        );
+        assert_eq!(&*ahead[0].sha, feature_sha);
+        assert_eq!(&*ahead[0].author_name, "test");
+        assert!(ahead.iter().all(|commit| commit.has_parent));
+
+        let limited = repository
+            .commits_between("main".to_string(), "feature".to_string(), 1)
+            .await
+            .unwrap();
+        assert_eq!(limited.len(), 1);
+        assert_eq!(&*limited[0].subject, "feature two");
+
+        let behind = repository
+            .commits_between("feature".to_string(), "main".to_string(), 10)
+            .await
+            .unwrap();
+        assert!(behind.is_empty());
+
+        let unrelated = repository
+            .commits_between("main".to_string(), "unrelated".to_string(), 10)
+            .await
+            .unwrap();
+        assert_eq!(unrelated.len(), 1);
+        assert!(!unrelated[0].has_parent);
+
+        let error = repository
+            .commits_between("main".to_string(), "no-such-ref".to_string(), 10)
+            .await
+            .expect_err("unknown revision must fail");
+        assert_eq!(failure_kind(&error), GitFailureKind::RevisionNotFound);
+    }
+
+    #[gpui::test]
+    async fn test_checkout_detached_resolves_tags_branches_and_shas(cx: &mut TestAppContext) {
+        disable_git_global_config();
+        cx.executor().allow_parking();
+
+        let repo_dir = tempfile::tempdir().unwrap();
+        init_repo_with_base_commit(repo_dir.path());
+        let base_sha = git_command_output(repo_dir.path(), ["rev-parse", "HEAD"]);
+        git_command(repo_dir.path(), ["tag", "-a", "annotated", "-m", "tag"]);
+        commit_file(repo_dir.path(), "file.txt", "second\n", "second");
+        let second_sha = git_command_output(repo_dir.path(), ["rev-parse", "HEAD"]);
+
+        let repository = open_real_repository(repo_dir.path(), cx);
+        repository
+            .checkout_detached("annotated".to_string())
+            .await
+            .unwrap();
+        assert_eq!(
+            git_command_output(repo_dir.path(), ["rev-parse", "HEAD"]),
+            base_sha
+        );
+        git_command_expecting_failure(repo_dir.path(), ["symbolic-ref", "-q", "HEAD"]);
+
+        repository
+            .checkout_detached(second_sha.clone())
+            .await
+            .unwrap();
+        assert_eq!(
+            git_command_output(repo_dir.path(), ["rev-parse", "HEAD"]),
+            second_sha
+        );
+
+        repository
+            .checkout_detached("main".to_string())
+            .await
+            .unwrap();
+        git_command_expecting_failure(repo_dir.path(), ["symbolic-ref", "-q", "HEAD"]);
+
+        for missing in ["does-not-exist", "-not-an-option"] {
+            let error = repository
+                .checkout_detached(missing.to_string())
+                .await
+                .expect_err("missing revision must fail");
+            assert_eq!(
+                failure_kind(&error),
+                GitFailureKind::RevisionNotFound,
+                "revision: {missing}"
+            );
+        }
+        assert_eq!(
+            git_command_output(repo_dir.path(), ["rev-parse", "HEAD"]),
+            second_sha
+        );
+    }
+
+    #[gpui::test]
+    async fn test_change_branch_reports_local_changes_and_checkout_force_discards_them(
+        cx: &mut TestAppContext,
+    ) {
+        disable_git_global_config();
+        cx.executor().allow_parking();
+
+        let repo_dir = tempfile::tempdir().unwrap();
+        init_repo_with_base_commit(repo_dir.path());
+        git_command(repo_dir.path(), ["checkout", "-b", "feature"]);
+        commit_file(repo_dir.path(), "file.txt", "feature\n", "feature change");
+        git_command(repo_dir.path(), ["checkout", "main"]);
+        fs::write(repo_dir.path().join("file.txt"), "dirty\n").unwrap();
+
+        let repository = open_real_repository(repo_dir.path(), cx);
+        let error = repository
+            .change_branch("feature".to_string())
+            .await
+            .expect_err("checkout over local changes must fail");
+        assert_eq!(
+            failure_kind(&error),
+            GitFailureKind::LocalChangesWouldBeOverwritten {
+                files: vec!["file.txt".to_string()]
+            }
+        );
+        assert!(
+            error.to_string().starts_with("Git command failed:"),
+            "the original message text must be preserved: {error}"
+        );
+        assert_eq!(current_branch_of(repo_dir.path()), "main");
+
+        repository
+            .checkout_force("feature".to_string())
+            .await
+            .unwrap();
+        assert_eq!(current_branch_of(repo_dir.path()), "feature");
+        assert_eq!(
+            fs::read_to_string(repo_dir.path().join("file.txt")).unwrap(),
+            "feature\n"
+        );
+    }
+
+    #[gpui::test]
+    async fn test_change_branch_reports_untracked_files_missing_branches_and_worktrees(
+        cx: &mut TestAppContext,
+    ) {
+        disable_git_global_config();
+        cx.executor().allow_parking();
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let repo_dir = temp_dir.path().join("repo");
+        init_repo_with_base_commit(&repo_dir);
+        git_command(&repo_dir, ["checkout", "-b", "feature"]);
+        commit_file(&repo_dir, "added.txt", "tracked on feature\n", "add file");
+        git_command(&repo_dir, ["checkout", "main"]);
+        git_command(&repo_dir, ["branch", "linked"]);
+        let linked_path = temp_dir.path().join("linked-tree");
+        git_command(
+            &repo_dir,
+            [
+                OsString::from("worktree"),
+                OsString::from("add"),
+                linked_path.as_os_str().into(),
+                OsString::from("linked"),
+            ],
+        );
+        fs::write(repo_dir.join("added.txt"), "untracked on main\n").unwrap();
+
+        let repository = open_real_repository(&repo_dir, cx);
+        let error = repository
+            .change_branch("feature".to_string())
+            .await
+            .expect_err("checkout over untracked files must fail");
+        assert_eq!(
+            failure_kind(&error),
+            GitFailureKind::UntrackedFilesWouldBeOverwritten {
+                files: vec!["added.txt".to_string()]
+            }
+        );
+
+        let error = repository
+            .change_branch("linked".to_string())
+            .await
+            .expect_err("checkout of a branch used by another worktree must fail");
+        match failure_kind(&error) {
+            GitFailureKind::BranchCheckedOutInWorktree { path } => {
+                assert!(path.ends_with("linked-tree"), "path: {path}");
+            }
+            other => panic!("unexpected failure kind: {other:?}"),
+        }
+
+        let error = repository
+            .change_branch("no-such-branch".to_string())
+            .await
+            .expect_err("missing branch must fail");
+        assert_eq!(failure_kind(&error), GitFailureKind::RevisionNotFound);
+        assert_eq!(error.to_string(), "Branch 'no-such-branch' not found");
+    }
+
+    #[gpui::test]
+    async fn test_delete_branch_reports_unmerged_branches_as_not_fully_merged(
+        cx: &mut TestAppContext,
+    ) {
+        disable_git_global_config();
+        cx.executor().allow_parking();
+
+        let repo_dir = tempfile::tempdir().unwrap();
+        init_repo_with_base_commit(repo_dir.path());
+        git_command(repo_dir.path(), ["checkout", "-b", "topic"]);
+        commit_file(repo_dir.path(), "topic.txt", "topic\n", "topic change");
+        git_command(repo_dir.path(), ["checkout", "main"]);
+
+        let repository = open_real_repository(repo_dir.path(), cx);
+        let error = repository
+            .delete_branch(false, "topic".to_string(), false)
+            .await
+            .expect_err("deleting an unmerged branch without force must fail");
+        assert_eq!(failure_kind(&error), GitFailureKind::BranchNotFullyMerged);
+        assert!(error.to_string().contains("not fully merged"));
+        git_command(
+            repo_dir.path(),
+            ["show-ref", "--verify", "--quiet", "refs/heads/topic"],
+        );
+
+        repository
+            .delete_branch(false, "topic".to_string(), true)
+            .await
+            .unwrap();
+        git_command_expecting_failure(
+            repo_dir.path(),
+            ["show-ref", "--verify", "--quiet", "refs/heads/topic"],
+        );
+    }
+
+    #[gpui::test]
+    async fn test_create_branch_at_covers_checkout_and_overwrite_combinations(
+        cx: &mut TestAppContext,
+    ) {
+        disable_git_global_config();
+        cx.executor().allow_parking();
+
+        let repo_dir = tempfile::tempdir().unwrap();
+        let path = repo_dir.path();
+        init_repo_with_base_commit(path);
+        let base_sha = git_command_output(path, ["rev-parse", "HEAD"]);
+        git_command(path, ["checkout", "-b", "feature"]);
+        commit_file(path, "feature.txt", "feature\n", "feature change");
+        let feature_sha = git_command_output(path, ["rev-parse", "HEAD"]);
+        git_command(path, ["checkout", "main"]);
+
+        let repository = open_real_repository(path, cx);
+
+        repository
+            .create_branch_at("created".to_string(), "main".to_string(), true, false)
+            .await
+            .unwrap();
+        assert_eq!(current_branch_of(path), "created");
+        assert_eq!(git_command_output(path, ["rev-parse", "created"]), base_sha);
+
+        repository
+            .create_branch_at("copy".to_string(), "feature".to_string(), false, false)
+            .await
+            .unwrap();
+        assert_eq!(current_branch_of(path), "created");
+        assert_eq!(git_command_output(path, ["rev-parse", "copy"]), feature_sha);
+
+        let error = repository
+            .create_branch_at("copy".to_string(), "main".to_string(), false, false)
+            .await
+            .expect_err("creating over an existing branch without overwrite must fail");
+        assert!(error.downcast_ref::<GitFailure>().is_some());
+        assert_eq!(git_command_output(path, ["rev-parse", "copy"]), feature_sha);
+
+        repository
+            .create_branch_at("copy".to_string(), "main".to_string(), false, true)
+            .await
+            .unwrap();
+        assert_eq!(current_branch_of(path), "created");
+        assert_eq!(git_command_output(path, ["rev-parse", "copy"]), base_sha);
+
+        repository
+            .create_branch_at("copy".to_string(), "feature".to_string(), true, true)
+            .await
+            .unwrap();
+        assert_eq!(current_branch_of(path), "copy");
+        assert_eq!(git_command_output(path, ["rev-parse", "copy"]), feature_sha);
+        assert!(path.join("feature.txt").exists());
+
+        repository
+            .create_branch_at("copy".to_string(), "main".to_string(), false, true)
+            .await
+            .unwrap();
+        assert_eq!(current_branch_of(path), "copy");
+        assert_eq!(git_command_output(path, ["rev-parse", "copy"]), base_sha);
+        assert!(
+            !path.join("feature.txt").exists(),
+            "overwriting the current branch must move the working tree with it"
+        );
+
+        let error = repository
+            .create_branch_at("bad".to_string(), "no-such-start".to_string(), true, false)
+            .await
+            .expect_err("unknown start point must fail");
+        assert_eq!(failure_kind(&error), GitFailureKind::RevisionNotFound);
+    }
+
+    #[gpui::test]
+    async fn test_set_upstream_sets_and_unsets_tracking_branch(cx: &mut TestAppContext) {
+        disable_git_global_config();
+        cx.executor().allow_parking();
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let (_remote_directory, clone_directory) =
+            clone_remote_repository_with_main_and_feature(temp_dir.path());
+        let repository = open_real_repository(&clone_directory, cx);
+        assert_eq!(
+            git_command_output(&clone_directory, ["rev-parse", "--abbrev-ref", "main@{u}"]),
+            "origin/main"
+        );
+
+        repository
+            .set_upstream("main".to_string(), Some("origin/feature".to_string()))
+            .await
+            .unwrap();
+        assert_eq!(
+            git_command_output(&clone_directory, ["rev-parse", "--abbrev-ref", "main@{u}"]),
+            "origin/feature"
+        );
+
+        repository
+            .set_upstream("main".to_string(), None)
+            .await
+            .unwrap();
+        git_command_expecting_failure(&clone_directory, ["rev-parse", "--abbrev-ref", "main@{u}"]);
+
+        repository
+            .set_upstream("main".to_string(), None)
+            .await
+            .expect("unsetting a missing upstream is not an error");
+
+        let error = repository
+            .set_upstream(
+                "main".to_string(),
+                Some("origin/no-such-branch".to_string()),
+            )
+            .await
+            .expect_err("unknown upstream must fail");
+        assert!(error.downcast_ref::<GitFailure>().is_some());
+    }
+
+    #[gpui::test]
+    async fn test_merge_reports_up_to_date_fast_forward_and_unknown_ref(cx: &mut TestAppContext) {
+        disable_git_global_config();
+        cx.executor().allow_parking();
+
+        let repo_dir = tempfile::tempdir().unwrap();
+        let path = repo_dir.path();
+        init_repo_with_base_commit(path);
+        git_command(path, ["branch", "same"]);
+        git_command(path, ["checkout", "-b", "ahead"]);
+        commit_file(path, "ahead.txt", "ahead\n", "ahead change");
+        git_command(path, ["checkout", "main"]);
+
+        let repository = open_real_repository(path, cx);
+        let env = Arc::new(test_commit_envs());
+
+        assert_eq!(
+            repository
+                .merge("same".to_string(), env.clone())
+                .await
+                .unwrap(),
+            MergeOutcome::AlreadyUpToDate
+        );
+
+        let outcome = repository
+            .merge("ahead".to_string(), env.clone())
+            .await
+            .unwrap();
+        assert!(
+            matches!(outcome, MergeOutcome::Merged { .. }),
+            "{outcome:?}"
+        );
+        assert!(path.join("ahead.txt").exists());
+
+        let error = repository
+            .merge("no-such-ref".to_string(), env.clone())
+            .await
+            .expect_err("merging an unknown ref must fail instead of reporting a conflict");
+        assert!(error.downcast_ref::<GitFailure>().is_some());
+        assert_eq!(repository.operation_in_progress().await.unwrap(), None);
+    }
+
+    #[gpui::test]
+    async fn test_merge_of_diverged_branches_creates_a_merge_commit(cx: &mut TestAppContext) {
+        disable_git_global_config();
+        cx.executor().allow_parking();
+
+        let repo_dir = tempfile::tempdir().unwrap();
+        let path = repo_dir.path();
+        init_repo_with_diverged_branches(path);
+
+        let repository = open_real_repository(path, cx);
+        let outcome = repository
+            .merge("feature".to_string(), Arc::new(test_commit_envs()))
+            .await
+            .unwrap();
+        assert!(
+            matches!(outcome, MergeOutcome::Merged { .. }),
+            "{outcome:?}"
+        );
+        let parents = git_command_output(path, ["rev-list", "--parents", "-n", "1", "HEAD"]);
+        assert_eq!(parents.split_whitespace().count(), 3);
+        assert!(path.join("feature.txt").exists());
+        assert!(path.join("main.txt").exists());
+    }
+
+    #[gpui::test]
+    async fn test_merge_conflict_is_reported_and_can_be_aborted(cx: &mut TestAppContext) {
+        disable_git_global_config();
+        cx.executor().allow_parking();
+
+        let repo_dir = tempfile::tempdir().unwrap();
+        let path = repo_dir.path();
+        init_repo_with_conflicting_branches(path);
+
+        let repository = open_real_repository(path, cx);
+        let env = Arc::new(test_commit_envs());
+        assert_eq!(repository.operation_in_progress().await.unwrap(), None);
+
+        let outcome = repository
+            .merge("feature".to_string(), env.clone())
+            .await
+            .unwrap();
+        match outcome {
+            MergeOutcome::Conflicted { output } => {
+                assert!(output.contains("CONFLICT"), "output: {output}");
+            }
+            other => panic!("expected a conflict, got {other:?}"),
+        }
+        assert_eq!(
+            repository.operation_in_progress().await.unwrap(),
+            Some(RepositoryOperation::Merge)
+        );
+
+        let error = repository
+            .merge("feature".to_string(), env.clone())
+            .await
+            .expect_err("merging while a merge is unresolved must fail");
+        assert!(error.downcast_ref::<GitFailure>().is_some());
+
+        repository.merge_abort(env.clone()).await.unwrap();
+        assert_eq!(repository.operation_in_progress().await.unwrap(), None);
+        assert_eq!(fs::read_to_string(path.join("file.txt")).unwrap(), "main\n");
+    }
+
+    #[gpui::test]
+    async fn test_merge_reports_local_changes_that_would_be_overwritten(cx: &mut TestAppContext) {
+        disable_git_global_config();
+        cx.executor().allow_parking();
+
+        let repo_dir = tempfile::tempdir().unwrap();
+        let path = repo_dir.path();
+        init_repo_with_base_commit(path);
+        git_command(path, ["checkout", "-b", "feature"]);
+        commit_file(path, "file.txt", "feature\n", "feature change");
+        git_command(path, ["checkout", "main"]);
+        fs::write(path.join("file.txt"), "dirty\n").unwrap();
+
+        let repository = open_real_repository(path, cx);
+        let error = repository
+            .merge("feature".to_string(), Arc::new(test_commit_envs()))
+            .await
+            .expect_err("merge over local changes must fail");
+        assert_eq!(
+            failure_kind(&error),
+            GitFailureKind::LocalChangesWouldBeOverwritten {
+                files: vec!["file.txt".to_string()]
+            }
+        );
+        assert_eq!(repository.operation_in_progress().await.unwrap(), None);
+        assert_eq!(
+            fs::read_to_string(path.join("file.txt")).unwrap(),
+            "dirty\n"
+        );
+    }
+
+    #[gpui::test]
+    async fn test_merge_prefers_the_branch_when_a_tag_has_the_same_name(cx: &mut TestAppContext) {
+        disable_git_global_config();
+        cx.executor().allow_parking();
+
+        let repo_dir = tempfile::tempdir().unwrap();
+        let path = repo_dir.path();
+        init_repo_with_base_commit(path);
+        git_command(path, ["tag", "same-name"]);
+        git_command(path, ["checkout", "-b", "same-name"]);
+        commit_file(path, "branch-only.txt", "branch\n", "branch change");
+        git_command(path, ["checkout", "main"]);
+
+        let repository = open_real_repository(path, cx);
+        let outcome = repository
+            .merge("same-name".to_string(), Arc::new(test_commit_envs()))
+            .await
+            .unwrap();
+        assert!(
+            matches!(outcome, MergeOutcome::Merged { .. }),
+            "{outcome:?}"
+        );
+        assert!(path.join("branch-only.txt").exists());
+    }
+
+    #[gpui::test]
+    async fn test_rebase_start_replays_branch_onto_upstream(cx: &mut TestAppContext) {
+        disable_git_global_config();
+        cx.executor().allow_parking();
+
+        let repo_dir = tempfile::tempdir().unwrap();
+        let path = repo_dir.path();
+        init_repo_with_diverged_branches(path);
+
+        let repository = open_real_repository(path, cx);
+        let outcome = repository
+            .rebase(
+                RebaseAction::Start {
+                    upstream: "main".to_string(),
+                    branch: Some("feature".to_string()),
+                },
+                Arc::new(test_commit_envs()),
+            )
+            .await
+            .unwrap();
+        assert!(
+            matches!(outcome, RebaseOutcome::Completed { .. }),
+            "{outcome:?}"
+        );
+        assert_eq!(current_branch_of(path), "feature");
+        git_command(path, ["merge-base", "--is-ancestor", "main", "feature"]);
+        assert_eq!(
+            git_command_output(path, ["log", "--format=%s", "main..feature"]),
+            "feature change"
+        );
+        assert_eq!(repository.operation_in_progress().await.unwrap(), None);
+    }
+
+    #[gpui::test]
+    async fn test_rebase_with_unknown_upstream_is_an_error_not_a_conflict(cx: &mut TestAppContext) {
+        disable_git_global_config();
+        cx.executor().allow_parking();
+
+        let repo_dir = tempfile::tempdir().unwrap();
+        let path = repo_dir.path();
+        init_repo_with_diverged_branches(path);
+
+        let repository = open_real_repository(path, cx);
+        let error = repository
+            .rebase(
+                RebaseAction::Start {
+                    upstream: "no-such-ref".to_string(),
+                    branch: None,
+                },
+                Arc::new(test_commit_envs()),
+            )
+            .await
+            .expect_err("rebasing onto an unknown ref must fail");
+        assert!(error.downcast_ref::<GitFailure>().is_some());
+        assert_eq!(repository.operation_in_progress().await.unwrap(), None);
+    }
+
+    #[gpui::test]
+    async fn test_rebase_conflict_can_be_aborted(cx: &mut TestAppContext) {
+        disable_git_global_config();
+        cx.executor().allow_parking();
+
+        let repo_dir = tempfile::tempdir().unwrap();
+        let path = repo_dir.path();
+        init_repo_with_conflicting_branches(path);
+        let feature_sha = git_command_output(path, ["rev-parse", "feature"]);
+
+        let repository = open_real_repository(path, cx);
+        let env = Arc::new(test_commit_envs());
+        let outcome = repository
+            .rebase(
+                RebaseAction::Start {
+                    upstream: "main".to_string(),
+                    branch: Some("feature".to_string()),
+                },
+                env.clone(),
+            )
+            .await
+            .unwrap();
+        assert!(
+            matches!(outcome, RebaseOutcome::Conflicted { .. }),
+            "{outcome:?}"
+        );
+        assert_eq!(
+            repository.operation_in_progress().await.unwrap(),
+            Some(RepositoryOperation::Rebase)
+        );
+
+        let outcome = repository
+            .rebase(RebaseAction::Abort, env.clone())
+            .await
+            .unwrap();
+        assert_eq!(outcome, RebaseOutcome::Aborted);
+        assert_eq!(repository.operation_in_progress().await.unwrap(), None);
+        assert_eq!(
+            git_command_output(path, ["rev-parse", "feature"]),
+            feature_sha
+        );
+    }
+
+    #[gpui::test]
+    async fn test_rebase_continue_after_resolving_conflict_completes(cx: &mut TestAppContext) {
+        disable_git_global_config();
+        cx.executor().allow_parking();
+
+        let repo_dir = tempfile::tempdir().unwrap();
+        let path = repo_dir.path();
+        init_repo_with_conflicting_branches(path);
+
+        let repository = open_real_repository(path, cx);
+        let env = Arc::new(test_commit_envs());
+        let outcome = repository
+            .rebase(
+                RebaseAction::Start {
+                    upstream: "main".to_string(),
+                    branch: Some("feature".to_string()),
+                },
+                env.clone(),
+            )
+            .await
+            .unwrap();
+        assert!(
+            matches!(outcome, RebaseOutcome::Conflicted { .. }),
+            "{outcome:?}"
+        );
+
+        let outcome = repository
+            .rebase(RebaseAction::Continue, env.clone())
+            .await
+            .unwrap();
+        assert!(
+            matches!(outcome, RebaseOutcome::Conflicted { .. }),
+            "continuing with unresolved conflicts must keep reporting a conflict: {outcome:?}"
+        );
+        assert_eq!(
+            repository.operation_in_progress().await.unwrap(),
+            Some(RepositoryOperation::Rebase)
+        );
+
+        fs::write(path.join("file.txt"), "resolved\n").unwrap();
+        git_command(path, ["add", "file.txt"]);
+        let outcome = repository
+            .rebase(RebaseAction::Continue, env.clone())
+            .await
+            .unwrap();
+        assert!(
+            matches!(outcome, RebaseOutcome::Completed { .. }),
+            "{outcome:?}"
+        );
+        assert_eq!(repository.operation_in_progress().await.unwrap(), None);
+        git_command(path, ["merge-base", "--is-ancestor", "main", "feature"]);
+        assert_eq!(
+            git_command_output(path, ["show", "feature:file.txt"]),
+            "resolved"
+        );
+    }
+
+    #[gpui::test]
+    async fn test_rebase_skip_drops_the_conflicting_commit(cx: &mut TestAppContext) {
+        disable_git_global_config();
+        cx.executor().allow_parking();
+
+        let repo_dir = tempfile::tempdir().unwrap();
+        let path = repo_dir.path();
+        init_repo_with_conflicting_branches(path);
+
+        let repository = open_real_repository(path, cx);
+        let env = Arc::new(test_commit_envs());
+        let outcome = repository
+            .rebase(
+                RebaseAction::Start {
+                    upstream: "main".to_string(),
+                    branch: Some("feature".to_string()),
+                },
+                env.clone(),
+            )
+            .await
+            .unwrap();
+        assert!(
+            matches!(outcome, RebaseOutcome::Conflicted { .. }),
+            "{outcome:?}"
+        );
+
+        let outcome = repository
+            .rebase(RebaseAction::Skip, env.clone())
+            .await
+            .unwrap();
+        assert!(
+            matches!(outcome, RebaseOutcome::Completed { .. }),
+            "{outcome:?}"
+        );
+        assert_eq!(repository.operation_in_progress().await.unwrap(), None);
+        assert_eq!(
+            git_command_output(path, ["log", "--format=%s", "main..feature"]),
+            ""
+        );
+    }
+
+    #[gpui::test]
+    async fn test_reset_hard_discards_commits_and_working_tree_changes(cx: &mut TestAppContext) {
+        disable_git_global_config();
+        cx.executor().allow_parking();
+
+        let repo_dir = tempfile::tempdir().unwrap();
+        let path = repo_dir.path();
+        init_repo_with_base_commit(path);
+        let base_sha = git_command_output(path, ["rev-parse", "HEAD"]);
+        commit_file(path, "file.txt", "second\n", "second");
+        fs::write(path.join("file.txt"), "dirty\n").unwrap();
+
+        let repository = open_real_repository(path, cx);
+        repository
+            .reset_hard(base_sha.clone(), Arc::new(test_commit_envs()))
+            .await
+            .unwrap();
+        assert_eq!(git_command_output(path, ["rev-parse", "HEAD"]), base_sha);
+        assert_eq!(fs::read_to_string(path.join("file.txt")).unwrap(), "base\n");
+        assert_eq!(git_command_output(path, ["status", "--porcelain"]), "");
+
+        let error = repository
+            .reset_hard("no-such-commit".to_string(), Arc::new(test_commit_envs()))
+            .await
+            .expect_err("resetting to an unknown commit must fail");
+        assert_eq!(failure_kind(&error), GitFailureKind::RevisionNotFound);
+    }
+
+    #[gpui::test]
+    async fn test_delete_remote_branch_removes_it_from_the_remote(cx: &mut TestAppContext) {
+        disable_git_global_config();
+        cx.executor().allow_parking();
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let (remote_directory, clone_directory) =
+            clone_remote_repository_with_main_and_feature(temp_dir.path());
+        let repository = open_real_repository(&clone_directory, cx);
+
+        repository
+            .delete_remote_branch(
+                "origin".to_string(),
+                "feature".to_string(),
+                noop_askpass(cx),
+                Arc::new(test_commit_envs()),
+                cx.to_async(),
+            )
+            .await
+            .unwrap();
+
+        let remote_branches = git_command_output(&remote_directory, ["branch", "--list"]);
+        assert!(remote_branches.contains("main"), "{remote_branches}");
+        assert!(!remote_branches.contains("feature"), "{remote_branches}");
+        git_command_expecting_failure(
+            &clone_directory,
+            [
+                "show-ref",
+                "--verify",
+                "--quiet",
+                "refs/remotes/origin/feature",
+            ],
+        );
+    }
+
+    #[gpui::test]
+    async fn test_delete_remote_branch_prunes_when_the_remote_ref_is_already_gone(
+        cx: &mut TestAppContext,
+    ) {
+        disable_git_global_config();
+        cx.executor().allow_parking();
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let (remote_directory, clone_directory) =
+            clone_remote_repository_with_main_and_feature(temp_dir.path());
+        git_command(&remote_directory, ["branch", "-D", "feature"]);
+        git_command(
+            &clone_directory,
+            [
+                "show-ref",
+                "--verify",
+                "--quiet",
+                "refs/remotes/origin/feature",
+            ],
+        );
+        let repository = open_real_repository(&clone_directory, cx);
+
+        repository
+            .delete_remote_branch(
+                "origin".to_string(),
+                "feature".to_string(),
+                noop_askpass(cx),
+                Arc::new(test_commit_envs()),
+                cx.to_async(),
+            )
+            .await
+            .unwrap();
+
+        git_command_expecting_failure(
+            &clone_directory,
+            [
+                "show-ref",
+                "--verify",
+                "--quiet",
+                "refs/remotes/origin/feature",
+            ],
+        );
+    }
+
+    #[gpui::test]
+    async fn test_delete_remote_branch_reports_failures_as_git_failures(cx: &mut TestAppContext) {
+        disable_git_global_config();
+        cx.executor().allow_parking();
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let (_remote_directory, clone_directory) =
+            clone_remote_repository_with_main_and_feature(temp_dir.path());
+        let repository = open_real_repository(&clone_directory, cx);
+
+        let error = repository
+            .delete_remote_branch(
+                "no-such-remote".to_string(),
+                "feature".to_string(),
+                noop_askpass(cx),
+                Arc::new(test_commit_envs()),
+                cx.to_async(),
+            )
+            .await
+            .expect_err("deleting through an unknown remote must fail");
+        assert!(error.downcast_ref::<GitFailure>().is_some());
+    }
+
+    #[gpui::test]
+    async fn test_fast_forward_branch_updates_other_branch_and_rejects_divergence(
+        cx: &mut TestAppContext,
+    ) {
+        disable_git_global_config();
+        cx.executor().allow_parking();
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let (_remote_directory, clone_directory) =
+            clone_remote_repository_with_main_and_feature(temp_dir.path());
+        let seed_directory = temp_dir.path().join("seed");
+        git_command(&clone_directory, ["branch", "feature", "origin/feature"]);
+        commit_file(
+            &seed_directory,
+            "feature.txt",
+            "advanced\n",
+            "advance feature",
+        );
+        git_command(&seed_directory, ["push", "origin", "feature"]);
+        let advanced_sha = git_command_output(&seed_directory, ["rev-parse", "HEAD"]);
+
+        let repository = open_real_repository(&clone_directory, cx);
+        repository
+            .fast_forward_branch(
+                "origin".to_string(),
+                "feature".to_string(),
+                "feature".to_string(),
+                noop_askpass(cx),
+                Arc::new(test_commit_envs()),
+                cx.to_async(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            git_command_output(&clone_directory, ["rev-parse", "feature"]),
+            advanced_sha
+        );
+        assert_eq!(current_branch_of(&clone_directory), "main");
+
+        git_command(&clone_directory, ["checkout", "feature"]);
+        commit_file(&clone_directory, "local.txt", "local\n", "local only");
+        git_command(&clone_directory, ["checkout", "main"]);
+        commit_file(
+            &seed_directory,
+            "feature.txt",
+            "advanced again\n",
+            "advance again",
+        );
+        git_command(&seed_directory, ["push", "origin", "feature"]);
+        let local_sha = git_command_output(&clone_directory, ["rev-parse", "feature"]);
+
+        let error = repository
+            .fast_forward_branch(
+                "origin".to_string(),
+                "feature".to_string(),
+                "feature".to_string(),
+                noop_askpass(cx),
+                Arc::new(test_commit_envs()),
+                cx.to_async(),
+            )
+            .await
+            .expect_err("a diverged branch must not be fast-forwarded");
+        assert!(error.downcast_ref::<GitFailure>().is_some());
+        assert!(error.to_string().contains("non-fast-forward"), "{error}");
+        assert_eq!(
+            git_command_output(&clone_directory, ["rev-parse", "feature"]),
+            local_sha
+        );
+    }
+
+    #[gpui::test]
+    async fn test_push_tag_publishes_only_the_tag(cx: &mut TestAppContext) {
+        disable_git_global_config();
+        cx.executor().allow_parking();
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let (remote_directory, clone_directory) =
+            clone_remote_repository_with_main_and_feature(temp_dir.path());
+        git_command(&clone_directory, ["tag", "v1"]);
+        git_command(&clone_directory, ["tag", "unpublished"]);
+        let repository = open_real_repository(&clone_directory, cx);
+
+        repository
+            .push_tag(
+                "origin".to_string(),
+                "v1".to_string(),
+                noop_askpass(cx),
+                Arc::new(test_commit_envs()),
+                cx.to_async(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            git_command_output(&remote_directory, ["tag", "--list"]),
+            "v1"
+        );
+
+        let error = repository
+            .push_tag(
+                "origin".to_string(),
+                "no-such-tag".to_string(),
+                noop_askpass(cx),
+                Arc::new(test_commit_envs()),
+                cx.to_async(),
+            )
+            .await
+            .expect_err("pushing an unknown tag must fail");
+        assert!(error.downcast_ref::<GitFailure>().is_some());
     }
 }

@@ -152,7 +152,7 @@ Flint uses WebStorm's [Islands](https://plugins.jetbrains.com/docs/intellij/supp
 - Editor tabs: the tab bar has the editor background and no borders. The active tab is a rounded pill with an accent border and a light accent fill while its pane is focused, and a plain border otherwise. Inactive tabs show only their text, with a thin vertical divider between neighbouring tabs: none next to the active tab and none after the last tab of a strip (the pinned tabs and the other tabs are separate strips).
 - Tool window bars run down the left and right window edges. The left bar shows the left dock panels, a separator, a "More Tool Windows" button (a menu of every panel, including panels whose button is hidden), and the bottom dock panels at the bottom. The right bar shows the right dock panels. Click an icon to show or hide its panel; right-click it to move the panel to another dock or hide its button. A filled background marks an open panel, an accent background a focused one. While the bars are shown, the status bar no longer has panel buttons.
 - The right bar disappears when no right dock panel has a button, so it never leaves an empty strip. The editor island then keeps exactly the islands gap to the window edge, the same as on every other side.
-- Tool window headers: every open dock island starts with a header like a WebStorm tool window header: the panel name in semibold, then ⋮ (the panel menu: move to another dock, hide the button) and — (hide the panel). Like WebStorm, the two buttons appear only while the pointer is over the tool window or the tool window has focus. Right-clicking the header opens the same menu. A panel that hosts its own tab strip, like the terminal, has no common header: its tabs start at the top of the island.
+- Tool window headers: every open dock island starts with a header like a WebStorm tool window header: the panel name in semibold, then the panel's own buttons, ⋮ (the panel menu: move to another dock, hide the button) and — (hide the panel). Like WebStorm, the buttons appear only while the pointer is over the tool window or the tool window has focus. Right-clicking the header opens the same menu. A panel that hosts its own tab strip, like the terminal, has no common header: its tabs start at the top of the island. A panel adds its own buttons by implementing `Panel::header_actions`; the Project panel is the only one that does.
 - Inactive window: when the Flint window is not focused, the title bar widgets, the tool window bar buttons and the status bar items are drawn at 56% opacity, matching the Islands `Island.inactiveAlpha` of 0.44. Backgrounds and the background image are not dimmed.
 
 ```json
@@ -168,7 +168,7 @@ Flint uses WebStorm's [Islands](https://plugins.jetbrains.com/docs/intellij/supp
 - `tool_window_bars.icon_style` — `"jetbrains"` (default) draws the IntelliJ Platform tool window icons: Project, Git (the IntelliJ "Version Control" icon), Structure for the Outline panel, Terminal and the "…" of More Tool Windows. `"zed"` returns to Zed's own icons. The artwork has two drawings, a 20×20 one and a 16×16 one with a thinner stroke, like IntelliJ; sizes below 18px use the 16×16 drawing and the others the 20×20 drawing, scaled to `icon_size`.
 - `tool_window_bars.show_names` — show the panel name under each icon.
 - `tool_window_headers.show` — show the header row. `false` returns to panels without a common header.
-- `tool_window_headers.always_show_actions` — show ⋮ and — all the time, like WebStorm's "Always show tool window header icons".
+- `tool_window_headers.always_show_actions` — show the header buttons (⋮, — and a panel's own buttons) all the time, like WebStorm's "Always show tool window header icons".
 - `"islands": { "enabled": false }` together with `"tool_window_bars": { "show": false }` and `"tool_window_headers": { "show": false }` restores the classic Zed layout: flat docks with borders, square tabs and panel buttons in the status bar.
 - Settings window: Window & Layout → Islands, Tool Window Bars and Tool Window Headers.
 - WebStorm-like defaults that come with it: `tabs.file_icons: true`, `tab_bar.show_nav_history_buttons: false`, and the Git and Outline panels docked on the left.
@@ -216,6 +216,7 @@ Flint uses WebStorm's [Islands](https://plugins.jetbrains.com/docs/intellij/supp
 
 - Hidden tabs: when the editor tabs do not fit, a ˅ button at the right end of the tab bar lists the tabs outside the visible area, like WebStorm's "Show Hidden Tabs" drop-down. Picking one activates it and scrolls it into view. `"tab_bar": { "show_hidden_tabs_button": true }`.
 - Project panel selection: the hovered and selected rows are rounded pills inset from the panel edges, like WebStorm's tree selection. The selection is the theme's selection color while the panel has focus and a neutral gray otherwise; the keyboard cursor is a border on the pill. `"project_panel": { "rounded_selection": true }`; `false` restores full-width square rows.
+- Project panel header buttons: like WebStorm's Project tool window, the header has Select Opened File (⌖), Expand All and Collapse All before ⋮ and —. Select Opened File reveals and selects the file of the active editor tab in the tree, expanding its folders, and moves focus to the tree; with no file behind the tab (an unsaved buffer or a file outside the project) it only focuses the panel. Expand All and Collapse All are the `project panel: expand all entries` and `project panel: collapse all entries` actions. The buttons follow `tool_window_headers.always_show_actions`; the `project panel: select opened file` action is available from the command palette.
 - Editor scrollbar: the thumb is a narrower rounded pill inside the track, like the macOS scrollbar in JetBrains IDEs. Dragging still works on the whole track width. `"scrollbar": { "rounded_thumb": true }`.
 - UI font: the default `ui_font_family` is `Inter`, the font JetBrains IDEs use; Inter 4.1 (OFL) is bundled in `assets/fonts/inter`. `".SystemUIFont"` gives San Francisco and `".ZedSans"` gives IBM Plex Sans.
 - Project tree and editor: folders show a disclosure chevron followed by the folder icon (`"project_panel": { "folder_indicator": "both" }`), and the editor line height is `comfortable` (`"buffer_line_height": "comfortable"`, 1.618), like WebStorm.
@@ -229,7 +230,7 @@ The title bar works like WebStorm's [main toolbar](https://www.jetbrains.com/hel
 
 - Project widget: a rounded badge with one or two initials of the project name, the name and a ˅. Click it to open the recent projects popover. The badge color is picked from the theme's accent colors by a stable hash of the project name, so a project keeps its color across restarts.
 - Project gradient: like WebStorm's colored project headers, the title bar is tinted with the badge color, fading out from the left edge to the middle. It appears only when a project is open.
-- VCS widget: the branch name, then `↓N ↑M` when the branch is behind or ahead of its upstream (only the non-zero directions are shown), and a ˅. Click it to open the branch picker. The worktree button is hidden by default.
+- VCS widget: the branch name, then `↓N ↑M` when the branch is behind or ahead of its upstream (only the non-zero directions are shown), and a ˅. Click it to open the [Git Branches popup](#git-branches-popup). The worktree button is hidden by default.
 - Run widget: the label of the last task you ran (or "Run…") with a ˅ that opens the task picker (`task: spawn`) and a green ▷ that reruns the last task (`task: rerun`).
 - Right edge: a magnifying glass that opens Search Everywhere and a gear that opens the Settings window.
 
@@ -267,6 +268,81 @@ Each widget can be turned off in `settings.json`, in Settings → Window & Layou
   "active_encoding_button": "enabled"
 }
 ```
+
+## Git Branches popup
+
+The branch popup works like WebStorm's [Git Branches popup](https://www.jetbrains.com/help/webstorm/manage-branches.html). It replaces the old Branches | Stashes picker.
+
+### Where it opens
+
+- The VCS widget in the title bar and the branch widget in the status bar open it as a popover.
+- The branch buttons of the Git panel and of the commit window open it as a popover too.
+- `git: branch`, `git: switch` and `git: checkout branch` open it as a modal for the active repository.
+- Stashes are no longer a tab. `git: view stash` opens the stash list as its own modal (Drop and Show keys are unchanged).
+- The popup surface, its gear menu, the branch submenus and every dialog opened from it are always opaque, even when your theme overrides make `elevated_surface.background` translucent.
+
+### Layout
+
+- Header: a search field with the placeholder "Search for branches and actions", a Fetch button (a spinner while it runs, errors are shown as notifications) and a gear.
+- The gear menu has "Show Actions in Search Results", "Group by Directory", "Show Recent Branches" and "Show Tags". All four are on by default and are remembered per repository.
+- Top actions: Update Project… (⌘T), Commit… (⌘K), Push… (⇧⌘K, which opens the Push dialog for the current branch instead of pushing at once), then, while a rebase or merge is in progress, its Abort, Continue and Skip actions, then New Branch… (⌥⌘N) and Checkout Tag or Revision…. The shortcuts are shown from your current keymap; with the JetBrains keymap they are the ones listed here.
+- New Branch… is greyed with an explanation in an empty repository without commits.
+- With several repositories in the project, a row per repository sits between the actions and the tree. Selecting one switches the repository the popup shows.
+
+### Tree
+
+- Sections: Recent (at most five branches you checked out last, the current branch first, taken from the reflog), Local, Remote and Tags. An empty section is not shown. A branch in Recent is not repeated in Local.
+- Branches are grouped into folders by `/` when "Group by Directory" is on; a remote's branches are grouped under the remote name. `*/HEAD` remote symrefs are hidden.
+- Order: the current branch first, then favorites, then folders, then the rest in natural order.
+- Favorites: `Space` or a click on the branch icon toggles the star. `main`, `master`, `origin/main` and `origin/master` are favorites until you remove them.
+- Rows show the tracked remote branch of a local branch and the incoming (↓) and outgoing (↑) commit counts. The current branch has its own marker; nothing is marked in a detached HEAD.
+- Sections and folders you expand stay expanded the next time the popup opens.
+
+### Search
+
+- Typing filters branches, tags and, with "Show Actions in Search Results", the top actions. Matching is case-insensitive and also accepts camelCase initials; matches are highlighted.
+- The best match is selected after every change. With no match the list says "Nothing found" (actions filter on) or "Branch not found".
+- `Escape` clears the search first and closes the popup when it is already empty.
+
+### Keys
+
+| Key | Action |
+|---|---|
+| `Up`, `Down` | Move the selection, skipping separators |
+| `Enter` | Run a top action; expand or collapse a section or folder; open the submenu of a branch or tag |
+| `Right` | Expand a section or folder, step into it when expanded, or open the submenu of a branch or tag |
+| `Left` | Collapse an expanded section or folder, otherwise select the parent row |
+| `Space` | Toggle favorite |
+| `Escape` | Clear the search, then close |
+
+### Submenu of a branch or tag
+
+Every branch and tag row opens a submenu (`>`). Its items depend on the kind of ref, and unavailable items are greyed with a tooltip:
+
+- Current local branch: New Branch from 'X'…, Show Diff with Working Tree, Update, Push…, Rename….
+- Other local branch: Checkout, New Branch from 'X'…, Checkout and Rebase onto 'current', Checkout and Update, Compare with 'current', Show Diff with Working Tree, Rebase 'current' onto 'X', Merge 'X' into 'current', Update, Push…, Rename…, Delete. Update and Checkout and Update are greyed for a branch without a tracked remote branch, and Rebase is greyed in a detached HEAD.
+- Remote branch: Checkout, New Branch from 'X'…, Checkout and Rebase onto 'current', Compare with 'current', Show Diff with Working Tree, Rebase 'current' onto 'X', Merge 'X' into 'current', Pull into 'current' Using Rebase, Pull into 'current' Using Merge, Delete.
+- Tag: Checkout, Show Diff with Working Tree, Merge 'X' into 'current', Push to each remote (a "Push Tag" submenu from six remotes on), Delete. A tag that is the current detached HEAD has no Checkout and no Merge.
+
+### What the operations do
+
+- Checkout, merge and rebase are smart: when local changes would be overwritten, a "Git Checkout Problem" (or "Git Merge Problem") dialog offers Smart Checkout (stash the changes, run the operation, restore them), Force Checkout (checkout only) or Don't Checkout. A conflict while restoring opens the Conflicts dialog.
+- New Branch… and New Branch from 'X'… ask for a name with "Checkout branch" and "Overwrite existing branch". Names are validated like WebStorm does and cleaned up while you type.
+- Checkout Tag or Revision… checks out a tag or any revision as a detached HEAD.
+- Merge reports "Already up to date", success (with a Delete action for the merged local branch) or a conflict that opens the Conflicts dialog. Rebase reports success or stops at conflicts with Resolve…, Continue and Abort actions, and asks before rebasing published commits.
+- Update Project… and Update pull the current branch with the configured method (merge, rebase or the branch default). The options dialog can be turned off with "Don't show this dialog again"; the row then reads "Update Project" and Shift-click brings the dialog back.
+- Delete removes a local branch without asking. A branch that is not fully merged is deleted anyway, and the notification offers Restore and View Commits. Deleting a remote branch asks first; deleting a tag does not, and its notification offers Restore.
+- Rename… and Push… open their dialogs; Push… is preset to the selected branch.
+- Compare with 'current' opens a tab with the commits that exist in one branch but not in the other, in both directions. Show Diff with Working Tree opens the diff of the selected ref against your working tree.
+- The Branch Name field of New Branch… and the field of Checkout Tag or Revision… suggest matching branches, directories and tags below the field (click, Tab or Enter accept a suggestion).
+
+### Not implemented
+
+- Worktree items ("New Worktree…", "Open existing worktree").
+- The "Tracked Branch" submenu.
+- "Restore Popup Size": the popup is not resizable.
+- Running one branch operation on all repositories at once; Flint works on one repository at a time.
+- "Commit and stage" and the cherry-pick and revert ongoing-operation actions.
 
 ## Search Everywhere
 
@@ -375,4 +451,6 @@ Zed source code is licensed under GPL-3.0-or-later, with Apache-2.0 components w
 
 Third-party licenses are generated by [`cargo-about`](https://github.com/EmbarkStudios/cargo-about) from [`script/licenses/zed-licenses.toml`](script/licenses/zed-licenses.toml) during bundling and embedded in the app. The build fails if a dependency's license is not in the accepted list.
 
-The `assets/icons/tool_window_*.svg` files are unmodified copies of [JetBrains/intellij-community](https://github.com/JetBrains/intellij-community) icons (commit `0ad391f70a62eabbec6db656f473e1284e1110a9`), licensed under Apache-2.0, each keeping its original JetBrains copyright header. Sources: `platform/icons/src/expui/toolwindows/{project,vcs,structure}.svg`, `platform/icons/src/expui/general/moreHorizontal.svg` and `plugins/terminal/resources/icons/expui/toolwindow/terminal.svg`; the 20×20 drawing is the `@20x20` file and the 16×16 drawing is the file without the suffix. JetBrains and IntelliJ names and logos are trademarks of JetBrains s.r.o. The default colours in `theme_overrides."Eva Dark"` are taken from `platform/platform-resources/src/themes/islands/ManyIslandsDark.theme.json` of the same commit, Apache-2.0.
+The `assets/icons/tool_window_*.svg` files, `assets/icons/locate.svg`, `assets/icons/expand_all.svg` and `assets/icons/collapse_all.svg` are unmodified copies of [JetBrains/intellij-community](https://github.com/JetBrains/intellij-community) icons (commit `0ad391f70a62eabbec6db656f473e1284e1110a9`), licensed under Apache-2.0, each keeping its original JetBrains copyright header. Sources: `platform/icons/src/expui/toolwindows/{project,vcs,structure}.svg`, `platform/icons/src/expui/general/moreHorizontal.svg` and `plugins/terminal/resources/icons/expui/toolwindow/terminal.svg`; the 20×20 drawing is the `@20x20` file and the 16×16 drawing is the file without the suffix. `locate.svg`, `expand_all.svg` and `collapse_all.svg` are `platform/icons/src/expui/general/{locate,expandAll,collapseAll}.svg` under snake_case names. JetBrains and IntelliJ names and logos are trademarks of JetBrains s.r.o. The default colours in `theme_overrides."Eva Dark"` are taken from `platform/platform-resources/src/themes/islands/ManyIslandsDark.theme.json` of the same commit, Apache-2.0.
+
+The Git Branches popup icons `assets/icons/{fetch,current_branch_label,current_branch_favorite_label,tag_label,branch_node,incoming_commits,outgoing_commits,favorite_outline,menu_arrow}.svg` are unmodified copies of [JetBrains/intellij-community](https://github.com/JetBrains/intellij-community) icons (commit `0ad391f70a62eabbec6db656f473e1284e1110a9`), licensed under Apache-2.0, each keeping its original JetBrains copyright header. Sources, in the order above: `platform/icons/src/expui/vcs/fetch.svg`, `platform/dvcs-impl/shared/resources/icons/new/{currentBranchLabel,currentBranchFavoriteLabel,branchLabel}.svg`, `platform/icons/src/vcs/branchNode.svg`, `platform/dvcs-impl/shared/resources/icons/new/{incomingUpdate,outgoingPush}.svg`, `platform/icons/src/nodes/notFavoriteOnHover.svg` and `platform/icons/src/icons/ide/menuArrow.svg`.

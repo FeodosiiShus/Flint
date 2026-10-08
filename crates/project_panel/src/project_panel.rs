@@ -379,6 +379,7 @@ actions!(
         CollapseAllEntries,
         /// Expands all entries in the project tree.
         ExpandAllEntries,
+        SelectOpenedFile,
         /// Creates a new directory.
         NewDirectory,
         /// Creates a new file.
@@ -545,6 +546,15 @@ pub fn init(cx: &mut App) {
                     panel.expand_all_entries(action, window, cx);
                 });
             }
+        });
+
+        workspace.register_action(|workspace, _: &SelectOpenedFile, window, cx| {
+            let pane_focus_handle = workspace.active_pane().focus_handle(cx);
+            pane_focus_handle.dispatch_action(
+                &workspace::RevealInProjectPanel::default(),
+                window,
+                cx,
+            );
         });
 
         workspace.register_action(|workspace, action: &Rename, window, cx| {
@@ -8138,6 +8148,29 @@ impl Panel for ProjectPanel {
         Some(workspace::HideStatusItem::new(|settings| {
             settings.project_panel.get_or_insert_default().button = Some(false);
         }))
+    }
+
+    fn header_actions(&self, _: &Window, _: &App) -> Vec<workspace::PanelHeaderAction> {
+        vec![
+            workspace::PanelHeaderAction {
+                id: "select-opened-file",
+                icon: IconName::Locate,
+                tooltip: "Select Opened File",
+                action: Box::new(SelectOpenedFile),
+            },
+            workspace::PanelHeaderAction {
+                id: "expand-all",
+                icon: IconName::ExpandAll,
+                tooltip: "Expand All",
+                action: Box::new(ExpandAllEntries),
+            },
+            workspace::PanelHeaderAction {
+                id: "collapse-all",
+                icon: IconName::CollapseAll,
+                tooltip: "Collapse All",
+                action: Box::new(CollapseAllEntries),
+            },
+        ]
     }
 }
 

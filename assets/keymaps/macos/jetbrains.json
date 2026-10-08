@@ -110,7 +110,9 @@
       "shift-f10": "task::Spawn",
       "cmd-f5": "task::Rerun",
       "cmd-e": "file_finder::Toggle",
-      "cmd-k": "git_panel::ToggleFocus", // bug: This should also focus commit editor
+      "cmd-k": "git::Commit",
+      "cmd-t": "git::UpdateProject",
+      "cmd-alt-n": "git::NewBranch",
       "cmd-shift-o": ["search_everywhere::Toggle", { "tab": "files" }],
       "cmd-shift-n": ["search_everywhere::Toggle", { "tab": "files" }],
       "cmd-n": "project_symbols::Toggle",
@@ -141,7 +143,7 @@
     "context": "Workspace || Editor",
     "bindings": {
       "alt-f12": "terminal_panel::Toggle",
-      "cmd-shift-k": "git::Push",
+      "cmd-shift-k": "git::PushDialog",
     },
   },
   {
