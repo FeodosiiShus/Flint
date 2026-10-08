@@ -959,6 +959,7 @@ pub struct Editor {
     word_completions_enabled: bool,
     inline_diagnostics: Vec<(Anchor, InlineDiagnostic)>,
     soft_wrap_mode_override: Option<language_settings::SoftWrap>,
+    show_whitespaces_override: Option<language_settings::ShowWhitespaceSetting>,
     hard_wrap: Option<usize>,
     project: Option<Entity<Project>>,
     semantics_provider: Option<Rc<dyn SemanticsProvider>>,
@@ -1225,6 +1226,13 @@ pub struct NavigationOverlayLabel {
     pub text_color: Hsla,
     pub x_offset: Pixels,
     pub scale_factor: f32,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct LastTextMetrics {
+    pub line_height: Pixels,
+    pub content_origin: gpui::Point<Pixels>,
+    pub scroll_x: Pixels,
 }
 
 #[derive(Default, Debug, Clone, Copy)]
@@ -2309,6 +2317,7 @@ impl Editor {
             inline_diagnostics_update: Task::ready(()),
             inline_diagnostics: Vec::new(),
             soft_wrap_mode_override,
+            show_whitespaces_override: None,
             diagnostics_max_severity,
             hard_wrap: None,
             completion_provider: project.clone().map(|project| Rc::new(project) as _),
@@ -2805,6 +2814,16 @@ impl Editor {
 
     pub fn last_bounds(&self) -> Option<&Bounds<Pixels>> {
         self.last_bounds.as_ref()
+    }
+
+    pub fn last_text_metrics(&self) -> Option<LastTextMetrics> {
+        let position_map = self.last_position_map.as_ref()?;
+        Some(LastTextMetrics {
+            line_height: position_map.line_height,
+            content_origin: position_map.text_hitbox.bounds.origin
+                + gpui::point(self.gutter_dimensions.margin, Pixels::ZERO),
+            scroll_x: Pixels::from(position_map.scroll_pixel_position.x),
+        })
     }
 
     pub(crate) fn last_right_margin(&self) -> Pixels {

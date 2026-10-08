@@ -11,19 +11,23 @@ use util::ResultExt as _;
 
 use super::ongoing::{self, RebaseReport, UpdateProgress};
 use super::smart_operation::{
-    SmartChoice, SmartOperation, confirm_smart_operation, restore_local_changes,
-    stash_local_changes,
+    RestoreLabels, SmartChoice, SmartOperation, UPDATE_OPERATION_TITLE, confirm_smart_operation,
+    local_changes_not_restored_notice, restore_local_changes, stash_local_changes,
 };
 use super::update_dialog::{ResetTarget, UpdateOptionsDialog};
 use super::{BranchContext, BranchNotice, error_notice, quoted_ref_label};
 use crate::branch_refs::{RefKind, RefTarget};
-use crate::merge_tool::has_unmerged_paths;
+use crate::merge_tool::conflict_resolution::{
+    ConflictParams, ResolveMode, ResolveOutcome, ResolverBehavior,
+};
 
 const UPDATE_METHOD_KEY: &str = "git_update_method";
 const SHOW_UPDATE_OPTIONS_KEY: &str = "git_update_show_options";
 const COMMIT_COUNT_LIMIT: usize = 10_000;
 const PROTECTED_BRANCH_NAMES: [&str; 2] = ["main", "master"];
 const DETACHED_HEAD_LABEL: &str = "HEAD";
+const MERGE_OPERATION_TITLE: &str = "merge";
+const RESET_OPERATION_TITLE: &str = "reset";
 const PUBLISHED_COMMIT_DETAIL: &str = "You are trying to rebase some commits already pushed to a protected branch.\n\nRebasing them would duplicate commits, which is not recommended and most likely unwanted.";
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -267,22 +271,53 @@ pub(super) fn notify_failure(
 
 pub(super) fn untracked_files_message(operation: &str, files: &[String]) -> String {
     format!(
-        "These untracked working tree files would be overwritten by {operation}:\n\n{}\n\nMove or remove the files and try again.",
+        "Move or commit them before {operation}\n{}",
         files.join("\n")
     )
 }
 
-pub(super) fn unmerged_files_notice(
-    context: &BranchContext,
-    title: &'static str,
-    message: &'static str,
+pub(super) fn unmerged_files_error_notice(
+    operation: &str,
+    resolve_conflicts: impl Fn(&mut Window, &mut App) + 'static,
 ) -> BranchNotice {
-    let context = context.clone();
-    BranchNotice::error(message)
-        .title(title)
-        .action("Resolve…", move |window, cx| {
-            context.open_conflicts_if_conflicted(window, cx)
-        })
+    BranchNotice::error(format!(
+        "You need to resolve all merge conflicts before {operation}.\nAfter resolving conflicts do not forget to commit your files to the current branch before switching to another branch."
+    ))
+    .title(format!("Cannot {operation} because of unmerged files"))
+    .action("Resolve conflicts…", resolve_conflicts)
+}
+
+pub(super) fn resolve_unmerged_files(
+    context: BranchContext,
+    operation: &'static str,
+) -> impl Fn(&mut Window, &mut App) + 'static {
+    move |window, cx| {
+        context
+            .resolve_conflicts(
+                ConflictParams::for_unmerged_files_before(operation),
+                ResolverBehavior::Plain,
+                ResolveMode::Initial,
+                window,
+                cx,
+            )
+            .detach();
+    }
+}
+
+pub(super) fn resolve_unfinished_merge(
+    context: BranchContext,
+) -> impl Fn(&mut Window, &mut App) + 'static {
+    move |window, cx| {
+        context
+            .resolve_conflicts(
+                ConflictParams::for_unfinished_merge(),
+                ResolverBehavior::CommitMergeWhenFinishRequested,
+                ResolveMode::Initial,
+                window,
+                cx,
+            )
+            .detach();
+    }
 }
 
 fn operation_name(operation: RepositoryOperation) -> &'static str {
@@ -305,6 +340,25 @@ fn unfinished_operation_message(
     )
 }
 
+fn rebase_not_allowed_message(operation: RepositoryOperation, repository_name: &str) -> String {
+    let (process, advice) = match operation {
+        RepositoryOperation::Merge => (
+            "merge",
+            "You should complete the merge before starting a rebase.",
+        ),
+        RepositoryOperation::Rebase => (
+            "rebase",
+            "You should complete it before starting another rebase.",
+        ),
+        RepositoryOperation::CherryPick => (
+            "cherry-pick",
+            "You should finish it before starting a rebase.",
+        ),
+        RepositoryOperation::Revert => ("revert", "You should finish it before starting a rebase."),
+    };
+    format!("There is an unfinished {process} process in {repository_name}.\n{advice}")
+}
+
 fn blocking_notice(
     context: &BranchContext,
     operation: RepositoryOperation,
@@ -318,14 +372,17 @@ fn blocking_notice(
         purpose,
     ))
     .title(title);
-    if matches!(
-        operation,
-        RepositoryOperation::Merge | RepositoryOperation::Rebase
-    ) {
-        let resolve_context = context.clone();
-        notice = notice.action("Resolve…", move |window, cx| {
-            resolve_context.open_conflicts_if_conflicted(window, cx)
-        });
+    match operation {
+        RepositoryOperation::Merge => {
+            notice = notice.action("Resolve…", resolve_unfinished_merge(context.clone()));
+        }
+        RepositoryOperation::Rebase => {
+            notice = notice.action(
+                "Resolve…",
+                ongoing::resolve_rebase_action(context.clone(), RebaseReport::default()),
+            );
+        }
+        RepositoryOperation::CherryPick | RepositoryOperation::Revert => {}
     }
     for action in ongoing::ongoing_actions(Some(operation)) {
         let action_context = context.clone();
@@ -346,8 +403,30 @@ fn repository_display_name(context: &BranchContext, cx: &App) -> String {
         .unwrap_or_else(|| "the repository".to_string())
 }
 
-fn repository_name(context: &BranchContext, cx: &mut AsyncWindowContext) -> Result<String> {
+pub(super) fn repository_name(
+    context: &BranchContext,
+    cx: &mut AsyncWindowContext,
+) -> Result<String> {
     cx.update(|_, app| repository_display_name(context, app))
+}
+
+pub(super) fn repository_mention(context: &BranchContext, cx: &App) -> String {
+    let has_several_repositories = context.workspace.upgrade().is_some_and(|workspace| {
+        workspace
+            .read(cx)
+            .project()
+            .read(cx)
+            .git_store()
+            .read(cx)
+            .repositories()
+            .len()
+            > 1
+    });
+    if has_several_repositories {
+        format!(" in {}", repository_display_name(context, cx))
+    } else {
+        String::new()
+    }
 }
 
 pub(crate) fn is_protected_branch_name(name: &str) -> bool {
@@ -604,12 +683,14 @@ async fn reset_hard(
 pub(super) async fn restore_stash(
     context: &BranchContext,
     stashed: bool,
+    labels: RestoreLabels,
     cx: &mut AsyncWindowContext,
 ) {
     if !stashed {
         return;
     }
-    let restoring = cx.update(|window, app| restore_local_changes(context, true, window, app));
+    let restoring =
+        cx.update(|window, app| restore_local_changes(context, true, labels, window, app));
     match restoring {
         Ok(task) => {
             if let Err(error) = task.await {
@@ -620,6 +701,10 @@ pub(super) async fn restore_stash(
             log::error!("could not restore stashed local changes: {error:#}");
         }
     }
+}
+
+fn merge_restore_labels(reference: &str) -> RestoreLabels {
+    RestoreLabels::new(MERGE_OPERATION_TITLE, reference.to_string())
 }
 
 enum MergeAttempt {
@@ -662,7 +747,7 @@ async fn merge_with_smart_stash(
     match merge_once(context, reference, cx).await {
         Ok(outcome) => Ok(MergeAttempt::Finished { outcome, stashed }),
         Err(error) => {
-            restore_stash(context, stashed, cx).await;
+            restore_stash(context, stashed, merge_restore_labels(reference), cx).await;
             Ok(MergeAttempt::Failed(error))
         }
     }
@@ -675,10 +760,9 @@ fn report_merge_failure(
     cx: &mut AsyncWindowContext,
 ) {
     let notice = match git_failure(error).map(|failure| &failure.kind) {
-        Some(GitFailureKind::UnmergedFiles) => Some(unmerged_files_notice(
-            context,
-            "Cannot merge because of unmerged files",
-            "Resolve the conflicts before merging.",
+        Some(GitFailureKind::UnmergedFiles) => Some(unmerged_files_error_notice(
+            "merge",
+            resolve_unmerged_files(context.clone(), "merge"),
         )),
         Some(GitFailureKind::UntrackedFilesWouldBeOverwritten { files }) => Some(
             BranchNotice::error(untracked_files_message("merge", files))
@@ -691,21 +775,16 @@ fn report_merge_failure(
     }
 }
 
-fn merge_conflict_notice(context: &BranchContext, reference: &str, stashed: bool) -> BranchNotice {
-    let mut message = String::from("Resolve the conflicts to complete the merge, or abort it.");
-    if stashed {
-        message.push_str(" Local changes were stashed before the merge.");
-    }
-    let resolve_context = context.clone();
-    let abort_context = context.clone();
-    BranchNotice::warning(message)
-        .title(format!("{reference} Merged with Conflicts"))
-        .action("Resolve…", move |window, cx| {
-            resolve_context.open_conflicts_if_conflicted(window, cx)
-        })
-        .action("Abort", move |window, cx| {
-            ongoing::abort_merge(abort_context.clone(), stashed, window, cx)
-        })
+async fn resolve_merge_conflicts(
+    context: &BranchContext,
+    params: ConflictParams,
+    behavior: ResolverBehavior,
+    cx: &mut AsyncWindowContext,
+) -> Result<ResolveOutcome> {
+    let resolution = cx.update(|window, app| {
+        context.resolve_conflicts(params, behavior, ResolveMode::Initial, window, app)
+    })?;
+    Ok(resolution.await)
 }
 
 fn merged_notice(context: &BranchContext, target: &RefTarget, current: &str) -> BranchNotice {
@@ -746,20 +825,33 @@ async fn merge_flow(
         MergeAttempt::Failed(error) => report_merge_failure(context, &reference, &error, cx),
         MergeAttempt::Finished { outcome, stashed } => match outcome {
             MergeOutcome::AlreadyUpToDate => {
-                restore_stash(context, stashed, cx).await;
+                restore_stash(context, stashed, merge_restore_labels(&reference), cx).await;
                 notify(context, BranchNotice::info("Already up to date"), cx);
             }
             MergeOutcome::Merged { .. } => {
-                restore_stash(context, stashed, cx).await;
+                restore_stash(context, stashed, merge_restore_labels(&reference), cx).await;
                 notify(context, merged_notice(context, target, &current), cx);
             }
             MergeOutcome::Conflicted { .. } => {
-                cx.update(|window, app| context.open_conflicts_if_conflicted(window, app))?;
-                notify(
+                if stashed {
+                    notify(
+                        context,
+                        local_changes_not_restored_notice(MERGE_OPERATION_TITLE),
+                        cx,
+                    );
+                }
+                let params = ConflictParams::for_user_merge(&reference);
+                let resolution = resolve_merge_conflicts(
                     context,
-                    merge_conflict_notice(context, &reference, stashed),
+                    params,
+                    ResolverBehavior::CommitMergeWhenFinishRequested,
                     cx,
-                );
+                )
+                .await?;
+                if resolution.proceed {
+                    restore_stash(context, stashed, merge_restore_labels(&reference), cx).await;
+                    notify(context, merged_notice(context, target, &current), cx);
+                }
             }
         },
     }
@@ -780,13 +872,8 @@ async fn rebase_flow(
 
     if let Some(operation) = unfinished_operation(context, cx).await {
         let name = repository_name(context, cx)?;
-        let notice = blocking_notice(
-            context,
-            operation,
-            "Rebase not allowed",
-            "starting a rebase",
-            &name,
-        );
+        let notice = BranchNotice::error(rebase_not_allowed_message(operation, &name))
+            .title("Rebase not allowed");
         notify(context, notice, cx);
         return Ok(());
     }
@@ -865,24 +952,50 @@ async fn update_current_flow(
     update_from(context, request, cx).await
 }
 
+async fn resolve_update_blockers(
+    context: &BranchContext,
+    cx: &mut AsyncWindowContext,
+) -> Result<bool> {
+    if unfinished_operation(context, cx).await == Some(RepositoryOperation::Rebase) {
+        let resolution = resolve_merge_conflicts(
+            context,
+            ConflictParams::for_unfinished_rebase(),
+            ResolverBehavior::ContinueRebase,
+            cx,
+        )
+        .await?;
+        if !resolution.proceed {
+            return Ok(false);
+        }
+    }
+    if unfinished_operation(context, cx).await == Some(RepositoryOperation::Merge) {
+        let resolution = resolve_merge_conflicts(
+            context,
+            ConflictParams::for_unfinished_merge(),
+            ResolverBehavior::CommitMergeWhenFinishRequested,
+            cx,
+        )
+        .await?;
+        if !resolution.proceed {
+            return Ok(false);
+        }
+    }
+    let resolution = resolve_merge_conflicts(
+        context,
+        ConflictParams::for_unmerged_files(),
+        ResolverBehavior::CommitMergeWhenFinishRequested,
+        cx,
+    )
+    .await?;
+    Ok(resolution.proceed)
+}
+
 async fn update_from(
     context: &BranchContext,
     request: UpdateRequest,
     cx: &mut AsyncWindowContext,
 ) -> Result<()> {
-    if let Some(operation) = unfinished_operation(context, cx).await {
-        let name = repository_name(context, cx)?;
-        let notice = blocking_notice(context, operation, "Cannot update", "updating", &name);
-        notify(context, notice, cx);
-        return Ok(());
-    }
-    if cx.update(|_, app| has_unmerged_paths(context.repository.read(app)))? {
-        let notice = unmerged_files_notice(
-            context,
-            "Cannot update",
-            "Unmerged files detected. Resolve the conflicts before updating.",
-        );
-        notify(context, notice, cx);
+    if !resolve_update_blockers(context, cx).await? {
         return Ok(());
     }
 
@@ -936,11 +1049,11 @@ async fn merge_update(
         MergeAttempt::Failed(error) => report_merge_failure(context, &request.upstream, &error, cx),
         MergeAttempt::Finished { outcome, stashed } => match outcome {
             MergeOutcome::AlreadyUpToDate => {
-                restore_stash(context, stashed, cx).await;
+                restore_stash(context, stashed, RestoreLabels::update(), cx).await;
                 notify(context, BranchNotice::info("Already up to date"), cx);
             }
             MergeOutcome::Merged { .. } => {
-                restore_stash(context, stashed, cx).await;
+                restore_stash(context, stashed, RestoreLabels::update(), cx).await;
                 let notice = update_notice(
                     context,
                     Some(&request.branch),
@@ -952,9 +1065,32 @@ async fn merge_update(
                 notify(context, notice, cx);
             }
             MergeOutcome::Conflicted { .. } => {
-                cx.update(|window, app| context.open_conflicts_if_conflicted(window, app))?;
-                let notice = merge_conflict_notice(context, &request.upstream, stashed);
-                notify(context, notice, cx);
+                let params = ConflictParams::for_update_by_merge();
+                let resolution = resolve_merge_conflicts(
+                    context,
+                    params,
+                    ResolverBehavior::CommitMergeAlways,
+                    cx,
+                )
+                .await?;
+                if resolution.proceed {
+                    restore_stash(context, stashed, RestoreLabels::update(), cx).await;
+                    let notice = update_notice(
+                        context,
+                        Some(&request.branch),
+                        Some(&request.upstream),
+                        &progress,
+                        cx,
+                    )
+                    .await;
+                    notify(context, notice, cx);
+                } else if stashed {
+                    notify(
+                        context,
+                        local_changes_not_restored_notice(UPDATE_OPERATION_TITLE),
+                        cx,
+                    );
+                }
             }
         },
     }
@@ -1050,7 +1186,13 @@ async fn reset_flow(context: &BranchContext, cx: &mut AsyncWindowContext) -> Res
         .await?;
     let upstream_ref = format!("refs/remotes/{}", tracked.reference);
     let result = reset_hard(context, &upstream_ref, cx).await;
-    restore_stash(context, stashed, cx).await;
+    restore_stash(
+        context,
+        stashed,
+        RestoreLabels::new(RESET_OPERATION_TITLE, tracked.reference.clone()),
+        cx,
+    )
+    .await;
     result?;
     let notice = BranchNotice::info(format!("Reset {} to {}", branch_name, tracked.reference))
         .title("Reset to the Remote Branch");
@@ -1218,10 +1360,49 @@ mod tests {
     }
 
     #[test]
+    fn rebase_not_allowed_message_follows_the_bundle_per_repository_state() {
+        assert_eq!(
+            rebase_not_allowed_message(RepositoryOperation::Merge, "flint"),
+            "There is an unfinished merge process in flint.\nYou should complete the merge before starting a rebase."
+        );
+        assert_eq!(
+            rebase_not_allowed_message(RepositoryOperation::Rebase, "flint"),
+            "There is an unfinished rebase process in flint.\nYou should complete it before starting another rebase."
+        );
+        assert_eq!(
+            rebase_not_allowed_message(RepositoryOperation::CherryPick, "flint"),
+            "There is an unfinished cherry-pick process in flint.\nYou should finish it before starting a rebase."
+        );
+        assert_eq!(
+            rebase_not_allowed_message(RepositoryOperation::Revert, "flint"),
+            "There is an unfinished revert process in flint.\nYou should finish it before starting a rebase."
+        );
+    }
+
+    #[test]
+    fn unmerged_files_error_notice_names_the_operation_and_offers_to_resolve() {
+        let notice = unmerged_files_error_notice("merge", |_, _| {});
+        assert_eq!(
+            notice.title.as_deref(),
+            Some("Cannot merge because of unmerged files")
+        );
+        assert_eq!(
+            notice.message.as_ref(),
+            "You need to resolve all merge conflicts before merge.\nAfter resolving conflicts do not forget to commit your files to the current branch before switching to another branch."
+        );
+        let labels: Vec<&str> = notice
+            .actions
+            .iter()
+            .map(|action| action.label.as_ref())
+            .collect();
+        assert_eq!(labels, vec!["Resolve conflicts…"]);
+    }
+
+    #[test]
     fn untracked_files_message_lists_every_file_on_its_own_line() {
         let message =
             untracked_files_message("merge", &["a.txt".to_string(), "b/c.txt".to_string()]);
-        assert!(message.contains("overwritten by merge:\n\na.txt\nb/c.txt\n\n"));
+        assert_eq!(message, "Move or commit them before merge\na.txt\nb/c.txt");
     }
 
     #[test]

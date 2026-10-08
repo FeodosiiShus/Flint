@@ -13,12 +13,13 @@ use git::{
     blame::Blame,
     repository::{
         AskPassDelegate, Branch, CommitData, CommitDataReader, CommitDetails, CommitOptions,
-        CommitSummary, CreateWorktreeTarget, FetchOptions, FileHistoryChangedFileSets,
-        GRAPH_CHUNK_SIZE, GitFailure, GitFailureKind, GitRepository, GitRepositoryCheckpoint,
-        InitialGraphCommitData, LogOrder, LogSource, MergeOutcome, PushOptions, RebaseAction,
-        RebaseOutcome, RefEdit, Remote, RemoteCommandOutput, RepoPath, RepositoryOperation,
-        ResetMode, SearchCommitArgs, Tag, Upstream, UpstreamTracking, UpstreamTrackingStatus,
-        Worktree, commit_hash_search_query,
+        CommitSummary, ConflictSide, CreateWorktreeTarget, FetchOptions,
+        FileHistoryChangedFileSets, GRAPH_CHUNK_SIZE, GitFailure, GitFailureKind, GitRepository,
+        GitRepositoryCheckpoint, InitialGraphCommitData, LogOrder, LogSource, MergeOutcome,
+        PushOptions, RebaseAction, RebaseOutcome, RefEdit, Remote, RemoteCommandOutput, RepoPath,
+        RepositoryOperation, ResetMode, SearchCommitArgs, Tag, UnmergedEntry,
+        UnmergedStagePresence, Upstream, UpstreamTracking, UpstreamTrackingStatus, Worktree,
+        commit_hash_search_query,
     },
     stash::GitStash,
     status::{
@@ -69,6 +70,7 @@ pub struct FakeGitRepositoryState {
     pub index_contents: HashMap<RepoPath, Vec<u8>>,
     // everything in commit contents is in oids
     pub merge_base_contents: HashMap<RepoPath, Oid>,
+    pub merge_base_commits: HashMap<(String, String), String>,
     pub oids: HashMap<Oid, Vec<u8>>,
     pub blames: HashMap<RepoPath, Blame>,
     pub blames_at_revision: HashMap<(RepoPath, Oid), Blame>,
@@ -119,6 +121,7 @@ impl FakeGitRepositoryState {
             worktrees_requiring_force_delete: Default::default(),
             refs: HashMap::from_iter([("HEAD".into(), "abc".into())]),
             merge_base_contents: Default::default(),
+            merge_base_commits: Default::default(),
             oids: Default::default(),
             remotes: HashMap::default(),
             graph_commits: Vec::new(),
@@ -194,6 +197,61 @@ fn parse_stage_revision(revision: &str) -> Option<(&str, &str)> {
     matches!(stage, "1" | "2" | "3").then_some((stage, path))
 }
 
+fn stage_presence_for_status(status: UnmergedStatus) -> UnmergedStagePresence {
+    let (base, ours, theirs) = match (status.first_head, status.second_head) {
+        (UnmergedStatusCode::Updated, UnmergedStatusCode::Updated) => (true, true, true),
+        (UnmergedStatusCode::Added, UnmergedStatusCode::Added) => (false, true, true),
+        (UnmergedStatusCode::Updated, UnmergedStatusCode::Deleted) => (true, true, false),
+        (UnmergedStatusCode::Deleted, UnmergedStatusCode::Updated) => (true, false, true),
+        (UnmergedStatusCode::Added, UnmergedStatusCode::Updated)
+        | (UnmergedStatusCode::Added, UnmergedStatusCode::Deleted) => (false, true, false),
+        (UnmergedStatusCode::Updated, UnmergedStatusCode::Added)
+        | (UnmergedStatusCode::Deleted, UnmergedStatusCode::Added) => (false, false, true),
+        (UnmergedStatusCode::Deleted, UnmergedStatusCode::Deleted) => (true, false, false),
+    };
+    UnmergedStagePresence { base, ours, theirs }
+}
+
+fn unmerged_stage_presence(
+    state: &FakeGitRepositoryState,
+    path: &RepoPath,
+) -> Option<UnmergedStagePresence> {
+    let status = *state.unmerged_paths.get(path)?;
+    Some(match state.conflict_stages.get(path) {
+        Some(stages) => UnmergedStagePresence {
+            base: stages.base.is_some(),
+            ours: stages.ours.is_some(),
+            theirs: stages.theirs.is_some(),
+        },
+        None => stage_presence_for_status(status),
+    })
+}
+
+fn revision_bytes(state: &FakeGitRepositoryState, revision: &str) -> Option<Vec<u8>> {
+    if let Some((stage, path)) = parse_stage_revision(revision) {
+        let repo_path = RepoPath::new(path).ok()?;
+        return state
+            .conflict_stages
+            .get(&repo_path)
+            .and_then(|stages| stages.stage(stage))
+            .cloned();
+    }
+    let (prefix, path) = revision.split_once(':')?;
+    let repo_path = RepoPath::new(path).ok()?;
+    match prefix {
+        "" => state.index_contents.get(&repo_path).cloned(),
+        "HEAD" => state.head_contents.get(&repo_path).cloned(),
+        _ if state.refs.get("HEAD").map(String::as_str) == Some(prefix) => {
+            state.head_contents.get(&repo_path).cloned()
+        }
+        _ => state
+            .commit_history
+            .iter()
+            .find(|snapshot| snapshot.sha == prefix)
+            .and_then(|snapshot| snapshot.head_contents.get(&repo_path).cloned()),
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum FakeGitOperation {
     Checkout,
@@ -216,9 +274,12 @@ pub struct FakeGitFailure {
 pub struct FakeRebaseSession {
     pub original_branch: Option<String>,
     pub upstream: Option<String>,
+    pub onto: Option<String>,
 }
 
 type ConflictFiles = Vec<(RepoPath, Option<Vec<u8>>)>;
+
+const FAKE_BLOB_MODE: u32 = 0o100644;
 
 fn git_failure(kind: GitFailureKind, message: impl Into<String>) -> anyhow::Error {
     anyhow::Error::new(GitFailure {
@@ -239,6 +300,54 @@ fn ensure_no_unmerged_paths(state: &FakeGitRepositoryState, message: &str) -> Re
         Ok(())
     } else {
         Err(git_failure(GitFailureKind::UnmergedFiles, message))
+    }
+}
+
+fn unmatched_pathspec(path: &RepoPath) -> anyhow::Error {
+    git_failure(
+        GitFailureKind::Other,
+        format!(
+            "error: pathspec '{}' did not match any file(s) known to git",
+            path.as_unix_str()
+        ),
+    )
+}
+
+fn is_tracked(state: &FakeGitRepositoryState, path: &RepoPath) -> bool {
+    state.unmerged_paths.contains_key(path)
+        || state.index_contents.contains_key(path)
+        || state.head_contents.contains_key(path)
+}
+
+fn conflict_side_content(
+    state: &FakeGitRepositoryState,
+    path: &RepoPath,
+    side: ConflictSide,
+) -> Result<Option<Vec<u8>>> {
+    if state.unmerged_paths.contains_key(path) {
+        let stages = state
+            .conflict_stages
+            .get(path)
+            .with_context(|| format!("{path:?} has no recorded conflict"))?;
+        let (content, version) = match side {
+            ConflictSide::Ours => (stages.ours.clone(), "our"),
+            ConflictSide::Theirs => (stages.theirs.clone(), "their"),
+        };
+        return match content {
+            Some(content) => Ok(Some(content)),
+            None => Err(git_failure(
+                GitFailureKind::Other,
+                format!(
+                    "error: path '{}' does not have {version} version",
+                    path.as_unix_str()
+                ),
+            )),
+        };
+    }
+    if is_tracked(state, path) {
+        Ok(None)
+    } else {
+        Err(unmatched_pathspec(path))
     }
 }
 
@@ -763,6 +872,7 @@ fn fake_rebase(
             let session = FakeRebaseSession {
                 original_branch: state.current_branch_name.clone(),
                 upstream: Some(upstream.clone()),
+                onto: Some(upstream_sha.clone()),
             };
             let Some(conflicts) = state
                 .rebase_conflicts
@@ -1098,34 +1208,89 @@ impl GitRepository for FakeGitRepository {
     ) -> BoxFuture<'_, Result<Vec<Option<Vec<u8>>>>> {
         let fut = self.with_state_async(false, move |state| {
             Ok(revisions
-                .into_iter()
-                .map(|rev| {
-                    if let Some((stage, path)) = parse_stage_revision(&rev) {
-                        let repo_path = RepoPath::new(path).ok()?;
-                        return state
-                            .conflict_stages
-                            .get(&repo_path)
-                            .and_then(|stages| stages.stage(stage))
-                            .cloned();
-                    }
-                    let (prefix, path) = rev.split_once(':')?;
-                    let repo_path = RepoPath::new(path).ok()?;
-                    match prefix {
-                        "" => state.index_contents.get(&repo_path).cloned(),
-                        "HEAD" => state.head_contents.get(&repo_path).cloned(),
-                        _ if state.refs.get("HEAD").map(String::as_str) == Some(prefix) => {
-                            state.head_contents.get(&repo_path).cloned()
-                        }
-                        _ => state
-                            .commit_history
-                            .iter()
-                            .find(|snapshot| snapshot.sha == prefix)
-                            .and_then(|snapshot| snapshot.head_contents.get(&repo_path).cloned()),
-                    }
-                })
+                .iter()
+                .map(|revision| revision_bytes(state, revision))
                 .collect())
         });
         self.executor.spawn(fut).boxed()
+    }
+
+    fn load_revisions_filtered(
+        &self,
+        revisions: Vec<String>,
+    ) -> BoxFuture<'_, Result<Vec<Option<Vec<u8>>>>> {
+        self.load_revisions(revisions)
+    }
+
+    fn unmerged_entries(&self) -> BoxFuture<'_, Result<Vec<UnmergedEntry>>> {
+        self.with_state_async(false, |state| {
+            let mut entries = state
+                .unmerged_paths
+                .keys()
+                .filter_map(|path| {
+                    let stages = unmerged_stage_presence(state, path)?;
+                    Some(UnmergedEntry {
+                        path: path.clone(),
+                        stages,
+                        base_oid: None,
+                        ours_oid: None,
+                        theirs_oid: None,
+                        ours_mode: stages.ours.then_some(FAKE_BLOB_MODE),
+                        theirs_mode: stages.theirs.then_some(FAKE_BLOB_MODE),
+                    })
+                })
+                .collect::<Vec<_>>();
+            entries.sort_by(|left, right| left.path.cmp(&right.path));
+            Ok(entries)
+        })
+    }
+
+    fn has_unmerged_paths(&self) -> BoxFuture<'_, Result<bool>> {
+        self.with_state_async(false, |state| Ok(!state.unmerged_paths.is_empty()))
+    }
+
+    fn merge_base(&self, first: String, second: String) -> BoxFuture<'_, Result<Option<String>>> {
+        self.with_state_async(false, move |state| {
+            anyhow::ensure!(
+                !first.starts_with('-') && !second.starts_with('-'),
+                "merge-base revisions must not start with a dash"
+            );
+            let planned = state
+                .merge_base_commits
+                .get(&(first.clone(), second.clone()))
+                .or_else(|| {
+                    state
+                        .merge_base_commits
+                        .get(&(second.clone(), first.clone()))
+                })
+                .cloned();
+            if planned.is_some() {
+                return Ok(planned);
+            }
+            let first_sha = revision_sha(state, &first);
+            let second_sha = revision_sha(state, &second);
+            Ok(first_sha.filter(|sha| Some(sha) == second_sha.as_ref()))
+        })
+    }
+
+    fn rebase_onto(&self) -> BoxFuture<'_, Option<String>> {
+        let onto = self.with_state_async(false, |state| {
+            Ok(state
+                .rebase_session
+                .as_ref()
+                .and_then(|session| session.onto.clone()))
+        });
+        async move { onto.await.ok().flatten() }.boxed()
+    }
+
+    fn rebase_current_commit(&self) -> BoxFuture<'_, Option<String>> {
+        let current_commit = self.with_state_async(false, |state| {
+            Ok(state
+                .rebase_session
+                .as_ref()
+                .and_then(|_| state.refs.get("REBASE_HEAD").cloned()))
+        });
+        async move { current_commit.await.ok().flatten() }.boxed()
     }
 
     fn show(&self, commit: String) -> BoxFuture<'_, Result<CommitDetails>> {
@@ -2446,6 +2611,161 @@ impl GitRepository for FakeGitRepository {
                 Ok(())
             })
             .await
+        })
+    }
+
+    fn checkout_conflict_side(
+        &self,
+        paths: Vec<RepoPath>,
+        side: ConflictSide,
+        _env: Arc<HashMap<String, String>>,
+    ) -> BoxFuture<'_, Result<()>> {
+        Box::pin(async move {
+            if paths.is_empty() {
+                return anyhow::Ok(());
+            }
+            let working_directory = self
+                .dot_git_path
+                .parent()
+                .context("repository has no working directory")?
+                .to_path_buf();
+            let side_contents = self
+                .with_state_async(false, move |state| {
+                    let mut side_contents = Vec::new();
+                    for path in paths {
+                        if let Some(content) = conflict_side_content(state, &path, side)? {
+                            side_contents.push((path, content));
+                        }
+                    }
+                    Ok(side_contents)
+                })
+                .await?;
+            for (path, content) in side_contents {
+                self.fs.write_file_internal(
+                    &working_directory.join(path.as_std_path()),
+                    content,
+                    false,
+                )?;
+            }
+            anyhow::Ok(())
+        })
+    }
+
+    fn mark_conflicts_resolved(
+        &self,
+        to_add: Vec<RepoPath>,
+        to_remove: Vec<RepoPath>,
+        _env: Arc<HashMap<String, String>>,
+    ) -> BoxFuture<'_, Result<()>> {
+        Box::pin(async move {
+            if to_add.is_empty() && to_remove.is_empty() {
+                return anyhow::Ok(());
+            }
+            let working_directory = self
+                .dot_git_path
+                .parent()
+                .context("repository has no working directory")?
+                .to_path_buf();
+            let worktree_contents = join_all(to_add.iter().map(|path| {
+                let absolute_path = working_directory.join(path.as_std_path());
+                async move { self.fs.load_bytes(&absolute_path).await.ok() }
+            }))
+            .await;
+            let removed_absolute_paths = to_remove
+                .iter()
+                .map(|path| working_directory.join(path.as_std_path()))
+                .collect::<Vec<_>>();
+            self.with_state_async(true, move |state| {
+                for (path, content) in to_add.iter().zip(&worktree_contents) {
+                    if content.is_none() && !is_tracked(state, path) {
+                        return Err(unmatched_pathspec(path));
+                    }
+                }
+                if let Some(path) = to_remove.iter().find(|path| !is_tracked(state, path)) {
+                    return Err(git_failure(
+                        GitFailureKind::Other,
+                        format!(
+                            "fatal: pathspec '{}' did not match any files",
+                            path.as_unix_str()
+                        ),
+                    ));
+                }
+                for (path, content) in to_add.into_iter().zip(worktree_contents) {
+                    match content {
+                        Some(content) => state.index_contents.insert(path.clone(), content),
+                        None => state.index_contents.remove(&path),
+                    };
+                    state.unmerged_paths.remove(&path);
+                }
+                for path in to_remove {
+                    state.index_contents.remove(&path);
+                    state.unmerged_paths.remove(&path);
+                }
+                Ok(())
+            })
+            .await?;
+            for absolute_path in removed_absolute_paths {
+                self.fs
+                    .remove_file(
+                        &absolute_path,
+                        RemoveOptions {
+                            recursive: false,
+                            ignore_if_not_exists: true,
+                        },
+                    )
+                    .await?;
+            }
+            anyhow::Ok(())
+        })
+    }
+
+    fn commit_merge(&self, _env: Arc<HashMap<String, String>>) -> BoxFuture<'_, Result<()>> {
+        let working_directory = self
+            .dot_git_path
+            .parent()
+            .map(|path| path.display().to_string())
+            .unwrap_or_default();
+        self.with_state_async(true, move |state| {
+            ensure_no_unmerged_paths(
+                state,
+                "error: Committing is not possible because you have unmerged files.\nhint: Fix them up in the work tree, and then use 'git add/rm <file>'\nhint: as appropriate to mark resolution and make a commit.\nfatal: Exiting because of an unresolved conflict.",
+            )?;
+            let subject = match state.merge_message.as_deref() {
+                Some(message) => message
+                    .lines()
+                    .find(|line| !line.trim().is_empty() && !line.starts_with('#'))
+                    .unwrap_or_default()
+                    .to_string(),
+                None => format!(
+                    "Merge branch '{}' of {working_directory} with conflicts.",
+                    state.current_branch_name.clone().unwrap_or_default()
+                ),
+            };
+            let previous_sha = state.refs.get("HEAD").cloned().unwrap_or_default();
+            state.commit_history.push(FakeCommitSnapshot {
+                head_contents: state.head_contents.clone(),
+                index_contents: state.index_contents.clone(),
+                sha: previous_sha,
+            });
+            state.head_contents = state.index_contents.clone();
+            let merge_sha = format!("fake-commit-{}", state.commit_history.len());
+            let history = ref_history(state, "HEAD");
+            if let Some(newest) = history.first() {
+                let merge_commit = CommitSummary {
+                    sha: merge_sha.clone().into(),
+                    subject: subject.into(),
+                    commit_timestamp: newest.commit_timestamp,
+                    author_name: SharedString::default(),
+                    has_parent: true,
+                };
+                let mut merged_history = vec![merge_commit];
+                merged_history.extend(history);
+                set_current_history(state, merged_history);
+            }
+            set_current_tip(state, merge_sha);
+            state.conflict_stages.clear();
+            clear_merge_markers(state);
+            Ok(())
         })
     }
 

@@ -39,12 +39,13 @@ use git::{
     parse_git_remote_url,
     repository::{
         Branch, BranchesScanResult, CommitData, CommitDetails, CommitFileStatus, CommitOptions,
-        CommitSummary, CreateWorktreeTarget, DiffStatType, DiffType, FetchOptions,
-        FileHistoryChangedFileSets, GitCommitTemplate, GitRepository, GitRepositoryCheckpoint,
-        InitialGraphCommitData, LogOrder, LogSource, MergeOutcome, PushOptions, RebaseAction,
-        RebaseOutcome, Remote, RemoteCommandOutput, RepoPath, RepositoryOperation, ResetMode,
-        SearchCommitArgs, Tag, UpstreamTrackingStatus, Worktree as GitWorktree, delete_branch_flag,
-        is_binary_content,
+        CommitSummary, ConflictBlobs, ConflictSide, CreateWorktreeTarget, DiffStatType, DiffType,
+        FetchOptions, FileHistoryChangedFileSets, GitCommitTemplate, GitRepository,
+        GitRepositoryCheckpoint, InitialGraphCommitData, LogOrder, LogSource, MergeOutcome,
+        PushOptions, RebaseAction, RebaseOutcome, Remote, RemoteCommandOutput, RepoPath,
+        RepositoryOperation, ResetMode, SearchCommitArgs, Tag, UnmergedEntry,
+        UnmergedStagePresence, UpstreamTrackingStatus, Worktree as GitWorktree,
+        conflicts_with_side, delete_branch_flag, is_binary_content, split_conflicts_for_resolution,
     },
     stash::{GitStash, StashEntry},
     status::{
@@ -8070,6 +8071,276 @@ impl Repository {
                     }) => backend.unresolve_paths(paths, environment).await,
                     RepositoryState::Remote(_) => Err(anyhow!(
                         "unresolving conflicts is not supported for remote repositories"
+                    )),
+                }
+            },
+        );
+        cx.background_spawn(async move { receiver.await? })
+    }
+
+    pub fn unmerged_entries(&mut self, cx: &mut Context<Self>) -> Task<Result<Vec<UnmergedEntry>>> {
+        let receiver = self.send_job("unmerged_entries", None, move |state, _| async move {
+            match state {
+                RepositoryState::Local(LocalRepositoryState { backend, .. }) => {
+                    backend.unmerged_entries().await
+                }
+                RepositoryState::Remote(_) => Err(anyhow!(
+                    "listing unmerged paths is not supported for remote repositories"
+                )),
+            }
+        });
+        cx.background_spawn(async move { receiver.await? })
+    }
+
+    pub fn has_unmerged_paths(&mut self, cx: &mut Context<Self>) -> Task<Result<bool>> {
+        let receiver = self.send_job("has_unmerged_paths", None, move |state, _| async move {
+            match state {
+                RepositoryState::Local(LocalRepositoryState { backend, .. }) => {
+                    backend.has_unmerged_paths().await
+                }
+                RepositoryState::Remote(_) => Err(anyhow!(
+                    "checking for unmerged paths is not supported for remote repositories"
+                )),
+            }
+        });
+        cx.background_spawn(async move { receiver.await? })
+    }
+
+    pub fn load_conflict_blobs(
+        &mut self,
+        repo_path: RepoPath,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<ConflictBlobs>> {
+        let receiver = self.send_job("load_conflict_blobs", None, move |state, _| async move {
+            match state {
+                RepositoryState::Local(LocalRepositoryState { backend, .. }) => {
+                    let path = repo_path.as_unix_str();
+                    let revisions = vec![
+                        format!(":1:{path}"),
+                        format!(":2:{path}"),
+                        format!(":3:{path}"),
+                    ];
+                    let mut blobs = backend
+                        .load_revisions_filtered(revisions)
+                        .await?
+                        .into_iter();
+                    Ok(ConflictBlobs {
+                        base: blobs.next().flatten(),
+                        ours: blobs.next().flatten(),
+                        theirs: blobs.next().flatten(),
+                    })
+                }
+                RepositoryState::Remote(_) => Err(anyhow!(
+                    "loading conflict blobs is not supported for remote repositories"
+                )),
+            }
+        });
+        cx.background_spawn(async move { receiver.await? })
+    }
+
+    pub fn load_revision_contents(
+        &mut self,
+        revisions: Vec<String>,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<Vec<Option<Vec<u8>>>>> {
+        let receiver = self.send_job("load_revision_contents", None, move |state, _| async move {
+            match state {
+                RepositoryState::Local(LocalRepositoryState { backend, .. }) => {
+                    backend.load_revisions_filtered(revisions).await
+                }
+                RepositoryState::Remote(_) => Err(anyhow!(
+                    "loading revision contents is not supported for remote repositories"
+                )),
+            }
+        });
+        cx.background_spawn(async move { receiver.await? })
+    }
+
+    pub fn merge_base(
+        &mut self,
+        first: String,
+        second: String,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<Option<String>>> {
+        let status = format!("git merge-base {first} {second}");
+        let receiver = self.send_job(
+            "merge_base",
+            Some(status.into()),
+            move |state, _| async move {
+                match state {
+                    RepositoryState::Local(LocalRepositoryState { backend, .. }) => {
+                        backend.merge_base(first, second).await
+                    }
+                    RepositoryState::Remote(_) => Err(anyhow!(
+                        "finding a merge base is not supported for remote repositories"
+                    )),
+                }
+            },
+        );
+        cx.background_spawn(async move { receiver.await? })
+    }
+
+    pub fn rebase_onto(&mut self, cx: &mut Context<Self>) -> Task<Result<Option<String>>> {
+        let receiver = self.send_job("rebase_onto", None, move |state, _| async move {
+            match state {
+                RepositoryState::Local(LocalRepositoryState { backend, .. }) => {
+                    Ok(backend.rebase_onto().await)
+                }
+                RepositoryState::Remote(_) => Err(anyhow!(
+                    "reading rebase state is not supported for remote repositories"
+                )),
+            }
+        });
+        cx.background_spawn(async move { receiver.await? })
+    }
+
+    pub fn rebase_current_commit(
+        &mut self,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<Option<String>>> {
+        let receiver = self.send_job("rebase_current_commit", None, move |state, _| async move {
+            match state {
+                RepositoryState::Local(LocalRepositoryState { backend, .. }) => {
+                    Ok(backend.rebase_current_commit().await)
+                }
+                RepositoryState::Remote(_) => Err(anyhow!(
+                    "reading rebase state is not supported for remote repositories"
+                )),
+            }
+        });
+        cx.background_spawn(async move { receiver.await? })
+    }
+
+    pub fn checkout_conflict_side(
+        &mut self,
+        paths: Vec<RepoPath>,
+        side: ConflictSide,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<()>> {
+        if paths.is_empty() {
+            return Task::ready(Ok(()));
+        }
+        let flag = match side {
+            ConflictSide::Ours => "--ours",
+            ConflictSide::Theirs => "--theirs",
+        };
+        let status = format!("git checkout {flag}");
+        let receiver = self.send_job(
+            "checkout_conflict_side",
+            Some(status.into()),
+            move |state, _| async move {
+                match state {
+                    RepositoryState::Local(LocalRepositoryState {
+                        backend,
+                        environment,
+                        ..
+                    }) => {
+                        backend
+                            .checkout_conflict_side(paths, side, environment)
+                            .await
+                    }
+                    RepositoryState::Remote(_) => Err(anyhow!(
+                        "checking out a conflict side is not supported for remote repositories"
+                    )),
+                }
+            },
+        );
+        cx.background_spawn(async move { receiver.await? })
+    }
+
+    pub fn mark_conflicts_resolved(
+        &mut self,
+        to_add: Vec<RepoPath>,
+        to_remove: Vec<RepoPath>,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<()>> {
+        if to_add.is_empty() && to_remove.is_empty() {
+            return Task::ready(Ok(()));
+        }
+        let receiver = self.send_job(
+            "mark_conflicts_resolved",
+            Some("git add".into()),
+            move |state, _| async move {
+                match state {
+                    RepositoryState::Local(LocalRepositoryState {
+                        backend,
+                        environment,
+                        ..
+                    }) => {
+                        backend
+                            .mark_conflicts_resolved(to_add, to_remove, environment)
+                            .await
+                    }
+                    RepositoryState::Remote(_) => Err(anyhow!(
+                        "resolving conflicts is not supported for remote repositories"
+                    )),
+                }
+            },
+        );
+        cx.background_spawn(async move { receiver.await? })
+    }
+
+    pub fn accept_conflict_side(
+        &mut self,
+        conflicts: Vec<(RepoPath, UnmergedStagePresence)>,
+        accept_theirs: bool,
+        reversed: bool,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<()>> {
+        if conflicts.is_empty() {
+            return Task::ready(Ok(()));
+        }
+        let side = ConflictSide::for_accepted_version(accept_theirs, reversed);
+        let flag = match side {
+            ConflictSide::Ours => "--ours",
+            ConflictSide::Theirs => "--theirs",
+        };
+        let status = format!("git checkout {flag}");
+        let receiver = self.send_job(
+            "accept_conflict_side",
+            Some(status.into()),
+            move |state, _| async move {
+                match state {
+                    RepositoryState::Local(LocalRepositoryState {
+                        backend,
+                        environment,
+                        ..
+                    }) => {
+                        backend
+                            .checkout_conflict_side(
+                                conflicts_with_side(&conflicts, side),
+                                side,
+                                environment.clone(),
+                            )
+                            .await?;
+                        let (to_add, to_remove) =
+                            split_conflicts_for_resolution(&conflicts, Some(side));
+                        backend
+                            .mark_conflicts_resolved(to_add, to_remove, environment)
+                            .await
+                    }
+                    RepositoryState::Remote(_) => Err(anyhow!(
+                        "accepting a conflict side is not supported for remote repositories"
+                    )),
+                }
+            },
+        );
+        cx.background_spawn(async move { receiver.await? })
+    }
+
+    pub fn commit_merge(&mut self, cx: &mut Context<Self>) -> Task<Result<()>> {
+        let receiver = self.send_job(
+            "commit_merge",
+            Some("git commit".into()),
+            move |state, _| async move {
+                match state {
+                    RepositoryState::Local(LocalRepositoryState {
+                        backend,
+                        environment,
+                        ..
+                    }) => backend.commit_merge(environment).await,
+                    RepositoryState::Remote(_) => Err(anyhow!(
+                        "committing a merge is not supported for remote repositories"
                     )),
                 }
             },

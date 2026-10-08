@@ -1,4 +1,5 @@
 use std::pin::pin;
+use std::rc::Rc;
 use std::time::Duration;
 
 use anyhow::Result;
@@ -6,8 +7,8 @@ use futures::channel::oneshot;
 use futures::future::{self, Either};
 use git::stash::StashEntry;
 use gpui::{
-    App, AsyncApp, Context, DismissEvent, Entity, EventEmitter, FocusHandle, Focusable,
-    SharedString, Task, Window,
+    Action as _, App, AsyncApp, AsyncWindowContext, Context, DismissEvent, Entity, EventEmitter,
+    FocusHandle, Focusable, SharedString, Task, Window,
 };
 use menu::Cancel;
 use project::git_store::{Repository, RepositoryEvent};
@@ -16,7 +17,15 @@ use ui::{TintColor, prelude::*};
 use util::ResultExt as _;
 use workspace::ModalView;
 
-use crate::branch_operations::{BranchContext, opaque_elevated_surface};
+use crate::branch_operations::{
+    BranchContext, BranchNotice, NoticeAction, opaque_elevated_surface,
+};
+use crate::merge_tool::conflict_resolution::{ConflictParams, ResolveMode, ResolverBehavior};
+
+const VIEW_SAVED_CHANGES_LABEL: &str = "View saved changes…";
+const LOCAL_CHANGES_NOT_RESTORED_TITLE: &str = "Local changes were not restored";
+pub(super) const UPDATE_OPERATION_TITLE: &str = "Update";
+const UPDATE_DESTINATION_NAME: &str = "Remote";
 
 const FALLBACK_PRODUCT_NAME: &str = "Flint";
 pub(crate) const STASH_MESSAGE: &str = "Local changes stashed for a smart operation";
@@ -129,9 +138,32 @@ pub fn stash_local_changes(context: &BranchContext, cx: &mut App) -> Task<Result
     })
 }
 
+#[derive(Clone, Debug)]
+pub struct RestoreLabels {
+    operation_title: SharedString,
+    destination_name: SharedString,
+}
+
+impl RestoreLabels {
+    pub fn new(
+        operation_title: impl Into<SharedString>,
+        destination_name: impl Into<SharedString>,
+    ) -> Self {
+        Self {
+            operation_title: operation_title.into(),
+            destination_name: destination_name.into(),
+        }
+    }
+
+    pub fn update() -> Self {
+        Self::new(UPDATE_OPERATION_TITLE, UPDATE_DESTINATION_NAME)
+    }
+}
+
 pub fn restore_local_changes(
     context: &BranchContext,
     stashed: bool,
+    labels: RestoreLabels,
     window: &mut Window,
     cx: &mut App,
 ) -> Task<Result<()>> {
@@ -151,13 +183,52 @@ pub fn restore_local_changes(
         match pop.await {
             Ok(()) => Ok(()),
             Err(error) if stash_pop_left_conflicts(&error) => {
-                cx.update(|window, cx| context.open_conflicts_if_conflicted(window, cx))
-                    .ok();
-                Ok(())
+                resolve_restore_conflicts(&context, &labels, cx).await
             }
             Err(error) => Err(error),
         }
     })
+}
+
+fn view_saved_changes_action() -> NoticeAction {
+    NoticeAction {
+        label: SharedString::new_static(VIEW_SAVED_CHANGES_LABEL),
+        handler: Rc::new(|window: &mut Window, cx: &mut App| {
+            window.dispatch_action(zed_actions::git::ViewStash.boxed_clone(), cx)
+        }),
+    }
+}
+
+pub(super) fn local_changes_not_restored_notice(operation: &str) -> BranchNotice {
+    let mut notice = BranchNotice::warning(format!(
+        "Before {operation} your uncommitted changes were saved to stash."
+    ))
+    .title(LOCAL_CHANGES_NOT_RESTORED_TITLE);
+    notice.actions.push(view_saved_changes_action());
+    notice
+}
+
+async fn resolve_restore_conflicts(
+    context: &BranchContext,
+    labels: &RestoreLabels,
+    cx: &mut AsyncWindowContext,
+) -> Result<()> {
+    let resolution = cx.update(|window, app| {
+        context.resolve_conflicts(
+            ConflictParams::for_smart_restore(
+                &labels.operation_title,
+                &labels.destination_name,
+                true,
+                vec![view_saved_changes_action()],
+            ),
+            ResolverBehavior::Plain,
+            ResolveMode::Initial,
+            window,
+            app,
+        )
+    })?;
+    resolution.await;
+    Ok(())
 }
 
 pub fn stash_pop_left_conflicts(error: &anyhow::Error) -> bool {
@@ -347,6 +418,29 @@ impl Render for SmartOperationDialog {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn local_changes_not_restored_notice_follows_the_bundle_texts() {
+        let notice = local_changes_not_restored_notice("merge");
+        assert_eq!(
+            notice.title.as_deref(),
+            Some("Local changes were not restored")
+        );
+        assert_eq!(
+            notice.message.as_ref(),
+            "Before merge your uncommitted changes were saved to stash."
+        );
+        assert_eq!(
+            notice.severity,
+            crate::branch_operations::NoticeSeverity::Warning
+        );
+        let labels: Vec<&str> = notice
+            .actions
+            .iter()
+            .map(|action| action.label.as_ref())
+            .collect();
+        assert_eq!(labels, vec!["View saved changes…"]);
+    }
 
     #[test]
     fn dialog_texts_follow_the_git_problem_wording_for_every_operation() {

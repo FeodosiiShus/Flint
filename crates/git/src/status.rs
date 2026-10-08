@@ -118,8 +118,8 @@ impl FileStatus {
             }
             .into(),
             [b'D', b'D'] => UnmergedStatus {
-                first_head: UnmergedStatusCode::Added,
-                second_head: UnmergedStatusCode::Added,
+                first_head: UnmergedStatusCode::Deleted,
+                second_head: UnmergedStatusCode::Deleted,
             }
             .into(),
             [x, b'U'] => UnmergedStatus {
@@ -724,6 +724,58 @@ mod tests {
         let status: GitStatus = input.parse().unwrap();
         assert_eq!(status.entries.len(), 1);
         assert_eq!(status.entries[0].1, FileStatus::Untracked);
+    }
+
+    #[test]
+    fn test_unmerged_codes_parse_to_both_sides() {
+        use super::{UnmergedStatus, UnmergedStatusCode};
+
+        let input = "DD both_deleted.txt\0AA both_added.txt\0UU both_modified.txt\0AU added_by_us.txt\0UA added_by_them.txt\0DU deleted_by_us.txt\0UD deleted_by_them.txt\0";
+        let status: GitStatus = input.parse().unwrap();
+        let unmerged = |first_head, second_head| {
+            FileStatus::Unmerged(UnmergedStatus {
+                first_head,
+                second_head,
+            })
+        };
+        let entries = status
+            .entries
+            .iter()
+            .map(|(path, status)| (path.as_unix_str().to_string(), *status))
+            .collect::<std::collections::BTreeMap<_, _>>();
+        assert_eq!(
+            entries,
+            std::collections::BTreeMap::from([
+                (
+                    "both_added.txt".to_string(),
+                    unmerged(UnmergedStatusCode::Added, UnmergedStatusCode::Added)
+                ),
+                (
+                    "both_deleted.txt".to_string(),
+                    unmerged(UnmergedStatusCode::Deleted, UnmergedStatusCode::Deleted)
+                ),
+                (
+                    "both_modified.txt".to_string(),
+                    unmerged(UnmergedStatusCode::Updated, UnmergedStatusCode::Updated)
+                ),
+                (
+                    "added_by_us.txt".to_string(),
+                    unmerged(UnmergedStatusCode::Added, UnmergedStatusCode::Updated)
+                ),
+                (
+                    "added_by_them.txt".to_string(),
+                    unmerged(UnmergedStatusCode::Updated, UnmergedStatusCode::Added)
+                ),
+                (
+                    "deleted_by_us.txt".to_string(),
+                    unmerged(UnmergedStatusCode::Deleted, UnmergedStatusCode::Updated)
+                ),
+                (
+                    "deleted_by_them.txt".to_string(),
+                    unmerged(UnmergedStatusCode::Updated, UnmergedStatusCode::Deleted)
+                ),
+            ])
+        );
     }
 
     #[test]

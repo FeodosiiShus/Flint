@@ -1,0 +1,32 @@
+use gpui::actions;
+
+actions!(
+    merge_tool,
+    [
+        NextDifference,
+        PreviousDifference,
+        NextConflict,
+        PreviousConflict,
+        AcceptLeftSide,
+        AcceptRightSide,
+        IgnoreLeftSide,
+        IgnoreRightSide,
+        ResolveUsingLeft,
+        ResolveUsingRight,
+        ResolveSimpleConflict,
+        IgnoreSelectedChanges,
+        ApplyNonConflictingLeft,
+        ApplyNonConflictingRight,
+        ApplyNonConflictingAll,
+        ResolveSimpleConflicts,
+        RevertConflictResolution,
+        ToggleSynchronizeScrolling,
+        ToggleCollapseUnchangedFragments,
+        FocusOppositePane,
+        FocusOppositePaneAndScroll,
+        AcceptLeft,
+        AcceptRight,
+        SaveAndClose,
+        ApplyChanges,
+    ]
+);

@@ -8322,10 +8322,10 @@ fn version_control_page() -> SettingsPage {
 
     fn merge_tool_section() -> [SettingsPageItem; 2] {
         [
-            SettingsPageItem::SectionHeader("Merge Tool"),
+            SettingsPageItem::SectionHeader("Merge"),
             SettingsPageItem::SettingItem(SettingItem {
-                title: "Auto Apply Non-Conflicting Changes",
-                description: "Apply non-conflicting changes automatically when the merge window opens.",
+                title: "Automatically Apply Non-Conflicting Changes",
+                description: "Automatically apply non-conflicting changes when the Merge Revisions window opens.",
                 field: Box::new(SettingField {
                     json_path: Some("git.merge_tool.auto_apply_non_conflicting"),
                     pick: |settings_content| {

@@ -329,7 +329,7 @@ Every branch and tag row opens a submenu (`>`). Its items depend on the kind of 
 - Checkout, merge and rebase are smart: when local changes would be overwritten, a "Git Checkout Problem" (or "Git Merge Problem") dialog offers Smart Checkout (stash the changes, run the operation, restore them), Force Checkout (checkout only) or Don't Checkout. A conflict while restoring opens the Conflicts dialog.
 - New Branch… and New Branch from 'X'… ask for a name with "Checkout branch" and "Overwrite existing branch". Names are validated like WebStorm does and cleaned up while you type.
 - Checkout Tag or Revision… checks out a tag or any revision as a detached HEAD.
-- Merge reports "Already up to date", success (with a Delete action for the merged local branch) or a conflict that opens the Conflicts dialog. Rebase reports success or stops at conflicts with Resolve…, Continue and Abort actions, and asks before rebasing published commits.
+- Merge reports "Already up to date", success (with a Delete action for the merged local branch) or a conflict that opens the Conflicts dialog; conflicts left unresolved produce a "<branch> Merged with Conflicts" notification with Resolve…. When the changes were stashed for the merge, a "Local changes were not restored" warning with "View saved changes…" is shown first. A merge or checkout refused because of unmerged files says "Cannot merge because of unmerged files" with "Resolve conflicts…". Rebase reports success or stops at conflicts with a "Rebase stopped due to conflicts" notification (Resolve…, Continue, Abort, and View Stash… when changes were stashed), and asks before rebasing published commits. A rebase that cannot start says "Rebase not allowed" with the unfinished operation. Abort Merge and Abort Rebase (menu, popup and notification) ask first ("Abort merge?", "Abort rebase in <repository>?" with Abort and Cancel) and report "Merge abort succeeded" / "Abort rebase succeeded" or "Merge abort failed" / "Abort rebase failed".
 - Update Project… and Update pull the current branch with the configured method (merge, rebase or the branch default). The options dialog can be turned off with "Don't show this dialog again"; the row then reads "Update Project" and Shift-click brings the dialog back.
 - Delete removes a local branch without asking. A branch that is not fully merged is deleted anyway, and the notification offers Restore and View Commits. Deleting a remote branch asks first; deleting a tag does not, and its notification offers Restore.
 - Rename… and Push… open their dialogs; Push… is preset to the selected branch.
@@ -382,43 +382,89 @@ Pressing a tab shortcut while the popup is open switches to that tab, or toggles
 
 ## Merge conflicts
 
-Flint resolves merge conflicts like WebStorm's [Resolve conflicts](https://www.jetbrains.com/help/webstorm/resolve-conflicts.html): a Conflicts dialog lists the conflicted files, and a three-pane Merge Revisions window resolves one file. Both work only for local repositories; they are hidden in remote projects.
+Flint resolves merge conflicts like WebStorm 2026.2.3's [Resolve conflicts](https://www.jetbrains.com/help/webstorm/resolve-conflicts.html) with the iterative flow: a "Conflicts" dialog lists every conflicted file, and each file opens in a three-pane "Merge Revisions" window. Both are separate native windows with their own saved position and size, not editor tabs. They exist only for local repositories and are hidden in remote projects.
+
+### Opening the Conflicts dialog
+
+- Git panel: the "Resolve…" button in the header of the Conflicts section (tooltip "Open the Conflicts dialog"), or `merge tool: resolve conflicts` in the command palette (`merge_tool::ResolveConflicts`, WebStorm's Git → Resolve Conflicts…). It works for conflicts made on the command line too.
+- Automatically after an operation that leaves conflicts: merge, update, rebase, stash pop and the restore step of a smart checkout. The dialog reads the repository state, so during a rebase the sides are swapped as in WebStorm and "Yours" stays your own commits.
+- What happens when the dialog closes depends on the operation:
+
+| Operation | All files resolved | Conflicts remain |
+|---|---|---|
+| Merge | Accept and Finish creates the merge commit, only while a merge is in progress | Warning "<branch> Merged with Conflicts" with Resolve… |
+| Update by merge, Pull in the Git panel | The merge commit is created | Warning "Cannot complete update" with Resolve… |
+| Update by rebase, Pull with rebase in the Git panel, unfinished rebase | `rebase --continue` runs by itself, skips an empty commit, and reopens the dialog at the next conflicting commit | Warning "Cannot continue rebase" with Resolve… |
+| Rebase from the branch popup, Checkout and Rebase onto | The rebase is continued | Warning "Rebase stopped due to conflicts" with Resolve…, Continue and Abort (and View Stash… when changes were stashed). Continue with conflicts left opens the Conflicts dialog. When Resolve… finds nothing left to resolve it asks "All conflicts have been resolved. Do you want to continue rebase?" |
+| Unfinished rebase, unfinished merge or unmerged files found before an update | The dialog opens straight away (as in WebStorm's update checks): an unfinished rebase is continued, the update goes on | Warning "Cannot update" with Resolve… |
+| Stash pop | Nothing more to do | Warning "Conflicts were not resolved during unstash" with "Resolve conflicts…" |
+| Smart checkout or update restoring local changes | Nothing more to do | Warning "Local changes were restored with conflicts" with "View saved changes…" and "Resolve conflicts…" |
+
+Choosing Resolve… in a notification reopens the dialog; if conflicts are still left, the notification comes back as "Pending Unresolved conflicts".
 
 ### Conflicts dialog
 
-- Opens by itself when an in-app pull, stash pop or stash apply leaves conflicted files. For conflicts made on the command line, click "Resolve…" in the header of the Git panel's Conflicts section, or run `merge tool: open conflicts`.
-- Columns: the file, "Yours (<current branch>)" and "Theirs (<merged branch>)", each showing whether that side added, deleted or modified the file. Files are grouped into Unresolved and Resolved, with a resolved/total changes badge per file.
-- Accept Yours keeps the checked-out branch's version of the file and Accept Theirs keeps the merged branch's version; either one stages the file.
-- Resolve All Simple Conflicts applies the non-conflicting changes and the simple conflicts of every file; a file left with nothing to resolve is written and staged.
-- Resolve Manually (or a double-click) opens the file in the Merge Revisions window.
-- Accept and Finish is enabled once every file is resolved and staged; it closes the dialog and focuses the commit editor of the Git panel.
-- Right-click a resolved file → Revert conflict resolution returns it to its conflicted state.
+- Title "Conflicts". A line above the table says what is being merged, for example "Merging branch feature into branch main", "Rebasing branch …", "Conflicts during unstashing …" or "The following files have conflicts:".
+- The table has a Name column and the columns "Yours (<branch>)" and "Theirs (<branch>)" (a short hash replaces a branch name that does not exist). Files are grouped under Unresolved and Resolved. A file row shows its name, the muted parent directory, a badge with resolved/total changes and, in the side columns, whether that side modified or deleted the file. Selection supports Cmd-click and Shift-click, Up/Down, Shift-Up/Down, PageUp/PageDown (one visible page), Shift-PageUp/PageDown, Ctrl-Home/Ctrl-End (first/last row), Ctrl-Shift-Home/End, Cmd-A and Ctrl-A (all rows). Home and End do nothing, as in WebStorm's table.
+- The View Options button (eye icon) has "Group by directory". The choice is remembered per project root.
+- The "Accept" button appears in the Yours and Theirs cells of the hovered unresolved file, or of the single selected one. Accept takes that whole side for every selected unresolved file. If a file already has merged changes, "Overwrite Changes" asks first ("Discard and Accept"). Text files are written and staged when the dialog closes; files without a text model (binary, not UTF-8, too big, read-only) are accepted with git straight away.
+- Right-click on the selection: Accept ‘Yours (…)’, Accept ‘Theirs (…)’, then Revert Conflict Resolution. Revert is enabled only for resolved files; "Confirm Revert" returns them to their original conflicted state.
+- The "Resolve All Simple Conflicts" button (wand icon) applies non-conflicting changes and resolves simple conflicts in every unresolved file, under a cancellable "Resolving simple conflicts…" overlay. A line next to it reports the result: "No conflicts were resolved automatically", "All conflicts were resolved automatically" or "2 conflicts resolved. 3 conflicts in 1 file still require attention". The button is disabled when there is nothing to resolve automatically.
+- "Resolve Manually" (or "Review Changes" when every selected file is resolved) and a double-click on a file open the Merge Revisions window. Windows open one after another: the selected files first, then the other unresolved files, then resolved files not yet reviewed. "Save and Close" in a window returns to the dialog; "Apply Changes" goes on to the next file. Binary files cannot be opened ("Cannot Show Merge Dialog: Binary files cannot be merged manually"); neither can read-only files ("Cannot resolve conflicts in a read-only file").
+- "Accept and Finish" is enabled once every file is resolved; it closes the dialog and applies the finish rule of the operation from the table above. The default button (accent colour, run by Enter, Ctrl-Enter or Cmd-Enter) is "Accept and Finish" when all files are resolved and reviewed, otherwise Resolve Manually / Review Changes. In that all-reviewed state the line above the table reads "All conflicts have been resolved" with a green check and the review button is hidden.
+- "Close" writes and stages the fully resolved files. If some files are only partially resolved it first asks "Discard Changes?" ("Closing the dialog will discard your changes in partially resolved files", buttons "Discard Changes" and "Continue Merge"). Esc, Cmd-W and the window close button close without asking and apply the same rule.
+- Speed search: typing selects the next file whose name contains the text (case-insensitive), shown as a chip; Backspace edits it and Esc clears it.
+- While files are being resolved or written, a progress overlay blocks the table. Confirmations (Discard Changes?, Confirm Revert, Overwrite Changes) are opaque cards inside the dialog with WebStorm's question icon; Enter answers the default (right) button and Esc the other one.
 
 ### Git panel
 
+- The context menu of a conflicted file starts with Merge…, Accept Theirs and Accept Yours (WebStorm's `Git.ChangesView.Conflicts` group), followed by a separator.
 - Double-clicking a conflicted file opens it in the Merge Revisions window; a single click keeps its usual behaviour.
-- The context menu of a conflicted file starts with Accept Yours, Accept Theirs and Merge….
+- Accept Theirs and Accept Yours run `git checkout --theirs` / `--ours` for the file and stage it at once. During a rebase the two sides are swapped, so Yours is still your own version.
+- A window opened from the Git panel is standalone, not part of the iterative flow: its bottom buttons are Accept Left, Accept Right, Cancel and Apply Changes. Cancel leaves the file untouched (after asking when the Result was edited); the other three write the file and stage it.
+
+### Editor notification
+
+- A text editor showing a file that is in a git conflict state gets a banner above its content, like WebStorm's editor notification: a warning banner "File has unresolved merge conflicts" with the link "Resolve conflicts…", which opens the standalone Merge Revisions window for that file (not the Conflicts dialog).
+- While that window is open the banner becomes an information banner "Resolving merge conflicts is in progress" with the links "Show resolve conflicts window" (brings the window to the front) and "Cancel resolve" (closes the window the same way its Cancel button does, so it asks first when the Result was edited).
+- The banner is not shown when both sides deleted the file, when the file is missing on disk, or in multi-file views such as the project diff. It refreshes when the repository status changes and when the Merge Revisions window opens or closes, and exists only for local projects.
 
 ### Merge Revisions window
 
-- Left pane: your version (the checked-out branch), read-only. Right pane: their version (the merged branch), read-only. Centre pane: the Result, a normal editor that starts from the base revision.
-- Each change has `>>` (left) or `<<` (right) to accept it into the Result and `X` to ignore it. Cmd-click on `>>`/`<<` resolves the conflict using that side and ignores the other one; Cmd-click on `X` ignores both sides and keeps the Result text. Alt-click appends the side after the text already in the Result. A magic wand in the Result gutter resolves a simple conflict.
-- Toolbar: previous/next difference, apply non-conflicting changes from the left, from both sides or from the right, resolve simple conflicts, and the gear with Synchronize Scrolling and Ignore Differences (None, Trim whitespaces, Ignore whitespaces, Ignore whitespaces and empty lines). Ignore Differences can be changed only before the first change is applied or the Result is edited. The counter shows the remaining changes and conflicts, for example "3 changes. 1 conflict.".
+- Title "Merge Revisions for <path>". Three panes: Left = Yours (read-only), Result (editable, starts from the base revision) and Right = Theirs (read-only). Each pane has a title strip; the side panes say what they contain ("Your version, branch …", "Changes from branch …", "Rebasing <hash> from …", "Local changes", "Changes from stash", …) with a "Show Details" link that opens the commit details and WebStorm's read-only icon. The Result strip shows the file path (tooltip: the home-relative path). When the line separators of the three texts differ, each strip also shows LF, CRLF or CR in WebStorm's colours.
+- Ribbons link corresponding changes between the panes. Drag a divider to resize the panes; a double-click on a divider gives the Result the full width, and another one restores equal thirds; the mouse wheel over a divider scrolls the Result. Scrolling is synchronised across the panes by default. Folded unchanged fragments (wavy lines in the editors, the gutter and the dividers) expand when you click the folded line, its placeholder or the chevron in the gutter. "Show Line Numbers" off removes the number column of the gutters.
+- Gutter icons on each change: Accept (arrows, which become "append" arrows after the other side was applied to a conflict) and Ignore (cross) on the side panes; in the Result pane a wand (Resolve, for a simple conflict) and Revert. Ctrl+click on Accept resolves the conflict using that side and ignores the other; Ctrl+click on Ignore ignores the whole conflict. On macOS a right-click on an icon does the same, because the system reports Ctrl+click as a right click.
+- Right-click menu in a pane: Accept, Resolve using Left / Right, Ignore, Resolve Automatically (only the entries that apply to the selection), Revert (shown whenever text is selected; it reverts the resolved changes in the selection), then Collapse Unchanged Fragments and Synchronize Scrolling.
+- Toolbar, left to right: Previous Difference, Next Difference, Collapse Unchanged Fragments, "Apply non-conflicting changes:" Left / All / Right, Resolve Simple Conflicts, Revert Conflict Resolution. The status shows a spinner while differences are computed, then "2 changes, 1 conflict" or a green "All conflicts resolved". The gear menu has Synchronize Scrolling; Ignore Differences (None, Trim whitespaces, Ignore whitespaces); Highlighting Differences (Lines, Words); and an Appearance submenu with Show Whitespaces, Show Line Numbers, Show Indent Guides and Soft-Wrap. Changing Ignore Differences or Highlighting restarts the merge and first asks "Update Highlighting Settings" when the Result was edited.
+- When the last change is processed, a green "All changes have been processed" panel with an "Apply Changes" link appears in the Result pane.
 - Undo and redo in the Result also undo and redo the accept and ignore states.
-- Bottom buttons: Accept Left and Accept Right take the whole file from one side. Save and Close keeps the partial result in memory and returns to the Conflicts dialog. Apply Changes writes the Result, stages the file and opens the next conflicted file; while unresolved changes remain it first asks "Apply the result anyway?".
+- Bottom buttons in the iterative flow: Accept Left and Accept Right take a whole side, "Save and Close" keeps the current Result for the dialog, "Apply Changes" (default) saves the Result. If changes or conflicts remain, Apply Changes first asks "Unprocessed Changes" ("Save Current Result" / "Back to Resolving"). Accept Left, Accept Right and the standalone Cancel ask for confirmation ("Discard Changes and …" / "Continue Merge") when the Result has unsaved edits. Apply Changes is disabled while differences are being computed or if the computation failed. A file whose differences cannot be computed shows a warning banner "Unable to calculate diff. File is too big and there are too many changes." with a "Hide" link. Esc and Cmd-W close the window like Cancel; in the iterative flow they never ask.
 
 ### Keyboard shortcuts
 
-| Shortcut | Action |
-|---|---|
-| F7 | Next difference |
-| Shift-F7 | Previous difference |
-| Ctrl-Cmd-Right | Accept the left side of the change at the cursor |
-| Ctrl-Cmd-Left | Accept the right side of the change at the cursor |
-| Ctrl-Shift-Tab | Focus the opposite pane |
-| Cmd-Shift-D | Show the settings popup |
+These bindings are in the default and the JetBrains macOS keymaps.
 
-The shortcuts work in the default and the JetBrains keymaps.
+| Shortcut | Action | Where |
+|---|---|---|
+| F7, Cmd-] | `merge_tool::NextDifference` | Merge Revisions window, also with an editor focused |
+| Shift-F7, Cmd-[ | `merge_tool::PreviousDifference` | Merge Revisions window |
+| Ctrl-Cmd-Right | `merge_tool::AcceptLeftSide` (accept the left side of the change at the cursor) | Merge Revisions window |
+| Ctrl-Cmd-Left | `merge_tool::AcceptRightSide` (accept the right side of the change at the cursor) | Merge Revisions window |
+| Ctrl-Shift-Tab | `merge_tool::FocusOppositePane` | Merge Revisions window |
+| Cmd-Enter | `merge_tool::ApplyChanges` | Merge Revisions window, also from the Result editor |
+| Cmd-A, Ctrl-A | `merge_tool::ConflictsSelectAllRows` | Conflicts dialog |
+| Shift-Up, Shift-Down | `merge_tool::ConflictsExtendSelectionUp`, `ConflictsExtendSelectionDown` | Conflicts dialog |
+| Left, Right | `merge_tool::ConflictsCollapseRow`, `ConflictsExpandRow` | Conflicts dialog |
+| PageUp, PageDown | `merge_tool::ConflictsPageUp`, `ConflictsPageDown` | Conflicts dialog |
+| Shift-PageUp, Shift-PageDown | `merge_tool::ConflictsExtendPageUp`, `ConflictsExtendPageDown` | Conflicts dialog |
+| Ctrl-Home, Ctrl-End | `menu::SelectFirst`, `menu::SelectLast` | Conflicts dialog |
+| Ctrl-Shift-Home, Ctrl-Shift-End | `merge_tool::ConflictsExtendToFirstRow`, `ConflictsExtendToLastRow` | Conflicts dialog |
+| Home, End | unbound (do nothing) | Conflicts dialog |
+| Cmd-W | `workspace::CloseWindow` | Conflicts dialog and Merge Revisions window |
+| Enter, Ctrl-Enter, Cmd-Enter | `menu::Confirm`, `menu::SecondaryConfirm`: run the default button | Conflicts dialog |
+| Esc | `menu::Cancel`: clears the speed search, then closes | Conflicts dialog |
+
+The other actions of the window (`merge_tool::NextConflict`, `PreviousConflict`, `IgnoreLeftSide`, `IgnoreRightSide`, `ResolveUsingLeft`, `ResolveUsingRight`, `ApplyNonConflictingLeft`, `ApplyNonConflictingAll`, `ApplyNonConflictingRight`, `ResolveSimpleConflicts`, `RevertConflictResolution`, `ToggleSynchronizeScrolling`, `ToggleCollapseUnchangedFragments`, `AcceptLeft`, `AcceptRight`, `SaveAndClose` and so on) have no default shortcut; they are in the command palette and can be bound in `keymap.json` with the context `MergeView`.
 
 ### Setting
 
@@ -426,7 +472,37 @@ The shortcuts work in the default and the JetBrains keymaps.
 "git": { "merge_tool": { "auto_apply_non_conflicting": false } }
 ```
 
-With `true`, the merge window applies all non-conflicting changes as soon as it opens. Settings window: Version Control → Merge Tool.
+With `true`, the Merge Revisions window applies all non-conflicting changes as soon as the differences are computed. Settings window: Version Control → Merge → "Automatically Apply Non-Conflicting Changes".
+
+### Other saved state
+
+- Position and size of the Conflicts dialog (key `MultipleFileMergeDialog`) and of the Merge Revisions window (key `MergeDialog`), per project. The size is saved only when it differs from the default; a window that no longer fits the screen is moved back inside.
+- "Group by directory" of the Conflicts dialog, per project root.
+- The gear menu choices of the Merge Revisions window are remembered across windows and restarts (not per project): Ignore Differences, Highlighting Differences, Show Whitespaces (default off), Show Line Numbers (default on), Show Indent Guides (default off), Soft-Wrap (default off) and Collapse Unchanged Fragments (default on). Synchronize Scrolling is not remembered and starts on in every window. A model that the Conflicts dialog already prepared keeps the Ignore Differences policy it was prepared with.
+
+### Not implemented
+
+- Compare Contents popup of the Merge Revisions window (Left / Middle / Right partial diffs and "Base and …") and "Compare with Clipboard" in the editor menu: they need a standalone two-side diff window, which Flint does not have (`MergeThreesideViewer`).
+- Binary merge viewer: binary files can only be accepted from one side (`BinaryMergeTool`).
+- Semantic conflict resolution (PSI, import merging) and resolution by AI are not ported; they are inert for Git conflicts in WebStorm 2026.2.3.
+- Gear menu: Breadcrumbs, Context Help and "Show Diff in Editor Tab / New Window" are missing. The Ignore Differences and Highlighting Differences choices carry check marks instead of radio marks, and the right-click menu has no icons.
+- Title strips: no charset label (Flint reads every revision as UTF-8 and rejects other encodings), the line-separator label of the Result is taken from the base text (WebStorm uses the working-tree file), the labels cannot be selected, and there is no read-only tooltip (`DiffEditorTitleDetails`).
+- The Left pane keeps its scrollbar on the right because the editor has no left-hand scrollbar.
+- Scrollbar stripe marks for changes, the expanded-region chevrons, the enclosing-class hint on fold waves, and the hand cursor on the two panes that are not under the pointer when a fold is hovered. Next/Previous Difference and Apply Non-Conflicting scroll without animation.
+- After Ignore Differences restarts the merge the folds are rebuilt in the default state (WebStorm restores the expanded ones, `ExpandSuggester`). A selection that touches a collapsed fold selects only the caret row for the merge actions. Ctrl+Alt+Shift+Up/Down are not consumed.
+- The diff row highlights keep the editor's own z-order (below the text selection, above the active line); WebStorm paints them between syntax and selection layers.
+- Ctrl+click on macOS: a real right-click on a gutter icon is indistinguishable from Ctrl+click, because GPUI reports Ctrl+click as a right-button event; WebStorm reacts only to the left button (`DiffGutterRenderer.performAction`).
+- The "All changes have been processed" notice is drawn inside the Result pane instead of a native balloon popup; it hides on mouse press, key press or window resize.
+- "Show Details" opens a Flint-built window with the commit or commit range (list, changed files, "Filter by conflicted file") instead of `ChangeListViewerDialog`.
+- The pane editors have no project, so they have no language-server features while merging.
+- The Merge Revisions window opens after the revisions are loaded (WebStorm shows it empty first with a loading overlay). The minimum size is 700×450 where WebStorm derives it from the content, the buttons are 24 px high like WebStorm's compact density (28 px otherwise), disabled buttons are dimmed and have no hover, pressed or focus-ring state, and the light-theme button colours are WebStorm's light values. Cmd-Enter does nothing while Apply Changes is disabled (WebStorm runs it anyway).
+- Confirmation dialogs of both windows are opaque cards inside the window with the title as a bold first line, not separate dialog windows with a title bar.
+- Conflicts dialog: no Dock bounce when it opens, no cancellable "Loading unmerged files…" progress, no block on project reloads while it is open, a context menu is closed by focus loss rather than by a resize, no vertical separators between header cells, one selection colour whether the window is focused or not, speed search is a case-insensitive substring match without highlighting (WebStorm uses word-prefix and wildcard matching), the inline Accept button is Flint's subtle button instead of `ActionToolbar.smallVariant`, Tab and Shift-Tab move between rows, not between cells, and the Resolve button spinner is a rotating icon rather than the 8-step `AnimatedIcon`.
+- The fallback description texts of `GitStashChangesSaver`, and the raw (unbolded) rebase description that WebStorm shows when `REBASE_HEAD` is missing, are not reproduced; Flint always passes its own restore description and renders the bold.
+- Modality: the dialog and the windows block only the workspace window that opened them, while WebStorm's `IdeModalityType.IDE` blocks all IDE windows. The native close button and Cmd-Q of the workspace window still work while a dialog is open. The zoomed state of a window is not saved, and bounds are written when the window closes, not at quit.
+- Operations around the dialog that Flint does not have, so their WebStorm flows are not ported: cherry-pick and revert conflicts (`GitApplyChangesConflictResolver`) and their Abort Cherry-Pick / Abort Revert actions, the "Abort and Rollback" variants of Abort Rebase, the "Rebase stopped for editing" notification as an actionable notice (inside the continue loop it is an information notice without Continue or Abort), "Continue rebase failed" with "Stage and Retry" / "Show Files" after `rebase --continue` finds unstaged changes (Flint reports the remaining conflicts instead), the "View Files" dialog of the "Untracked Files Prevent …" notifications (the files are listed in the notification), the "Cannot commit changes due to unresolved conflicts" commit check (the Git panel disables Commit instead), the unstash index-conflict notice, a Git → Resolve Conflicts… menu entry (the action is in the command palette and the Git panel only). Flint also refuses to start a merge while a merge or rebase is unfinished, before running git.
+- Smart operations keep Flint's own stash mechanism (WebStorm's `GitPreservingProcess`): the restore step opens the Conflicts dialog with WebStorm's texts, but the stash is restored by `git stash pop` without `--index`. A merge or update that leaves conflicts while changes are stashed shows the WebStorm warning "Local changes were not restored" ("Before merge your uncommitted changes were saved to stash.") with "View saved changes…"; WebStorm restores the stash after the dialog in every case, Flint only once everything is resolved.
+- The Git Conflicts tool window, the Changes view banner, the hover icons (Merge, Rollback) of changed files and the non-modal merge in the Changes view: they are off by default in WebStorm (registry keys `git.merge.conflicts.toolwindow` and `vcs.non.modal.merge.enabled`), so they are not built. Revert Resolved Files in the Git panel is not built either; use the Conflicts dialog.
 
 ## Languages and code navigation
 

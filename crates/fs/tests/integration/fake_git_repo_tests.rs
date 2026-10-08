@@ -2,15 +2,16 @@ use collections::HashMap;
 use fs::{FakeFs, FakeGitOperation, Fs};
 use git::{
     repository::{
-        AskPassDelegate, Branch, CommitSummary, GitFailure, GitFailureKind, GitRepository,
-        MergeOutcome, RebaseAction, RebaseOutcome, RepositoryOperation, UpstreamTracking,
-        UpstreamTrackingStatus, repo_path,
+        AskPassDelegate, Branch, CommitSummary, ConflictSide, GitFailure, GitFailureKind,
+        GitRepository, MergeOutcome, RebaseAction, RebaseOutcome, RepositoryOperation,
+        UpstreamTracking, UpstreamTrackingStatus, repo_path,
     },
     status::{FileStatus, StatusCode, TrackedStatus, UnmergedStatus, UnmergedStatusCode},
 };
 use gpui::{BackgroundExecutor, TestAppContext};
 use serde_json::json;
 use std::{
+    collections::BTreeMap,
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -1905,4 +1906,550 @@ async fn test_fake_push_tag_records_pushed_tags(cx: &mut TestAppContext) {
         .await
         .unwrap_err();
     assert!(error.to_string().contains("unable to access remote"));
+}
+
+async fn unmerged_presence(
+    repository: &Arc<dyn GitRepository>,
+) -> BTreeMap<String, (bool, bool, bool)> {
+    repository
+        .unmerged_entries()
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|entry| {
+            (
+                entry.path.as_unix_str().to_string(),
+                (entry.stages.base, entry.stages.ours, entry.stages.theirs),
+            )
+        })
+        .collect()
+}
+
+async fn open_repository_in_conflicted_merge(
+    executor: BackgroundExecutor,
+) -> (Arc<FakeFs>, Arc<dyn GitRepository>) {
+    let (fs, repository) = open_fake_repository(executor).await;
+    fs.insert_branches(dot_git(), &["main", "feature"]);
+    fs.set_ref_for_repo(dot_git(), "HEAD", "main-sha");
+    fs.set_ref_history_for_repo(dot_git(), "main", history(&["m2", "m1"]));
+    fs.set_ref_history_for_repo(dot_git(), "feature", history(&["f1", "m1"]));
+    fs.set_merge_conflict_for_repo(
+        dot_git(),
+        "feature",
+        "conflicted.txt",
+        Some("base\n"),
+        Some("ours\n"),
+        Some("theirs\n"),
+    );
+    let outcome = repository.merge("feature".into(), no_env()).await.unwrap();
+    assert!(matches!(outcome, MergeOutcome::Conflicted { .. }));
+    (fs, repository)
+}
+
+#[gpui::test]
+async fn test_fake_unmerged_entries_report_stage_presence_and_drop_resolved_paths(
+    executor: BackgroundExecutor,
+) {
+    let (fs, repository) = open_fake_repository(executor).await;
+    fs.set_conflict_for_repo(
+        dot_git(),
+        "both_modified.txt",
+        Some("base\n"),
+        Some("ours\n"),
+        Some("theirs\n"),
+    );
+    fs.set_conflict_for_repo(
+        dot_git(),
+        "deleted_by_us.txt",
+        Some("base\n"),
+        None,
+        Some("theirs\n"),
+    );
+    fs.set_conflict_for_repo(
+        dot_git(),
+        "deleted_by_them.txt",
+        Some("base\n"),
+        Some("ours\n"),
+        None,
+    );
+    fs.set_conflict_for_repo(
+        dot_git(),
+        "both_added.txt",
+        None,
+        Some("ours\n"),
+        Some("theirs\n"),
+    );
+    fs.set_conflict_for_repo(dot_git(), "added_by_us.txt", None, Some("ours\n"), None);
+    fs.set_conflict_for_repo(dot_git(), "added_by_them.txt", None, None, Some("theirs\n"));
+    fs.set_conflict_for_repo(dot_git(), "both_deleted.txt", Some("base\n"), None, None);
+
+    assert_eq!(
+        unmerged_presence(&repository).await,
+        BTreeMap::from([
+            ("added_by_them.txt".to_string(), (false, false, true)),
+            ("added_by_us.txt".to_string(), (false, true, false)),
+            ("both_added.txt".to_string(), (false, true, true)),
+            ("both_deleted.txt".to_string(), (true, false, false)),
+            ("both_modified.txt".to_string(), (true, true, true)),
+            ("deleted_by_them.txt".to_string(), (true, true, false)),
+            ("deleted_by_us.txt".to_string(), (true, false, true)),
+        ])
+    );
+
+    let entries = repository.unmerged_entries().await.unwrap();
+    let paths = entries
+        .iter()
+        .map(|entry| entry.path.as_unix_str().to_string())
+        .collect::<Vec<_>>();
+    let mut sorted_paths = paths.clone();
+    sorted_paths.sort();
+    assert_eq!(paths, sorted_paths);
+    let both_modified = entries
+        .iter()
+        .find(|entry| entry.path == repo_path("both_modified.txt"))
+        .unwrap();
+    assert_eq!(both_modified.ours_mode, Some(0o100644));
+    assert_eq!(both_modified.theirs_mode, Some(0o100644));
+    let deleted_by_us = entries
+        .iter()
+        .find(|entry| entry.path == repo_path("deleted_by_us.txt"))
+        .unwrap();
+    assert_eq!(deleted_by_us.ours_mode, None);
+    assert_eq!(deleted_by_us.theirs_mode, Some(0o100644));
+    assert!(repository.has_unmerged_paths().await.unwrap());
+
+    repository
+        .mark_conflicts_resolved(
+            vec![
+                repo_path("both_modified.txt"),
+                repo_path("both_added.txt"),
+                repo_path("both_deleted.txt"),
+            ],
+            vec![repo_path("deleted_by_us.txt")],
+            no_env(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        unmerged_presence(&repository).await,
+        BTreeMap::from([
+            ("added_by_them.txt".to_string(), (false, false, true)),
+            ("added_by_us.txt".to_string(), (false, true, false)),
+            ("deleted_by_them.txt".to_string(), (true, true, false)),
+        ])
+    );
+    assert!(repository.has_unmerged_paths().await.unwrap());
+
+    repository
+        .mark_conflicts_resolved(
+            vec![
+                repo_path("added_by_them.txt"),
+                repo_path("added_by_us.txt"),
+                repo_path("deleted_by_them.txt"),
+            ],
+            Vec::new(),
+            no_env(),
+        )
+        .await
+        .unwrap();
+    assert!(repository.unmerged_entries().await.unwrap().is_empty());
+    assert!(!repository.has_unmerged_paths().await.unwrap());
+}
+
+#[gpui::test]
+async fn test_fake_unmerged_entries_derive_presence_from_status_without_recorded_stages(
+    executor: BackgroundExecutor,
+) {
+    let (fs, repository) = open_fake_repository(executor).await;
+    fs.set_unmerged_paths_for_repo(
+        dot_git(),
+        &[
+            (
+                repo_path("modified_deleted.txt"),
+                UnmergedStatus {
+                    first_head: UnmergedStatusCode::Updated,
+                    second_head: UnmergedStatusCode::Deleted,
+                },
+            ),
+            (
+                repo_path("deleted_deleted.txt"),
+                UnmergedStatus {
+                    first_head: UnmergedStatusCode::Deleted,
+                    second_head: UnmergedStatusCode::Deleted,
+                },
+            ),
+            (
+                repo_path("added_added.txt"),
+                UnmergedStatus {
+                    first_head: UnmergedStatusCode::Added,
+                    second_head: UnmergedStatusCode::Added,
+                },
+            ),
+        ],
+    );
+
+    assert_eq!(
+        unmerged_presence(&repository).await,
+        BTreeMap::from([
+            ("added_added.txt".to_string(), (false, true, true)),
+            ("deleted_deleted.txt".to_string(), (true, false, false)),
+            ("modified_deleted.txt".to_string(), (true, true, false)),
+        ])
+    );
+    let error = repository
+        .checkout_conflict_side(
+            vec![repo_path("added_added.txt")],
+            ConflictSide::Ours,
+            no_env(),
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        error.to_string().contains("has no recorded conflict"),
+        "unexpected error: {error}"
+    );
+}
+
+#[gpui::test]
+async fn test_fake_checkout_conflict_side_writes_the_chosen_stage_and_keeps_the_path_unmerged(
+    executor: BackgroundExecutor,
+) {
+    let (fs, repository) = open_fake_repository(executor).await;
+    fs.set_conflict_for_repo(
+        dot_git(),
+        "recorded.txt",
+        Some("base\n"),
+        Some("ours\n"),
+        Some("theirs\n"),
+    );
+    fs.set_conflict_for_repo(
+        dot_git(),
+        "gone.txt",
+        Some("base\n"),
+        None,
+        Some("theirs\n"),
+    );
+    let recorded = Path::new(path!("/project/recorded.txt"));
+    let conflict_text = "<<<<<<< HEAD\nours\n=======\ntheirs\n>>>>>>> MERGE_HEAD\n";
+    let both_paths = BTreeMap::from([
+        ("gone.txt".to_string(), (true, false, true)),
+        ("recorded.txt".to_string(), (true, true, true)),
+    ]);
+
+    repository
+        .checkout_conflict_side(Vec::new(), ConflictSide::Ours, no_env())
+        .await
+        .unwrap();
+    assert_eq!(fs.load(recorded).await.unwrap(), conflict_text);
+
+    repository
+        .checkout_conflict_side(
+            vec![repo_path("recorded.txt")],
+            ConflictSide::Theirs,
+            no_env(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(fs.load(recorded).await.unwrap(), "theirs\n");
+    assert_eq!(unmerged_presence(&repository).await, both_paths);
+
+    let missing_side = repository
+        .checkout_conflict_side(vec![repo_path("gone.txt")], ConflictSide::Ours, no_env())
+        .await
+        .unwrap_err();
+    assert_eq!(failure(&missing_side).kind, GitFailureKind::Other);
+    assert!(
+        missing_side
+            .to_string()
+            .contains("path 'gone.txt' does not have our version"),
+        "unexpected error: {missing_side}"
+    );
+
+    fs.write(recorded, conflict_text.as_bytes()).await.unwrap();
+    let partially_missing = repository
+        .checkout_conflict_side(
+            vec![repo_path("recorded.txt"), repo_path("gone.txt")],
+            ConflictSide::Ours,
+            no_env(),
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        partially_missing
+            .to_string()
+            .contains("does not have our version"),
+        "unexpected error: {partially_missing}"
+    );
+    assert_eq!(
+        fs.load(recorded).await.unwrap(),
+        conflict_text,
+        "a failing batch must not write any of its paths"
+    );
+
+    let unknown = repository
+        .checkout_conflict_side(vec![repo_path("unknown.txt")], ConflictSide::Ours, no_env())
+        .await
+        .unwrap_err();
+    assert!(
+        unknown
+            .to_string()
+            .contains("pathspec 'unknown.txt' did not match any file(s) known to git"),
+        "unexpected error: {unknown}"
+    );
+
+    repository
+        .mark_conflicts_resolved(vec![repo_path("recorded.txt")], Vec::new(), no_env())
+        .await
+        .unwrap();
+    repository
+        .checkout_conflict_side(
+            vec![repo_path("recorded.txt")],
+            ConflictSide::Theirs,
+            no_env(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        fs.load(recorded).await.unwrap(),
+        conflict_text,
+        "checking out a side of an already resolved path leaves the worktree alone"
+    );
+}
+
+#[gpui::test]
+async fn test_fake_mark_conflicts_resolved_stages_worktree_and_removes_deleted_sides(
+    executor: BackgroundExecutor,
+) {
+    let (fs, repository) = open_fake_repository(executor).await;
+    fs.set_conflict_for_repo(
+        dot_git(),
+        "keep.txt",
+        Some("base\n"),
+        Some("ours\n"),
+        Some("theirs\n"),
+    );
+    fs.set_conflict_for_repo(
+        dot_git(),
+        "drop.txt",
+        Some("base\n"),
+        None,
+        Some("theirs\n"),
+    );
+    fs.set_conflict_for_repo(dot_git(), "gone.txt", Some("base\n"), None, None);
+    repository
+        .checkout_conflict_side(vec![repo_path("keep.txt")], ConflictSide::Theirs, no_env())
+        .await
+        .unwrap();
+
+    let unknown_removal = repository
+        .mark_conflicts_resolved(Vec::new(), vec![repo_path("unknown.txt")], no_env())
+        .await
+        .unwrap_err();
+    assert!(
+        unknown_removal
+            .to_string()
+            .contains("pathspec 'unknown.txt' did not match any files"),
+        "unexpected error: {unknown_removal}"
+    );
+    let unknown_addition = repository
+        .mark_conflicts_resolved(vec![repo_path("unknown.txt")], Vec::new(), no_env())
+        .await
+        .unwrap_err();
+    assert!(
+        unknown_addition
+            .to_string()
+            .contains("pathspec 'unknown.txt' did not match any file(s) known to git"),
+        "unexpected error: {unknown_addition}"
+    );
+    assert_eq!(unmerged_presence(&repository).await.len(), 3);
+
+    repository
+        .mark_conflicts_resolved(
+            vec![repo_path("keep.txt"), repo_path("gone.txt")],
+            vec![repo_path("drop.txt")],
+            no_env(),
+        )
+        .await
+        .unwrap();
+
+    assert!(!repository.has_unmerged_paths().await.unwrap());
+    assert!(!has_conflicts(&repository).await);
+    assert_eq!(
+        repository
+            .load_revisions(vec![
+                ":keep.txt".to_string(),
+                ":drop.txt".to_string(),
+                ":gone.txt".to_string()
+            ])
+            .await
+            .unwrap(),
+        vec![Some(b"theirs\n".to_vec()), None, None]
+    );
+    assert_eq!(
+        fs.load(Path::new(path!("/project/keep.txt")))
+            .await
+            .unwrap(),
+        "theirs\n"
+    );
+    assert!(!fs.is_file(Path::new(path!("/project/drop.txt"))).await);
+}
+
+#[gpui::test]
+async fn test_fake_commit_merge_uses_the_merge_message_and_clears_merge_state(
+    executor: BackgroundExecutor,
+) {
+    let (_fs, repository) = open_repository_in_conflicted_merge(executor).await;
+
+    let unresolved = repository.commit_merge(no_env()).await.unwrap_err();
+    assert_eq!(failure(&unresolved).kind, GitFailureKind::UnmergedFiles);
+    assert_eq!(
+        repository.operation_in_progress().await.unwrap(),
+        Some(RepositoryOperation::Merge)
+    );
+
+    repository
+        .checkout_conflict_side(
+            vec![repo_path("conflicted.txt")],
+            ConflictSide::Theirs,
+            no_env(),
+        )
+        .await
+        .unwrap();
+    repository
+        .mark_conflicts_resolved(vec![repo_path("conflicted.txt")], Vec::new(), no_env())
+        .await
+        .unwrap();
+    repository.commit_merge(no_env()).await.unwrap();
+
+    assert_eq!(repository.operation_in_progress().await.unwrap(), None);
+    assert_eq!(repository.merge_message().await, None);
+    assert!(!repository.has_unmerged_paths().await.unwrap());
+    assert_eq!(
+        repository.head_sha().await.as_deref(),
+        Some("fake-commit-1")
+    );
+    let new_commits = repository
+        .commits_between("feature".into(), "HEAD".into(), 10)
+        .await
+        .unwrap();
+    assert_eq!(shas(&new_commits), ["fake-commit-1", "m2"]);
+    assert_eq!(&*new_commits[0].subject, "Merge branch 'feature'");
+    assert!(new_commits[0].has_parent);
+}
+
+#[gpui::test]
+async fn test_fake_commit_merge_without_merge_message_names_the_branch_and_root(
+    executor: BackgroundExecutor,
+) {
+    let (fs, repository) = open_repository_in_conflicted_merge(executor).await;
+    fs.set_merge_message_for_repo(dot_git(), None);
+    repository
+        .mark_conflicts_resolved(vec![repo_path("conflicted.txt")], Vec::new(), no_env())
+        .await
+        .unwrap();
+    let branch = current_branch_name(&repository).await.unwrap_or_default();
+
+    repository.commit_merge(no_env()).await.unwrap();
+
+    let new_commits = repository
+        .commits_between("feature".into(), "HEAD".into(), 10)
+        .await
+        .unwrap();
+    assert_eq!(
+        &*new_commits[0].subject,
+        format!(
+            "Merge branch '{branch}' of {} with conflicts.",
+            Path::new(path!("/project")).display()
+        )
+    );
+    assert_eq!(repository.operation_in_progress().await.unwrap(), None);
+}
+
+#[gpui::test]
+async fn test_fake_merge_base_prefers_planned_commits_and_rejects_option_like_revisions(
+    executor: BackgroundExecutor,
+) {
+    let (fs, repository) = open_fake_repository(executor).await;
+    fs.set_ref_for_repo(dot_git(), "HEAD", "main-sha");
+    fs.set_merge_base_commit_for_repo(dot_git(), "HEAD", "MERGE_HEAD", "base-sha");
+
+    assert_eq!(
+        repository
+            .merge_base("HEAD".into(), "MERGE_HEAD".into())
+            .await
+            .unwrap(),
+        Some("base-sha".to_string())
+    );
+    assert_eq!(
+        repository
+            .merge_base("MERGE_HEAD".into(), "HEAD".into())
+            .await
+            .unwrap(),
+        Some("base-sha".to_string())
+    );
+    assert_eq!(
+        repository
+            .merge_base("HEAD".into(), "HEAD".into())
+            .await
+            .unwrap(),
+        Some("main-sha".to_string())
+    );
+    assert_eq!(
+        repository
+            .merge_base("HEAD".into(), "feature".into())
+            .await
+            .unwrap(),
+        None
+    );
+    repository
+        .merge_base("--all".into(), "HEAD".into())
+        .await
+        .unwrap_err();
+}
+
+#[gpui::test]
+async fn test_fake_rebase_revisions_exist_only_while_a_rebase_is_stopped(
+    executor: BackgroundExecutor,
+) {
+    let (fs, repository) = open_fake_repository(executor).await;
+    fs.insert_branches(dot_git(), &["main", "topic"]);
+    fs.set_ref_for_repo(dot_git(), "HEAD", "main-tip-sha");
+    fs.set_ref_history_for_repo(dot_git(), "main", history(&["m2", "m1"]));
+    fs.set_ref_history_for_repo(dot_git(), "topic", history(&["t1", "m1"]));
+    fs.set_rebase_conflict_for_repo(
+        dot_git(),
+        "main",
+        "conflicted.txt",
+        Some("base\n"),
+        Some("ours\n"),
+        Some("theirs\n"),
+    );
+    assert_eq!(repository.rebase_onto().await, None);
+    assert_eq!(repository.rebase_current_commit().await, None);
+
+    repository
+        .rebase(
+            RebaseAction::Start {
+                upstream: "main".into(),
+                branch: Some("topic".into()),
+            },
+            no_env(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(
+        repository.rebase_onto().await.as_deref(),
+        Some("main-tip-sha")
+    );
+    let stopped_at = tip_of(&repository, "REBASE_HEAD").await;
+    assert!(stopped_at.is_some());
+    assert_eq!(repository.rebase_current_commit().await, stopped_at);
+
+    repository
+        .rebase(RebaseAction::Abort, no_env())
+        .await
+        .unwrap();
+    assert_eq!(repository.rebase_onto().await, None);
+    assert_eq!(repository.rebase_current_commit().await, None);
 }

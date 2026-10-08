@@ -67,6 +67,7 @@ members = [
     "crates/lsp_locations",
     "crates/markdown",
     "crates/menu",
+    "crates/merge_diff",
     "crates/migrator",
     "crates/multi_buffer",
     "crates/net",
@@ -120,7 +121,6 @@ members = [
     "crates/theme",
     "crates/theme_extension",
     "crates/theme_settings",
-    "crates/three_way_merge",
     "crates/time_format",
     "crates/title_bar",
     "crates/ui",
@@ -232,6 +232,7 @@ lsp = { path = "crates/lsp" }
 lsp_locations = { path = "crates/lsp_locations" }
 markdown = { path = "crates/markdown" }
 menu = { path = "crates/menu" }
+merge_diff = { path = "crates/merge_diff" }
 migrator = { path = "crates/migrator" }
 multi_buffer = { path = "crates/multi_buffer" }
 net = { path = "crates/net" }
@@ -285,7 +286,6 @@ text = { path = "crates/text" }
 theme = { path = "crates/theme" }
 theme_extension = { path = "crates/theme_extension" }
 theme_settings = { path = "crates/theme_settings" }
-three_way_merge = { path = "crates/three_way_merge" }
 time_format = { path = "crates/time_format" }
 title_bar = { path = "crates/title_bar" }
 ui = { path = "crates/ui" }

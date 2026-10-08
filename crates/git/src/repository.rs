@@ -327,6 +327,89 @@ pub enum RebaseOutcome {
     Aborted,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct UnmergedStagePresence {
+    pub base: bool,
+    pub ours: bool,
+    pub theirs: bool,
+}
+
+impl UnmergedStagePresence {
+    pub fn has_side(self, side: ConflictSide) -> bool {
+        match side {
+            ConflictSide::Ours => self.ours,
+            ConflictSide::Theirs => self.theirs,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UnmergedEntry {
+    pub path: RepoPath,
+    pub stages: UnmergedStagePresence,
+    pub base_oid: Option<Oid>,
+    pub ours_oid: Option<Oid>,
+    pub theirs_oid: Option<Oid>,
+    pub ours_mode: Option<u32>,
+    pub theirs_mode: Option<u32>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ConflictSide {
+    Ours,
+    Theirs,
+}
+
+impl ConflictSide {
+    pub fn for_accepted_version(accepts_theirs: bool, reversed: bool) -> Self {
+        if accepts_theirs != reversed {
+            ConflictSide::Theirs
+        } else {
+            ConflictSide::Ours
+        }
+    }
+
+    fn checkout_flag(self) -> &'static str {
+        match self {
+            ConflictSide::Ours => "--ours",
+            ConflictSide::Theirs => "--theirs",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ConflictBlobs {
+    pub base: Option<Vec<u8>>,
+    pub ours: Option<Vec<u8>>,
+    pub theirs: Option<Vec<u8>>,
+}
+
+pub fn conflicts_with_side(
+    entries: &[(RepoPath, UnmergedStagePresence)],
+    side: ConflictSide,
+) -> Vec<RepoPath> {
+    entries
+        .iter()
+        .filter(|(_, presence)| presence.has_side(side))
+        .map(|(path, _)| path.clone())
+        .collect()
+}
+
+pub fn split_conflicts_for_resolution(
+    entries: &[(RepoPath, UnmergedStagePresence)],
+    chosen_side: Option<ConflictSide>,
+) -> (Vec<RepoPath>, Vec<RepoPath>) {
+    let mut to_add = Vec::new();
+    let mut to_remove = Vec::new();
+    for (path, presence) in entries {
+        match chosen_side {
+            Some(side) if !presence.has_side(side) => to_remove.push(path.clone()),
+            _ => to_add.push(path.clone()),
+        }
+    }
+    (to_add, to_remove)
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum GitFailureKind {
     LocalChangesWouldBeOverwritten { files: Vec<String> },
@@ -593,6 +676,186 @@ async fn has_unmerged_files(git: &GitBinary, env: &HashMap<String, String>) -> R
         .output()
         .await?;
     Ok(output.status.success() && !output.stdout.is_empty())
+}
+
+const LITERAL_PATHSPECS_ENV: &str = "GIT_LITERAL_PATHSPECS";
+const MAX_PATHSPEC_ARGUMENT_BYTES: usize = 100_000;
+const MERGE_MESSAGE_FILE: &str = "MERGE_MSG";
+const SPARSE_CONFLICT_STAGING_MIN_VERSION: (u32, u32) = (2, 34);
+const REBASE_ORIGINAL_COMMIT_FILE: &str = "original-commit";
+const REBASE_STOPPED_SHA_FILE: &str = "stopped-sha";
+const REBASE_ONTO_FILE: &str = "onto";
+
+fn parse_unmerged_entries(listing: &[u8]) -> Result<Vec<UnmergedEntry>> {
+    let mut entries: Vec<UnmergedEntry> = Vec::new();
+    for record in listing.split(|byte| *byte == 0) {
+        if record.is_empty() {
+            continue;
+        }
+        let record = std::str::from_utf8(record)
+            .with_context(|| format!("unmerged entry is not valid UTF-8: {record:?}"))?;
+        let (metadata, path) = record
+            .split_once('\t')
+            .with_context(|| format!("malformed unmerged entry: {record:?}"))?;
+        let mut fields = metadata.split(' ');
+        let (Some(mode), Some(oid), Some(stage), None) =
+            (fields.next(), fields.next(), fields.next(), fields.next())
+        else {
+            bail!("malformed unmerged entry: {record:?}");
+        };
+        let mode = u32::from_str_radix(mode, 8)
+            .with_context(|| format!("invalid mode in unmerged entry: {record:?}"))?;
+        let oid = Oid::from_str(oid)?;
+        let path = RepoPath::new(path)?;
+        let is_new_path = entries.last().is_none_or(|entry| entry.path != path);
+        if is_new_path {
+            entries.push(UnmergedEntry {
+                path,
+                stages: UnmergedStagePresence::default(),
+                base_oid: None,
+                ours_oid: None,
+                theirs_oid: None,
+                ours_mode: None,
+                theirs_mode: None,
+            });
+        }
+        let Some(entry) = entries.last_mut() else {
+            continue;
+        };
+        match stage {
+            "1" => {
+                entry.stages.base = true;
+                entry.base_oid = Some(oid);
+            }
+            "2" => {
+                entry.stages.ours = true;
+                entry.ours_oid = Some(oid);
+                entry.ours_mode = Some(mode);
+            }
+            "3" => {
+                entry.stages.theirs = true;
+                entry.theirs_oid = Some(oid);
+                entry.theirs_mode = Some(mode);
+            }
+            unknown => bail!(
+                "Unknown revision {unknown} for the file: {}",
+                entry.path.as_unix_str()
+            ),
+        }
+    }
+    Ok(entries)
+}
+
+fn chunk_pathspecs(paths: &[RepoPath]) -> Vec<&[RepoPath]> {
+    let mut chunks = Vec::new();
+    let mut chunk_start = 0;
+    let mut chunk_bytes = 0;
+    for (index, path) in paths.iter().enumerate() {
+        let path_bytes = path.as_unix_str().len() + 1;
+        if index > chunk_start && chunk_bytes + path_bytes > MAX_PATHSPEC_ARGUMENT_BYTES {
+            chunks.push(&paths[chunk_start..index]);
+            chunk_start = index;
+            chunk_bytes = 0;
+        }
+        chunk_bytes += path_bytes;
+    }
+    if chunk_start < paths.len() {
+        chunks.push(&paths[chunk_start..]);
+    }
+    chunks
+}
+
+fn parse_git_version(output: &str) -> Result<(u32, u32)> {
+    let version = output
+        .trim()
+        .strip_prefix("git version ")
+        .with_context(|| format!("unexpected git version output: {output:?}"))?;
+    let release = version.split_whitespace().next().unwrap_or_default();
+    let mut components = release.split('.').map(|component| {
+        component
+            .chars()
+            .take_while(char::is_ascii_digit)
+            .collect::<String>()
+            .parse::<u32>()
+    });
+    let major = components
+        .next()
+        .with_context(|| format!("missing major version in {output:?}"))?
+        .with_context(|| format!("invalid major version in {output:?}"))?;
+    let minor = components
+        .next()
+        .with_context(|| format!("missing minor version in {output:?}"))?
+        .with_context(|| format!("invalid minor version in {output:?}"))?;
+    Ok((major, minor))
+}
+
+async fn git_accepts_sparse_conflict_staging(git: &GitBinary) -> Result<bool> {
+    let output = ensure_git_success(git.build_stable_command(&["version"]).output().await?)?;
+    let version = parse_git_version(&String::from_utf8_lossy(&output.stdout))?;
+    Ok(version >= SPARSE_CONFLICT_STAGING_MIN_VERSION)
+}
+
+fn is_missing_revision_error(message: &str) -> bool {
+    let lowered = message.trim().to_lowercase();
+    lowered.starts_with("fatal: ambiguous argument ")
+        || (lowered.starts_with("fatal: path '")
+            && lowered.contains("' exists on disk, but not in '"))
+        || lowered.contains("is in the index, but not at stage ")
+        || lowered.contains("bad revision")
+        || lowered.starts_with("fatal: not a valid object name")
+        || lowered.starts_with("error: cannot read object")
+}
+
+async fn load_filtered_revision(git: &GitBinary, revision: &str) -> Result<Option<Vec<u8>>> {
+    anyhow::ensure!(
+        !revision.starts_with('-'),
+        "revision spec {revision:?} must not start with a dash"
+    );
+    let output = git
+        .build_stable_command(&["cat-file", "--filters", revision])
+        .output()
+        .await?;
+    if output.status.success() {
+        return Ok(Some(output.stdout));
+    }
+    if is_missing_revision_error(&String::from_utf8_lossy(&output.stderr)) {
+        return Ok(None);
+    }
+    Err(git_failure_from_output(&output))
+}
+
+async fn resolve_commit(git: &GitBinary, revision: &str) -> Result<Option<String>> {
+    if revision.is_empty() || revision.starts_with('-') {
+        return Ok(None);
+    }
+    let output = git
+        .build_stable_command(&["rev-list", "--max-count=1", revision, "--"])
+        .output()
+        .await?;
+    if !output.status.success() {
+        return Ok(None);
+    }
+    let resolved = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    Ok((!resolved.is_empty()).then_some(resolved))
+}
+
+async fn run_pathspec_command(
+    git: &GitBinary,
+    arguments: &[&str],
+    paths: &[RepoPath],
+    env: &HashMap<String, String>,
+) -> Result<()> {
+    for chunk in chunk_pathspecs(paths) {
+        let output = git
+            .build_stable_command_with_env(arguments, env)
+            .env(LITERAL_PATHSPECS_ENV, "1")
+            .arg("--")
+            .args(chunk.iter().map(|path| path.as_unix_str()))
+            .output()
+            .await?;
+        ensure_git_success(output)?;
+    }
+    Ok(())
 }
 
 async fn qualify_ambiguous_reference(
@@ -1507,6 +1770,37 @@ pub trait GitRepository: Send + Sync {
         paths: Vec<RepoPath>,
         env: Arc<HashMap<String, String>>,
     ) -> BoxFuture<'_, Result<()>>;
+
+    fn unmerged_entries(&self) -> BoxFuture<'_, Result<Vec<UnmergedEntry>>>;
+
+    fn has_unmerged_paths(&self) -> BoxFuture<'_, Result<bool>>;
+
+    fn load_revisions_filtered(
+        &self,
+        revisions: Vec<String>,
+    ) -> BoxFuture<'_, Result<Vec<Option<Vec<u8>>>>>;
+
+    fn merge_base(&self, first: String, second: String) -> BoxFuture<'_, Result<Option<String>>>;
+
+    fn rebase_onto(&self) -> BoxFuture<'_, Option<String>>;
+
+    fn rebase_current_commit(&self) -> BoxFuture<'_, Option<String>>;
+
+    fn checkout_conflict_side(
+        &self,
+        paths: Vec<RepoPath>,
+        side: ConflictSide,
+        env: Arc<HashMap<String, String>>,
+    ) -> BoxFuture<'_, Result<()>>;
+
+    fn mark_conflicts_resolved(
+        &self,
+        to_add: Vec<RepoPath>,
+        to_remove: Vec<RepoPath>,
+        env: Arc<HashMap<String, String>>,
+    ) -> BoxFuture<'_, Result<()>>;
+
+    fn commit_merge(&self, env: Arc<HashMap<String, String>>) -> BoxFuture<'_, Result<()>>;
 
     /// Only used to serve `proto::RunGitHook` requests from older remote clients;
     /// new code lets `git commit` run hooks itself.
@@ -3555,6 +3849,183 @@ impl GitRepository for RealGitRepository {
                 Ok(())
             })
             .boxed()
+    }
+
+    fn unmerged_entries(&self) -> BoxFuture<'_, Result<Vec<UnmergedEntry>>> {
+        let git = self.git_binary_in_worktree();
+        classify_task(self.executor.spawn(async move {
+            let git = git?;
+            let output = ensure_git_success(
+                git.build_stable_command(&["ls-files", "--exclude-standard", "--unmerged", "-z"])
+                    .output()
+                    .await?,
+            )?;
+            parse_unmerged_entries(&output.stdout)
+        }))
+    }
+
+    fn has_unmerged_paths(&self) -> BoxFuture<'_, Result<bool>> {
+        let git = self.git_binary_in_worktree();
+        classify_task(self.executor.spawn(async move {
+            let git = git?;
+            let output = ensure_git_success(
+                git.build_stable_command(&["ls-files", "--unmerged", "-z"])
+                    .output()
+                    .await?,
+            )?;
+            anyhow::Ok(!output.stdout.is_empty())
+        }))
+    }
+
+    fn load_revisions_filtered(
+        &self,
+        revisions: Vec<String>,
+    ) -> BoxFuture<'_, Result<Vec<Option<Vec<u8>>>>> {
+        let git = self.git_binary();
+        classify_task(self.executor.spawn(async move {
+            futures::future::try_join_all(
+                revisions
+                    .iter()
+                    .map(|revision| load_filtered_revision(&git, revision)),
+            )
+            .await
+        }))
+    }
+
+    fn merge_base(&self, first: String, second: String) -> BoxFuture<'_, Result<Option<String>>> {
+        let git = self.git_binary();
+        classify_task(self.executor.spawn(async move {
+            anyhow::ensure!(
+                !first.starts_with('-') && !second.starts_with('-'),
+                "merge-base revisions must not start with a dash"
+            );
+            let output = git
+                .build_stable_command(&["merge-base", first.as_str(), second.as_str()])
+                .output()
+                .await?;
+            if !output.status.success() {
+                return Ok(None);
+            }
+            let merge_base = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            Ok((!merge_base.is_empty()).then_some(merge_base))
+        }))
+    }
+
+    fn rebase_onto(&self) -> BoxFuture<'_, Option<String>> {
+        let git_dir = self.path();
+        self.executor
+            .spawn(async move {
+                let rebase_dir = [crate::REBASE_APPLY_DIR, crate::REBASE_MERGE_DIR]
+                    .into_iter()
+                    .map(|directory| git_dir.join(directory))
+                    .find(|directory| directory.exists())?;
+                let onto = std::fs::read_to_string(rebase_dir.join(REBASE_ONTO_FILE)).log_err()?;
+                let onto = onto.trim();
+                (!onto.is_empty()).then(|| onto.to_string())
+            })
+            .boxed()
+    }
+
+    fn rebase_current_commit(&self) -> BoxFuture<'_, Option<String>> {
+        let git = self.git_binary();
+        let git_dir = self.path();
+        self.executor
+            .spawn(async move {
+                let candidates = [
+                    (crate::REBASE_APPLY_DIR, REBASE_ORIGINAL_COMMIT_FILE),
+                    (crate::REBASE_MERGE_DIR, REBASE_STOPPED_SHA_FILE),
+                ];
+                for (directory, file_name) in candidates {
+                    let path = git_dir.join(directory).join(file_name);
+                    if !path.exists() {
+                        continue;
+                    }
+                    let Some(revision) = std::fs::read_to_string(&path).log_err() else {
+                        continue;
+                    };
+                    if let Some(resolved) = resolve_commit(&git, revision.trim())
+                        .await
+                        .log_err()
+                        .flatten()
+                    {
+                        return Some(resolved);
+                    }
+                }
+                None
+            })
+            .boxed()
+    }
+
+    fn checkout_conflict_side(
+        &self,
+        paths: Vec<RepoPath>,
+        side: ConflictSide,
+        env: Arc<HashMap<String, String>>,
+    ) -> BoxFuture<'_, Result<()>> {
+        let git = self.git_binary_in_worktree();
+        classify_task(self.executor.spawn(async move {
+            let git = git?;
+            run_pathspec_command(&git, &["checkout", side.checkout_flag()], &paths, &env).await
+        }))
+    }
+
+    fn mark_conflicts_resolved(
+        &self,
+        to_add: Vec<RepoPath>,
+        to_remove: Vec<RepoPath>,
+        env: Arc<HashMap<String, String>>,
+    ) -> BoxFuture<'_, Result<()>> {
+        let git = self.git_binary_in_worktree();
+        classify_task(self.executor.spawn(async move {
+            let git = git?;
+            if to_add.is_empty() && to_remove.is_empty() {
+                return Ok(());
+            }
+            let sparse_flags: &[&str] = if git_accepts_sparse_conflict_staging(&git).await? {
+                &["--sparse"]
+            } else {
+                &[]
+            };
+            let add_arguments = ["add", "--ignore-errors", "-A", "-f"]
+                .into_iter()
+                .chain(sparse_flags.iter().copied())
+                .collect::<Vec<_>>();
+            run_pathspec_command(&git, &add_arguments, &to_add, &env).await?;
+            let remove_arguments = ["rm"]
+                .into_iter()
+                .chain(sparse_flags.iter().copied())
+                .collect::<Vec<_>>();
+            run_pathspec_command(&git, &remove_arguments, &to_remove, &env).await
+        }))
+    }
+
+    fn commit_merge(&self, env: Arc<HashMap<String, String>>) -> BoxFuture<'_, Result<()>> {
+        let git = self.git_binary_in_worktree();
+        let message_file = self.path().join(MERGE_MESSAGE_FILE);
+        let working_directory = self.working_directory();
+        classify_task(self.executor.spawn(async move {
+            let git = git?;
+            let mut arguments: Vec<OsString> = vec!["commit".into()];
+            if message_file.exists() {
+                arguments.push("-F".into());
+                arguments.push(message_file.into_os_string());
+            } else {
+                let branch_name = current_branch_name(&git).await?.unwrap_or_default();
+                let message = format!(
+                    "Merge branch '{branch_name}' of {} with conflicts.",
+                    working_directory?.display()
+                );
+                arguments.push("-m".into());
+                arguments.push(message.into());
+            }
+            arguments.push("--".into());
+            ensure_git_success(
+                git.build_stable_command_with_env(&arguments, &env)
+                    .output()
+                    .await?,
+            )?;
+            anyhow::Ok(())
+        }))
     }
 
     fn stash_paths(
@@ -9610,5 +10081,711 @@ mod tests {
             .await
             .expect_err("pushing an unknown tag must fail");
         assert!(error.downcast_ref::<GitFailure>().is_some());
+    }
+
+    fn write_bytes(directory: &Path, file: &str, contents: &[u8]) {
+        fs::write(directory.join(file), contents).unwrap();
+    }
+
+    fn init_repo_with_every_conflict_kind(path: &Path) {
+        git_init_repo(path);
+        write_bytes(path, "uu.txt", b"uu base\nl2\nl3\n");
+        write_bytes(path, "du.txt", b"du base\nl2\nl3\n");
+        write_bytes(path, "ud.txt", b"ud base\nl2\nl3\n");
+        write_bytes(
+            path,
+            "ren.txt",
+            b"rename me\nwith several lines\nof unique content\nfor detection\n",
+        );
+        write_bytes(path, "bin.dat", b"a\0base\n");
+        write_bytes(path, "sp ace \u{e9}.txt", b"sp base\n");
+        write_bytes(path, "new\nline.txt", b"nl base\n");
+        write_bytes(path, "star*.txt", b"star base\nl2\nl3\n");
+        write_bytes(path, "starX.txt", b"x base\n");
+        git_command(path, ["add", "-A"]);
+        git_command(path, ["commit", "-m", "base"]);
+
+        git_command(path, ["checkout", "-b", "theirs"]);
+        write_bytes(path, "uu.txt", b"uu base\ntheirs\nl3\n");
+        write_bytes(path, "du.txt", b"du base\ntheirs\nl3\n");
+        git_command(path, ["rm", "-q", "ud.txt"]);
+        git_command(path, ["mv", "ren.txt", "ren-theirs.txt"]);
+        write_bytes(path, "bin.dat", b"a\0theirs\n");
+        write_bytes(path, "aa.txt", b"aa theirs\n");
+        write_bytes(path, "sp ace \u{e9}.txt", b"sp theirs\n");
+        write_bytes(path, "new\nline.txt", b"nl theirs\n");
+        write_bytes(path, "star*.txt", b"star base\ntheirs\nl3\n");
+        git_command(path, ["add", "-A"]);
+        git_command(path, ["commit", "-m", "theirs"]);
+
+        git_command(path, ["checkout", "main"]);
+        write_bytes(path, "uu.txt", b"uu base\nours\nl3\n");
+        git_command(path, ["rm", "-q", "du.txt"]);
+        write_bytes(path, "ud.txt", b"ud base\nours\nl3\n");
+        git_command(path, ["mv", "ren.txt", "ren-ours.txt"]);
+        write_bytes(path, "bin.dat", b"a\0ours\n");
+        write_bytes(path, "aa.txt", b"aa ours\n");
+        write_bytes(path, "sp ace \u{e9}.txt", b"sp ours\n");
+        write_bytes(path, "new\nline.txt", b"nl ours\n");
+        write_bytes(path, "star*.txt", b"star base\nours\nl3\n");
+        git_command(path, ["add", "-A"]);
+        git_command(path, ["commit", "-m", "ours"]);
+
+        git_command_expecting_failure(path, ["merge", "theirs"]);
+        write_bytes(path, "starX.txt", b"x dirty\n");
+    }
+
+    fn stage_presence_by_path(
+        entries: &[UnmergedEntry],
+    ) -> std::collections::BTreeMap<String, (bool, bool, bool)> {
+        entries
+            .iter()
+            .map(|entry| {
+                (
+                    entry.path.as_unix_str().to_string(),
+                    (entry.stages.base, entry.stages.ours, entry.stages.theirs),
+                )
+            })
+            .collect()
+    }
+
+    #[gpui::test]
+    async fn test_unmerged_entries_report_stage_presence_for_every_conflict_kind(
+        cx: &mut TestAppContext,
+    ) {
+        disable_git_global_config();
+        cx.executor().allow_parking();
+
+        let repo_dir = tempfile::tempdir().unwrap();
+        let path = repo_dir.path();
+        init_repo_with_every_conflict_kind(path);
+        let repository = open_real_repository(path, cx);
+
+        let entries = repository.unmerged_entries().await.unwrap();
+
+        assert_eq!(
+            stage_presence_by_path(&entries),
+            std::collections::BTreeMap::from([
+                ("aa.txt".to_string(), (false, true, true)),
+                ("bin.dat".to_string(), (true, true, true)),
+                ("du.txt".to_string(), (true, false, true)),
+                ("new\nline.txt".to_string(), (true, true, true)),
+                ("ren-ours.txt".to_string(), (false, true, false)),
+                ("ren-theirs.txt".to_string(), (false, false, true)),
+                ("ren.txt".to_string(), (true, false, false)),
+                ("sp ace \u{e9}.txt".to_string(), (true, true, true)),
+                ("star*.txt".to_string(), (true, true, true)),
+                ("ud.txt".to_string(), (true, true, false)),
+                ("uu.txt".to_string(), (true, true, true)),
+            ])
+        );
+
+        let both_modified = entries
+            .iter()
+            .find(|entry| entry.path == repo_path("uu.txt"))
+            .unwrap();
+        let oid_of = |revision: &str| {
+            git_command_output(path, ["rev-parse", revision])
+                .parse::<Oid>()
+                .unwrap()
+        };
+        assert_eq!(both_modified.base_oid, Some(oid_of(":1:uu.txt")));
+        assert_eq!(both_modified.ours_oid, Some(oid_of(":2:uu.txt")));
+        assert_eq!(both_modified.theirs_oid, Some(oid_of(":3:uu.txt")));
+        assert_eq!(both_modified.ours_mode, Some(0o100644));
+        assert_eq!(both_modified.theirs_mode, Some(0o100644));
+
+        let deleted_by_us = entries
+            .iter()
+            .find(|entry| entry.path == repo_path("du.txt"))
+            .unwrap();
+        assert_eq!(deleted_by_us.ours_oid, None);
+        assert_eq!(deleted_by_us.ours_mode, None);
+        assert_eq!(deleted_by_us.theirs_oid, Some(oid_of(":3:du.txt")));
+    }
+
+    #[gpui::test]
+    async fn test_has_unmerged_paths_follows_the_index_not_a_snapshot(cx: &mut TestAppContext) {
+        disable_git_global_config();
+        cx.executor().allow_parking();
+
+        let repo_dir = tempfile::tempdir().unwrap();
+        let path = repo_dir.path();
+        init_repo_with_conflicting_branches(path);
+        let repository = open_real_repository(path, cx);
+        let env = Arc::new(test_commit_envs());
+
+        assert!(!repository.has_unmerged_paths().await.unwrap());
+        assert!(repository.unmerged_entries().await.unwrap().is_empty());
+
+        repository
+            .merge("feature".to_string(), env.clone())
+            .await
+            .unwrap();
+        assert!(repository.has_unmerged_paths().await.unwrap());
+
+        repository
+            .checkout_conflict_side(
+                vec![repo_path("file.txt")],
+                ConflictSide::Theirs,
+                env.clone(),
+            )
+            .await
+            .unwrap();
+        assert!(repository.has_unmerged_paths().await.unwrap());
+
+        repository
+            .mark_conflicts_resolved(vec![repo_path("file.txt")], Vec::new(), env)
+            .await
+            .unwrap();
+        assert!(!repository.has_unmerged_paths().await.unwrap());
+        assert_eq!(
+            fs::read_to_string(path.join("file.txt")).unwrap(),
+            "feature\n"
+        );
+    }
+
+    #[gpui::test]
+    async fn test_load_revisions_filtered_returns_raw_bytes_and_missing_sides(
+        cx: &mut TestAppContext,
+    ) {
+        disable_git_global_config();
+        cx.executor().allow_parking();
+
+        let repo_dir = tempfile::tempdir().unwrap();
+        let path = repo_dir.path();
+        init_repo_with_every_conflict_kind(path);
+        let repository = open_real_repository(path, cx);
+
+        let stages = repository
+            .load_revisions_filtered(
+                [
+                    ":1:bin.dat",
+                    ":2:bin.dat",
+                    ":3:bin.dat",
+                    ":2:du.txt",
+                    ":3:du.txt",
+                    ":3:ud.txt",
+                    ":1:ren.txt",
+                    ":2:ren.txt",
+                    ":3:new\nline.txt",
+                    ":2:star*.txt",
+                    ":2:sp ace \u{e9}.txt",
+                ]
+                .map(String::from)
+                .to_vec(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            stages,
+            vec![
+                Some(b"a\0base\n".to_vec()),
+                Some(b"a\0ours\n".to_vec()),
+                Some(b"a\0theirs\n".to_vec()),
+                None,
+                Some(b"du base\ntheirs\nl3\n".to_vec()),
+                None,
+                Some(b"rename me\nwith several lines\nof unique content\nfor detection\n".to_vec()),
+                None,
+                Some(b"nl theirs\n".to_vec()),
+                Some(b"star base\nours\nl3\n".to_vec()),
+                Some(b"sp ours\n".to_vec()),
+            ]
+        );
+
+        let error = repository
+            .load_revisions_filtered(vec![":2:no-such.txt".to_string()])
+            .await
+            .expect_err("a path unknown to both the index and the disk is not a missing side");
+        assert!(error.downcast_ref::<GitFailure>().is_some());
+
+        let error = repository
+            .load_revisions_filtered(vec!["--help".to_string()])
+            .await
+            .expect_err("a revision that looks like an option must be rejected");
+        assert!(error.to_string().contains("must not start with a dash"));
+    }
+
+    #[gpui::test]
+    async fn test_load_revisions_filtered_applies_the_eol_filter_that_load_revisions_skips(
+        cx: &mut TestAppContext,
+    ) {
+        disable_git_global_config();
+        cx.executor().allow_parking();
+
+        let repo_dir = tempfile::tempdir().unwrap();
+        let path = repo_dir.path();
+        git_init_repo(path);
+        write_bytes(path, ".gitattributes", b"*.txt text eol=crlf\n");
+        write_bytes(path, "a.txt", b"one\ntwo\n");
+        git_command(path, ["add", "-A"]);
+        git_command(path, ["commit", "-m", "base"]);
+        git_command(path, ["checkout", "-b", "theirs"]);
+        write_bytes(path, "a.txt", b"one\nTHEIRS\n");
+        git_command(path, ["commit", "-am", "theirs"]);
+        git_command(path, ["checkout", "main"]);
+        write_bytes(path, "a.txt", b"one\nOURS\n");
+        git_command(path, ["commit", "-am", "ours"]);
+        git_command_expecting_failure(path, ["merge", "theirs"]);
+        let repository = open_real_repository(path, cx);
+
+        let filtered = repository
+            .load_revisions_filtered(
+                [":1:a.txt", ":2:a.txt", ":3:a.txt"]
+                    .map(String::from)
+                    .to_vec(),
+            )
+            .await
+            .unwrap();
+        let raw = repository
+            .load_revisions(vec![":2:a.txt".to_string()])
+            .await
+            .unwrap();
+
+        assert_eq!(
+            filtered,
+            vec![
+                Some(b"one\r\ntwo\r\n".to_vec()),
+                Some(b"one\r\nOURS\r\n".to_vec()),
+                Some(b"one\r\nTHEIRS\r\n".to_vec()),
+            ]
+        );
+        assert_eq!(raw, vec![Some(b"one\nOURS\n".to_vec())]);
+    }
+
+    #[gpui::test]
+    async fn test_merge_base_returns_the_fork_point_or_none(cx: &mut TestAppContext) {
+        disable_git_global_config();
+        cx.executor().allow_parking();
+
+        let repo_dir = tempfile::tempdir().unwrap();
+        let path = repo_dir.path();
+        init_repo_with_diverged_branches(path);
+        let repository = open_real_repository(path, cx);
+        let fork_point = git_command_output(path, ["rev-parse", "main~1"]);
+
+        assert_eq!(
+            repository
+                .merge_base("main".to_string(), "feature".to_string())
+                .await
+                .unwrap(),
+            Some(fork_point)
+        );
+        assert_eq!(
+            repository
+                .merge_base("main".to_string(), "no-such-branch".to_string())
+                .await
+                .unwrap(),
+            None
+        );
+        repository
+            .merge_base("--all".to_string(), "main".to_string())
+            .await
+            .expect_err("a revision that looks like an option must be rejected");
+    }
+
+    #[gpui::test]
+    async fn test_rebase_revisions_come_from_the_rebase_directory(cx: &mut TestAppContext) {
+        disable_git_global_config();
+        cx.executor().allow_parking();
+
+        let repo_dir = tempfile::tempdir().unwrap();
+        let path = repo_dir.path();
+        init_repo_with_conflicting_branches(path);
+        git_command(path, ["checkout", "feature"]);
+        let feature_commit = git_command_output(path, ["rev-parse", "feature"]);
+        let main_commit = git_command_output(path, ["rev-parse", "main"]);
+        let repository = open_real_repository(path, cx);
+
+        assert_eq!(repository.rebase_onto().await, None);
+        assert_eq!(repository.rebase_current_commit().await, None);
+
+        git_command_expecting_failure(path, ["rebase", "main"]);
+        assert_eq!(repository.rebase_onto().await, Some(main_commit.clone()));
+        assert_eq!(
+            repository.rebase_current_commit().await,
+            Some(feature_commit.clone())
+        );
+
+        git_command(path, ["rebase", "--abort"]);
+        assert_eq!(repository.rebase_onto().await, None);
+        assert_eq!(repository.rebase_current_commit().await, None);
+
+        git_command_expecting_failure(path, ["rebase", "--apply", "main"]);
+        assert_eq!(repository.rebase_onto().await, Some(main_commit));
+        assert_eq!(
+            repository.rebase_current_commit().await,
+            Some(feature_commit)
+        );
+    }
+
+    #[gpui::test]
+    async fn test_accepting_conflict_sides_and_marking_them_resolved_leaves_a_clean_index(
+        cx: &mut TestAppContext,
+    ) {
+        disable_git_global_config();
+        cx.executor().allow_parking();
+
+        let repo_dir = tempfile::tempdir().unwrap();
+        let path = repo_dir.path();
+        init_repo_with_every_conflict_kind(path);
+        let repository = open_real_repository(path, cx);
+        let env = Arc::new(test_commit_envs());
+
+        let entries = repository.unmerged_entries().await.unwrap();
+        let presence_by_path = entries
+            .iter()
+            .map(|entry| (entry.path.clone(), entry.stages))
+            .collect::<std::collections::BTreeMap<_, _>>();
+        let choices = [
+            ("uu.txt", ConflictSide::Ours),
+            ("aa.txt", ConflictSide::Ours),
+            ("bin.dat", ConflictSide::Theirs),
+            ("new\nline.txt", ConflictSide::Theirs),
+            ("sp ace \u{e9}.txt", ConflictSide::Ours),
+            ("star*.txt", ConflictSide::Theirs),
+            ("ud.txt", ConflictSide::Theirs),
+            ("du.txt", ConflictSide::Ours),
+            ("ren-ours.txt", ConflictSide::Ours),
+            ("ren-theirs.txt", ConflictSide::Theirs),
+        ];
+
+        let missing_side_error = repository
+            .checkout_conflict_side(vec![repo_path("du.txt")], ConflictSide::Ours, env.clone())
+            .await
+            .expect_err("git cannot check out a side that does not exist");
+        assert!(missing_side_error.downcast_ref::<GitFailure>().is_some());
+
+        for side in [ConflictSide::Ours, ConflictSide::Theirs] {
+            let chosen = choices
+                .iter()
+                .filter(|(_, choice)| *choice == side)
+                .map(|(file, _)| {
+                    let path = repo_path(file);
+                    let presence = presence_by_path[&path];
+                    (path, presence)
+                })
+                .collect::<Vec<_>>();
+            repository
+                .checkout_conflict_side(conflicts_with_side(&chosen, side), side, env.clone())
+                .await
+                .unwrap();
+            let (to_add, to_remove) = split_conflicts_for_resolution(&chosen, Some(side));
+            repository
+                .mark_conflicts_resolved(to_add, to_remove, env.clone())
+                .await
+                .unwrap();
+        }
+
+        assert_eq!(
+            stage_presence_by_path(&repository.unmerged_entries().await.unwrap()),
+            std::collections::BTreeMap::from([("ren.txt".to_string(), (true, false, false))])
+        );
+        repository
+            .mark_conflicts_resolved(vec![repo_path("ren.txt")], Vec::new(), env)
+            .await
+            .unwrap();
+        assert!(!repository.has_unmerged_paths().await.unwrap());
+
+        assert_eq!(
+            fs::read(path.join("uu.txt")).unwrap(),
+            b"uu base\nours\nl3\n"
+        );
+        assert_eq!(fs::read(path.join("aa.txt")).unwrap(), b"aa ours\n");
+        assert_eq!(fs::read(path.join("bin.dat")).unwrap(), b"a\0theirs\n");
+        assert_eq!(
+            fs::read(path.join("new\nline.txt")).unwrap(),
+            b"nl theirs\n"
+        );
+        assert_eq!(
+            fs::read(path.join("sp ace \u{e9}.txt")).unwrap(),
+            b"sp ours\n"
+        );
+        assert_eq!(
+            fs::read(path.join("star*.txt")).unwrap(),
+            b"star base\ntheirs\nl3\n"
+        );
+        assert!(!path.join("ud.txt").exists());
+        assert!(!path.join("du.txt").exists());
+        assert!(!path.join("ren.txt").exists());
+        assert!(path.join("ren-ours.txt").exists());
+        assert!(path.join("ren-theirs.txt").exists());
+        git_command(path, ["diff", "--cached", "--quiet", "--", "starX.txt"]);
+        git_command_expecting_failure(path, ["diff", "--quiet", "--", "starX.txt"]);
+        assert_eq!(fs::read(path.join("starX.txt")).unwrap(), b"x dirty\n");
+        assert_eq!(
+            git_command_output(path, ["ls-files", "--stage", "--", "ud.txt", "du.txt"]),
+            ""
+        );
+    }
+
+    #[gpui::test]
+    async fn test_commit_merge_uses_merge_message_when_present(cx: &mut TestAppContext) {
+        disable_git_global_config();
+        cx.executor().allow_parking();
+
+        let repo_dir = tempfile::tempdir().unwrap();
+        let path = repo_dir.path();
+        init_repo_with_conflicting_branches(path);
+        let repository = open_real_repository(path, cx);
+        let env = Arc::new(test_commit_envs());
+        repository
+            .merge("feature".to_string(), env.clone())
+            .await
+            .unwrap();
+
+        let error = repository
+            .commit_merge(env.clone())
+            .await
+            .expect_err("committing a merge with unmerged paths must fail");
+        assert_eq!(failure_kind(&error), GitFailureKind::UnmergedFiles);
+
+        repository
+            .checkout_conflict_side(vec![repo_path("file.txt")], ConflictSide::Ours, env.clone())
+            .await
+            .unwrap();
+        repository
+            .mark_conflicts_resolved(vec![repo_path("file.txt")], Vec::new(), env.clone())
+            .await
+            .unwrap();
+        repository.commit_merge(env).await.unwrap();
+
+        assert_eq!(repository.operation_in_progress().await.unwrap(), None);
+        let parents = git_command_output(path, ["rev-list", "--parents", "-n", "1", "HEAD"]);
+        assert_eq!(parents.split_whitespace().count(), 3);
+        assert_eq!(
+            git_command_output(path, ["log", "-1", "--format=%s"]),
+            "Merge branch 'feature'"
+        );
+        assert_eq!(fs::read_to_string(path.join("file.txt")).unwrap(), "main\n");
+    }
+
+    #[gpui::test]
+    async fn test_commit_merge_without_merge_message_names_the_branch_and_root(
+        cx: &mut TestAppContext,
+    ) {
+        disable_git_global_config();
+        cx.executor().allow_parking();
+
+        let repo_dir = tempfile::tempdir().unwrap();
+        let path = repo_dir.path();
+        init_repo_with_conflicting_branches(path);
+        let repository = open_real_repository(path, cx);
+        let env = Arc::new(test_commit_envs());
+        repository
+            .merge("feature".to_string(), env.clone())
+            .await
+            .unwrap();
+        repository
+            .checkout_conflict_side(
+                vec![repo_path("file.txt")],
+                ConflictSide::Theirs,
+                env.clone(),
+            )
+            .await
+            .unwrap();
+        repository
+            .mark_conflicts_resolved(vec![repo_path("file.txt")], Vec::new(), env.clone())
+            .await
+            .unwrap();
+        fs::remove_file(path.join(".git").join("MERGE_MSG")).unwrap();
+
+        repository.commit_merge(env).await.unwrap();
+
+        assert_eq!(
+            git_command_output(path, ["log", "-1", "--format=%s"]),
+            format!("Merge branch 'main' of {} with conflicts.", path.display())
+        );
+        let parents = git_command_output(path, ["rev-list", "--parents", "-n", "1", "HEAD"]);
+        assert_eq!(parents.split_whitespace().count(), 3);
+    }
+
+    #[test]
+    fn test_parse_unmerged_entries_groups_stages_per_path() {
+        let listing = b"100644 1111111111111111111111111111111111111111 1\ta b.txt\0\
+            100644 2222222222222222222222222222222222222222 2\ta b.txt\0\
+            100755 3333333333333333333333333333333333333333 3\ta b.txt\0\
+            100644 4444444444444444444444444444444444444444 1\tnew\nline.txt\0\
+            100644 5555555555555555555555555555555555555555 3\tnew\nline.txt\0\
+            120000 6666666666666666666666666666666666666666 2\t\xc3\xa9.txt\0";
+
+        let entries = parse_unmerged_entries(listing).unwrap();
+
+        assert_eq!(entries.len(), 3);
+        assert_eq!(entries[0].path, repo_path("a b.txt"));
+        assert_eq!(
+            entries[0].stages,
+            UnmergedStagePresence {
+                base: true,
+                ours: true,
+                theirs: true
+            }
+        );
+        assert_eq!(entries[0].theirs_mode, Some(0o100755));
+        assert_eq!(
+            entries[0].ours_oid,
+            Some("2222222222222222222222222222222222222222".parse().unwrap())
+        );
+        assert_eq!(entries[1].path, repo_path("new\nline.txt"));
+        assert_eq!(
+            entries[1].stages,
+            UnmergedStagePresence {
+                base: true,
+                ours: false,
+                theirs: true
+            }
+        );
+        assert_eq!(entries[1].ours_mode, None);
+        assert_eq!(entries[2].path, repo_path("\u{e9}.txt"));
+        assert_eq!(entries[2].ours_mode, Some(0o120000));
+        assert!(parse_unmerged_entries(b"").unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_parse_unmerged_entries_rejects_malformed_records() {
+        let unknown_stage = b"100644 1111111111111111111111111111111111111111 4\tfile.txt\0";
+        let missing_tab = b"100644 1111111111111111111111111111111111111111 1 file.txt\0";
+        let extra_field = b"M 100644 1111111111111111111111111111111111111111 1\tfile.txt\0";
+        let invalid_utf8 = b"100644 1111111111111111111111111111111111111111 1\tfile\xff.txt\0";
+
+        assert!(
+            parse_unmerged_entries(unknown_stage)
+                .unwrap_err()
+                .to_string()
+                .contains("Unknown revision 4 for the file: file.txt")
+        );
+        assert!(parse_unmerged_entries(missing_tab).is_err());
+        assert!(parse_unmerged_entries(extra_field).is_err());
+        assert!(parse_unmerged_entries(invalid_utf8).is_err());
+    }
+
+    #[test]
+    fn test_conflict_side_for_accepted_version_swaps_only_when_reversed() {
+        assert_eq!(
+            ConflictSide::for_accepted_version(false, false),
+            ConflictSide::Ours
+        );
+        assert_eq!(
+            ConflictSide::for_accepted_version(true, false),
+            ConflictSide::Theirs
+        );
+        assert_eq!(
+            ConflictSide::for_accepted_version(false, true),
+            ConflictSide::Theirs
+        );
+        assert_eq!(
+            ConflictSide::for_accepted_version(true, true),
+            ConflictSide::Ours
+        );
+    }
+
+    #[test]
+    fn test_split_conflicts_for_resolution_removes_paths_whose_chosen_side_is_deleted() {
+        let both = UnmergedStagePresence {
+            base: true,
+            ours: true,
+            theirs: true,
+        };
+        let deleted_by_us = UnmergedStagePresence {
+            base: true,
+            ours: false,
+            theirs: true,
+        };
+        let deleted_by_them = UnmergedStagePresence {
+            base: true,
+            ours: true,
+            theirs: false,
+        };
+        let entries = vec![
+            (repo_path("both"), both),
+            (repo_path("deleted_by_us"), deleted_by_us),
+            (repo_path("deleted_by_them"), deleted_by_them),
+        ];
+
+        assert_eq!(
+            split_conflicts_for_resolution(&entries, Some(ConflictSide::Ours)),
+            (
+                vec![repo_path("both"), repo_path("deleted_by_them")],
+                vec![repo_path("deleted_by_us")]
+            )
+        );
+        assert_eq!(
+            split_conflicts_for_resolution(&entries, Some(ConflictSide::Theirs)),
+            (
+                vec![repo_path("both"), repo_path("deleted_by_us")],
+                vec![repo_path("deleted_by_them")]
+            )
+        );
+        assert_eq!(
+            split_conflicts_for_resolution(&entries, None),
+            (
+                vec![
+                    repo_path("both"),
+                    repo_path("deleted_by_us"),
+                    repo_path("deleted_by_them")
+                ],
+                Vec::new()
+            )
+        );
+        assert_eq!(
+            conflicts_with_side(&entries, ConflictSide::Ours),
+            vec![repo_path("both"), repo_path("deleted_by_them")]
+        );
+    }
+
+    #[test]
+    fn test_parse_git_version_reads_major_and_minor() {
+        assert_eq!(parse_git_version("git version 2.55.0\n").unwrap(), (2, 55));
+        assert_eq!(
+            parse_git_version("git version 2.39.5 (Apple Git-154)\n").unwrap(),
+            (2, 39)
+        );
+        assert_eq!(
+            parse_git_version("git version 2.34.0.windows.1").unwrap(),
+            (2, 34)
+        );
+        assert_eq!(parse_git_version("git version 2.45.rc1").unwrap(), (2, 45));
+        assert!(parse_git_version("not git").is_err());
+        assert!(parse_git_version("git version two.three").is_err());
+    }
+
+    #[test]
+    fn test_missing_revision_errors_match_the_stage_lookup_failures() {
+        for message in [
+            "fatal: ambiguous argument ':2:x': unknown revision or path not in the working tree.",
+            "fatal: path 'x' exists on disk, but not in 'HEAD'",
+            "fatal: path 'du.txt' is in the index, but not at stage 2\nhint: Did you mean ':1:du.txt'?",
+            "fatal: bad revision ':2:x'",
+            "fatal: Not a valid object name :2:x",
+            "error: cannot read object 1234 '/x': Bad file descriptor",
+        ] {
+            assert!(is_missing_revision_error(message), "{message}");
+        }
+        for message in [
+            "fatal: path 'no-such.txt' does not exist (neither on disk nor in the index)",
+            "fatal: path 'untracked.txt' exists on disk, but not in the index",
+            "fatal: not a git repository",
+            "",
+        ] {
+            assert!(!is_missing_revision_error(message), "{message}");
+        }
+    }
+
+    #[test]
+    fn test_chunk_pathspecs_splits_by_total_argument_bytes() {
+        assert!(chunk_pathspecs(&[]).is_empty());
+
+        let short_paths = ["a", "b", "c"].map(repo_path).to_vec();
+        assert_eq!(chunk_pathspecs(&short_paths), vec![&short_paths[..]]);
+
+        let long_paths = ["x", "y", "z"]
+            .map(|prefix| repo_path(&prefix.repeat(60_000)))
+            .to_vec();
+        assert_eq!(
+            chunk_pathspecs(&long_paths),
+            vec![&long_paths[0..1], &long_paths[1..2], &long_paths[2..3]]
+        );
     }
 }

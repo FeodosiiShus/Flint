@@ -1,11 +1,34 @@
 use anyhow::Result;
-use git::repository::{GitFailureKind, RebaseAction, RebaseOutcome, RepositoryOperation};
-use gpui::{App, AsyncWindowContext, Window};
+use git::repository::{
+    GitFailureKind, RebaseAction, RebaseOutcome, RepositoryOperation, UnmergedEntry,
+};
+use gpui::{Action as _, App, AsyncWindowContext, PromptLevel, Window};
 
 use super::integrate;
-use super::smart_operation::stash_local_changes;
+use super::smart_operation::{RestoreLabels, stash_local_changes};
 use super::{BranchContext, BranchNotice};
-use crate::merge_tool::has_unmerged_paths;
+use crate::merge_tool::conflict_resolution::{
+    ConflictParams, RebaseCustomizerSpec, RebaseUpstream, ResolveMode, ResolverBehavior,
+    retain_entries_on_disk,
+};
+
+const ABORT_LABEL: &str = "Abort";
+const CANCEL_LABEL: &str = "Cancel";
+const ABORT_REBASE_TITLE: &str = "Abort Rebase";
+const ABORT_MERGE_TITLE: &str = "Abort Merge";
+const REBASE_ABORTED_MESSAGE: &str = "Abort rebase succeeded";
+const MERGE_ABORTED_MESSAGE: &str = "Merge abort succeeded";
+const REBASE_ABORT_FAILED_TITLE: &str = "Abort rebase failed";
+const MERGE_ABORT_FAILED_TITLE: &str = "Merge abort failed";
+const ALL_CONFLICTS_RESOLVED_TITLE: &str = "Resolve Conflicts";
+const ALL_CONFLICTS_RESOLVED_MESSAGE: &str =
+    "All conflicts have been resolved. Do you want to continue rebase?";
+const CONTINUE_REBASE_LABEL: &str = "Continue Rebase";
+const REBASE_RESTORE_OPERATION_TITLE: &str = "rebase";
+const MERGE_RESTORE_OPERATION_TITLE: &str = "merge";
+const MERGE_RESTORE_DESTINATION_NAME: &str = "HEAD";
+const STASHED_BEFORE_REBASE_NOTE: &str = "Local changes were stashed before rebase.";
+const VIEW_STASH_LABEL: &str = "View Stash…";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OngoingOperationAction {
@@ -66,9 +89,7 @@ pub fn run_ongoing_action(
         ..RebaseReport::default()
     };
     match action {
-        OngoingOperationAction::AbortRebase => {
-            advance_rebase_in_background(context, report, RebaseAction::Abort, window, cx)
-        }
+        OngoingOperationAction::AbortRebase => abort_rebase(context, report, window, cx),
         OngoingOperationAction::ContinueRebase => {
             advance_rebase_in_background(context, report, RebaseAction::Continue, window, cx)
         }
@@ -101,12 +122,22 @@ pub(super) fn rebase_success_message(branch: Option<&str>, onto: Option<&str>) -
     }
 }
 
-pub(super) fn rebase_conflict_message(stashed: bool) -> String {
-    let mut message = String::from("Resolve the conflicts, then continue the rebase.");
-    if stashed {
-        message.push_str(" Local changes were stashed before the rebase.");
+fn rebase_restore_labels(report: &RebaseReport) -> RestoreLabels {
+    if report.update.is_some() {
+        return RestoreLabels::update();
     }
-    message
+    RestoreLabels::new(
+        REBASE_RESTORE_OPERATION_TITLE,
+        report.onto.clone().unwrap_or_default(),
+    )
+}
+
+pub(super) fn rebase_conflict_message(stashed: bool) -> String {
+    if stashed {
+        String::from(STASHED_BEFORE_REBASE_NOTE)
+    } else {
+        String::new()
+    }
 }
 
 pub(super) async fn rebase_once(
@@ -136,7 +167,8 @@ pub(super) async fn start_rebase(
     match rebase_once(context, action, cx).await {
         Ok(outcome) => finish_rebase(context, &report, outcome, cx).await,
         Err(error) => {
-            integrate::restore_stash(context, report.stashed, cx).await;
+            integrate::restore_stash(context, report.stashed, rebase_restore_labels(&report), cx)
+                .await;
             report_rebase_failure(context, &error, cx);
             Ok(())
         }
@@ -150,50 +182,194 @@ pub(super) async fn finish_rebase(
     cx: &mut AsyncWindowContext,
 ) -> Result<()> {
     match outcome {
-        RebaseOutcome::Completed { .. } => {
-            integrate::restore_stash(context, report.stashed, cx).await;
-            let notice = match &report.update {
-                Some(progress) => {
-                    integrate::update_notice(
-                        context,
-                        report.branch.as_deref(),
-                        report.onto.as_deref(),
-                        progress,
-                        cx,
-                    )
-                    .await
-                }
-                None => BranchNotice::info(rebase_success_message(
-                    report.branch.as_deref(),
-                    report.onto.as_deref(),
-                ))
-                .title("Rebase successful"),
-            };
-            integrate::notify(context, notice, cx);
-        }
-        RebaseOutcome::Conflicted { .. } => {
-            cx.update(|window, app| context.open_conflicts_if_conflicted(window, app))?;
-            integrate::notify(context, rebase_conflict_notice(context, report), cx);
-        }
+        RebaseOutcome::Completed { .. } => complete_rebase(context, report, cx).await,
+        RebaseOutcome::Conflicted { .. } => resolve_stopped_rebase(context, report, cx).await?,
         RebaseOutcome::Aborted => {
-            integrate::restore_stash(context, report.stashed, cx).await;
-            integrate::notify(context, BranchNotice::info("Rebase aborted"), cx);
+            integrate::restore_stash(context, report.stashed, rebase_restore_labels(report), cx)
+                .await;
+            integrate::notify(context, BranchNotice::info(REBASE_ABORTED_MESSAGE), cx);
         }
     }
     Ok(())
 }
 
-fn rebase_conflict_notice(context: &BranchContext, report: &RebaseReport) -> BranchNotice {
-    let resolve_context = context.clone();
+async fn complete_rebase(
+    context: &BranchContext,
+    report: &RebaseReport,
+    cx: &mut AsyncWindowContext,
+) {
+    integrate::restore_stash(context, report.stashed, rebase_restore_labels(report), cx).await;
+    let notice = match &report.update {
+        Some(progress) => {
+            integrate::update_notice(
+                context,
+                report.branch.as_deref(),
+                report.onto.as_deref(),
+                progress,
+                cx,
+            )
+            .await
+        }
+        None => BranchNotice::info(rebase_success_message(
+            report.branch.as_deref(),
+            report.onto.as_deref(),
+        ))
+        .title("Rebase successful"),
+    };
+    integrate::notify(context, notice, cx);
+}
+
+fn rebase_conflict_params(report: &RebaseReport) -> ConflictParams {
+    if report.update.is_some() {
+        return ConflictParams::for_update_by_rebase();
+    }
+    ConflictParams::for_rebase_process(RebaseCustomizerSpec {
+        upstream: report.onto.as_deref().map(RebaseUpstream::from_ref_string),
+        branch: None,
+        initial_branch: report.branch.clone(),
+    })
+}
+
+pub(super) async fn conflicts_remain(context: &BranchContext, cx: &mut AsyncWindowContext) -> bool {
+    match unmerged_files_on_disk(context, cx).await {
+        Ok(entries) => !entries.is_empty(),
+        Err(error) => {
+            log::warn!("could not check the repository for unmerged paths: {error:#}");
+            true
+        }
+    }
+}
+
+async fn unmerged_files_on_disk(
+    context: &BranchContext,
+    cx: &mut AsyncWindowContext,
+) -> Result<Vec<UnmergedEntry>> {
+    let listing = context
+        .repository
+        .update(cx, |repository, cx| repository.unmerged_entries(cx));
+    let entries = listing.await?;
+    let fs = context.workspace.read_with(cx, |workspace, cx| {
+        workspace.project().read(cx).fs().clone()
+    })?;
+    let absolute_paths: Vec<_> = context.repository.read_with(cx, |repository, _| {
+        entries
+            .iter()
+            .map(|entry| repository.repo_path_to_abs_path(&entry.path))
+            .collect()
+    });
+    retain_entries_on_disk(fs.as_ref(), entries, &absolute_paths).await
+}
+
+pub(super) async fn resolve_stopped_rebase(
+    context: &BranchContext,
+    report: &RebaseReport,
+    cx: &mut AsyncWindowContext,
+) -> Result<()> {
+    let resolution = cx.update(|window, app| {
+        context.resolve_conflicts(
+            rebase_conflict_params(report),
+            ResolverBehavior::ContinueRebase,
+            ResolveMode::Initial,
+            window,
+            app,
+        )
+    })?;
+    if resolution.await.proceed {
+        complete_rebase(context, report, cx).await;
+    } else if report.update.is_none() && conflicts_remain(context, cx).await {
+        integrate::notify(context, rebase_conflict_notice(context, report), cx);
+    }
+    Ok(())
+}
+
+async fn resolve_rebase_from_notification(
+    context: &BranchContext,
+    report: &RebaseReport,
+    cx: &mut AsyncWindowContext,
+) -> Result<()> {
+    if conflicts_remain(context, cx).await {
+        return resolve_stopped_rebase(context, report, cx).await;
+    }
+    let answer = cx.prompt(
+        PromptLevel::Info,
+        ALL_CONFLICTS_RESOLVED_TITLE,
+        Some(ALL_CONFLICTS_RESOLVED_MESSAGE),
+        &[CONTINUE_REBASE_LABEL, CANCEL_LABEL],
+    );
+    if matches!(answer.await, Ok(0)) {
+        advance_rebase(context, report, RebaseAction::Continue, cx).await?;
+    }
+    Ok(())
+}
+
+pub(super) fn resolve_rebase_action(
+    context: BranchContext,
+    report: RebaseReport,
+) -> impl Fn(&mut Window, &mut App) + 'static {
+    move |window, cx| {
+        let context = context.clone();
+        let report = RebaseReport {
+            stashed: report.stashed || smart_stash_present(&context, cx),
+            ..report.clone()
+        };
+        window
+            .spawn(cx, async move |cx| {
+                if let Err(error) = resolve_rebase_from_notification(&context, &report, cx).await {
+                    integrate::notify_failure(&context, "Rebase failed", &error, cx);
+                }
+            })
+            .detach();
+    }
+}
+
+pub(super) fn abort_rebase(
+    context: BranchContext,
+    report: RebaseReport,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    window
+        .spawn(cx, async move |cx| {
+            if let Err(error) = abort_rebase_flow(&context, &report, cx).await {
+                integrate::notify_failure(&context, REBASE_ABORT_FAILED_TITLE, &error, cx);
+            }
+        })
+        .detach();
+}
+
+async fn abort_rebase_flow(
+    context: &BranchContext,
+    report: &RebaseReport,
+    cx: &mut AsyncWindowContext,
+) -> Result<()> {
+    let repository = integrate::repository_name(context, cx)?;
+    let message = format!("Abort rebase in {repository}?");
+    let answer = cx.prompt(
+        PromptLevel::Info,
+        ABORT_REBASE_TITLE,
+        Some(message.as_str()),
+        &[ABORT_LABEL, CANCEL_LABEL],
+    );
+    if matches!(answer.await, Ok(0)) {
+        advance_rebase(context, report, RebaseAction::Abort, cx).await?;
+    }
+    Ok(())
+}
+
+pub(super) fn rebase_conflict_notice(
+    context: &BranchContext,
+    report: &RebaseReport,
+) -> BranchNotice {
     let continue_context = context.clone();
     let continue_report = report.clone();
     let abort_context = context.clone();
     let abort_report = report.clone();
-    BranchNotice::warning(rebase_conflict_message(report.stashed))
+    let notice = BranchNotice::warning(rebase_conflict_message(report.stashed))
         .title("Rebase stopped due to conflicts")
-        .action("Resolve…", move |window, cx| {
-            resolve_context.open_conflicts_if_conflicted(window, cx)
-        })
+        .action(
+            "Resolve…",
+            resolve_rebase_action(context.clone(), report.clone()),
+        )
         .action("Continue", move |window, cx| {
             advance_rebase_in_background(
                 continue_context.clone(),
@@ -203,15 +379,16 @@ fn rebase_conflict_notice(context: &BranchContext, report: &RebaseReport) -> Bra
                 cx,
             )
         })
-        .action("Abort", move |window, cx| {
-            advance_rebase_in_background(
-                abort_context.clone(),
-                abort_report.clone(),
-                RebaseAction::Abort,
-                window,
-                cx,
-            )
+        .action(ABORT_LABEL, move |window, cx| {
+            abort_rebase(abort_context.clone(), abort_report.clone(), window, cx)
+        });
+    if report.stashed {
+        notice.action(VIEW_STASH_LABEL, |window, cx| {
+            window.dispatch_action(zed_actions::git::ViewStash.boxed_clone(), cx)
         })
+    } else {
+        notice
+    }
 }
 
 pub(super) fn report_rebase_failure(
@@ -224,11 +401,6 @@ pub(super) fn report_rebase_failure(
             BranchNotice::error(integrate::untracked_files_message("rebase", files))
                 .title("Untracked Files Prevent Rebase"),
         ),
-        Some(GitFailureKind::UnmergedFiles) => Some(integrate::unmerged_files_notice(
-            context,
-            "Rebase failed",
-            "Resolve the conflicts before rebasing.",
-        )),
         _ => integrate::failure_notice("Rebase failed", error),
     };
     if let Some(notice) = notice {
@@ -258,22 +430,13 @@ async fn advance_rebase(
     action: RebaseAction,
     cx: &mut AsyncWindowContext,
 ) -> Result<()> {
-    if matches!(action, RebaseAction::Continue)
-        && cx.update(|_, app| has_unmerged_paths(context.repository.read(app)))?
-    {
-        integrate::notify(
-            context,
-            integrate::unmerged_files_notice(
-                context,
-                "Unresolved conflicts",
-                "Resolve all conflicts before continuing the rebase.",
-            ),
-            cx,
-        );
-        return Ok(());
-    }
+    let aborting = matches!(action, RebaseAction::Abort);
     match rebase_once(context, action, cx).await {
         Ok(outcome) => finish_rebase(context, report, outcome, cx).await,
+        Err(error) if aborting => {
+            integrate::notify_failure(context, REBASE_ABORT_FAILED_TITLE, &error, cx);
+            Ok(())
+        }
         Err(error) => {
             report_rebase_failure(context, &error, cx);
             Ok(())
@@ -290,7 +453,7 @@ pub(super) fn abort_merge(
     window
         .spawn(cx, async move |cx| {
             if let Err(error) = abort_merge_flow(&context, stashed, cx).await {
-                integrate::notify_failure(&context, "Could Not Abort Merge", &error, cx);
+                integrate::notify_failure(&context, MERGE_ABORT_FAILED_TITLE, &error, cx);
             }
         })
         .detach();
@@ -301,12 +464,32 @@ async fn abort_merge_flow(
     stashed: bool,
     cx: &mut AsyncWindowContext,
 ) -> Result<()> {
+    let mention = cx.update(|_, app| integrate::repository_mention(context, app))?;
+    let message = format!("Abort merge{mention}?");
+    let answer = cx.prompt(
+        PromptLevel::Info,
+        ABORT_MERGE_TITLE,
+        Some(message.as_str()),
+        &[ABORT_LABEL, CANCEL_LABEL],
+    );
+    if !matches!(answer.await, Ok(0)) {
+        return Ok(());
+    }
     let receiver = context
         .repository
         .update(cx, |repository, _| repository.merge_abort());
     receiver.await??;
-    integrate::restore_stash(context, stashed, cx).await;
-    integrate::notify(context, BranchNotice::info("Merge aborted"), cx);
+    integrate::restore_stash(
+        context,
+        stashed,
+        RestoreLabels::new(
+            MERGE_RESTORE_OPERATION_TITLE,
+            MERGE_RESTORE_DESTINATION_NAME,
+        ),
+        cx,
+    )
+    .await;
+    integrate::notify(context, BranchNotice::info(MERGE_ABORTED_MESSAGE), cx);
     Ok(())
 }
 
@@ -369,8 +552,11 @@ mod tests {
     }
 
     #[test]
-    fn rebase_conflict_message_mentions_the_stash_only_when_changes_were_stashed() {
-        assert!(!rebase_conflict_message(false).contains("stashed"));
-        assert!(rebase_conflict_message(true).contains("Local changes were stashed"));
+    fn rebase_conflict_message_is_empty_unless_changes_were_stashed() {
+        assert_eq!(rebase_conflict_message(false), "");
+        assert_eq!(
+            rebase_conflict_message(true),
+            "Local changes were stashed before rebase."
+        );
     }
 }

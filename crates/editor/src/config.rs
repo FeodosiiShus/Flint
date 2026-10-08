@@ -20,6 +20,20 @@ impl Editor {
         cx.notify();
     }
 
+    pub fn set_show_whitespaces_override(
+        &mut self,
+        setting: Option<language_settings::ShowWhitespaceSetting>,
+        cx: &mut Context<Self>,
+    ) {
+        self.show_whitespaces_override = setting;
+        cx.notify();
+    }
+
+    pub fn show_whitespaces_setting(&self, cx: &App) -> language_settings::ShowWhitespaceSetting {
+        self.show_whitespaces_override
+            .unwrap_or_else(|| self.buffer.read(cx).language_settings(cx).show_whitespaces)
+    }
+
     pub fn set_hard_wrap(&mut self, hard_wrap: Option<usize>, cx: &mut Context<Self>) {
         self.hard_wrap = hard_wrap;
         cx.notify();

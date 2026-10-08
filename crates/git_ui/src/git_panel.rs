@@ -1,6 +1,7 @@
 use git_ui_core::askpass_modal::AskPassModal;
 pub(crate) use git_ui_core::notifications::{open_output, show_error_toast};
 
+use crate::branch_operations::smart_operation::stash_pop_left_conflicts;
 use crate::commit_context_menu::{
     CommitContextMenuData, CommitContextMenuSource, commit_context_menu,
 };
@@ -8,7 +9,9 @@ use crate::commit_modal::CommitModal;
 use crate::commit_tooltip::{CommitAvatar, CommitTooltip};
 use crate::commit_view::CommitView;
 use crate::git_panel_settings::GitPanelScrollbarAccessor;
-use crate::merge_tool::{self, AcceptTheirs, AcceptYours, OpenMergeTool};
+use crate::merge_tool::conflict_resolution::ConflictContext;
+use crate::merge_tool::single_file_merge::open_single_file_merge;
+use crate::merge_tool::{self, AcceptConflictTheirs, AcceptConflictYours, MergeConflictedFile};
 use crate::project_diff::{DeployBranchDiff, Diff, ProjectDiff};
 use crate::remote_output::{self, RemoteAction, SuccessMessage};
 use crate::solo_diff_view::SoloDiffView;
@@ -78,7 +81,6 @@ use std::rc::Rc;
 use std::{sync::Arc, time::Duration};
 use strum::{IntoEnumIterator, VariantNames};
 use theme_settings::ThemeSettings;
-use three_way_merge::Side;
 use time::OffsetDateTime;
 use ui::{
     ButtonLike, Checkbox, Chip, ChromeRegion, ContextMenu, ContextMenuEntry, Divider,
@@ -2672,63 +2674,134 @@ impl GitPanel {
         entry.status.is_conflicted().then(|| entry.clone())
     }
 
-    fn selected_entry_opens_merge_tool(&self, cx: &App) -> bool {
+    fn selected_conflicted_entries(&self) -> Vec<GitStatusEntry> {
+        self.effective_status_entries()
+            .into_iter()
+            .filter(|entry| entry.status.is_conflicted())
+            .collect()
+    }
+
+    fn selection_has_conflicts(&self, cx: &App) -> bool {
+        self.merge_tool_available(cx) && !self.selected_conflicted_entries().is_empty()
+    }
+
+    fn selected_entry_opens_merge_window(&self, cx: &App) -> bool {
         self.merge_tool_available(cx) && self.selected_conflicted_entry().is_some()
     }
 
-    fn open_merge_tool(&mut self, _: &OpenMergeTool, window: &mut Window, cx: &mut Context<Self>) {
+    fn open_selected_conflict_merge_window(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(repository) = self.active_repository.clone() else {
-            cx.propagate();
             return;
         };
         let Some(entry) = self.selected_conflicted_entry() else {
-            cx.propagate();
             return;
         };
-        let workspace = self.workspace.clone();
-        workspace
-            .update(cx, |workspace, cx| {
-                merge_tool::open_merge_tool(workspace, repository, entry.repo_path, window, cx)
-                    .detach_and_notify_err(cx.weak_entity(), window, cx);
-            })
-            .log_err();
+        open_single_file_merge(
+            self.workspace.clone(),
+            repository,
+            entry.repo_path,
+            window,
+            cx,
+        );
     }
 
-    fn accept_yours(&mut self, _: &AcceptYours, window: &mut Window, cx: &mut Context<Self>) {
-        self.accept_conflict_side(Side::Left, window, cx);
-    }
-
-    fn accept_theirs(&mut self, _: &AcceptTheirs, window: &mut Window, cx: &mut Context<Self>) {
-        self.accept_conflict_side(Side::Right, window, cx);
-    }
-
-    fn accept_conflict_side(&mut self, side: Side, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(repository) = self.active_repository.clone() else {
-            cx.propagate();
-            return;
-        };
-        let Some(entry) = self.selected_conflicted_entry() else {
-            cx.propagate();
-            return;
-        };
-        merge_tool::accept_side(self.project.clone(), repository, entry.repo_path, side, cx)
-            .detach_and_notify_err(self.workspace.clone(), window, cx);
-    }
-
-    fn open_conflicts_dialog_if_conflicted(
-        &self,
-        repository: Entity<Repository>,
+    fn merge_conflicted_files(
+        &mut self,
+        _: &MergeConflictedFile,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.merge_tool_available(cx) {
-            merge_tool::open_conflicts_dialog_if_conflicted(
+        let Some(repository) = self.active_repository.clone() else {
+            cx.propagate();
+            return;
+        };
+        let entries = self.selected_conflicted_entries();
+        if entries.is_empty() {
+            cx.propagate();
+            return;
+        }
+        for entry in entries {
+            open_single_file_merge(
                 self.workspace.clone(),
-                repository,
+                repository.clone(),
+                entry.repo_path,
                 window,
                 cx,
             );
         }
+    }
+
+    fn accept_conflicted_yours(
+        &mut self,
+        _: &AcceptConflictYours,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.accept_conflicted_files(false, window, cx);
+    }
+
+    fn accept_conflicted_theirs(
+        &mut self,
+        _: &AcceptConflictTheirs,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.accept_conflicted_files(true, window, cx);
+    }
+
+    fn accept_conflicted_files(
+        &mut self,
+        accept_theirs: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(repository) = self.active_repository.clone() else {
+            cx.propagate();
+            return;
+        };
+        let paths: Vec<RepoPath> = self
+            .selected_conflicted_entries()
+            .into_iter()
+            .map(|entry| entry.repo_path)
+            .collect();
+        if paths.is_empty() {
+            cx.propagate();
+            return;
+        }
+        merge_tool::accept_conflict_sides(repository, paths, accept_theirs, cx)
+            .detach_and_notify_err(self.workspace.clone(), window, cx);
+    }
+
+    fn conflict_context(&self, repository: Entity<Repository>, window: &Window) -> ConflictContext {
+        ConflictContext {
+            workspace: self.workspace.clone(),
+            window: window.window_handle(),
+            repository,
+        }
+    }
+
+    fn resolve_unstash_conflicts(
+        &self,
+        repository: Entity<Repository>,
+        stash: Option<git::stash::StashEntry>,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) {
+        merge_tool::resolve_unstash_conflicts(self.conflict_context(repository, window), stash, cx);
+    }
+
+    fn resolve_conflicts_after_pull(
+        &self,
+        repository: Entity<Repository>,
+        rebase: bool,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) {
+        merge_tool::resolve_conflicts_after_pull(
+            self.conflict_context(repository, window),
+            rebase,
+            cx,
+        );
     }
 
     fn revert_selected(
@@ -3458,16 +3531,24 @@ impl GitPanel {
 
         cx.spawn_in(window, {
             async move |this, cx| {
+                let stash = active_repository.update(cx, |repo, _| {
+                    repo.cached_stash()
+                        .entries
+                        .iter()
+                        .min_by_key(|entry| entry.index)
+                        .cloned()
+                });
                 let stash_task = active_repository
                     .update(cx, |repo, cx| repo.stash_pop(None, cx))
                     .await;
                 this.update_in(cx, |this, window, cx| {
-                    stash_task
-                        .map_err(|e| {
-                            this.show_error_toast("stash pop", e, cx);
-                        })
-                        .ok();
-                    this.open_conflicts_dialog_if_conflicted(active_repository, window, cx);
+                    match stash_task {
+                        Ok(()) => {}
+                        Err(error) if stash_pop_left_conflicts(&error) => {
+                            this.resolve_unstash_conflicts(active_repository, stash, window, cx);
+                        }
+                        Err(error) => this.show_error_toast("stash pop", error, cx),
+                    }
                     cx.notify();
                 })
             }
@@ -3482,16 +3563,24 @@ impl GitPanel {
 
         cx.spawn_in(window, {
             async move |this, cx| {
+                let stash = active_repository.update(cx, |repo, _| {
+                    repo.cached_stash()
+                        .entries
+                        .iter()
+                        .min_by_key(|entry| entry.index)
+                        .cloned()
+                });
                 let stash_task = active_repository
                     .update(cx, |repo, cx| repo.stash_apply(None, cx))
                     .await;
                 this.update_in(cx, |this, window, cx| {
-                    stash_task
-                        .map_err(|e| {
-                            this.show_error_toast("stash apply", e, cx);
-                        })
-                        .ok();
-                    this.open_conflicts_dialog_if_conflicted(active_repository, window, cx);
+                    match stash_task {
+                        Ok(()) => {}
+                        Err(error) if stash_pop_left_conflicts(&error) => {
+                            this.resolve_unstash_conflicts(active_repository, stash, window, cx);
+                        }
+                        Err(error) => this.show_error_toast("stash apply", error, cx),
+                    }
                     cx.notify();
                 })
             }
@@ -4280,7 +4369,7 @@ impl GitPanel {
                         this.show_error_toast(action.name(), e, cx)
                     }
                 }
-                this.open_conflicts_dialog_if_conflicted(repo, window, cx);
+                this.resolve_conflicts_after_pull(repo, rebase, window, cx);
             })
             .ok();
 
@@ -7575,7 +7664,9 @@ impl GitPanel {
                                 cx.stop_propagation();
                                 workspace
                                     .update(cx, |workspace, cx| {
-                                        merge_tool::open_conflicts_dialog(workspace, window, cx);
+                                        merge_tool::resolve_conflicts_in_workspace(
+                                            workspace, window, cx,
+                                        );
                                     })
                                     .log_err();
                             }),
@@ -7733,9 +7824,9 @@ impl GitPanel {
                 .context(self.focus_handle.clone())
                 .when(show_conflict_actions, |context_menu| {
                     context_menu
-                        .action("Accept Yours", AcceptYours.boxed_clone())
-                        .action("Accept Theirs", AcceptTheirs.boxed_clone())
-                        .action("Merge…", OpenMergeTool.boxed_clone())
+                        .action("Merge…", MergeConflictedFile.boxed_clone())
+                        .action("Accept Theirs", AcceptConflictTheirs.boxed_clone())
+                        .action("Accept Yours", AcceptConflictYours.boxed_clone())
                         .separator()
                 })
                 .action(stage_title, ToggleStaged.boxed_clone())
@@ -7806,8 +7897,7 @@ impl GitPanel {
         let all_created = entries.iter().all(|entry| entry.status.is_created());
         let all_deleted = entries.iter().all(|entry| entry.status.is_deleted());
         let will_unstage = self.should_unstage(target_kind, &entries, cx);
-        let show_conflict_actions =
-            target_kind == SelectionTargetKind::File && self.selected_entry_opens_merge_tool(cx);
+        let show_conflict_actions = self.selection_has_conflicts(cx);
 
         self.set_context_menu(
             self.build_context_menu(
@@ -8154,8 +8244,8 @@ impl GitPanel {
                     } else {
                         this.clear_marks_and_select(ix, cx);
                         let secondary = event.click_count() > 1;
-                        if secondary && this.selected_entry_opens_merge_tool(cx) {
-                            this.open_merge_tool(&OpenMergeTool, window, cx);
+                        if secondary && this.selected_entry_opens_merge_window(cx) {
+                            this.open_selected_conflict_merge_window(window, cx);
                         } else {
                             this.open_selected_entry_on_click(secondary, window, cx);
                         }
@@ -8642,9 +8732,9 @@ impl Render for GitPanel {
                     .on_action(cx.listener(Self::stash_pop))
             })
             .when(merge_tool_available, |this| {
-                this.on_action(cx.listener(Self::open_merge_tool))
-                    .on_action(cx.listener(Self::accept_yours))
-                    .on_action(cx.listener(Self::accept_theirs))
+                this.on_action(cx.listener(Self::merge_conflicted_files))
+                    .on_action(cx.listener(Self::accept_conflicted_yours))
+                    .on_action(cx.listener(Self::accept_conflicted_theirs))
             })
             .on_action(cx.listener(Self::cancel))
             .on_action(cx.listener(Self::collapse_selected_entry))
@@ -9411,6 +9501,7 @@ mod tests {
     };
 
     use super::*;
+    use crate::merge_tool::dialog_window::DialogWindowShell;
 
     fn init_test(cx: &mut gpui::TestAppContext) {
         zlog::init_test();
@@ -11129,31 +11220,36 @@ mod tests {
         );
     }
 
-    async fn setup_git_panel_with_conflict(
+    async fn setup_git_panel_with_conflicts(
         cx: &mut TestAppContext,
+        conflicted_files: &[&str],
     ) -> (
         Arc<FakeFs>,
         Entity<Workspace>,
         Entity<GitPanel>,
         VisualTestContext,
     ) {
+        let mut tree = serde_json::Map::new();
+        tree.insert(".git".to_string(), json!({}));
+        tree.insert("other.txt".to_string(), json!("other\n"));
+        for file in conflicted_files {
+            tree.insert((*file).to_string(), json!(""));
+        }
         let (fs, _, workspace, panel, mut cx) = setup_git_panel_with_changes(
             cx,
-            json!({
-                ".git": {},
-                "conflict.txt": "",
-                "other.txt": "other\n",
-            }),
+            serde_json::Value::Object(tree),
             &[("other.txt", StatusCode::Modified)],
         )
         .await;
-        fs.set_conflict_for_repo(
-            path!("/project/.git").as_ref(),
-            "conflict.txt",
-            Some("base\n"),
-            Some("ours\n"),
-            Some("theirs\n"),
-        );
+        for file in conflicted_files {
+            fs.set_conflict_for_repo(
+                path!("/project/.git").as_ref(),
+                file,
+                Some("base\n"),
+                Some("ours\n"),
+                Some("theirs\n"),
+            );
+        }
         cx.run_until_parked();
         await_git_panel_entries(&panel, &mut cx).await;
 
@@ -11164,6 +11260,32 @@ mod tests {
         cx.run_until_parked();
 
         (fs, workspace, panel, cx)
+    }
+
+    async fn setup_git_panel_with_conflict(
+        cx: &mut TestAppContext,
+    ) -> (
+        Arc<FakeFs>,
+        Entity<Workspace>,
+        Entity<GitPanel>,
+        VisualTestContext,
+    ) {
+        setup_git_panel_with_conflicts(cx, &["conflict.txt"]).await
+    }
+
+    fn mark_entries(panel: &Entity<GitPanel>, paths: &[&str], cx: &mut VisualTestContext) {
+        panel.update_in(cx, |panel, _window, _cx| {
+            for path in paths {
+                panel.marked_entries.insert(repo_path(path));
+            }
+        });
+    }
+
+    fn dialog_window_count(cx: &VisualTestContext) -> usize {
+        cx.windows()
+            .into_iter()
+            .filter(|window| window.downcast::<DialogWindowShell>().is_some())
+            .count()
     }
 
     fn select_and_focus_entry(
@@ -11236,13 +11358,13 @@ mod tests {
                 .origin
                 .y
         };
-        let accept_yours = item_top(&mut cx, "MENU_ITEM-Accept Yours");
-        let accept_theirs = item_top(&mut cx, "MENU_ITEM-Accept Theirs");
         let merge = item_top(&mut cx, "MENU_ITEM-Merge…");
+        let accept_theirs = item_top(&mut cx, "MENU_ITEM-Accept Theirs");
+        let accept_yours = item_top(&mut cx, "MENU_ITEM-Accept Yours");
         let stage_file = item_top(&mut cx, "MENU_ITEM-Stage File");
-        assert!(accept_yours < accept_theirs);
-        assert!(accept_theirs < merge);
-        assert!(merge < stage_file);
+        assert!(merge < accept_theirs);
+        assert!(accept_theirs < accept_yours);
+        assert!(accept_yours < stage_file);
 
         let accept_yours_bounds = cx
             .debug_bounds("MENU_ITEM-Accept Yours")
@@ -11269,7 +11391,7 @@ mod tests {
         assert_eq!(conflict_state(&fs, "conflict.txt"), (true, None));
 
         select_and_focus_entry(&panel, "conflict.txt", &mut cx);
-        cx.dispatch_action(AcceptTheirs);
+        cx.dispatch_action(AcceptConflictTheirs);
         cx.run_until_parked();
         await_git_panel_entries(&panel, &mut cx).await;
 
@@ -11295,27 +11417,64 @@ mod tests {
     }
 
     #[gpui::test]
-    async fn test_open_merge_tool_from_git_panel_opens_merge_view(cx: &mut TestAppContext) {
+    async fn test_accept_yours_from_git_panel_resolves_every_marked_conflict(
+        cx: &mut TestAppContext,
+    ) {
         init_test(cx);
-        let (_fs, workspace, panel, mut cx) = setup_git_panel_with_conflict(cx).await;
+        let (fs, _workspace, panel, mut cx) =
+            setup_git_panel_with_conflicts(cx, &["conflict.txt", "second.txt"]).await;
+        select_and_focus_entry(&panel, "conflict.txt", &mut cx);
+        mark_entries(&panel, &["conflict.txt", "second.txt"], &mut cx);
 
-        let active_merge_view = |workspace: &Entity<Workspace>, cx: &VisualTestContext| {
-            workspace.read_with(cx, |workspace, cx| {
-                workspace
-                    .active_item(cx)
-                    .and_then(|item| item.downcast::<merge_tool::MergeView>())
-            })
-        };
+        cx.dispatch_action(AcceptConflictYours);
+        cx.run_until_parked();
+        await_git_panel_entries(&panel, &mut cx).await;
+
+        for file in ["conflict.txt", "second.txt"] {
+            let absolute_path = Path::new(path!("/project")).join(file);
+            assert_eq!(fs.load(&absolute_path).await.unwrap(), "ours\n");
+            assert_eq!(
+                conflict_state(&fs, file),
+                (false, Some(b"ours\n".to_vec())),
+                "{file} should be resolved with the yours side"
+            );
+        }
+    }
+
+    #[gpui::test]
+    async fn test_merge_action_from_git_panel_opens_a_merge_window_for_a_conflicted_file(
+        cx: &mut TestAppContext,
+    ) {
+        init_test(cx);
+        cx.update(|cx| cx.set_global(db::AppDatabase::test_new()));
+        let (_fs, _workspace, panel, mut cx) = setup_git_panel_with_conflict(cx).await;
 
         select_and_focus_entry(&panel, "other.txt", &mut cx);
-        cx.dispatch_action(OpenMergeTool);
+        cx.dispatch_action(MergeConflictedFile);
         cx.run_until_parked();
-        assert!(active_merge_view(&workspace, &cx).is_none());
+        assert_eq!(dialog_window_count(&cx), 0);
 
         select_and_focus_entry(&panel, "conflict.txt", &mut cx);
-        cx.dispatch_action(OpenMergeTool);
+        cx.dispatch_action(MergeConflictedFile);
         cx.run_until_parked();
-        assert!(active_merge_view(&workspace, &cx).is_some());
+        assert_eq!(dialog_window_count(&cx), 1);
+    }
+
+    #[gpui::test]
+    async fn test_merge_action_from_git_panel_opens_a_merge_window_for_every_marked_conflict(
+        cx: &mut TestAppContext,
+    ) {
+        init_test(cx);
+        cx.update(|cx| cx.set_global(db::AppDatabase::test_new()));
+        let (_fs, _workspace, panel, mut cx) =
+            setup_git_panel_with_conflicts(cx, &["conflict.txt", "second.txt"]).await;
+        select_and_focus_entry(&panel, "conflict.txt", &mut cx);
+        mark_entries(&panel, &["conflict.txt", "second.txt"], &mut cx);
+
+        cx.dispatch_action(MergeConflictedFile);
+        cx.run_until_parked();
+
+        assert_eq!(dialog_window_count(&cx), 2);
     }
 
     #[gpui::test]

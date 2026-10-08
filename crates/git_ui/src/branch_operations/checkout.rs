@@ -10,17 +10,22 @@ use project::git_store::{Repository, RepositoryEvent};
 use util::ResultExt as _;
 
 use crate::branch_operations::checkout_revision_dialog;
-use crate::branch_operations::integrate::update_branch;
+use crate::branch_operations::integrate::{
+    resolve_unmerged_files, unmerged_files_error_notice, update_branch,
+};
 use crate::branch_operations::new_branch_dialog::{
     self, NewBranchDialogOptions, NewBranchRequest, initial_branch_name,
 };
-use crate::branch_operations::ongoing::{OngoingOperationAction, run_ongoing_action};
+use crate::branch_operations::ongoing::{RebaseReport, conflicts_remain, rebase_conflict_notice};
 use crate::branch_operations::smart_operation::{
-    SmartChoice, SmartOperation, confirm_smart_operation, restore_local_changes,
+    RestoreLabels, SmartChoice, SmartOperation, confirm_smart_operation, restore_local_changes,
     stash_local_changes,
 };
 use crate::branch_operations::{BranchContext, BranchNotice};
 use crate::branch_refs::{RefKind, RefTarget};
+use crate::merge_tool::conflict_resolution::{
+    ConflictParams, RebaseCustomizerSpec, RebaseUpstream, ResolveMode, ResolverBehavior,
+};
 
 const HEAD_REFERENCE: &str = "HEAD";
 const BRANCH_SWITCH_TIMEOUT: Duration = Duration::from_secs(5);
@@ -31,11 +36,6 @@ const EMPTY_REPOSITORY_MESSAGE: &str =
     "Cannot create new branch in empty repository. Make initial commit first";
 const CHECKOUT_AND_REBASE_FAILED: &str = "Checkout and Rebase failed";
 const REBASE_FAILED: &str = "Rebase failed";
-const REBASE_STOPPED_TITLE: &str = "Rebase stopped due to conflicts";
-const REBASE_STOPPED_MESSAGE: &str = "Resolve the conflicts, then continue or abort the rebase.";
-const STASH_KEPT_TITLE: &str = "Local changes were stashed";
-const STASH_KEPT_MESSAGE: &str =
-    "They were not restored because the rebase stopped. Pop the stash after finishing the rebase.";
 
 pub fn checkout(context: BranchContext, target: RefTarget, window: &mut Window, cx: &mut App) {
     match target.kind {
@@ -657,8 +657,7 @@ async fn run_step_async(context: BranchContext, run: StepRun, cx: &mut AsyncWind
     }
     match execute_step(&context.repository, &run.step, false, cx).await {
         Ok(outcome) => {
-            announce(&context, &run, outcome, cx);
-            outcome == StepOutcome::Completed
+            announce(&context, &run, outcome, None, false, cx).await == StepOutcome::Completed
         }
         Err(error) => recover(context, run, error, cx).await,
     }
@@ -768,24 +767,77 @@ async fn receive<T>(receiver: oneshot::Receiver<Result<T>>) -> Result<T> {
         .map_err(|_| anyhow!("The git operation was canceled"))?
 }
 
-fn announce(
+async fn announce(
     context: &BranchContext,
     run: &StepRun,
     outcome: StepOutcome,
+    initial_branch: Option<String>,
+    stashed: bool,
     cx: &mut AsyncWindowContext,
-) {
-    cx.update(|window, cx| match outcome {
+) -> StepOutcome {
+    match outcome {
         StepOutcome::Completed => {
-            if let Some(notice) = run.completion.notice() {
-                context.notify(notice, cx);
-            }
+            notify_completion(context, run, cx);
+            StepOutcome::Completed
         }
         StepOutcome::RebaseStopped => {
-            context.notify(rebase_stopped_notice(context), cx);
-            context.open_conflicts_if_conflicted(window, cx);
+            resolve_stopped_checkout_rebase(context, run, initial_branch, stashed, cx).await
         }
-    })
-    .log_err();
+    }
+}
+
+fn notify_completion(context: &BranchContext, run: &StepRun, cx: &mut AsyncWindowContext) {
+    if let Some(notice) = run.completion.notice() {
+        cx.update(|_, app| context.notify(notice, app)).log_err();
+    }
+}
+
+async fn resolve_stopped_checkout_rebase(
+    context: &BranchContext,
+    run: &StepRun,
+    initial_branch: Option<String>,
+    stashed: bool,
+    cx: &mut AsyncWindowContext,
+) -> StepOutcome {
+    let CheckoutStep::RebaseOnto { upstream, branch } = &run.step else {
+        return StepOutcome::RebaseStopped;
+    };
+    let params = ConflictParams::for_rebase_process(RebaseCustomizerSpec {
+        upstream: Some(RebaseUpstream::from_ref_string(upstream)),
+        branch: Some(branch.clone()),
+        initial_branch,
+    });
+    let resolution = cx.update(|window, app| {
+        context.resolve_conflicts(
+            params,
+            ResolverBehavior::ContinueRebase,
+            ResolveMode::Initial,
+            window,
+            app,
+        )
+    });
+    let proceeded = match resolution {
+        Ok(task) => task.await.proceed,
+        Err(error) => {
+            log::error!("could not start the conflict resolution: {error:#}");
+            false
+        }
+    };
+    if proceeded {
+        notify_completion(context, run, cx);
+        return StepOutcome::Completed;
+    }
+    if conflicts_remain(context, cx).await {
+        let report = RebaseReport {
+            branch: Some(branch.clone()),
+            onto: Some(upstream.clone()),
+            stashed,
+            ..RebaseReport::default()
+        };
+        cx.update(|_, app| context.notify(rebase_conflict_notice(context, &report), app))
+            .log_err();
+    }
+    StepOutcome::RebaseStopped
 }
 
 async fn recover(
@@ -820,8 +872,7 @@ async fn force_step(context: &BranchContext, run: &StepRun, cx: &mut AsyncWindow
     }
     match execute_step(&context.repository, &run.step, true, cx).await {
         Ok(outcome) => {
-            announce(context, run, outcome, cx);
-            outcome == StepOutcome::Completed
+            announce(context, run, outcome, None, false, cx).await == StepOutcome::Completed
         }
         Err(error) => {
             report_failure(context, run, &error, cx);
@@ -845,21 +896,21 @@ async fn stash_and_retry(
             return false;
         }
     };
+    let initial_branch = cx
+        .update(|_, app| context.current_branch_name(app))
+        .log_err()
+        .flatten()
+        .map(|name| name.to_string());
     let outcome = match execute_step(&context.repository, &run.step, false, cx).await {
-        Ok(outcome) => {
-            announce(context, run, outcome, cx);
-            Some(outcome)
-        }
+        Ok(outcome) => Some(announce(context, run, outcome, initial_branch, stashed, cx).await),
         Err(error) => {
             report_failure(context, run, &error, cx);
             None
         }
     };
-    if stashed && outcome == Some(StepOutcome::RebaseStopped) {
-        let notice = BranchNotice::warning(STASH_KEPT_MESSAGE).title(STASH_KEPT_TITLE);
-        cx.update(|_, cx| context.notify(notice, cx)).log_err();
-    } else {
-        restore_stashed_changes(context, stashed, cx).await;
+    if outcome != Some(StepOutcome::RebaseStopped) {
+        let labels = RestoreLabels::new(run.operation.verb(), run.ref_name.clone());
+        restore_stashed_changes(context, stashed, labels, cx).await;
     }
     outcome == Some(StepOutcome::Completed)
 }
@@ -867,9 +918,11 @@ async fn stash_and_retry(
 async fn restore_stashed_changes(
     context: &BranchContext,
     stashed: bool,
+    labels: RestoreLabels,
     cx: &mut AsyncWindowContext,
 ) {
-    let Ok(restoring) = cx.update(|window, cx| restore_local_changes(context, stashed, window, cx))
+    let Ok(restoring) =
+        cx.update(|window, cx| restore_local_changes(context, stashed, labels, window, cx))
     else {
         return;
     };
@@ -895,10 +948,11 @@ fn report_failure(
     cx: &mut AsyncWindowContext,
 ) {
     cx.update(|_, cx| {
-        let resolve_context = context.clone();
-        let notice = failure_notice(run, error, move |window, cx| {
-            resolve_context.open_conflicts_if_conflicted(window, cx)
-        });
+        let notice = failure_notice(
+            run,
+            error,
+            resolve_unmerged_files(context.clone(), run.operation.verb()),
+        );
         context.notify(notice, cx);
     })
     .log_err();
@@ -924,13 +978,7 @@ fn failure_notice(
 ) -> BranchNotice {
     let verb = run.operation.verb();
     match git_failure(error).map(|failure| &failure.kind) {
-        Some(GitFailureKind::UnmergedFiles) => BranchNotice::error(format!(
-            "You need to resolve all merge conflicts before {verb}.\nAfter resolving conflicts do \
-             not forget to commit your files to the current branch before switching to another \
-             branch."
-        ))
-        .title(format!("Cannot {verb} because of unmerged files"))
-        .action("Resolve conflicts…", resolve_conflicts),
+        Some(GitFailureKind::UnmergedFiles) => unmerged_files_error_notice(verb, resolve_conflicts),
         Some(GitFailureKind::UntrackedFilesWouldBeOverwritten { files }) => BranchNotice::error(
             format!("Move or commit them before {verb}\n{}", files.join("\n")),
         )
@@ -948,33 +996,6 @@ fn failure_notice(
         }
         _ => BranchNotice::error(failure_message(error)).title(run.failure_title.clone()),
     }
-}
-
-fn rebase_stopped_notice(context: &BranchContext) -> BranchNotice {
-    let resolve_context = context.clone();
-    let continue_context = context.clone();
-    let abort_context = context.clone();
-    BranchNotice::warning(REBASE_STOPPED_MESSAGE)
-        .title(REBASE_STOPPED_TITLE)
-        .action("Resolve…", move |window, cx| {
-            resolve_context.open_conflicts_if_conflicted(window, cx)
-        })
-        .action("Continue", move |window, cx| {
-            run_ongoing_action(
-                continue_context.clone(),
-                OngoingOperationAction::ContinueRebase,
-                window,
-                cx,
-            )
-        })
-        .action("Abort", move |window, cx| {
-            run_ongoing_action(
-                abort_context.clone(),
-                OngoingOperationAction::AbortRebase,
-                window,
-                cx,
-            )
-        })
 }
 
 async fn wait_for_current_branch(

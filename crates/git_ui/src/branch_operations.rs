@@ -21,7 +21,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use askpass::AskPassDelegate;
 use git::repository::{Branch, GitFailure, REMOTE_CANCELLED_BY_USER};
 use git_ui_core::askpass_modal::AskPassModal;
-use gpui::{App, AppContext as _, Context, Entity, SharedString, WeakEntity, Window};
+use gpui::{App, AppContext as _, Context, Entity, SharedString, Task, WeakEntity, Window};
 use project::git_store::{Repository, RepositorySnapshot};
 use theme::ActiveTheme as _;
 use util::ResultExt as _;
@@ -30,6 +30,10 @@ use workspace::{ModalView, Workspace, notifications::NotificationId};
 use self::branch_notification::BranchNotification;
 use crate::branch_refs::{RefKind, RefTarget};
 use crate::merge_tool;
+use crate::merge_tool::conflict_resolution::{
+    ConflictContext, ConflictParams, ResolveMode, ResolveOutcome, ResolverBehavior,
+    resolve_conflicts,
+};
 
 const MAX_QUOTED_REF_NAME_CHARS: usize = 40;
 const ELLIPSIS: char = '\u{2026}';
@@ -136,20 +140,26 @@ impl BranchContext {
         }
     }
 
-    pub fn open_conflicts_if_conflicted(&self, window: &mut Window, cx: &mut App) {
-        let Some(workspace) = self.workspace.upgrade() else {
-            return;
-        };
-        let merge_tool_available =
-            merge_tool::is_available(workspace.read(cx).project().read(cx), cx);
-        if merge_tool_available {
-            merge_tool::open_conflicts_dialog_if_conflicted(
-                self.workspace.clone(),
-                self.repository.clone(),
-                window,
-                cx,
-            );
+    pub(crate) fn resolve_conflicts(
+        &self,
+        params: ConflictParams,
+        behavior: ResolverBehavior,
+        mode: ResolveMode,
+        window: &Window,
+        cx: &mut App,
+    ) -> Task<ResolveOutcome> {
+        let merge_tool_available = self.workspace.upgrade().is_some_and(|workspace| {
+            merge_tool::is_available(workspace.read(cx).project().read(cx), cx)
+        });
+        if !merge_tool_available {
+            return Task::ready(ResolveOutcome::default());
         }
+        let context = ConflictContext {
+            workspace: self.workspace.clone(),
+            window: window.window_handle(),
+            repository: self.repository.clone(),
+        };
+        resolve_conflicts(context, params, behavior, mode, cx)
     }
 
     pub fn open_modal<V: ModalView>(

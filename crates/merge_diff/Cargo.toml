@@ -1,0 +1,16 @@
+[package]
+name = "merge_diff"
+version = "0.1.0"
+edition.workspace = true
+publish.workspace = true
+license = "GPL-3.0-or-later"
+
+[lints]
+workspace = true
+
+[lib]
+path = "src/merge_diff.rs"
+doctest = false
+
+[dev-dependencies]
+serde_json.workspace = true

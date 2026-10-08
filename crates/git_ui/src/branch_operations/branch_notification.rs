@@ -113,7 +113,9 @@ impl Render for BranchNotification {
                                     .when_some(self.notice.title.clone(), |this, title| {
                                         this.child(Label::new(title).weight(gpui::FontWeight::BOLD))
                                     })
-                                    .child(message),
+                                    .when(!self.notice.message.is_empty(), |this| {
+                                        this.child(message)
+                                    }),
                             )
                             .when(has_actions, |this| {
                                 this.child(h_flex().gap_1().flex_wrap().children(action_buttons))

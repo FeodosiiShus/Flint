@@ -5862,13 +5862,7 @@ impl EditorElement {
         window: &mut Window,
         cx: &mut App,
     ) {
-        let whitespace_setting = self
-            .editor
-            .read(cx)
-            .buffer
-            .read(cx)
-            .language_settings(cx)
-            .show_whitespaces;
+        let whitespace_setting = self.editor.read(cx).show_whitespaces_setting(cx);
 
         for (ix, line_with_invisibles) in layout.position_map.line_layouts.iter().enumerate() {
             let row = DisplayRow(layout.visible_display_row_range.start.0 + ix as u32);

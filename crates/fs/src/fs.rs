@@ -2466,6 +2466,7 @@ impl FakeFs {
                     state.rebase_session = Some(FakeRebaseSession {
                         original_branch: state.current_branch_name.clone(),
                         upstream: None,
+                        onto: None,
                     });
                 }
                 Some(RepositoryOperation::CherryPick) => {
@@ -2762,6 +2763,22 @@ impl FakeFs {
             assigned
         })
         .unwrap()
+    }
+
+    pub fn set_merge_base_commit_for_repo(
+        &self,
+        dot_git: &Path,
+        first_revision: &str,
+        second_revision: &str,
+        merge_base_sha: &str,
+    ) {
+        self.with_git_state(dot_git, false, |state| {
+            state.merge_base_commits.insert(
+                (first_revision.to_string(), second_revision.to_string()),
+                merge_base_sha.to_string(),
+            );
+        })
+        .unwrap();
     }
 
     pub fn install_blob_read_gate_for_repo(&self, dot_git: &Path) -> FakeBlobReadGate {
