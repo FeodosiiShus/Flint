@@ -339,8 +339,6 @@ pub enum IconName {
     ToolWindowMoreCompact,
     ToolWindowProject,
     ToolWindowProjectCompact,
-    ToolWindowStructure,
-    ToolWindowStructureCompact,
     ToolWindowTerminal,
     ToolWindowTerminalCompact,
     ToolWindowVcs,

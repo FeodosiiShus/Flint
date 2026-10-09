@@ -395,7 +395,7 @@ pub struct LanguageSettingsContent {
     /// Which code actions to run on save before the formatter.
     /// These are not run if formatting is off.
     ///
-    /// Default: {} (or {"source.organizeImports": true} for Go).
+    /// Default: {}
     pub code_actions_on_format: Option<HashMap<String, bool>>,
     /// Whether to perform linked edits of associated ranges, if the language server supports it.
     /// For example, when editing opening <html> tag, the contents of the closing </html> tag will be edited as well.
@@ -1102,8 +1102,8 @@ mod test {
     #[test]
     fn test_language_servers_merge_keeps_per_language_lists_pure() {
         let default_typescript_servers = vec![
-            ConfiguredLanguageServer::new_disabled("typescript-language-server"),
-            ConfiguredLanguageServer::new("vtsls"),
+            ConfiguredLanguageServer::new_disabled("server-a"),
+            ConfiguredLanguageServer::new("server-b"),
             ConfiguredLanguageServer::new(REST_OF_LANGUAGE_SERVERS),
         ];
         let mut base = AllLanguageSettingsContent {
@@ -1127,7 +1127,7 @@ mod test {
 
         let user = AllLanguageSettingsContent {
             defaults: LanguageSettingsContent {
-                language_servers: Some(vec!["!vtsls".into(), REST_OF_LANGUAGE_SERVERS.into()]),
+                language_servers: Some(vec!["!server-b".into(), REST_OF_LANGUAGE_SERVERS.into()]),
                 ..LanguageSettingsContent::default()
             },
             ..AllLanguageSettingsContent::default()
@@ -1141,7 +1141,7 @@ mod test {
         assert_eq!(
             base.defaults.language_servers.as_ref(),
             Some(&vec![
-                ConfiguredLanguageServer::new_disabled("vtsls"),
+                ConfiguredLanguageServer::new_disabled("server-b"),
                 ConfiguredLanguageServer::new(REST_OF_LANGUAGE_SERVERS),
             ])
         );
@@ -1152,7 +1152,7 @@ mod test {
                     "TypeScript".into(),
                     LanguageSettingsContent {
                         language_servers: Some(vec![
-                            "vtsls".into(),
+                            "server-b".into(),
                             REST_OF_LANGUAGE_SERVERS.into(),
                         ]),
                         ..LanguageSettingsContent::default()
@@ -1167,7 +1167,7 @@ mod test {
         assert_eq!(
             base.languages.0["TypeScript"].language_servers.as_ref(),
             Some(&vec![
-                ConfiguredLanguageServer::new("vtsls"),
+                ConfiguredLanguageServer::new("server-b"),
                 ConfiguredLanguageServer::new(REST_OF_LANGUAGE_SERVERS),
             ]),
             "a per-language list must replace the older one wholesale"
@@ -1230,8 +1230,8 @@ mod test {
                     "TypeScript".into(),
                     LanguageSettingsContent {
                         language_servers: Some(vec![
-                            "!typescript-language-server".into(),
-                            "vtsls".into(),
+                            "!server-a".into(),
+                            "server-b".into(),
                             REST_OF_LANGUAGE_SERVERS.into(),
                         ]),
                         ..LanguageSettingsContent::default()
@@ -1254,7 +1254,7 @@ mod test {
                     LanguageSettingsContent {
                         language_servers: Some(vec![
                             "deno".into(),
-                            "!vtsls".into(),
+                            "!server-b".into(),
                             REST_OF_LANGUAGE_SERVERS.into(),
                         ]),
                         ..LanguageSettingsContent::default()
@@ -1276,7 +1276,7 @@ mod test {
             ts_servers,
             &vec![
                 ConfiguredLanguageServer::new("deno"),
-                ConfiguredLanguageServer::new_disabled("vtsls"),
+                ConfiguredLanguageServer::new_disabled("server-b"),
                 ConfiguredLanguageServer::new(REST_OF_LANGUAGE_SERVERS),
             ]
         );
@@ -1294,8 +1294,8 @@ mod test {
                     "TypeScript".into(),
                     LanguageSettingsContent {
                         language_servers: Some(vec![
-                            "!typescript-language-server".into(),
-                            "vtsls".into(),
+                            "!server-a".into(),
+                            "server-b".into(),
                             REST_OF_LANGUAGE_SERVERS.into(),
                         ]),
                         ..LanguageSettingsContent::default()
@@ -1313,7 +1313,7 @@ mod test {
                     "TypeScript".into(),
                     LanguageSettingsContent {
                         language_servers: Some(vec![
-                            "typescript-language-server".into(),
+                            "server-a".into(),
                             REST_OF_LANGUAGE_SERVERS.into(),
                         ]),
                         ..LanguageSettingsContent::default()
@@ -1334,7 +1334,7 @@ mod test {
         assert_eq!(
             ts_servers,
             &vec![
-                ConfiguredLanguageServer::new("typescript-language-server"),
+                ConfiguredLanguageServer::new("server-a"),
                 ConfiguredLanguageServer::new(REST_OF_LANGUAGE_SERVERS),
             ]
         );

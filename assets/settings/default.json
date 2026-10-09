@@ -720,54 +720,6 @@
     },
     "rounded_thumb": true,
   },
-  // Minimap related settings
-  "minimap": {
-    // When to show the minimap in the editor.
-    // This setting can take three values:
-    // 1. Show the minimap if the editor's scrollbar is visible:
-    //    "auto"
-    // 2. Always show the minimap:
-    //    "always"
-    // 3. Never show the minimap:
-    //    "never" (default)
-    "show": "auto",
-    // Where to show the minimap in the editor.
-    // This setting can take two values:
-    // 1. Show the minimap on the focused editor only:
-    //    "active_editor" (default)
-    // 2. Show the minimap on all open editors:
-    //    "all_editors"
-    "display_in": "active_editor",
-    // When to show the minimap thumb.
-    // This setting can take two values:
-    // 1. Show the minimap thumb if the mouse is over the minimap:
-    //    "hover"
-    // 2. Always show the minimap thumb:
-    //    "always" (default)
-    "thumb": "always",
-    // How the minimap thumb border should look.
-    // This setting can take five values:
-    // 1. Display a border on all sides of the thumb:
-    //    "thumb_border": "full"
-    // 2. Display a border on all sides except the left side of the thumb:
-    //    "thumb_border": "left_open" (default)
-    // 3. Display a border on all sides except the right side of the thumb:
-    //    "thumb_border": "right_open"
-    // 4. Display a border only on the left side of the thumb:
-    //    "thumb_border": "left_only"
-    // 5. Display the thumb without any border:
-    //    "thumb_border": "none"
-    "thumb_border": "left_open",
-    // How to highlight the current line in the minimap.
-    // This setting can take the following values:
-    //
-    // 1. `null` to inherit the editor `current_line_highlight` setting (default)
-    // 2. "line" or "all" to highlight the current line in the minimap.
-    // 3. "gutter" or "none" to not highlight the current line in the minimap.
-    "current_line_highlight": null,
-    // Maximum number of columns to display in the minimap.
-    "max_width_columns": 80,
-  },
   // Enable middle-click paste on Linux.
   "middle_click_paste": true,
   // What to do when multibuffer is double clicked in some of its excerpts
@@ -844,8 +796,6 @@
   "search_wrap": true,
   // Search options to enable by default when opening new project and buffer searches.
   "search": {
-    // Whether to show the project search button in the status bar.
-    "button": true,
     // Whether to only match on whole words.
     "whole_word": false,
     // Whether to match case sensitively.
@@ -937,7 +887,7 @@
     // Whether to reveal it in the project panel automatically,
     // when a corresponding project entry becomes active.
     // Gitignored entries are never auto revealed.
-    "auto_reveal_entries": true,
+    "auto_reveal_entries": false,
     // Whether the project panel should open on startup.
     "starts_open": true,
     // Whether to fold directories automatically and show compact folders
@@ -1035,71 +985,10 @@
     },
     "rounded_selection": true,
   },
-  "outline_panel": {
-    // Whether to show the outline panel button in the status bar
+  "search_panel": {
     "button": true,
-    // Default width of the outline panel.
-    "default_width": 300,
-    // Where to dock the outline panel. Can be 'left' or 'right'.
     "dock": "left",
-    // Whether to show file icons in the outline panel.
-    "file_icons": true,
-    // What to show for directories in the outline panel.
-    //
-    // 1. A folder icon:
-    //   "icon"
-    // 2. A disclosure chevron:
-    //   "chevron"
-    // 3. A disclosure chevron followed by a folder icon:
-    //   "both"
-    "folder_indicator": "icon",
-    // Whether to show the git status in the outline panel.
-    "git_status": true,
-    // Amount of indentation for nested items.
-    "indent_size": 20,
-    // Whether to reveal it in the outline panel automatically,
-    // when a corresponding outline entry becomes active.
-    // Gitignored entries are never auto revealed.
-    "auto_reveal_entries": true,
-    // Whether to fold directories automatically
-    // when a directory has only one directory inside.
-    "auto_fold_dirs": true,
-    // Settings related to indent guides in the outline panel.
-    "indent_guides": {
-      // When to show indent guides in the outline panel.
-      // This setting can take two values:
-      //
-      // 1. Always show indent guides:
-      //    "always"
-      // 2. Never show indent guides:
-      //    "never"
-      "show": "always",
-    },
-    // Scrollbar-related settings
-    "scrollbar": {
-      // When to show the scrollbar in the project panel.
-      // This setting can take five values:
-      //
-      // 1. null (default): Inherit editor settings
-      // 2. Show the scrollbar if there's important information or
-      //    follow the system's configured behavior (default):
-      //   "auto"
-      // 3. Match the system's configured behavior:
-      //    "system"
-      // 4. Always show the scrollbar:
-      //    "always"
-      // 5. Never show the scrollbar:
-      //    "never"
-      "show": null,
-    },
-    // Default depth to expand outline items in the current file.
-    // Set to 0 to collapse all items that have children, 1 or higher to collapse items at that depth or deeper.
-    "expand_outlines_with_depth": 100,
-    // Whether to hide symbols, excerpts and search matches in the outline panel
-    // when a multi-buffer view (e.g. a diff or search results) is active,
-    // showing only files and directories.
-    // Does not affect single-file views.
-    "multi_buffer_hide_symbols": false,
+    "default_width": 360,
   },
   "git_panel": {
     // Whether to show the git panel button in the status bar.
@@ -1651,16 +1540,6 @@
   // 3. Don't load direnv configuration at all.
   //      "load_direnv": "disabled"
   "load_direnv": "direct",
-  // Settings specific to journaling
-  "journal": {
-    // The path of the directory where journal entries are stored
-    "path": "~",
-    // What format to display the hours in
-    // May take 2 values:
-    // 1. hour12
-    // 2. hour24
-    "hour_format": "hour12",
-  },
   // Status bar-related settings.
   "status_bar": {
     // Whether to show the status bar.
@@ -2007,20 +1886,10 @@
   // If you don't want any of these extensions, add this field to your settings
   // and change the value to `false`.
   "auto_install_extensions": {
-    "html": true,
     "material-icon-theme": true,
-    "dockerfile": true,
     "env": true,
     "toml": true,
-    "marksman": true,
-    "csharp": true,
     "git-firefly": true,
-    "java": true,
-    "swift": true,
-    "dart": true,
-    "vue": true,
-    "svelte": true,
-    "astro": true,
   },
   // The capabilities granted to extensions.
   //
@@ -2102,14 +1971,8 @@
         "allowed": false,
       },
     },
-    "C++": {
-      "use_on_type_format": false,
-      "prettier": {
-        "allowed": false,
-      },
-    },
     "CSharp": {
-      "language_servers": ["roslyn"],
+      "language_servers": ["!omnisharp", "!csharp-ls", "..."],
     },
     "CSS": {
       "prettier": {
@@ -2147,9 +2010,6 @@
     "Go": {
       "format_on_save": "on",
       "hard_tabs": true,
-      "code_actions_on_format": {
-        "source.organizeImports": true,
-      },
       "debuggers": ["Delve"],
     },
     "GraphQL": {
@@ -2177,7 +2037,7 @@
       },
     },
     "JavaScript": {
-      "language_servers": ["tsgo", "!vtsls", "!typescript-language-server", "eslint", "..."],
+      "language_servers": ["tsgo", "..."],
       "code_actions_on_format": {
         "source.fixAll.eslint": true,
       },
@@ -2241,16 +2101,7 @@
       "language_servers": ["buf", "!protols", "!protobuf-language-server", "..."],
     },
     "Python": {
-      "code_actions_on_format": {
-        "source.organizeImports.ruff": true,
-      },
-      "formatter": {
-        "language_server": {
-          "name": "ruff",
-        },
-      },
       "debuggers": ["Debugpy"],
-      "language_servers": ["basedpyright", "ruff", "!ty", "!pyrefly", "!pyright", "!pylsp", "..."],
     },
     "Ruby": {
       "language_servers": [
@@ -2285,7 +2136,7 @@
       },
     },
     "TSX": {
-      "language_servers": ["tsgo", "!vtsls", "!typescript-language-server", "eslint", "..."],
+      "language_servers": ["tsgo", "..."],
       "code_actions_on_format": {
         "source.fixAll.eslint": true,
       },
@@ -2299,7 +2150,7 @@
       },
     },
     "TypeScript": {
-      "language_servers": ["tsgo", "!vtsls", "!typescript-language-server", "eslint", "..."],
+      "language_servers": ["tsgo", "..."],
       "code_actions_on_format": {
         "source.fixAll.eslint": true,
       },
@@ -2313,12 +2164,6 @@
     "SystemVerilog": {
       "language_servers": ["slang", "!verible", "!veridian", "!svls", "..."],
       "use_on_type_format": false,
-    },
-    "Vue.js": {
-      "language_servers": ["vue-language-server", "vtsls", "..."],
-      "prettier": {
-        "allowed": true,
-      },
     },
     "XML": {
       "prettier": {
@@ -2390,42 +2235,6 @@
     //         }
     //     }
     // }
-    "vtsls": {
-      "settings": {
-        "typescript": {
-          "inlayHints": {
-            "parameterNames": {
-              "enabled": "all",
-              "suppressWhenArgumentMatchesName": false,
-            },
-            "parameterTypes": { "enabled": true },
-            "variableTypes": {
-              "enabled": true,
-              "suppressWhenTypeMatchesName": true,
-            },
-            "propertyDeclarationTypes": { "enabled": true },
-            "functionLikeReturnTypes": { "enabled": true },
-            "enumMemberValues": { "enabled": true },
-          },
-        },
-        "javascript": {
-          "inlayHints": {
-            "parameterNames": {
-              "enabled": "all",
-              "suppressWhenArgumentMatchesName": false,
-            },
-            "parameterTypes": { "enabled": true },
-            "variableTypes": {
-              "enabled": true,
-              "suppressWhenTypeMatchesName": true,
-            },
-            "propertyDeclarationTypes": { "enabled": true },
-            "functionLikeReturnTypes": { "enabled": true },
-            "enumMemberValues": { "enabled": true },
-          },
-        },
-      },
-    },
     "tsgo": {
       "settings": {
         "typescript": {

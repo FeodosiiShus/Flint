@@ -1,4 +1,4 @@
-use gpui::{KeyContext, canvas};
+use gpui::{App, Hsla, KeyContext, canvas, relative};
 use settings::Settings;
 use theme_settings::ThemeSettings;
 use ui::{
@@ -24,6 +24,8 @@ use ui_input::ErasedEditor;
 
 pub mod window_controls;
 
+const PANEL_PREVIEW_HEIGHT_FRACTION: f32 = 0.4;
+
 impl<D: PickerDelegate> Render for Picker<D> {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.finish_any_completed_resize(window, cx);
@@ -31,6 +33,9 @@ impl<D: PickerDelegate> Render for Picker<D> {
         // horizontal
         let rendered_layout = self.preview_layout_rendered(window);
         let content = match &self.preview {
+            Some(preview) if self.is_panel() && preview.layout != Layout::Hidden => self
+                .render_panel_with_preview(preview, window, cx)
+                .into_any_element(),
             Some(
                 preview @ Preview {
                     layout: Layout::Below,
@@ -69,9 +74,16 @@ impl<D: PickerDelegate> Render for Picker<D> {
         // documentation aside (which is positioned outside the picker) isn't cut
         // off.
         let has_preview = self.preview.is_some();
+        let is_panel = self.is_panel();
         let content = div()
-            .when(self.draws_own_container(), |this| this.elevation_3(cx))
+            .when(self.draws_own_container(), |this| {
+                this.elevation_3(cx)
+                    .when_some(self.opaque_surface_background(cx), |this, color| {
+                        this.bg(color)
+                    })
+            })
             .when(has_preview, |this| this.overflow_hidden())
+            .when(is_panel, |this| this.size_full())
             .child(content);
 
         let layout = self
@@ -80,6 +92,7 @@ impl<D: PickerDelegate> Render for Picker<D> {
 
         div()
             .relative()
+            .when(is_panel, |this| this.size_full())
             .child(content)
             .when(self.is_resizable(), |this| {
                 this.left(self.shape.horizontal_offset(window))
@@ -89,6 +102,13 @@ impl<D: PickerDelegate> Render for Picker<D> {
                     .child(self.render_resize(LeftCorner(layout), window, cx))
                     .child(self.render_resize(RightCorner(layout), window, cx))
             })
+    }
+}
+
+impl<D: PickerDelegate> Picker<D> {
+    pub fn opaque_surface_background(&self, cx: &App) -> Option<Hsla> {
+        self.opaque_background
+            .then(|| cx.theme().colors().elevated_surface_background.alpha(1.0))
     }
 }
 
@@ -166,13 +186,17 @@ impl<D: PickerDelegate> Picker<D> {
             .key_context(key_context)
             .relative()
             .map(|this| {
-                self.shape.apply_results_size(
-                    self.preview_layout_rendered(window),
-                    &self.size_bounds,
-                    self.fill_height(),
-                    this,
-                    window,
-                )
+                if self.is_panel() {
+                    this.size_full()
+                } else {
+                    self.shape.apply_results_size(
+                        self.preview_layout_rendered(window),
+                        &self.size_bounds,
+                        self.fill_height(),
+                        this,
+                        window,
+                    )
+                }
             })
             .child(
                 canvas(
@@ -337,6 +361,31 @@ impl<D: PickerDelegate> Picker<D> {
                 .child(render_aside(aside, cx))
                 .child(menu)
         }
+    }
+
+    fn render_panel_with_preview(
+        &self,
+        preview: &Preview,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        v_flex()
+            .size_full()
+            .child(
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .overflow_hidden()
+                    .child(self.render_results(window, cx)),
+            )
+            .child(
+                div()
+                    .flex_none()
+                    .h(relative(PANEL_PREVIEW_HEIGHT_FRACTION))
+                    .border_t_1()
+                    .border_color(cx.theme().colors().border_variant)
+                    .child(preview.render(cx)),
+            )
     }
 
     fn render_with_preview_below(

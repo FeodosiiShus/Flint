@@ -1144,7 +1144,7 @@ impl Editor {
     }
 
     pub(super) fn render_git_blame_gutter(&self, cx: &App) -> bool {
-        !self.mode().is_minimap() && self.show_git_blame_gutter && self.has_blame_entries(cx)
+        self.show_git_blame_gutter && self.has_blame_entries(cx)
     }
 
     pub(super) fn render_git_blame_inline(&self, window: &Window, cx: &App) -> bool {

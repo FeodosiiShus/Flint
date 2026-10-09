@@ -305,27 +305,6 @@ impl LspCommand for OpenDocs {
     }
 }
 
-pub enum LspSwitchSourceHeader {}
-
-impl lsp::request::Request for LspSwitchSourceHeader {
-    type Params = SwitchSourceHeaderParams;
-    type Result = Option<SwitchSourceHeaderResult>;
-    const METHOD: &'static str = "textDocument/switchSourceHeader";
-}
-
-#[derive(Serialize, Deserialize, Debug)]
-#[serde(rename_all = "camelCase")]
-pub struct SwitchSourceHeaderParams(lsp::TextDocumentIdentifier);
-
-#[derive(Serialize, Deserialize, Debug, Default)]
-#[serde(rename_all = "camelCase")]
-pub struct SwitchSourceHeaderResult(pub String);
-
-#[derive(Debug)]
-pub struct SwitchSourceHeader {
-    pub server_id: LanguageServerId,
-}
-
 #[derive(Debug)]
 pub struct GoToParentModule {
     pub position: PointUtf16,
@@ -338,95 +317,6 @@ impl lsp::request::Request for LspGoToParentModule {
     type Params = lsp::TextDocumentPositionParams;
     type Result = Option<Vec<lsp::LocationLink>>;
     const METHOD: &'static str = "experimental/parentModule";
-}
-
-#[async_trait(?Send)]
-impl LspCommand for SwitchSourceHeader {
-    type Response = SwitchSourceHeaderResult;
-    type LspRequest = LspSwitchSourceHeader;
-    type ProtoRequest = proto::LspExtSwitchSourceHeader;
-
-    fn display_name(&self) -> &str {
-        "Switch source header"
-    }
-
-    fn check_capabilities(&self, _: AdapterServerCapabilities<'_>) -> bool {
-        true
-    }
-
-    fn language_server_to_query(&self) -> LanguageServerToQuery {
-        LanguageServerToQuery::Other(self.server_id)
-    }
-
-    fn to_lsp(
-        &self,
-        path: &Path,
-        _: &Buffer,
-        _: &Arc<LanguageServer>,
-        _: &App,
-    ) -> Result<SwitchSourceHeaderParams> {
-        Ok(SwitchSourceHeaderParams(make_text_document_identifier(
-            path,
-        )?))
-    }
-
-    async fn response_from_lsp(
-        self,
-        message: Option<SwitchSourceHeaderResult>,
-        _: Entity<LspStore>,
-        _: Entity<Buffer>,
-        _: LanguageServerId,
-        _: AsyncApp,
-    ) -> anyhow::Result<SwitchSourceHeaderResult> {
-        Ok(message
-            .map(|message| SwitchSourceHeaderResult(message.0))
-            .unwrap_or_default())
-    }
-
-    fn to_proto(&self, project_id: u64, buffer: &Buffer) -> proto::LspExtSwitchSourceHeader {
-        proto::LspExtSwitchSourceHeader {
-            project_id,
-            buffer_id: buffer.remote_id().into(),
-            server_id: self.server_id.to_proto(),
-        }
-    }
-
-    async fn from_proto(
-        message: Self::ProtoRequest,
-        _: Entity<LspStore>,
-        _: Entity<Buffer>,
-        _: AsyncApp,
-    ) -> anyhow::Result<Self> {
-        Ok(Self {
-            server_id: LanguageServerId::from_proto(message.server_id),
-        })
-    }
-
-    fn response_to_proto(
-        response: SwitchSourceHeaderResult,
-        _: &mut LspStore,
-        _: PeerId,
-        _: &clock::Global,
-        _: &mut App,
-    ) -> proto::LspExtSwitchSourceHeaderResponse {
-        proto::LspExtSwitchSourceHeaderResponse {
-            target_file: response.0,
-        }
-    }
-
-    async fn response_from_proto(
-        self,
-        message: proto::LspExtSwitchSourceHeaderResponse,
-        _: Entity<LspStore>,
-        _: Entity<Buffer>,
-        _: AsyncApp,
-    ) -> anyhow::Result<SwitchSourceHeaderResult> {
-        Ok(SwitchSourceHeaderResult(message.target_file))
-    }
-
-    fn buffer_id_from_proto(message: &proto::LspExtSwitchSourceHeader) -> Result<BufferId> {
-        BufferId::new(message.buffer_id)
-    }
 }
 
 #[async_trait(?Send)]

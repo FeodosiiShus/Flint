@@ -230,9 +230,6 @@ message Envelope {
     AddWorktree add_worktree = 222;
     AddWorktreeResponse add_worktree_response = 223;
 
-    LspExtSwitchSourceHeader lsp_ext_switch_source_header = 241;
-    LspExtSwitchSourceHeaderResponse lsp_ext_switch_source_header_response = 242;
-
     FindSearchCandidates find_search_candidates = 243;
 
     CloseBuffer close_buffer = 245;

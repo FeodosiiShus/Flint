@@ -2161,9 +2161,6 @@ mod tests {
             r#" { "editor.tabSize": 37 } "#.to_owned(),
             r#"{
               "base_keymap": "VSCode",
-              "minimap": {
-                "show": "always"
-              },
               "tab_size": 37
             }
             "#
@@ -2182,9 +2179,6 @@ mod tests {
             r#"{ "editor.tabSize": 42 }"#.to_owned(),
             r#"{
                 "base_keymap": "VSCode",
-                "minimap": {
-                    "show": "always"
-                },
                 "tab_size": 42,
                 "preferred_line_length": 99,
             }
@@ -2205,9 +2199,6 @@ mod tests {
             r#"{}"#.to_owned(),
             r#"{
                 "base_keymap": "VSCode",
-                "minimap": {
-                    "show": "always"
-                },
                 "preferred_line_length": 99,
                 "tab_size": 42
             }
@@ -2228,15 +2219,9 @@ mod tests {
               "project_panel": {
                 "git_status": true
               },
-              "outline_panel": {
-                "git_status": true
-              },
               "base_keymap": "VSCode",
               "tabs": {
                 "git_status": true
-              },
-              "minimap": {
-                "show": "always"
               }
             }
             "#
@@ -2261,10 +2246,7 @@ mod tests {
                 "sort_mode": "mixed",
                 "sort_order": "lower"
               },
-              "base_keymap": "VSCode",
-              "minimap": {
-                "show": "always"
-              }
+              "base_keymap": "VSCode"
             }
             "#
             .unindent(),
@@ -2281,9 +2263,6 @@ mod tests {
             r#"{ "editor.fontFamily": "Cascadia Code, 'Consolas', Courier New" }"#.to_owned(),
             r#"{
               "base_keymap": "VSCode",
-              "minimap": {
-                "show": "always"
-              },
               "buffer_font_fallbacks": [
                 "Consolas",
                 "Courier New"
@@ -2307,10 +2286,7 @@ mod tests {
               "terminal": {
                 "bell": "system"
               },
-              "base_keymap": "VSCode",
-              "minimap": {
-                "show": "always"
-              }
+              "base_keymap": "VSCode"
             }
             "#
             .unindent(),
@@ -2329,10 +2305,7 @@ mod tests {
               "terminal": {
                 "bell": "off"
               },
-              "base_keymap": "VSCode",
-              "minimap": {
-                "show": "always"
-              }
+              "base_keymap": "VSCode"
             }
             "#
             .unindent(),
@@ -2351,10 +2324,7 @@ mod tests {
               "terminal": {
                 "bell": "system"
               },
-              "base_keymap": "VSCode",
-              "minimap": {
-                "show": "always"
-              }
+              "base_keymap": "VSCode"
             }
             "#
             .unindent(),
@@ -2373,10 +2343,7 @@ mod tests {
               "terminal": {
                 "bell": "off"
               },
-              "base_keymap": "VSCode",
-              "minimap": {
-                "show": "always"
-              }
+              "base_keymap": "VSCode"
             }
             "#
             .unindent(),
@@ -2399,10 +2366,7 @@ mod tests {
               "terminal": {
                 "bell": "off"
               },
-              "base_keymap": "VSCode",
-              "minimap": {
-                "show": "always"
-              }
+              "base_keymap": "VSCode"
             }
             "#
             .unindent(),
@@ -2423,9 +2387,6 @@ mod tests {
             .to_owned(),
             r#"{
               "base_keymap": "VSCode",
-              "minimap": {
-                "show": "always"
-              },
               "hover_popover_hiding_delay": 500,
               "hover_popover_sticky": false
             }
@@ -2445,9 +2406,6 @@ mod tests {
                 .to_owned(),
             r#"{
               "base_keymap": "VSCode",
-              "minimap": {
-                "show": "always"
-              },
               "format_on_save": "modifications_if_available"
             }
             "#
@@ -2466,9 +2424,6 @@ mod tests {
                 .to_owned(),
             r#"{
               "base_keymap": "VSCode",
-              "minimap": {
-                "show": "always"
-              },
               "format_on_save": "modifications"
             }
             "#
@@ -2486,9 +2441,6 @@ mod tests {
             r#"{ "editor.formatOnSave": true, "editor.formatOnSaveMode": "file" }"#.to_owned(),
             r#"{
               "base_keymap": "VSCode",
-              "minimap": {
-                "show": "always"
-              },
               "format_on_save": "on"
             }
             "#
@@ -2507,9 +2459,6 @@ mod tests {
                 .to_owned(),
             r#"{
               "base_keymap": "VSCode",
-              "minimap": {
-                "show": "always"
-              },
               "format_on_save": "off"
             }
             "#
@@ -2526,10 +2475,7 @@ mod tests {
             .unindent(),
             r#"{ "editor.formatOnSaveMode": "modifications" }"#.to_owned(),
             r#"{
-              "base_keymap": "VSCode",
-              "minimap": {
-                "show": "always"
-              }
+              "base_keymap": "VSCode"
             }
             "#
             .unindent(),
@@ -2546,9 +2492,6 @@ mod tests {
             r#"{ "editor.formatOnSave": true }"#.to_owned(),
             r#"{
               "base_keymap": "VSCode",
-              "minimap": {
-                "show": "always"
-              },
               "format_on_save": "on"
             }
             "#
@@ -2566,9 +2509,6 @@ mod tests {
             r#"{ "editor.formatOnSave": false }"#.to_owned(),
             r#"{
               "base_keymap": "VSCode",
-              "minimap": {
-                "show": "always"
-              },
               "format_on_save": "off"
             }
             "#
@@ -2590,9 +2530,6 @@ mod tests {
             r#"{ "files.associations": { "*.keymap": "c" } }"#.to_owned(),
             r#"{
               "base_keymap": "VSCode",
-              "minimap": {
-                "show": "always"
-              },
               "file_types": {
                 "c": ["*.keymap"]
               }
@@ -2615,9 +2552,6 @@ mod tests {
             .unindent(),
             r#"{
               "base_keymap": "VSCode",
-              "minimap": {
-                "show": "always"
-              },
               "window_title_separator": " - ",
               "window_title_format": "${fileName}${separator}${projectName}${separator}${appName}"
             }
@@ -2637,10 +2571,7 @@ mod tests {
             }"#
             .unindent(),
             r#"{
-              "base_keymap": "VSCode",
-              "minimap": {
-                "show": "always"
-              }
+              "base_keymap": "VSCode"
             }
             "#
             .unindent(),
@@ -3106,10 +3037,7 @@ mod tests {
             font_names: &["Zed Mono".to_string()],
             theme_names: &["One Dark".into()],
             icon_theme_names: &["Zed Icons".into()],
-            lsp_adapter_names: &[
-                "rust-analyzer".to_string(),
-                "typescript-language-server".to_string(),
-            ],
+            lsp_adapter_names: &["rust-analyzer".to_string(), "tsgo".to_string()],
             action_names: &[],
             action_documentation: &HashMap::default(),
             deprecations: &HashMap::default(),
@@ -3123,7 +3051,7 @@ mod tests {
             .unwrap();
 
         assert!(properties.contains_key("rust-analyzer"));
-        assert!(properties.contains_key("typescript-language-server"));
+        assert!(properties.contains_key("tsgo"));
 
         let init_options_ref = properties
             .get("rust-analyzer")
@@ -3161,10 +3089,7 @@ mod tests {
             font_names: &["Zed Mono".to_string()],
             theme_names: &["One Dark".into()],
             icon_theme_names: &["Zed Icons".into()],
-            lsp_adapter_names: &[
-                "rust-analyzer".to_string(),
-                "typescript-language-server".to_string(),
-            ],
+            lsp_adapter_names: &["rust-analyzer".to_string(), "tsgo".to_string()],
             action_names: &[],
             action_documentation: &HashMap::default(),
             deprecations: &HashMap::default(),
@@ -3178,7 +3103,7 @@ mod tests {
             .unwrap();
 
         assert!(properties.contains_key("rust-analyzer"));
-        assert!(properties.contains_key("typescript-language-server"));
+        assert!(properties.contains_key("tsgo"));
 
         let init_options_ref = properties
             .get("rust-analyzer")

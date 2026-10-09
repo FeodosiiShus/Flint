@@ -291,14 +291,9 @@ enum ExtensionFilter {
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Clone, Copy)]
 enum Feature {
-    ExtensionBasedpyright,
-    ExtensionRuff,
-    ExtensionTailwind,
-    ExtensionTy,
     Git,
     LanguageBash,
     LanguageC,
-    LanguageCpp,
     LanguageGo,
     LanguagePython,
     LanguageReact,
@@ -311,17 +306,9 @@ fn keywords_by_feature() -> &'static BTreeMap<Feature, Vec<&'static str>> {
     static KEYWORDS_BY_FEATURE: OnceLock<BTreeMap<Feature, Vec<&'static str>>> = OnceLock::new();
     KEYWORDS_BY_FEATURE.get_or_init(|| {
         BTreeMap::from_iter([
-            (
-                Feature::ExtensionBasedpyright,
-                vec!["basedpyright", "pyright"],
-            ),
-            (Feature::ExtensionRuff, vec!["ruff"]),
-            (Feature::ExtensionTailwind, vec!["tail", "tailwind"]),
-            (Feature::ExtensionTy, vec!["ty"]),
             (Feature::Git, vec!["git"]),
             (Feature::LanguageBash, vec!["sh", "bash"]),
             (Feature::LanguageC, vec!["c", "clang"]),
-            (Feature::LanguageCpp, vec!["c++", "cpp", "clang"]),
             (Feature::LanguageGo, vec!["go", "golang"]),
             (Feature::LanguagePython, vec!["python", "py"]),
             (Feature::LanguageReact, vec!["react"]),
@@ -986,20 +973,8 @@ impl ExtensionsPage {
             return;
         };
 
-        if let Some(id) = search.strip_prefix("id:") {
+        if search.starts_with("id:") {
             self.upsells.clear();
-
-            let upsell = match id.to_lowercase().as_str() {
-                "ruff" => Some(Feature::ExtensionRuff),
-                "basedpyright" => Some(Feature::ExtensionBasedpyright),
-                "ty" => Some(Feature::ExtensionTy),
-                _ => None,
-            };
-
-            if let Some(upsell) = upsell {
-                self.upsells.insert(upsell);
-            }
-
             return;
         }
 
@@ -1044,22 +1019,6 @@ impl ExtensionsPage {
 
     fn render_feature_upsells(&self) -> impl IntoElement {
         v_flex().children(self.upsells.iter().map(|feature| match feature {
-            Feature::ExtensionBasedpyright => self.render_feature_upsell_banner(
-                "Basedpyright (Python language server) support is built-in to Zed!",
-                "https://zed.dev/docs/languages/python#basedpyright",
-            ),
-            Feature::ExtensionRuff => self.render_feature_upsell_banner(
-                "Ruff (linter for Python) support is built-in to Zed!",
-                "https://zed.dev/docs/languages/python#code-formatting--linting",
-            ),
-            Feature::ExtensionTailwind => self.render_feature_upsell_banner(
-                "Tailwind CSS support is built-in to Zed!",
-                "https://zed.dev/docs/languages/tailwindcss",
-            ),
-            Feature::ExtensionTy => self.render_feature_upsell_banner(
-                "Ty (Python language server) support is built-in to Zed!",
-                "https://zed.dev/docs/languages/python",
-            ),
             Feature::Git => self.render_feature_upsell_banner(
                 "Zed comes with basic Git support—more features are coming in the future.",
                 "https://zed.dev/docs/git",
@@ -1071,10 +1030,6 @@ impl ExtensionsPage {
             Feature::LanguageC => self.render_feature_upsell_banner(
                 "C support is built-in to Zed!",
                 "https://zed.dev/docs/languages/c",
-            ),
-            Feature::LanguageCpp => self.render_feature_upsell_banner(
-                "C++ support is built-in to Zed!",
-                "https://zed.dev/docs/languages/cpp",
             ),
             Feature::LanguageGo => self.render_feature_upsell_banner(
                 "Go support is built-in to Zed!",

@@ -914,7 +914,7 @@ pub struct ProjectPanelSettingsContent {
     /// when a corresponding project entry becomes active.
     /// Gitignored entries are never auto revealed.
     ///
-    /// Default: true
+    /// Default: false
     pub auto_reveal_entries: Option<bool>,
     /// Whether to fold directories automatically
     /// when directory has only one directory inside.

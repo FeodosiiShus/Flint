@@ -4055,17 +4055,14 @@ impl LspCommand for InlayHints {
     ) -> anyhow::Result<Vec<InlayHint>> {
         let (lsp_adapter, lsp_server) =
             language_server_for_buffer(&lsp_store, &buffer, server_id, &mut cx)?;
-        // `typescript-language-server` adds padding to the left for type hints, turning
+        // `tsgo` adds padding to the left for type hints, turning
         // `const foo: boolean` into `const foo : boolean` which looks odd.
         // `rust-analyzer` does not have the padding for this case, and we have to accommodate both.
         //
         // We could trim the whole string, but being pessimistic on par with the situation above,
         // there might be a hint with multiple whitespaces at the end(s) which we need to display properly.
         // Hence let's use a heuristic first to handle the most awkward case and look for more.
-        let force_no_type_left_padding = matches!(
-            lsp_adapter.name.0.as_ref(),
-            "typescript-language-server" | "tsgo"
-        );
+        let force_no_type_left_padding = lsp_adapter.name.0.as_ref() == "tsgo";
         let can_resolve = lsp_store.update(&mut cx, |lsp_store, cx| {
             lsp_store.text_document_capability_matches_for_server(
                 &buffer,

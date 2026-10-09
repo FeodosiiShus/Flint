@@ -105,13 +105,16 @@ enum Presentation {
     /// A self-contained modal: draws its own elevated background and dismisses
     /// when it loses focus. May optionally be resized (persisting its size);
     /// resizing only makes sense for modals.
-    Modal { resizable: bool },
+    Modal {
+        resizable: bool,
+    },
     /// A popover attached to a menu/trigger: draws its own elevated background
     /// and dismisses when it loses focus, but is never resizable.
     Popover,
     /// Embedded inside a larger container (e.g. another modal) that provides its
     /// own chrome and handles dismissal.
     Embedded,
+    Panel,
 }
 
 /// The default size for a given preview layout. With the preview hidden the
@@ -150,6 +153,7 @@ pub struct Picker<D: PickerDelegate> {
     /// picker open while that menu has focus.
     actions_menu_handle: PopoverMenuHandle<ContextMenu>,
     reopenable: bool,
+    opaque_background: bool,
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq)]
@@ -644,6 +648,7 @@ impl<D: PickerDelegate> Picker<D> {
             size_bounds,
             actions_menu_handle: PopoverMenuHandle::default(),
             reopenable: true,
+            opaque_background: false,
         };
         // give delegate the initial preview layout
         this.delegate
@@ -719,9 +724,15 @@ impl<D: PickerDelegate> Picker<D> {
     /// Whether the picker fills its full height (preview visible) or shrinks to
     /// fit its content, treating the height as a maximum (no preview visible).
     fn fill_height(&self) -> bool {
-        self.preview
-            .as_ref()
-            .is_some_and(|preview| preview.layout != preview::Layout::Hidden)
+        self.is_panel()
+            || self
+                .preview
+                .as_ref()
+                .is_some_and(|preview| preview.layout != preview::Layout::Hidden)
+    }
+
+    fn is_panel(&self) -> bool {
+        matches!(self.presentation, Presentation::Panel)
     }
 
     pub fn show_scrollbar(mut self, show_scrollbar: bool) -> Self {
@@ -752,6 +763,20 @@ impl<D: PickerDelegate> Picker<D> {
     /// modal. Use [`popover`](Self::popover) instead for menu-attached pickers.
     pub fn embedded(mut self) -> Self {
         self.presentation = Presentation::Embedded;
+        self
+    }
+
+    pub fn fill_container(mut self) -> Self {
+        self.presentation = Presentation::Panel;
+        if let Some(preview) = &mut self.preview {
+            preview.layout = preview::Layout::Hidden;
+        }
+        self.delegate.preview_layout_changed(false);
+        self
+    }
+
+    pub fn opaque_background(mut self) -> Self {
+        self.opaque_background = true;
         self
     }
 
@@ -1615,6 +1640,18 @@ impl<D: PickerDelegate> Picker<D> {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.is_panel() {
+            let layout = match layout {
+                preview::Layout::Right => preview::Layout::Below,
+                other => other,
+            };
+            if let Some(preview) = &mut self.preview {
+                preview.layout = layout;
+            }
+            self.delegate.preview_layout_changed(false);
+            cx.notify();
+            return;
+        }
         persistence::store_last_layout(D::name(), self.preview.as_ref().map(|_| layout), cx);
 
         let Some(preview) = &mut self.preview else {

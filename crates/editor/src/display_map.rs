@@ -173,7 +173,6 @@ pub enum HighlightKey {
     DocumentHighlightWrite,
     Editor,
     HighlightOnYank,
-    HighlightsTreeView(usize),
     HoverState,
     HoveredLinkState,
     InputComposition,
@@ -189,7 +188,6 @@ pub enum HighlightKey {
     Rename,
     SearchWithinRange,
     SelectedTextHighlight,
-    SyntaxTreeView(usize),
 }
 
 pub trait ToDisplayPoint {

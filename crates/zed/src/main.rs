@@ -556,9 +556,7 @@ fn main() {
         outline::init(cx);
         project_symbols::init(cx);
         project_panel::init(cx);
-        outline_panel::init(cx);
         tasks_ui::init(cx);
-        snippets_ui::init(cx);
         search::init(cx);
         lsp_locations::init(cx);
         cx.set_global(workspace::PaneSearchBarCallbacks {
@@ -571,14 +569,12 @@ fn main() {
             wrap_div_with_search_actions: search::buffer_search::register_pane_search_actions,
         });
         terminal_view::init(cx);
-        journal::init(app_state.clone(), cx);
         encoding_selector::init(cx);
         language_selector::init(cx);
         line_ending_selector::init(cx);
         status_widgets::init(cx);
         language_tools::init(cx);
         git_ui::init(cx);
-        svg_preview::init(cx);
         settings_ui::init(cx);
         keymap_editor::init(cx);
         extensions_ui::init(cx);

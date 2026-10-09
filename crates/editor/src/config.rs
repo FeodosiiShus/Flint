@@ -45,20 +45,15 @@ impl Editor {
 
     /// called by the Element so we know what style we were most recently rendered with.
     pub fn set_style(&mut self, style: EditorStyle, window: &mut Window, cx: &mut Context<Self>) {
-        // We intentionally do not inform the display map about the minimap style
-        // so that wrapping is not recalculated and stays consistent for the editor
-        // and its linked minimap.
-        if !self.mode.is_minimap() {
-            let font = style.text.font();
-            let font_size = style.text.font_size.to_pixels(window.rem_size());
-            let display_map = self
-                .placeholder_display_map
-                .as_ref()
-                .filter(|_| self.is_empty(cx))
-                .unwrap_or(&self.display_map);
+        let font = style.text.font();
+        let font_size = style.text.font_size.to_pixels(window.rem_size());
+        let display_map = self
+            .placeholder_display_map
+            .as_ref()
+            .filter(|_| self.is_empty(cx))
+            .unwrap_or(&self.display_map);
 
-            display_map.update(cx, |map, cx| map.set_font(font, font_size, cx));
-        }
+        display_map.update(cx, |map, cx| map.set_font(font, font_size, cx));
         self.style = Some(style);
     }
 
@@ -135,23 +130,6 @@ impl Editor {
         cx.notify();
     }
 
-    pub fn set_minimap_visibility(
-        &mut self,
-        minimap_visibility: MinimapVisibility,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        if self.minimap_visibility != minimap_visibility {
-            if minimap_visibility.visible() && self.minimap.is_none() {
-                let minimap_settings = EditorSettings::get_global(cx).minimap;
-                self.minimap =
-                    self.create_minimap(minimap_settings.with_show_override(), window, cx);
-            }
-            self.minimap_visibility = minimap_visibility;
-            cx.notify();
-        }
-    }
-
     pub fn breadcrumbs_visible(&self) -> bool {
         self.breadcrumbs_visibility.visible()
     }
@@ -177,13 +155,8 @@ impl Editor {
         self.set_breadcrumbs_visibility(self.breadcrumbs_visibility.toggle_visibility(), cx);
     }
 
-    pub fn disable_scrollbars_and_minimap(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub fn disable_scrollbars(&mut self, cx: &mut Context<Self>) {
         self.set_show_scrollbars(false, cx);
-        self.set_minimap_visibility(MinimapVisibility::Disabled, window, cx);
-    }
-
-    pub fn hide_minimap_by_default(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.set_minimap_visibility(self.minimap_visibility.hidden(), window, cx);
     }
 
     /// Normally the text in full mode and auto height editors is padded on the

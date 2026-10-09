@@ -193,6 +193,8 @@ pub struct SettingsContent {
 
     pub git_panel: Option<GitPanelSettingsContent>,
 
+    pub search_panel: Option<SearchPanelSettingsContent>,
+
     pub tabs: Option<ItemSettingsContent>,
     pub tab_bar: Option<TabBarSettingsContent>,
     pub status_bar: Option<StatusBarSettingsContent>,
@@ -233,8 +235,6 @@ pub struct SettingsContent {
     /// Default: on_typing_and_action
     pub hide_mouse: Option<HideMouseMode>,
 
-    pub journal: Option<JournalSettingsContent>,
-
     /// A map of log scopes to the desired log level.
     /// Useful for filtering out noisy logs or enabling more verbose logging.
     ///
@@ -242,8 +242,6 @@ pub struct SettingsContent {
     pub log: Option<HashMap<String, String>>,
 
     pub line_indicator_format: Option<LineIndicatorFormat>,
-
-    pub outline_panel: Option<OutlinePanelSettingsContent>,
 
     pub project_panel: Option<ProjectPanelSettingsContent>,
 
@@ -330,11 +328,11 @@ impl SettingsContent {
 fallible_options::flattened_deserialize!(SettingsContent {
     sections: { project, theme, extension, workspace, editor, remote },
     options: {
-        command_palette, file_finder, git_panel, tabs, tab_bar, status_bar, panel, preview_tabs,
+        command_palette, file_finder, git_panel, search_panel, tabs, tab_bar, status_bar, panel, preview_tabs,
         base_keymap, debugger, diagnostics,
         git,
         global_lsp_settings, markdown_preview, helix_mode, hide_mouse,
-        journal, log, line_indicator_format, outline_panel, project_panel,
+        log, line_indicator_format, project_panel,
         node, proxy, reduce_motion, session, terminal,
         title_bar, vim_mode, which_key, modeline_lines, feature_flags,
     },
@@ -530,6 +528,14 @@ pub enum DockPosition {
     Left,
     Bottom,
     Right,
+}
+
+#[with_fallible_options]
+#[derive(Clone, PartialEq, Default, Serialize, Deserialize, JsonSchema, MergeFrom, Debug)]
+pub struct SearchPanelSettingsContent {
+    pub button: Option<bool>,
+    pub dock: Option<DockPosition>,
+    pub default_width: Option<PixelSetting>,
 }
 
 #[with_fallible_options]
@@ -844,90 +850,6 @@ pub enum SidebarSide {
     Right,
 }
 
-/// Settings specific to journaling
-#[with_fallible_options]
-#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema, MergeFrom, PartialEq)]
-pub struct JournalSettingsContent {
-    /// The path of the directory where journal entries are stored.
-    ///
-    /// Default: `~`
-    pub path: Option<String>,
-    /// What format to display the hours in.
-    ///
-    /// Default: hour12
-    pub hour_format: Option<HourFormat>,
-}
-
-#[derive(Clone, Debug, Default, Serialize, Deserialize, JsonSchema, MergeFrom, PartialEq)]
-#[serde(rename_all = "snake_case")]
-pub enum HourFormat {
-    #[default]
-    Hour12,
-    Hour24,
-}
-
-#[with_fallible_options]
-#[derive(Clone, Default, Serialize, Deserialize, JsonSchema, MergeFrom, Debug, PartialEq)]
-pub struct OutlinePanelSettingsContent {
-    /// Whether to show the outline panel button in the status bar.
-    ///
-    /// Default: true
-    pub button: Option<bool>,
-    /// Customize default width (in pixels) taken by outline panel
-    ///
-    /// Default: 240
-    pub default_width: Option<PixelSetting>,
-    /// The position of outline panel
-    ///
-    /// Default: left
-    pub dock: Option<DockSide>,
-    /// Whether to show file icons in the outline panel.
-    ///
-    /// Default: true
-    pub file_icons: Option<bool>,
-    /// What to show for directories in the outline panel.
-    ///
-    /// Default: icon
-    pub folder_indicator: Option<FolderIndicator>,
-    /// Whether to show the git status in the outline panel.
-    ///
-    /// Default: true
-    pub git_status: Option<bool>,
-    /// Amount of indentation (in pixels) for nested items.
-    ///
-    /// Default: 20
-    pub indent_size: Option<PixelSetting>,
-    /// Whether to reveal it in the outline panel automatically,
-    /// when a corresponding project entry becomes active.
-    /// Gitignored entries are never auto revealed.
-    ///
-    /// Default: true
-    pub auto_reveal_entries: Option<bool>,
-    /// Whether to fold directories automatically
-    /// when directory has only one directory inside.
-    ///
-    /// Default: true
-    pub auto_fold_dirs: Option<bool>,
-    /// Settings related to indent guides in the outline panel.
-    pub indent_guides: Option<IndentGuidesSettingsContent>,
-    /// Scrollbar-related settings
-    pub scrollbar: Option<ScrollbarSettingsContent>,
-    /// Default depth to expand outline items in the current file.
-    /// The default depth to which outline entries are expanded on reveal.
-    /// - Set to 0 to collapse all items that have children
-    /// - Set to 1 or higher to collapse items at that depth or deeper
-    ///
-    /// Default: 100
-    pub expand_outlines_with_depth: Option<usize>,
-    /// Whether to hide symbols, excerpts and search matches in the outline panel
-    /// when a multi-buffer view (e.g. a diff or search results) is active,
-    /// showing only files and directories.
-    /// Does not affect single-file views.
-    ///
-    /// Default: false
-    pub multi_buffer_hide_symbols: Option<bool>,
-}
-
 #[derive(
     Clone,
     Copy,
@@ -964,15 +886,6 @@ pub enum DockSide {
 pub enum ShowIndentGuides {
     Always,
     Never,
-}
-
-#[with_fallible_options]
-#[derive(
-    Copy, Clone, Debug, Serialize, Deserialize, JsonSchema, MergeFrom, PartialEq, Eq, Default,
-)]
-pub struct IndentGuidesSettingsContent {
-    /// When to show the scrollbar in the outline panel.
-    pub show: Option<ShowIndentGuides>,
 }
 
 #[derive(Clone, Copy, Default, PartialEq, Debug, JsonSchema, MergeFrom, Deserialize, Serialize)]

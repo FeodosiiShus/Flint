@@ -460,7 +460,7 @@ impl PickerDelegate for OutlineViewDelegate {
     }
 }
 
-pub fn render_item<T, M: IntoIterator<Item = Range<usize>>>(
+fn render_item<T, M: IntoIterator<Item = Range<usize>>>(
     outline_item: &OutlineItem<T>,
     match_ranges: M,
     cx: &App,

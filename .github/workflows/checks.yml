@@ -82,7 +82,10 @@ jobs:
         run: cargo test --locked --package status_widgets
 
       - name: Run Search Everywhere tests
-        run: cargo test --locked --package search_everywhere --package file_finder --package project_symbols --package command_palette
+        run: cargo test --locked --package search_everywhere --package file_finder --package project_symbols --package command_palette --package picker
+
+      - name: Run project search deploy tests
+        run: cargo test --locked --package search --lib -- test_new_project_search_in_directory test_deploy_search_with_multiple_panes test_search_dismisses_modal
 
       - name: Run merge_diff tests
         run: cargo test --locked --package merge_diff
@@ -126,14 +129,23 @@ jobs:
       - name: Run language server DOTNET_ROOT tests
         run: cargo test --locked --package project --features project/test-support --lib dotnet_root
 
-      - name: Run TypeScript native language server tests
-        run: cargo test --locked --package languages --lib tsgo
+      - name: Run TypeScript native language server and activation rule tests
+        run: cargo test --locked --package languages --lib -- tsgo server_activation
+
+      - name: Run language server settings tests
+        run: cargo test --locked --package language --lib -- test_resolve_language_servers test_language_servers_across_settings_files test_language_servers_combined_restrictions
+
+      - name: Run marker-driven extension install tests
+        run: cargo test --locked --package extensions_ui --lib marker_install
+
+      - name: Run which key pending keystrokes tests
+        run: cargo test --locked --package which_key --lib pending_keystrokes_indicator
 
       - name: Run language server activation tests
         run: cargo test --locked --package project --features project/test-support --lib server_activation
 
       - name: Run zed action and keymap tests
-        run: cargo test --locked --package zed --bin zed -- test_action_namespaces test_base_keymap
+        run: cargo test --locked --package zed --bin zed -- test_action_namespaces test_base_keymap test_open_paths test_bundled_languages
 
       - name: Check tests of crates changed by Flint compile
-        run: cargo check --locked --tests --package editor --package workspace --package client --package settings_ui --package terminal_view --package outline_panel --package language_tools --package diagnostics --package extension_host
+        run: cargo check --locked --tests --package editor --package workspace --package client --package settings_ui --package settings_content --package terminal_view --package language_tools --package diagnostics --package extension_host

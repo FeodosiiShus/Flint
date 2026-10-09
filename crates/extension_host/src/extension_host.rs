@@ -109,9 +109,6 @@ async fn with_remote_sync_timeout<T>(
 static SUPPRESSED_EXTENSIONS: LazyLock<FxHashSet<&str>> = LazyLock::new(|| {
     FxHashSet::from_iter([
         "snippets",
-        "ruff",
-        "ty",
-        "basedpyright",
         "basher",
         // ACP
         "opencode",

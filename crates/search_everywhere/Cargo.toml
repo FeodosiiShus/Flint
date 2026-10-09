@@ -13,10 +13,12 @@ path = "src/search_everywhere.rs"
 doctest = false
 
 [dependencies]
+anyhow.workspace = true
 command_palette.workspace = true
 editor.workspace = true
 file_finder.workspace = true
 file_icons.workspace = true
+fs.workspace = true
 futures.workspace = true
 fuzzy.workspace = true
 fuzzy_nucleo.workspace = true

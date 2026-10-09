@@ -52,7 +52,6 @@ members = [
     "crates/http_client_tls",
     "crates/icons",
     "crates/install_cli",
-    "crates/journal",
     "crates/json_schema_store",
     "crates/keymap_editor",
     "crates/language",
@@ -75,7 +74,6 @@ members = [
     "crates/notifications",
     "crates/open_path_prompt",
     "crates/outline",
-    "crates/outline_panel",
     "crates/path",
     "crates/paths",
     "crates/picker",
@@ -106,12 +104,10 @@ members = [
     "crates/settings_ui",
     "crates/snippet",
     "crates/snippet_provider",
-    "crates/snippets_ui",
     "crates/sqlez",
     "crates/sqlez_macros",
     "crates/status_widgets",
     "crates/sum_tree",
-    "crates/svg_preview",
     "crates/syntax_theme",
     "crates/task",
     "crates/tasks_ui",
@@ -217,7 +213,6 @@ http_client = { path = "crates/http_client" }
 http_client_tls = { path = "crates/http_client_tls" }
 icons = { path = "crates/icons" }
 install_cli = { path = "crates/install_cli" }
-journal = { path = "crates/journal" }
 json_schema_store = { path = "crates/json_schema_store" }
 keymap_editor = { path = "crates/keymap_editor" }
 language = { path = "crates/language" }
@@ -240,7 +235,6 @@ node_runtime = { path = "crates/node_runtime" }
 notifications = { path = "crates/notifications" }
 open_path_prompt = { path = "crates/open_path_prompt" }
 outline = { path = "crates/outline" }
-outline_panel = { path = "crates/outline_panel" }
 path = { path = "crates/path" }
 paths = { path = "crates/paths" }
 perf = { path = "tooling/perf" }
@@ -271,12 +265,10 @@ settings_macros = { path = "crates/settings_macros" }
 settings_ui = { path = "crates/settings_ui" }
 snippet = { path = "crates/snippet" }
 snippet_provider = { path = "crates/snippet_provider" }
-snippets_ui = { path = "crates/snippets_ui" }
 sqlez = { path = "crates/sqlez" }
 sqlez_macros = { path = "crates/sqlez_macros" }
 status_widgets = { path = "crates/status_widgets" }
 sum_tree = { path = "crates/sum_tree" }
-svg_preview = { path = "crates/svg_preview" }
 syntax_theme = { path = "crates/syntax_theme" }
 task = { path = "crates/task" }
 tasks_ui = { path = "crates/tasks_ui" }
@@ -602,7 +594,6 @@ tree-sitter = { git = "https://github.com/tree-sitter/tree-sitter", rev = "43623
 tracing = "0.1.40"
 tree-sitter-bash = "0.25.1"
 tree-sitter-c = "0.24.1"
-tree-sitter-cpp = { git = "https://github.com/tree-sitter/tree-sitter-cpp", rev = "5cb9b693cfd7bfacab1d9ff4acac1a4150700609" }
 tree-sitter-css = "0.23"
 tree-sitter-diff = "0.1.0"
 tree-sitter-elixir = "0.3"
@@ -783,7 +774,6 @@ feature_flags = { codegen-units = 1 }
 file_content = { codegen-units = 1 }
 file_icons = { codegen-units = 1 }
 install_cli = { codegen-units = 1 }
-journal = { codegen-units = 1 }
 json_schema_store = { codegen-units = 1 }
 menu = { codegen-units = 1 }
 notifications = { codegen-units = 1 }
@@ -796,7 +786,6 @@ release_channel = { codegen-units = 1 }
 reqwest_client = { codegen-units = 1 }
 session = { codegen-units = 1 }
 snippet = { codegen-units = 1 }
-snippets_ui = { codegen-units = 1 }
 time_format = { codegen-units = 1 }
 ui_input = { codegen-units = 1 }
 zed_actions = { codegen-units = 1 }

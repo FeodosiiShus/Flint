@@ -628,7 +628,6 @@ impl SplittableEditor {
             editor.disable_code_lens(cx);
             editor.disable_inline_diagnostics();
             editor.disable_mouse_wheel_zoom();
-            editor.set_minimap_visibility(crate::MinimapVisibility::Disabled, window, cx);
             editor.set_diff_hunk_renderer(Some(Arc::new(DefaultDiffHunkRenderer)), cx);
             editor
         });
@@ -747,7 +746,6 @@ impl SplittableEditor {
             editor.disable_runnables();
             editor.disable_diagnostics(cx);
             editor.disable_mouse_wheel_zoom();
-            editor.set_minimap_visibility(crate::MinimapVisibility::Disabled, window, cx);
             editor
         });
 

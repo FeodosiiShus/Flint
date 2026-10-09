@@ -808,13 +808,8 @@ mod tests {
                 .collect::<Vec<_>>()
         }
 
-        let available_language_servers = language_server_names(&[
-            "typescript-language-server",
-            "biome",
-            "deno",
-            "eslint",
-            "tailwind",
-        ]);
+        let available_language_servers =
+            language_server_names(&["other-server", "biome", "deno", "eslint", "tailwind"]);
 
         // A value of just `["..."]` is the same as taking all of the available language servers.
         assert_eq!(
@@ -835,13 +830,7 @@ mod tests {
                 ],
                 &available_language_servers
             ),
-            language_server_names(&[
-                "biome",
-                "typescript-language-server",
-                "eslint",
-                "tailwind",
-                "deno",
-            ])
+            language_server_names(&["biome", "other-server", "eslint", "tailwind", "deno",])
         );
 
         // Negating an available language server removes it from the list.
@@ -849,7 +838,7 @@ mod tests {
             LanguageSettings::resolve_language_servers(
                 &[
                     "deno".into(),
-                    "!typescript-language-server".into(),
+                    "!other-server".into(),
                     "!biome".into(),
                     REST_OF_LANGUAGE_SERVERS.into()
                 ],
@@ -869,7 +858,7 @@ mod tests {
             ),
             language_server_names(&[
                 "my-cool-language-server",
-                "typescript-language-server",
+                "other-server",
                 "biome",
                 "deno",
                 "eslint",
@@ -898,25 +887,25 @@ mod tests {
 
             assert_eq!(
                 resolved_language_servers(&store, None, "TypeScript"),
-                servers(&["tsgo", "eslint"]),
-                "default settings should disable typescript-language-server for TypeScript"
+                servers(&["tsgo", "server-a", "server-b", "eslint"]),
+                "default settings should start TypeScript with tsgo ahead of the other servers"
             );
             assert_eq!(
                 resolved_language_servers(&store, None, "Rust"),
-                servers(&["typescript-language-server", "vtsls", "eslint"]),
+                servers(&["server-a", "server-b", "eslint"]),
             );
 
             store
-                .set_user_settings(r#"{"language_servers": ["!vtsls", "..."]}"#, cx)
+                .set_user_settings(r#"{"language_servers": ["!server-b", "..."]}"#, cx)
                 .unwrap();
             assert_eq!(
                 resolved_language_servers(&store, None, "TypeScript"),
-                servers(&["tsgo", "eslint"]),
+                servers(&["tsgo", "server-a", "server-b", "eslint"]),
                 "the per-language list should fully replace the user's global list"
             );
             assert_eq!(
                 resolved_language_servers(&store, None, "Rust"),
-                servers(&["typescript-language-server", "eslint"]),
+                servers(&["server-a", "eslint"]),
                 "user's global disable should apply to languages without their own list"
             );
 
@@ -931,12 +920,12 @@ mod tests {
                 .unwrap();
             assert_eq!(
                 resolved_language_servers(&store, root_location, "Rust"),
-                servers(&["typescript-language-server", "vtsls", "eslint"]),
+                servers(&["server-a", "server-b", "eslint"]),
                 "project settings enabling all servers should undo the user's global disable (#61524)"
             );
             assert_eq!(
                 resolved_language_servers(&store, None, "Rust"),
-                servers(&["typescript-language-server", "eslint"]),
+                servers(&["server-a", "eslint"]),
                 "user's global disable should still apply outside of the project"
             );
 
@@ -951,12 +940,12 @@ mod tests {
                 .unwrap();
             assert_eq!(
                 resolved_language_servers(&store, root_location, "Rust"),
-                servers(&["typescript-language-server", "vtsls"]),
+                servers(&["server-a", "server-b"]),
                 "project's global list should replace the user's global list"
             );
             assert_eq!(
                 resolved_language_servers(&store, root_location, "TypeScript"),
-                servers(&["tsgo", "eslint"]),
+                servers(&["tsgo", "server-a", "server-b", "eslint"]),
                 "the per-language list should fully replace the project's global list"
             );
 
@@ -971,12 +960,12 @@ mod tests {
                 .unwrap();
             assert_eq!(
                 resolved_language_servers(&store, subdir_location, "Rust"),
-                servers(&["typescript-language-server", "vtsls", "eslint"]),
+                servers(&["server-a", "server-b", "eslint"]),
                 "nested project settings should replace the outer global list"
             );
             assert_eq!(
                 resolved_language_servers(&store, root_location, "Rust"),
-                servers(&["typescript-language-server", "vtsls"]),
+                servers(&["server-a", "server-b"]),
             );
             store
                 .set_local_settings(worktree_id, subdir, LocalSettingsKind::Settings, None, cx)
@@ -988,39 +977,39 @@ mod tests {
                     root.clone(),
                     LocalSettingsKind::Settings,
                     Some(
-                        r#"{"languages": {"TypeScript": {"language_servers": ["vtsls", "..."]}}}"#,
+                        r#"{"languages": {"TypeScript": {"language_servers": ["server-b", "..."]}}}"#,
                     ),
                     cx,
                 )
                 .unwrap();
             assert_eq!(
                 resolved_language_servers(&store, root_location, "TypeScript"),
-                servers(&["vtsls", "typescript-language-server", "eslint"]),
+                servers(&["server-b", "server-a", "eslint"]),
                 "project's per-language configuration should override the user's global disable"
             );
             assert_eq!(
                 resolved_language_servers(&store, root_location, "Rust"),
-                servers(&["typescript-language-server", "eslint"]),
+                servers(&["server-a", "eslint"]),
                 "user's global disable should still apply to other languages"
             );
 
             store
                 .set_user_settings(
                     r#"{
-                        "language_servers": ["!vtsls", "..."],
-                        "languages": {"TypeScript": {"language_servers": ["vtsls", "..."]}}
+                        "language_servers": ["!server-b", "..."],
+                        "languages": {"TypeScript": {"language_servers": ["server-b", "..."]}}
                     }"#,
                     cx,
                 )
                 .unwrap();
             assert_eq!(
                 resolved_language_servers(&store, None, "TypeScript"),
-                servers(&["vtsls", "typescript-language-server", "eslint"]),
+                servers(&["server-b", "server-a", "eslint"]),
                 "per-language configuration should win over a global disable from the same file"
             );
             assert_eq!(
                 resolved_language_servers(&store, None, "Rust"),
-                servers(&["typescript-language-server", "eslint"]),
+                servers(&["server-a", "eslint"]),
             );
 
             store
@@ -1028,24 +1017,24 @@ mod tests {
                     worktree_id,
                     root.clone(),
                     LocalSettingsKind::Settings,
-                    Some(r#"{"language_servers": ["!vtsls", "..."]}"#),
+                    Some(r#"{"language_servers": ["!server-b", "..."]}"#),
                     cx,
                 )
                 .unwrap();
             assert_eq!(
                 resolved_language_servers(&store, root_location, "TypeScript"),
-                servers(&["vtsls", "typescript-language-server", "eslint"]),
+                servers(&["server-b", "server-a", "eslint"]),
                 "user's per-language list should win over the project's global disable"
             );
             assert_eq!(
                 resolved_language_servers(&store, root_location, "Rust"),
-                servers(&["typescript-language-server", "eslint"]),
+                servers(&["server-a", "eslint"]),
                 "project's global disable should still apply to languages without their own list"
             );
 
             store
                 .set_user_settings(
-                    r#"{"languages": {"JavaScript": {"language_servers": ["!vtsls", "..."]}}}"#,
+                    r#"{"languages": {"JavaScript": {"language_servers": ["!server-b", "..."]}}}"#,
                     cx,
                 )
                 .unwrap();
@@ -1060,12 +1049,12 @@ mod tests {
                 .unwrap();
             assert_eq!(
                 resolved_language_servers(&store, root_location, "JavaScript"),
-                servers(&["typescript-language-server", "vtsls", "eslint"]),
+                servers(&["server-a", "server-b", "eslint"]),
                 "project's per-language list should re-enable a server disabled by the user (#61524)"
             );
             assert_eq!(
                 resolved_language_servers(&store, None, "JavaScript"),
-                servers(&["typescript-language-server", "eslint"]),
+                servers(&["server-a", "eslint"]),
                 "user's per-language disable should still apply outside of the project"
             );
         });
@@ -1085,7 +1074,7 @@ mod tests {
             });
 
             store
-                .set_user_settings(r#"{"language_servers": ["!vtsls", "..."]}"#, cx)
+                .set_user_settings(r#"{"language_servers": ["!server-b", "..."]}"#, cx)
                 .unwrap();
             store
                 .set_local_settings(
@@ -1098,26 +1087,26 @@ mod tests {
                 .unwrap();
             assert_eq!(
                 resolved_language_servers(&store, root_location, "Rust"),
-                servers(&["typescript-language-server", "vtsls"]),
+                servers(&["server-a", "server-b"]),
                 "global lists replace wholesale: disables from different files must not accumulate"
             );
             assert_eq!(
                 resolved_language_servers(&store, None, "Rust"),
-                servers(&["typescript-language-server", "eslint"]),
+                servers(&["server-a", "eslint"]),
                 "user's own disable should still apply outside of the project"
             );
             assert_eq!(
                 resolved_language_servers(&store, root_location, "TypeScript"),
-                servers(&["tsgo", "eslint"]),
+                servers(&["tsgo", "server-a", "server-b", "eslint"]),
                 "a language with its own list should ignore global lists from every file"
             );
 
             store
-                .set_user_settings(r#"{"language_servers": ["...", "!vtsls"]}"#, cx)
+                .set_user_settings(r#"{"language_servers": ["...", "!server-b"]}"#, cx)
                 .unwrap();
             assert_eq!(
                 resolved_language_servers(&store, None, "Rust"),
-                servers(&["typescript-language-server", "eslint"]),
+                servers(&["server-a", "eslint"]),
                 "the position of a disabled entry relative to '...' should not matter"
             );
 
@@ -1126,7 +1115,7 @@ mod tests {
                 .unwrap();
             assert_eq!(
                 resolved_language_servers(&store, None, "Rust"),
-                servers(&["eslint", "typescript-language-server", "vtsls"]),
+                servers(&["eslint", "server-a", "server-b"]),
                 "the position of '...' should determine the priority order of enabled servers"
             );
 
@@ -1140,7 +1129,7 @@ mod tests {
             );
             assert_eq!(
                 resolved_language_servers(&store, None, "TypeScript"),
-                servers(&["tsgo", "eslint"]),
+                servers(&["tsgo", "server-a", "server-b", "eslint"]),
                 "a global list, exhaustive or not, never applies to languages with their own list"
             );
 
@@ -1148,45 +1137,42 @@ mod tests {
                 .set_user_settings(
                     r#"{
                         "language_servers": ["!eslint", "..."],
-                        "languages": {"TypeScript": {"language_servers": ["vtsls", "..."]}}
+                        "languages": {"TypeScript": {"language_servers": ["server-b", "..."]}}
                     }"#,
                     cx,
                 )
                 .unwrap();
             assert_eq!(
                 resolved_language_servers(&store, None, "TypeScript"),
-                servers(&["vtsls", "typescript-language-server", "eslint"]),
+                servers(&["server-b", "server-a", "eslint"]),
                 "authoring a per-language list opts the language out of the global list entirely"
             );
             assert_eq!(
                 resolved_language_servers(&store, None, "Rust"),
-                servers(&["typescript-language-server", "vtsls"]),
+                servers(&["server-a", "server-b"]),
             );
 
-            // Issue #60763: to disable a server that the shipped list explicitly
-            // enables, the spelling is per-language, restating the shipped
-            // exclusions.
             store
                 .set_user_settings(
-                    r#"{"languages": {"TypeScript": {"language_servers": ["!typescript-language-server", "!vtsls", "..."]}}}"#,
+                    r#"{"languages": {"TypeScript": {"language_servers": ["!tsgo", "..."]}}}"#,
                     cx,
                 )
                 .unwrap();
             assert_eq!(
                 resolved_language_servers(&store, None, "TypeScript"),
-                servers(&["eslint"]),
+                servers(&["server-a", "server-b", "eslint"]),
                 "a per-language disable should win over the shipped explicit enable"
             );
             store
                 .set_user_settings(
-                    r#"{"languages": {"TypeScript": {"language_servers": ["!vtsls", "..."]}}}"#,
+                    r#"{"languages": {"TypeScript": {"language_servers": ["!server-b", "..."]}}}"#,
                     cx,
                 )
                 .unwrap();
             assert_eq!(
                 resolved_language_servers(&store, None, "TypeScript"),
-                servers(&["typescript-language-server", "eslint"]),
-                "a per-language list not restating the shipped exclusions should lift them"
+                servers(&["server-a", "eslint"]),
+                "a per-language list replaces the shipped one, dropping its explicit enable"
             );
 
             store
@@ -1220,10 +1206,6 @@ mod tests {
             .languages
             .get(&LanguageName::new(language))
             .unwrap_or(&all_settings.defaults);
-        language_settings.customized_language_servers(&servers(&[
-            "typescript-language-server",
-            "vtsls",
-            "eslint",
-        ]))
+        language_settings.customized_language_servers(&servers(&["server-a", "server-b", "eslint"]))
     }
 }

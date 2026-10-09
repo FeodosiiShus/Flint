@@ -132,6 +132,28 @@ impl Fixture {
         self.cx.run_until_parked();
     }
 
+    fn open_in_modal_layer(&mut self) {
+        self.workspace
+            .update_in(&mut self.cx, |workspace, window, cx| {
+                open_modal(workspace, window, cx)
+            });
+        self.cx.run_until_parked();
+        self.popup = self
+            .workspace
+            .read_with(&self.cx, |workspace, cx| {
+                workspace.active_modal::<BranchesPopup>(cx)
+            })
+            .expect("the modal layer shows the popup");
+    }
+
+    fn focus_workspace(&mut self) {
+        self.workspace
+            .update_in(&mut self.cx, |workspace, window, cx| {
+                workspace.focus_handle(cx).focus(window, cx)
+            });
+        self.cx.run_until_parked();
+    }
+
     fn picker(&self) -> Entity<Picker<BranchesDelegate>> {
         self.popup
             .read_with(&self.cx, |popup, _| popup.picker.clone())
@@ -753,6 +775,8 @@ async fn left_and_right_drive_the_tree_only_while_the_search_field_has_focus(
     cx: &mut TestAppContext,
 ) {
     let mut fixture = Fixture::open(cx, path!("/branches-popup-arrows"), standard_repository).await;
+    fixture.open_in_modal_layer();
+    fixture.focus_workspace();
     fixture.select("section:Local:closed");
 
     fixture

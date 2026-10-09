@@ -11124,9 +11124,6 @@ fn load_legacy_panel_size(
         "ProjectPanel" => {
             format!("{}-{:?}", "ProjectPanel", workspace_id)
         }
-        "OutlinePanel" => {
-            format!("{}-{:?}", "OutlinePanel", workspace_id)
-        }
         "GitPanel" => {
             format!("{}-{:?}", "GitPanel", workspace_id)
         }

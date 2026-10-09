@@ -517,26 +517,6 @@ pub fn theme_colors_refinement(
             .scrollbar_track_border
             .as_ref()
             .and_then(|color| try_parse_color(color).ok()),
-        minimap_thumb_background: this
-            .minimap_thumb_background
-            .as_ref()
-            .and_then(|color| try_parse_color(color).ok())
-            .or(scrollbar_thumb_background.map(ensure_non_opaque)),
-        minimap_thumb_hover_background: this
-            .minimap_thumb_hover_background
-            .as_ref()
-            .and_then(|color| try_parse_color(color).ok())
-            .or(scrollbar_thumb_hover_background.map(ensure_non_opaque)),
-        minimap_thumb_active_background: this
-            .minimap_thumb_active_background
-            .as_ref()
-            .and_then(|color| try_parse_color(color).ok())
-            .or(scrollbar_thumb_active_background.map(ensure_non_opaque)),
-        minimap_thumb_border: this
-            .minimap_thumb_border
-            .as_ref()
-            .and_then(|color| try_parse_color(color).ok())
-            .or(scrollbar_thumb_border),
         editor_foreground: this
             .editor_foreground
             .as_ref()
@@ -803,18 +783,6 @@ pub fn theme_colors_refinement(
             .as_ref()
             .or(this.version_control_conflict_theirs_background.as_ref())
             .and_then(|color| try_parse_color(color).ok()),
-    }
-}
-
-fn ensure_non_opaque(color: Hsla) -> Hsla {
-    const MAXIMUM_OPACITY: f32 = 0.7;
-    if color.a <= MAXIMUM_OPACITY {
-        color
-    } else {
-        Hsla {
-            a: MAXIMUM_OPACITY,
-            ..color
-        }
     }
 }
 

@@ -6,16 +6,15 @@ use language::{LanguageName, LspAdapter, LspAdapterDelegate, LspInstaller, Toolc
 use lsp::{CodeActionKind, LanguageServerBinary, LanguageServerName, Uri};
 use node_runtime::{NodeRuntime, VersionStrategy};
 use project::lsp_store::language_server_settings;
+use regex::Regex;
 use semver::Version;
 use serde_json::{Value, json};
 use std::{
     future::Future,
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{Arc, LazyLock},
 };
 use util::{ResultExt, merge_json_value_into};
-
-use crate::vtsls::{VtslsLspAdapter, completion_label};
 
 const SERVER_NAME: LanguageServerName = LanguageServerName::new_static("tsgo");
 const CODE_LENS_SHOW_LOCATIONS_COMMAND: &str = "editor.action.showReferences";
@@ -237,7 +236,7 @@ impl LspAdapter for TsgoLspAdapter {
     }
 
     fn diagnostic_message_to_markdown(&self, message: &str) -> Option<String> {
-        VtslsLspAdapter::enhance_diagnostic_message(message)
+        enhance_diagnostic_message(message)
     }
 
     fn language_ids(&self) -> HashMap<LanguageName, String> {
@@ -249,9 +248,82 @@ impl LspAdapter for TsgoLspAdapter {
     }
 }
 
+fn enhance_diagnostic_message(message: &str) -> Option<String> {
+    static SINGLE_WORD_REGEX: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"'([^\s']*)'").expect("Failed to create REGEX"));
+
+    static MULTI_WORD_REGEX: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"'([^']+\s+[^']*)'").expect("Failed to create REGEX"));
+
+    let first = SINGLE_WORD_REGEX.replace_all(message, "`$1`").to_string();
+    let second = MULTI_WORD_REGEX
+        .replace_all(&first, "\n```typescript\n$1\n```\n")
+        .to_string();
+    Some(second)
+}
+
+fn completion_label(
+    item: &lsp::CompletionItem,
+    language: &Arc<language::Language>,
+) -> Option<language::CodeLabel> {
+    use lsp::CompletionItemKind as Kind;
+    let label_len = item.label.len();
+    let grammar = language.grammar()?;
+    let highlight_id = match item.kind? {
+        Kind::CLASS | Kind::INTERFACE | Kind::ENUM => grammar.highlight_id_for_name("type"),
+        Kind::CONSTRUCTOR => grammar.highlight_id_for_name("type"),
+        Kind::CONSTANT => grammar.highlight_id_for_name("constant"),
+        Kind::FUNCTION | Kind::METHOD => grammar.highlight_id_for_name("function"),
+        Kind::PROPERTY | Kind::FIELD => grammar.highlight_id_for_name("property"),
+        Kind::VARIABLE => grammar.highlight_id_for_name("variable"),
+        _ => None,
+    }?;
+
+    let text = if let Some(description) = item
+        .label_details
+        .as_ref()
+        .and_then(|label_details| label_details.description.as_ref())
+    {
+        format!("{} {}", item.label, description)
+    } else if let Some(detail) = &item.detail {
+        format!("{} {}", item.label, detail)
+    } else {
+        item.label.clone()
+    };
+    Some(language::CodeLabel::filtered(
+        text,
+        label_len,
+        item.filter_text.as_deref(),
+        vec![(0..label_len, highlight_id)],
+    ))
+}
+
 #[cfg(test)]
 mod tests {
-    use super::npm_platform_package_name;
+    use super::{enhance_diagnostic_message, npm_platform_package_name};
+
+    #[test]
+    fn enhance_diagnostic_message_formats_quoted_types() {
+        let message = "The expected type comes from the return type of this signature.";
+        assert_eq!(
+            enhance_diagnostic_message(message).expect("Should be some"),
+            message
+        );
+
+        let message = "Property 'baz' is missing in type '{ foo: string; bar: string; }' but required in type 'User'.";
+        let expected = "Property `baz` is missing in type \n```typescript\n{ foo: string; bar: string; }\n```\n but required in type `User`.";
+        assert_eq!(
+            enhance_diagnostic_message(message).expect("Should be some"),
+            expected
+        );
+
+        let message = "Type '() => { foo: string; bar: string; }' is not assignable to type 'GetUserFunction'.\n  Property 'baz' is missing in type '{ foo: string; bar: string; }' but required in type 'User'.";
+        let expected = "Type \n```typescript\n() => { foo: string; bar: string; }\n```\n is not assignable to type `GetUserFunction`.\n  Property `baz` is missing in type \n```typescript\n{ foo: string; bar: string; }\n```\n but required in type `User`.";
+        assert_eq!(
+            enhance_diagnostic_message(message).expect("Should be some"),
+            expected
+        );
+    }
 
     #[test]
     fn maps_supported_platforms_to_npm_platform_packages() {

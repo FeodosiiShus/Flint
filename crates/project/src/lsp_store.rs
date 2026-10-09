@@ -9,7 +9,6 @@
 //! - [`LspStore`], which unifies the two under one consistent interface for interacting with language servers.
 //!
 //! Most of the interesting work happens at the local layer, as bulk of the complexity is with managing the lifecycle of language servers. The actual implementation of the LSP protocol is handled by [`lsp`] crate.
-pub mod clangd_ext;
 pub mod code_lens;
 mod document_colors;
 mod document_links;
@@ -24,7 +23,6 @@ pub mod lsp_ext_command;
 pub mod rust_analyzer_ext;
 mod semantic_tokens;
 pub(crate) mod server_activation;
-pub mod vue_language_server_ext;
 
 use self::code_lens::CodeLensData;
 use self::document_colors::DocumentColorData;
@@ -1353,10 +1351,8 @@ impl LocalLspStore {
             })
             .detach();
 
-        vue_language_server_ext::register_requests(lsp_store.clone(), language_server);
         json_language_server_ext::register_requests(lsp_store.clone(), language_server);
-        rust_analyzer_ext::register_notifications(lsp_store.clone(), language_server);
-        clangd_ext::register_notifications(lsp_store, language_server, adapter);
+        rust_analyzer_ext::register_notifications(lsp_store, language_server);
     }
 
     fn shutdown_language_servers_on_quit(&mut self) -> impl Future<Output = ()> + use<> {
@@ -4839,9 +4835,6 @@ impl LspStore {
         );
         client.add_entity_request_handler(
             Self::handle_lsp_command::<lsp_ext_command::GetLspRunnables>,
-        );
-        client.add_entity_request_handler(
-            Self::handle_lsp_command::<lsp_ext_command::SwitchSourceHeader>,
         );
     }
 

@@ -67,7 +67,6 @@ use workspace::{
     item::{FollowEvent, ProjectItemKind},
     searchable::SearchOptions,
 };
-use zed_actions::preview::svg::OpenPreview as OpenSvgPreview;
 
 pub const MAX_TAB_TITLE_LEN: usize = 24;
 
@@ -1189,34 +1188,6 @@ impl Item for Editor {
         }
     }
 
-    fn tab_extra_context_menu_actions(
-        &self,
-        _window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> Vec<(SharedString, Box<dyn gpui::Action>)> {
-        let mut actions = Vec::new();
-
-        let is_svg = self
-            .buffer()
-            .read(cx)
-            .as_singleton()
-            .and_then(|buffer| buffer.read(cx).file())
-            .is_some_and(|file| {
-                std::path::Path::new(file.file_name(cx))
-                    .extension()
-                    .is_some_and(|ext| ext.eq_ignore_ascii_case("svg"))
-            });
-
-        if is_svg {
-            actions.push((
-                "Open SVG Preview".into(),
-                Box::new(OpenSvgPreview) as Box<dyn gpui::Action>,
-            ));
-        }
-
-        actions
-    }
-
     fn preserve_preview(&self, cx: &App) -> bool {
         self.buffer.read(cx).preserve_preview(cx)
     }
@@ -1609,7 +1580,7 @@ impl Editor {
         cx: &mut Context<Self>,
         write: impl for<'a> FnOnce(&'a mut RestorationData) + 'static,
     ) {
-        if self.mode.is_minimap() || !WorkspaceSettings::get(None, cx).restore_on_file_reopen {
+        if !WorkspaceSettings::get(None, cx).restore_on_file_reopen {
             return;
         }
 

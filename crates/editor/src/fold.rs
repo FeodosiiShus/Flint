@@ -650,10 +650,6 @@ impl Editor {
             self.invalidate_add_selection_goals_after_change(Some(&previous));
         }
 
-        cx.emit(EditorEvent::BufferFoldToggled {
-            ids: ids_to_fold,
-            folded: true,
-        });
         cx.notify();
     }
 
@@ -663,10 +659,6 @@ impl Editor {
         }
         self.display_map.update(cx, |display_map, cx| {
             display_map.unfold_buffers([buffer_id], cx);
-        });
-        cx.emit(EditorEvent::BufferFoldToggled {
-            ids: vec![buffer_id],
-            folded: false,
         });
         cx.notify();
     }
@@ -810,9 +802,7 @@ impl Editor {
     pub(super) fn folds_did_change(&mut self, cx: &mut Context<Self>) {
         use text::ToOffset as _;
 
-        if self.mode.is_minimap()
-            || WorkspaceSettings::get(None, cx).restore_on_startup
-                == RestoreOnStartupBehavior::EmptyTab
+        if WorkspaceSettings::get(None, cx).restore_on_startup == RestoreOnStartupBehavior::EmptyTab
         {
             return;
         }
@@ -987,9 +977,7 @@ impl Editor {
         window: &mut Window,
         cx: &mut Context<Editor>,
     ) {
-        if self.mode.is_minimap()
-            || WorkspaceSettings::get(None, cx).restore_on_startup
-                == RestoreOnStartupBehavior::EmptyTab
+        if WorkspaceSettings::get(None, cx).restore_on_startup == RestoreOnStartupBehavior::EmptyTab
         {
             return;
         }

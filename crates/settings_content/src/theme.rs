@@ -815,22 +815,6 @@ pub struct ThemeColorsContent {
     #[serde(rename = "scrollbar.track.border")]
     pub scrollbar_track_border: Option<ThemeColor>,
 
-    /// The color of the minimap thumb.
-    #[serde(rename = "minimap.thumb.background")]
-    pub minimap_thumb_background: Option<ThemeColor>,
-
-    /// The color of the minimap thumb when hovered over.
-    #[serde(rename = "minimap.thumb.hover_background")]
-    pub minimap_thumb_hover_background: Option<ThemeColor>,
-
-    /// The color of the minimap thumb whilst being actively dragged.
-    #[serde(rename = "minimap.thumb.active_background")]
-    pub minimap_thumb_active_background: Option<ThemeColor>,
-
-    /// The border color of the minimap thumb.
-    #[serde(rename = "minimap.thumb.border")]
-    pub minimap_thumb_border: Option<ThemeColor>,
-
     #[serde(rename = "editor.foreground")]
     pub editor_foreground: Option<ThemeColor>,
 

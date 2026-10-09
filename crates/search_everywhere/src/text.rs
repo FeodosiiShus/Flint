@@ -16,6 +16,7 @@ const MAX_TEXT_MATCHES: usize = 100;
 pub(crate) fn search(
     project: Entity<Project>,
     query: &str,
+    scope: Option<PathMatcher>,
     include_non_project_items: bool,
     search_id: usize,
     cancel_flag: Arc<AtomicBool>,
@@ -28,7 +29,7 @@ pub(crate) fn search(
     let Some(search_query) = options
         .build_query(
             query,
-            PathMatcher::default(),
+            scope.unwrap_or_default(),
             PathMatcher::default(),
             match_full_paths,
             None,

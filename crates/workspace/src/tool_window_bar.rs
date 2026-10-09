@@ -458,8 +458,6 @@ fn tool_window_icon(icon: IconName, settings: &ToolWindowBarsSettings) -> IconNa
         (IconName::FileTree, true) => IconName::ToolWindowProjectCompact,
         (IconName::GitBranch, false) => IconName::ToolWindowVcs,
         (IconName::GitBranch, true) => IconName::ToolWindowVcsCompact,
-        (IconName::ListTree, false) => IconName::ToolWindowStructure,
-        (IconName::ListTree, true) => IconName::ToolWindowStructureCompact,
         (IconName::TerminalAlt, false) => IconName::ToolWindowTerminal,
         (IconName::TerminalAlt, true) => IconName::ToolWindowTerminalCompact,
         (IconName::Ellipsis, false) => IconName::ToolWindowMore,
@@ -540,7 +538,6 @@ mod tests {
         for (zed_icon, expected) in [
             (IconName::FileTree, IconName::ToolWindowProject),
             (IconName::GitBranch, IconName::ToolWindowVcs),
-            (IconName::ListTree, IconName::ToolWindowStructure),
             (IconName::TerminalAlt, IconName::ToolWindowTerminal),
             (IconName::Ellipsis, IconName::ToolWindowMore),
         ] {
@@ -564,11 +561,6 @@ mod tests {
                 IconName::GitBranch,
                 IconName::ToolWindowVcs,
                 IconName::ToolWindowVcsCompact,
-            ),
-            (
-                IconName::ListTree,
-                IconName::ToolWindowStructure,
-                IconName::ToolWindowStructureCompact,
             ),
             (
                 IconName::TerminalAlt,
@@ -608,7 +600,6 @@ mod tests {
             for zed_icon in [
                 IconName::FileTree,
                 IconName::GitBranch,
-                IconName::ListTree,
                 IconName::TerminalAlt,
                 IconName::Ellipsis,
                 IconName::Plus,

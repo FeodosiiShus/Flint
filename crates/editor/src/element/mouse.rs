@@ -274,10 +274,6 @@ impl EditorElement {
         window: &mut Window,
         cx: &mut App,
     ) {
-        if layout.mode.is_minimap() {
-            return;
-        }
-
         self.paint_scroll_wheel_listener(layout, window, cx);
 
         window.on_mouse_event({

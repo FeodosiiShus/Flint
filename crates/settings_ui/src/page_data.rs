@@ -1948,7 +1948,7 @@ fn editor_page() -> SettingsPage {
         ]
     }
 
-    fn multibuffer_section() -> [SettingsPageItem; 7] {
+    fn multibuffer_section() -> [SettingsPageItem; 6] {
         [
             SettingsPageItem::SectionHeader("Multibuffer"),
             SettingsPageItem::SettingItem(SettingItem {
@@ -1987,29 +1987,6 @@ fn editor_page() -> SettingsPage {
                     pick: |settings_content| settings_content.editor.excerpt_context_lines.as_ref(),
                     write: |settings_content, value, _| {
                         settings_content.editor.excerpt_context_lines = value;
-                    },
-                }),
-                metadata: None,
-                files: USER,
-            }),
-            SettingsPageItem::SettingItem(SettingItem {
-                title: "Expand Outlines With Depth",
-                description: "Default depth to expand outline items in the current file.",
-                field: Box::new(SettingField {
-                    json_path: Some("outline_panel.expand_outlines_with_depth"),
-                    pick: |settings_content| {
-                        settings_content
-                            .outline_panel
-                            .as_ref()
-                            .and_then(|outline_panel| {
-                                outline_panel.expand_outlines_with_depth.as_ref()
-                            })
-                    },
-                    write: |settings_content, value, _| {
-                        settings_content
-                            .outline_panel
-                            .get_or_insert_default()
-                            .expand_outlines_with_depth = value;
                     },
                 }),
                 metadata: None,
@@ -2837,142 +2814,6 @@ fn editor_page() -> SettingsPage {
         ]
     }
 
-    fn minimap_section() -> [SettingsPageItem; 7] {
-        [
-            SettingsPageItem::SectionHeader("Minimap"),
-            SettingsPageItem::SettingItem(SettingItem {
-                title: "Show",
-                description: "When to show the minimap in the editor.",
-                field: Box::new(SettingField {
-                    json_path: Some("minimap.show"),
-                    pick: |settings_content| {
-                        settings_content.editor.minimap.as_ref()?.show.as_ref()
-                    },
-                    write: |settings_content, value, _| {
-                        settings_content.editor.minimap.get_or_insert_default().show = value;
-                    },
-                }),
-                metadata: None,
-                files: USER,
-            }),
-            SettingsPageItem::SettingItem(SettingItem {
-                title: "Display In",
-                description: "Where to show the minimap in the editor.",
-                field: Box::new(SettingField {
-                    json_path: Some("minimap.display_in"),
-                    pick: |settings_content| {
-                        settings_content
-                            .editor
-                            .minimap
-                            .as_ref()?
-                            .display_in
-                            .as_ref()
-                    },
-                    write: |settings_content, value, _| {
-                        settings_content
-                            .editor
-                            .minimap
-                            .get_or_insert_default()
-                            .display_in = value;
-                    },
-                }),
-                metadata: None,
-                files: USER,
-            }),
-            SettingsPageItem::SettingItem(SettingItem {
-                title: "Thumb",
-                description: "When to show the minimap thumb.",
-                field: Box::new(SettingField {
-                    json_path: Some("minimap.thumb"),
-                    pick: |settings_content| {
-                        settings_content.editor.minimap.as_ref()?.thumb.as_ref()
-                    },
-                    write: |settings_content, value, _| {
-                        settings_content
-                            .editor
-                            .minimap
-                            .get_or_insert_default()
-                            .thumb = value;
-                    },
-                }),
-                metadata: None,
-                files: USER,
-            }),
-            SettingsPageItem::SettingItem(SettingItem {
-                title: "Thumb Border",
-                description: "Border style for the minimap's scrollbar thumb.",
-                field: Box::new(SettingField {
-                    json_path: Some("minimap.thumb_border"),
-                    pick: |settings_content| {
-                        settings_content
-                            .editor
-                            .minimap
-                            .as_ref()?
-                            .thumb_border
-                            .as_ref()
-                    },
-                    write: |settings_content, value, _| {
-                        settings_content
-                            .editor
-                            .minimap
-                            .get_or_insert_default()
-                            .thumb_border = value;
-                    },
-                }),
-                metadata: None,
-                files: USER,
-            }),
-            SettingsPageItem::SettingItem(SettingItem {
-                title: "Current Line Highlight",
-                description: "How to highlight the current line in the minimap.",
-                field: Box::new(SettingField {
-                    json_path: Some("minimap.current_line_highlight"),
-                    pick: |settings_content| {
-                        settings_content
-                            .editor
-                            .minimap
-                            .as_ref()
-                            .and_then(|minimap| minimap.current_line_highlight.as_ref())
-                            .or(settings_content.editor.current_line_highlight.as_ref())
-                    },
-                    write: |settings_content, value, _| {
-                        settings_content
-                            .editor
-                            .minimap
-                            .get_or_insert_default()
-                            .current_line_highlight = value;
-                    },
-                }),
-                metadata: None,
-                files: USER,
-            }),
-            SettingsPageItem::SettingItem(SettingItem {
-                title: "Max Width Columns",
-                description: "Maximum number of columns to display in the minimap.",
-                field: Box::new(SettingField {
-                    json_path: Some("minimap.max_width_columns"),
-                    pick: |settings_content| {
-                        settings_content
-                            .editor
-                            .minimap
-                            .as_ref()?
-                            .max_width_columns
-                            .as_ref()
-                    },
-                    write: |settings_content, value, _| {
-                        settings_content
-                            .editor
-                            .minimap
-                            .get_or_insert_default()
-                            .max_width_columns = value;
-                    },
-                }),
-                metadata: None,
-                files: USER,
-            }),
-        ]
-    }
-
     fn toolbar_section() -> [SettingsPageItem; 7] {
         [
             SettingsPageItem::SectionHeader("Toolbar"),
@@ -3123,7 +2964,6 @@ fn editor_page() -> SettingsPage {
         drag_and_drop_selection_section(),
         gutter_section(),
         scrollbar_section(),
-        minimap_section(),
         toolbar_section(),
         language_settings_data(),
     );
@@ -3838,7 +3678,7 @@ fn search_and_files_page() -> SettingsPage {
 }
 
 fn window_and_layout_page() -> SettingsPage {
-    fn status_bar_section() -> [SettingsPageItem; 16] {
+    fn status_bar_section() -> [SettingsPageItem; 15] {
         [
             SettingsPageItem::SectionHeader("Status Bar"),
             SettingsPageItem::SettingItem(SettingItem {
@@ -4056,25 +3896,6 @@ fn window_and_layout_page() -> SettingsPage {
                     pick: |settings_content| settings_content.diagnostics.as_ref()?.button.as_ref(),
                     write: |settings_content, value, _| {
                         settings_content.diagnostics.get_or_insert_default().button = value;
-                    },
-                }),
-                metadata: None,
-                files: USER,
-            }),
-            SettingsPageItem::SettingItem(SettingItem {
-                title: "Project Search Button",
-                description: "Show the project search button in the status bar.",
-                field: Box::new(SettingField {
-                    json_path: Some("search.button"),
-                    pick: |settings_content| {
-                        settings_content.editor.search.as_ref()?.button.as_ref()
-                    },
-                    write: |settings_content, value, _| {
-                        settings_content
-                            .editor
-                            .search
-                            .get_or_insert_default()
-                            .button = value;
                     },
                 }),
                 metadata: None,
@@ -6329,237 +6150,6 @@ fn panels_page() -> SettingsPage {
         ]
     }
 
-    fn outline_panel_section() -> [SettingsPageItem; 12] {
-        [
-            SettingsPageItem::SectionHeader("Outline Panel"),
-            SettingsPageItem::SettingItem(SettingItem {
-                title: "Outline Panel Button",
-                description: "Show the outline panel button in the status bar.",
-                field: Box::new(SettingField {
-                    json_path: Some("outline_panel.button"),
-                    pick: |settings_content| {
-                        settings_content.outline_panel.as_ref()?.button.as_ref()
-                    },
-                    write: |settings_content, value, _| {
-                        settings_content
-                            .outline_panel
-                            .get_or_insert_default()
-                            .button = value;
-                    },
-                }),
-                metadata: None,
-                files: USER,
-            }),
-            SettingsPageItem::SettingItem(SettingItem {
-                title: "Outline Panel Dock",
-                description: "Where to dock the outline panel.",
-                field: Box::new(SettingField {
-                    json_path: Some("outline_panel.dock"),
-                    pick: |settings_content| settings_content.outline_panel.as_ref()?.dock.as_ref(),
-                    write: |settings_content, value, _| {
-                        settings_content.outline_panel.get_or_insert_default().dock = value;
-                    },
-                }),
-                metadata: None,
-                files: USER,
-            }),
-            SettingsPageItem::SettingItem(SettingItem {
-                title: "Outline Panel Default Width",
-                description: "Default width of the outline panel in pixels.",
-                field: Box::new(SettingField {
-                    json_path: Some("outline_panel.default_width"),
-                    pick: |settings_content| {
-                        settings_content
-                            .outline_panel
-                            .as_ref()?
-                            .default_width
-                            .as_ref()
-                    },
-                    write: |settings_content, value, _| {
-                        settings_content
-                            .outline_panel
-                            .get_or_insert_default()
-                            .default_width = value;
-                    },
-                }),
-                metadata: None,
-                files: USER,
-            }),
-            SettingsPageItem::SettingItem(SettingItem {
-                title: "File Icons",
-                description: "Show file icons in the outline panel.",
-                field: Box::new(SettingField {
-                    json_path: Some("outline_panel.file_icons"),
-                    pick: |settings_content| {
-                        settings_content.outline_panel.as_ref()?.file_icons.as_ref()
-                    },
-                    write: |settings_content, value, _| {
-                        settings_content
-                            .outline_panel
-                            .get_or_insert_default()
-                            .file_icons = value;
-                    },
-                }),
-                metadata: None,
-                files: USER,
-            }),
-            SettingsPageItem::SettingItem(SettingItem {
-                title: "Folder Indicator",
-                description: "What to show for directories in the outline panel.",
-                field: Box::new(SettingField {
-                    json_path: Some("outline_panel.folder_indicator"),
-                    pick: |settings_content| {
-                        settings_content
-                            .outline_panel
-                            .as_ref()?
-                            .folder_indicator
-                            .as_ref()
-                    },
-                    write: |settings_content, value, _| {
-                        settings_content
-                            .outline_panel
-                            .get_or_insert_default()
-                            .folder_indicator = value;
-                    },
-                }),
-                metadata: None,
-                files: USER,
-            }),
-            SettingsPageItem::SettingItem(SettingItem {
-                title: "Git Status",
-                description: "Show the Git status in the outline panel.",
-                field: Box::new(SettingField {
-                    json_path: Some("outline_panel.git_status"),
-                    pick: |settings_content| {
-                        settings_content.outline_panel.as_ref()?.git_status.as_ref()
-                    },
-                    write: |settings_content, value, _| {
-                        settings_content
-                            .outline_panel
-                            .get_or_insert_default()
-                            .git_status = value;
-                    },
-                }),
-                metadata: None,
-                files: USER,
-            }),
-            SettingsPageItem::SettingItem(SettingItem {
-                title: "Indent Size",
-                description: "Amount of indentation for nested items.",
-                field: Box::new(SettingField {
-                    json_path: Some("outline_panel.indent_size"),
-                    pick: |settings_content| {
-                        settings_content
-                            .outline_panel
-                            .as_ref()?
-                            .indent_size
-                            .as_ref()
-                    },
-                    write: |settings_content, value, _| {
-                        settings_content
-                            .outline_panel
-                            .get_or_insert_default()
-                            .indent_size = value;
-                    },
-                }),
-                metadata: None,
-                files: USER,
-            }),
-            SettingsPageItem::SettingItem(SettingItem {
-                title: "Auto Reveal Entries",
-                description: "Whether to reveal when a corresponding outline entry becomes active.",
-                field: Box::new(SettingField {
-                    json_path: Some("outline_panel.auto_reveal_entries"),
-                    pick: |settings_content| {
-                        settings_content
-                            .outline_panel
-                            .as_ref()?
-                            .auto_reveal_entries
-                            .as_ref()
-                    },
-                    write: |settings_content, value, _| {
-                        settings_content
-                            .outline_panel
-                            .get_or_insert_default()
-                            .auto_reveal_entries = value;
-                    },
-                }),
-                metadata: None,
-                files: USER,
-            }),
-            SettingsPageItem::SettingItem(SettingItem {
-                title: "Auto Fold Directories",
-                description: "Whether to fold directories automatically when a directory contains only one subdirectory.",
-                field: Box::new(SettingField {
-                    json_path: Some("outline_panel.auto_fold_dirs"),
-                    pick: |settings_content| {
-                        settings_content
-                            .outline_panel
-                            .as_ref()?
-                            .auto_fold_dirs
-                            .as_ref()
-                    },
-                    write: |settings_content, value, _| {
-                        settings_content
-                            .outline_panel
-                            .get_or_insert_default()
-                            .auto_fold_dirs = value;
-                    },
-                }),
-                metadata: None,
-                files: USER,
-            }),
-            SettingsPageItem::SettingItem(SettingItem {
-                files: USER,
-                title: "Show Indent Guides",
-                description: "When to show indent guides in the outline panel.",
-                field: Box::new(SettingField {
-                    json_path: Some("outline_panel.indent_guides.show"),
-                    pick: |settings_content| {
-                        settings_content
-                            .outline_panel
-                            .as_ref()?
-                            .indent_guides
-                            .as_ref()?
-                            .show
-                            .as_ref()
-                    },
-                    write: |settings_content, value, _| {
-                        settings_content
-                            .outline_panel
-                            .get_or_insert_default()
-                            .indent_guides
-                            .get_or_insert_default()
-                            .show = value;
-                    },
-                }),
-                metadata: None,
-            }),
-            SettingsPageItem::SettingItem(SettingItem {
-                title: "Hide Symbols in Multi-Buffers",
-                description: "Whether to hide symbols, excerpts and search matches in the outline panel when a multi-buffer view is active.",
-                field: Box::new(SettingField {
-                    json_path: Some("outline_panel.multi_buffer_hide_symbols"),
-                    pick: |settings_content| {
-                        settings_content
-                            .outline_panel
-                            .as_ref()?
-                            .multi_buffer_hide_symbols
-                            .as_ref()
-                    },
-                    write: |settings_content, value, _| {
-                        settings_content
-                            .outline_panel
-                            .get_or_insert_default()
-                            .multi_buffer_hide_symbols = value;
-                    },
-                }),
-                metadata: None,
-                files: USER,
-            }),
-        ]
-    }
-
     fn git_panel_section() -> [SettingsPageItem; 19] {
         [
             SettingsPageItem::SectionHeader("Git Panel"),
@@ -6901,6 +6491,62 @@ fn panels_page() -> SettingsPage {
         ]
     }
 
+    fn search_panel_section() -> [SettingsPageItem; 4] {
+        [
+            SettingsPageItem::SectionHeader("Search Panel"),
+            SettingsPageItem::SettingItem(SettingItem {
+                title: "Search Panel Button",
+                description: "Show the Search panel button in the tool window bar.",
+                field: Box::new(SettingField {
+                    json_path: Some("search_panel.button"),
+                    pick: |settings_content| {
+                        settings_content.search_panel.as_ref()?.button.as_ref()
+                    },
+                    write: |settings_content, value, _| {
+                        settings_content.search_panel.get_or_insert_default().button = value;
+                    },
+                }),
+                metadata: None,
+                files: USER,
+            }),
+            SettingsPageItem::SettingItem(SettingItem {
+                title: "Search Panel Dock",
+                description: "Where to dock the Search panel.",
+                field: Box::new(SettingField {
+                    json_path: Some("search_panel.dock"),
+                    pick: |settings_content| settings_content.search_panel.as_ref()?.dock.as_ref(),
+                    write: |settings_content, value, _| {
+                        settings_content.search_panel.get_or_insert_default().dock = value;
+                    },
+                }),
+                metadata: None,
+                files: USER,
+            }),
+            SettingsPageItem::SettingItem(SettingItem {
+                title: "Search Panel Default Width",
+                description: "Default width of the Search panel in pixels.",
+                field: Box::new(SettingField {
+                    json_path: Some("search_panel.default_width"),
+                    pick: |settings_content| {
+                        settings_content
+                            .search_panel
+                            .as_ref()?
+                            .default_width
+                            .as_ref()
+                    },
+                    write: |settings_content, value, _| {
+                        settings_content
+                            .search_panel
+                            .get_or_insert_default()
+                            .default_width = value;
+                    },
+                }),
+                metadata: None,
+                files: USER,
+            }),
+        ]
+    }
+
     fn panel_headers_section() -> [SettingsPageItem; 3] {
         [
             SettingsPageItem::SectionHeader("Panel Headers"),
@@ -6939,8 +6585,8 @@ fn panels_page() -> SettingsPage {
             panel_headers_section(),
             project_panel_section(),
             terminal_panel_section(),
-            outline_panel_section(),
             git_panel_section(),
+            search_panel_section(),
         ],
     }
 }

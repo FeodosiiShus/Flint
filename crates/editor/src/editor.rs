@@ -14,7 +14,6 @@
 pub mod actions;
 pub mod blink_manager;
 mod bracket_colorization;
-mod clangd_ext;
 pub mod code_context_menus;
 mod code_lens;
 pub mod display_map;
@@ -89,8 +88,7 @@ pub use display_map::{
 pub use editor_settings::{
     CompletionDetailAlignment, CompletionMenuItemKind, CurrentLineHighlight, DiffViewStyle,
     DocumentColorsRenderMode, EditorSettings, EditorSettingsScrollbarProxy, OpenResultsIn,
-    ScrollBeyondLastLine, ScrollbarAxes, SearchSettings, ShowMinimap,
-    ui_scrollbar_settings_from_raw,
+    ScrollBeyondLastLine, ScrollbarAxes, SearchSettings, ui_scrollbar_settings_from_raw,
 };
 pub use element::{
     CursorLayout, EditorElement, HighlightedRange, HighlightedRangeLine, PointForPosition,
@@ -138,7 +136,7 @@ use cursor_animation::CursorAnimationStates;
 use display_map::*;
 use document_colors::LspColorData;
 use document_links::LspDocumentLinks;
-use editor_settings::{GoToDefinitionFallback, Minimap as MinimapSettings};
+use editor_settings::GoToDefinitionFallback;
 use element::{LineWithInvisibles, PositionMap};
 use futures::{
     FutureExt,
@@ -293,8 +291,6 @@ pub(crate) const CODE_ACTION_TIMEOUT: Duration = Duration::from_secs(5);
 pub(crate) const FORMAT_TIMEOUT: Duration = Duration::from_secs(5);
 pub(crate) const SCROLL_CENTER_TOP_BOTTOM_DEBOUNCE_TIMEOUT: Duration = Duration::from_secs(1);
 pub const LSP_REQUEST_DEBOUNCE_TIMEOUT: Duration = Duration::from_millis(50);
-
-pub(crate) const MINIMAP_FONT_SIZE: AbsoluteLength = AbsoluteLength::Pixels(px(2.));
 
 pub enum ActiveDebugLine {}
 pub enum DebugStackFrameLine {}
@@ -458,9 +454,6 @@ pub enum EditorMode {
         /// Determines the sizing behavior for this editor
         sizing_behavior: SizingBehavior,
     },
-    Minimap {
-        parent: WeakEntity<Editor>,
-    },
 }
 
 impl EditorMode {
@@ -480,11 +473,6 @@ impl EditorMode {
     #[inline]
     pub fn is_single_line(&self) -> bool {
         matches!(self, Self::SingleLine { .. })
-    }
-
-    #[inline]
-    fn is_minimap(&self) -> bool {
-        matches!(self, Self::Minimap { .. })
     }
 }
 
@@ -611,80 +599,6 @@ struct ScrollbarMarkerState {
 impl ScrollbarMarkerState {
     fn should_refresh(&self, scrollbar_size: Size<Pixels>) -> bool {
         self.pending_refresh.is_none() && (self.scrollbar_size != scrollbar_size || self.dirty)
-    }
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub enum MinimapVisibility {
-    Disabled,
-    Enabled {
-        /// The configuration currently present in the users settings.
-        setting_configuration: bool,
-        /// Whether to override the currently set visibility from the users setting.
-        toggle_override: bool,
-    },
-}
-
-impl MinimapVisibility {
-    fn for_mode(mode: &EditorMode, cx: &App) -> Self {
-        if mode.is_full() {
-            Self::Enabled {
-                setting_configuration: EditorSettings::get_global(cx).minimap.minimap_enabled(),
-                toggle_override: false,
-            }
-        } else {
-            Self::Disabled
-        }
-    }
-
-    fn hidden(&self) -> Self {
-        match *self {
-            Self::Enabled {
-                setting_configuration,
-                ..
-            } => Self::Enabled {
-                setting_configuration,
-                toggle_override: setting_configuration,
-            },
-            Self::Disabled => Self::Disabled,
-        }
-    }
-
-    fn disabled(&self) -> bool {
-        matches!(*self, Self::Disabled)
-    }
-
-    fn settings_visibility(&self) -> bool {
-        match *self {
-            Self::Enabled {
-                setting_configuration,
-                ..
-            } => setting_configuration,
-            _ => false,
-        }
-    }
-
-    fn visible(&self) -> bool {
-        match *self {
-            Self::Enabled {
-                setting_configuration,
-                toggle_override,
-            } => setting_configuration ^ toggle_override,
-            _ => false,
-        }
-    }
-
-    fn toggle_visibility(&self) -> Self {
-        match *self {
-            Self::Enabled {
-                toggle_override,
-                setting_configuration,
-            } => Self::Enabled {
-                setting_configuration,
-                toggle_override: !toggle_override,
-            },
-            Self::Disabled => Self::Disabled,
-        }
     }
 }
 
@@ -974,7 +888,6 @@ pub struct Editor {
     breadcrumbs_visibility: BreadcrumbsVisibility,
     show_gutter: bool,
     show_scrollbars: ScrollbarAxes,
-    minimap_visibility: MinimapVisibility,
     offset_content: bool,
     disable_expand_excerpt_buttons: bool,
     delegate_expand_excerpts: bool,
@@ -1088,7 +1001,7 @@ pub struct Editor {
     >,
     last_bounds: Option<Bounds<Pixels>>,
     last_position_map: Option<Rc<PositionMap>>,
-    /// The right margin (vertical scrollbar + minimap width) the editor was
+    /// The right margin (vertical scrollbar width) the editor was
     /// last laid out with, updated on every prepaint.
     /// Used later in the frame by `SplitBufferHeadersElement` to shrink the
     /// width available to buffer headers.
@@ -1123,7 +1036,6 @@ pub struct Editor {
     _scroll_cursor_center_top_bottom_task: Task<()>,
     serialize_selections: Task<()>,
     serialize_folds: Task<()>,
-    minimap: Option<Entity<Self>>,
     pub change_list: ChangeList,
     inline_value_cache: InlineValueCache,
     number_deleted_lines: bool,
@@ -1853,16 +1765,6 @@ impl Editor {
         clone
     }
 
-    pub fn new(
-        mode: EditorMode,
-        buffer: Entity<MultiBuffer>,
-        project: Option<Entity<Project>>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> Self {
-        Editor::new_internal(mode, buffer, project, None, window, cx)
-    }
-
     pub fn refresh_sticky_headers(
         &mut self,
         display_snapshot: &DisplaySnapshot,
@@ -1934,21 +1836,14 @@ impl Editor {
         });
     }
 
-    fn new_internal(
+    pub fn new(
         mode: EditorMode,
         multi_buffer: Entity<MultiBuffer>,
         project: Option<Entity<Project>>,
-        display_map: Option<Entity<DisplayMap>>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        debug_assert!(
-            display_map.is_none() || mode.is_minimap(),
-            "Providing a display map for a new editor is only intended for the minimap and might have unintended side effects otherwise!"
-        );
-
         let full_mode = mode.is_full();
-        let is_minimap = mode.is_minimap();
         let diagnostics_max_severity = if full_mode {
             EditorSettings::get_global(cx)
                 .diagnostics_max_severity
@@ -1985,34 +1880,28 @@ impl Editor {
             merge_adjacent: true,
             ..FoldPlaceholder::default()
         };
-        let display_map = display_map.unwrap_or_else(|| {
-            cx.new(|cx| {
-                DisplayMap::new(
-                    multi_buffer.clone(),
-                    style.font(),
-                    font_size,
-                    None,
-                    FILE_HEADER_HEIGHT,
-                    MULTI_BUFFER_EXCERPT_HEADER_HEIGHT,
-                    fold_placeholder,
-                    diagnostics_max_severity,
-                    cx,
-                )
-            })
+        let display_map = cx.new(|cx| {
+            DisplayMap::new(
+                multi_buffer.clone(),
+                style.font(),
+                font_size,
+                None,
+                FILE_HEADER_HEIGHT,
+                MULTI_BUFFER_EXCERPT_HEADER_HEIGHT,
+                fold_placeholder,
+                diagnostics_max_severity,
+                cx,
+            )
         });
 
         let selections = SelectionsCollection::new();
 
         let blink_manager = cx.new(|cx| {
-            let mut blink_manager = BlinkManager::new(
+            BlinkManager::new(
                 CURSOR_BLINK_INTERVAL,
                 |cx| EditorSettings::get_global(cx).cursor_blink,
                 cx,
-            );
-            if is_minimap {
-                blink_manager.disable(cx);
-            }
-            blink_manager
+            )
         });
 
         let soft_wrap_mode_override =
@@ -2257,25 +2146,22 @@ impl Editor {
         let inlay_hint_settings =
             inlay_hint_settings(selections.newest_anchor().head(), &buffer_snapshot, cx);
         let focus_handle = cx.focus_handle();
-        if !is_minimap {
-            cx.on_focus(&focus_handle, window, Self::handle_focus)
-                .detach();
-            cx.on_focus_in(&focus_handle, window, Self::handle_focus_in)
-                .detach();
-            cx.on_focus_out(&focus_handle, window, Self::handle_focus_out)
-                .detach();
-            cx.on_blur(&focus_handle, window, Self::handle_blur)
-                .detach();
-            cx.observe_pending_input(window, Self::observe_pending_input)
-                .detach();
-        }
+        cx.on_focus(&focus_handle, window, Self::handle_focus)
+            .detach();
+        cx.on_focus_in(&focus_handle, window, Self::handle_focus_in)
+            .detach();
+        cx.on_focus_out(&focus_handle, window, Self::handle_focus_out)
+            .detach();
+        cx.on_blur(&focus_handle, window, Self::handle_blur)
+            .detach();
+        cx.observe_pending_input(window, Self::observe_pending_input)
+            .detach();
 
-        let show_indent_guides =
-            if matches!(mode, EditorMode::SingleLine | EditorMode::Minimap { .. }) {
-                Some(false)
-            } else {
-                None
-            };
+        let show_indent_guides = if matches!(mode, EditorMode::SingleLine) {
+            Some(false)
+        } else {
+            None
+        };
 
         let bookmark_store = match (&mode, project.as_ref()) {
             (EditorMode::Full { .. }, Some(project)) => Some(project.read(cx).bookmark_store()),
@@ -2333,7 +2219,6 @@ impl Editor {
                 horizontal: full_mode,
                 vertical: full_mode,
             },
-            minimap_visibility: MinimapVisibility::for_mode(&mode, cx),
             offset_content: !matches!(mode, EditorMode::SingleLine),
             breadcrumbs_visibility: BreadcrumbsVisibility::from_settings(cx),
             show_gutter: full_mode,
@@ -2387,7 +2272,7 @@ impl Editor {
             linked_editing_range_task: None,
             pending_rename: None,
             pending_inline_input: None,
-            searchable: !is_minimap,
+            searchable: true,
             cursor_shape: EditorSettings::get_global(cx)
                 .cursor_shape
                 .unwrap_or_default(),
@@ -2396,10 +2281,10 @@ impl Editor {
             autoindent_mode: Some(AutoindentMode::EachLine),
             collapse_matches: false,
             workspace: None,
-            input_enabled: !is_minimap,
-            expects_character_input: !is_minimap,
+            input_enabled: true,
+            expects_character_input: true,
             use_modal_editing: full_mode,
-            read_only: is_minimap,
+            read_only: false,
             use_autoclose: true,
             use_auto_surround: true,
             use_selection_highlight: true,
@@ -2436,13 +2321,11 @@ impl Editor {
             show_git_blame_inline_delay_task: None,
             git_blame_inline_enabled: full_mode
                 && ProjectSettings::get_global(cx).git.inline_blame.enabled,
-            buffer_serialization: is_minimap.not().then(|| {
-                BufferSerialization::new(
-                    ProjectSettings::get_global(cx)
-                        .session
-                        .restore_unsaved_buffers,
-                )
-            }),
+            buffer_serialization: Some(BufferSerialization::new(
+                ProjectSettings::get_global(cx)
+                    .session
+                    .restore_unsaved_buffers,
+            )),
             blame: None,
             blame_subscription: None,
             pending_blame_hover_observation: None,
@@ -2453,19 +2336,15 @@ impl Editor {
             breakpoint_store,
             gutter_hover_button: (None, None),
             hovered_diff_hunk_row: None,
-            _subscriptions: (!is_minimap)
-                .then(|| {
-                    vec![
-                        cx.observe(&multi_buffer, Self::on_buffer_changed),
-                        cx.subscribe_in(&multi_buffer, window, Self::on_buffer_event),
-                        cx.observe_in(&display_map, window, Self::on_display_map_changed),
-                        cx.observe(&blink_manager, |_, _, cx| cx.notify()),
-                        cx.observe_global_in::<SettingsStore>(window, Self::settings_changed),
-                        cx.observe_global_in::<GlobalTheme>(window, Self::theme_changed),
-                        observe_buffer_font_size_adjustment(cx, |_, cx| cx.notify()),
-                    ]
-                })
-                .unwrap_or_default(),
+            _subscriptions: vec![
+                cx.observe(&multi_buffer, Self::on_buffer_changed),
+                cx.subscribe_in(&multi_buffer, window, Self::on_buffer_event),
+                cx.observe_in(&display_map, window, Self::on_display_map_changed),
+                cx.observe(&blink_manager, |_, _, cx| cx.notify()),
+                cx.observe_global_in::<SettingsStore>(window, Self::settings_changed),
+                cx.observe_global_in::<GlobalTheme>(window, Self::theme_changed),
+                observe_buffer_font_size_adjustment(cx, |_, cx| cx.notify()),
+            ],
             runnables: RunnableData::new(),
             pull_diagnostics_task: Task::ready(()),
             colors: None,
@@ -2495,7 +2374,6 @@ impl Editor {
             load_diff_task: None,
             diff_hunk_renderer: None,
             diff_hunk_action_target: None,
-            minimap: None,
             change_list: ChangeList::new(),
             mode,
             selection_drag_state: SelectionDragState::None,
@@ -2530,10 +2408,6 @@ impl Editor {
                     )
                     .shared(),
             );
-        }
-
-        if is_minimap {
-            return editor;
         }
 
         editor.applicable_language_settings = editor.fetch_applicable_language_settings(cx);
@@ -2649,8 +2523,6 @@ impl Editor {
 
             editor.go_to_active_debug_line(window, cx);
 
-            editor.minimap =
-                editor.create_minimap(EditorSettings::get_global(cx).minimap, window, cx);
             editor.colors = Some(LspColorData::new(cx));
             editor.use_document_folding_ranges = true;
             editor.inlay_hints = Some(LspInlayHintData::new(inlay_hint_settings));
@@ -2702,7 +2574,6 @@ impl Editor {
         let mode = match self.mode {
             EditorMode::SingleLine => "single_line",
             EditorMode::AutoHeight { .. } => "auto_height",
-            EditorMode::Minimap { .. } => "minimap",
             EditorMode::Full { .. } => "full",
         };
 
@@ -8567,21 +8438,6 @@ impl Editor {
         window.show_character_palette();
     }
 
-    pub fn supports_minimap(&self, cx: &App) -> bool {
-        !self.minimap_visibility.disabled() && self.buffer_kind(cx) == ItemBufferKind::Singleton
-    }
-
-    pub fn toggle_minimap(
-        &mut self,
-        _: &ToggleMinimap,
-        window: &mut Window,
-        cx: &mut Context<Editor>,
-    ) {
-        if self.supports_minimap(cx) {
-            self.set_minimap_visibility(self.minimap_visibility.toggle_visibility(), window, cx);
-        }
-    }
-
     pub fn transact(
         &mut self,
         window: &mut Window,
@@ -8809,66 +8665,6 @@ impl Editor {
         self.display_map
             .update(cx, |map, cx| map.snapshot(cx))
             .text()
-    }
-
-    fn create_minimap(
-        &self,
-        minimap_settings: MinimapSettings,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> Option<Entity<Self>> {
-        (minimap_settings.minimap_enabled() && self.buffer_kind(cx) == ItemBufferKind::Singleton)
-            .then(|| self.initialize_new_minimap(minimap_settings, window, cx))
-    }
-
-    fn initialize_new_minimap(
-        &self,
-        minimap_settings: MinimapSettings,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> Entity<Self> {
-        const MINIMAP_FONT_WEIGHT: gpui::FontWeight = gpui::FontWeight::BLACK;
-        const MINIMAP_FONT_FAMILY: SharedString = SharedString::new_static(".ZedMono");
-
-        let mut minimap = Editor::new_internal(
-            EditorMode::Minimap {
-                parent: cx.weak_entity(),
-            },
-            self.buffer.clone(),
-            None,
-            Some(self.display_map.clone()),
-            window,
-            cx,
-        );
-        let my_snapshot = self.display_map.update(cx, |map, cx| map.snapshot(cx));
-        let minimap_snapshot = minimap.display_map.update(cx, |map, cx| map.snapshot(cx));
-        minimap.scroll_manager.clone_state(
-            &self.scroll_manager,
-            &my_snapshot,
-            &minimap_snapshot,
-            cx,
-        );
-        minimap.set_text_style_refinement(TextStyleRefinement {
-            font_size: Some(MINIMAP_FONT_SIZE),
-            font_weight: Some(MINIMAP_FONT_WEIGHT),
-            font_family: Some(MINIMAP_FONT_FAMILY),
-            ..Default::default()
-        });
-        minimap.update_minimap_configuration(minimap_settings, cx);
-        cx.new(|_| minimap)
-    }
-
-    fn update_minimap_configuration(&mut self, minimap_settings: MinimapSettings, cx: &App) {
-        let current_line_highlight = minimap_settings
-            .current_line_highlight
-            .unwrap_or_else(|| EditorSettings::get_global(cx).current_line_highlight);
-        self.set_current_line_highlight(Some(current_line_highlight));
-    }
-
-    pub fn minimap(&self) -> Option<&Entity<Self>> {
-        self.minimap
-            .as_ref()
-            .filter(|_| self.minimap_visibility.visible())
     }
 
     pub fn set_masked(&mut self, masked: bool, cx: &mut Context<Self>) {
@@ -9997,9 +9793,6 @@ impl Editor {
                 self.display_map.update(cx, |map, cx| {
                     map.unfold_buffers(buffer_ids.iter().copied(), cx)
                 });
-                cx.emit(EditorEvent::BuffersEdited {
-                    buffer_ids: buffer_ids.clone(),
-                });
             }
             multi_buffer::Event::Reparsed(buffer_id) => {
                 self.refresh_runnables(Some(*buffer_id), window, cx);
@@ -10190,23 +9983,6 @@ impl Editor {
 
             if self.git_blame_inline_enabled != inline_blame_enabled {
                 self.toggle_git_blame_inline_internal(false, window, cx);
-            }
-
-            let minimap_settings = EditorSettings::get_global(cx).minimap;
-            if self.minimap_visibility != MinimapVisibility::Disabled {
-                if self.minimap_visibility.settings_visibility()
-                    != minimap_settings.minimap_enabled()
-                {
-                    self.set_minimap_visibility(
-                        MinimapVisibility::for_mode(self.mode(), cx),
-                        window,
-                        cx,
-                    );
-                } else if let Some(minimap_entity) = self.minimap.as_ref() {
-                    minimap_entity.update(cx, |minimap_editor, cx| {
-                        minimap_editor.update_minimap_configuration(minimap_settings, cx)
-                    })
-                }
             }
 
             if language_settings_changed || accents_changed {
@@ -10825,10 +10601,6 @@ impl Editor {
         })
     }
 
-    pub fn file_header_size(&self) -> u32 {
-        FILE_HEADER_HEIGHT
-    }
-
     pub fn restore(
         &mut self,
         revert_changes: HashMap<BufferId, Vec<(Range<text::Anchor>, Rope)>>,
@@ -10896,9 +10668,6 @@ impl Editor {
     }
 
     pub fn register_addon<T: Addon>(&mut self, instance: T) {
-        if self.mode.is_minimap() {
-            return;
-        }
         self.addons
             .insert(std::any::TypeId::of::<T>(), Box::new(instance));
     }
@@ -10949,7 +10718,6 @@ impl Editor {
         cx: &mut Context<Editor>,
     ) {
         if self.buffer_kind(cx) == ItemBufferKind::Singleton
-            && !self.mode.is_minimap()
             && WorkspaceSettings::get(None, cx).restore_on_startup
                 != RestoreOnStartupBehavior::EmptyTab
         {
@@ -11232,7 +11000,7 @@ impl Editor {
                 line_height: relative(settings.buffer_line_height.value()),
                 ..Default::default()
             },
-            EditorMode::Full { .. } | EditorMode::Minimap { .. } => TextStyle {
+            EditorMode::Full { .. } => TextStyle {
                 color: cx.theme().colors().editor_foreground,
                 font_family: settings.buffer_font.family.clone(),
                 font_features: settings.buffer_font.features.clone(),
@@ -11251,7 +11019,6 @@ impl Editor {
             EditorMode::SingleLine => cx.theme().system().transparent,
             EditorMode::AutoHeight { .. } => cx.theme().system().transparent,
             EditorMode::Full { .. } => cx.theme().colors().editor_background,
-            EditorMode::Minimap { .. } => cx.theme().colors().editor_background.opacity(0.7),
         };
 
         EditorStyle {
@@ -12302,13 +12069,6 @@ pub enum EditorEvent {
     },
     BuffersRemoved {
         removed_buffer_ids: Vec<BufferId>,
-    },
-    BuffersEdited {
-        buffer_ids: Vec<BufferId>,
-    },
-    BufferFoldToggled {
-        ids: Vec<BufferId>,
-        folded: bool,
     },
     ExpandExcerptsRequested {
         excerpt_anchors: Vec<Anchor>,

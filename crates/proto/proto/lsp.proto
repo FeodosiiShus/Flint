@@ -308,16 +308,6 @@ message LspExtOpenDocsResponse {
   optional string local = 2;
 }
 
-message LspExtSwitchSourceHeader {
-  uint64 project_id = 1;
-  uint64 buffer_id = 2;
-  uint64 server_id = 3;
-}
-
-message LspExtSwitchSourceHeaderResponse {
-  string target_file = 1;
-}
-
 message LspExtGoToParentModule {
   uint64 project_id = 1;
   uint64 buffer_id = 2;

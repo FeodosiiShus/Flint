@@ -25,7 +25,7 @@ use ui::{
     Checkbox, Divider, HighlightedLabel, KeyBinding, LabelLike, ListItem, ListItemSpacing,
     ToggleButtonGroup, ToggleButtonGroupStyle, ToggleButtonSimple, Tooltip, prelude::*,
 };
-use util::{ResultExt, post_inc};
+use util::{ResultExt, paths::PathMatcher, post_inc};
 use workspace::{
     Workspace,
     item::{ItemSettings, PreviewTabsSettings},
@@ -39,7 +39,6 @@ use crate::{
 };
 
 pub(crate) const SEARCH_DEBOUNCE: Duration = Duration::from_millis(100);
-const FEW_RESULTS_THRESHOLD: usize = 5;
 const ALL_TAB_CLASS_LIMIT: usize = 4;
 const ALL_TAB_FILE_LIMIT: usize = 6;
 const ALL_TAB_SYMBOL_LIMIT: usize = 6;
@@ -201,14 +200,28 @@ pub(crate) struct Results {
     pub(crate) text: Vec<SearchMatch>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Presentation {
+    Modal,
+    Panel,
+}
+
+#[derive(Clone)]
+pub(crate) struct TextScope {
+    pub(crate) directory: SharedString,
+    pub(crate) matcher: PathMatcher,
+}
+
 pub(crate) struct SearchEverywhereDelegate {
     pub(crate) search_everywhere: WeakEntity<SearchEverywhere>,
+    pub(crate) presentation: Presentation,
     pub(crate) workspace: WeakEntity<Workspace>,
     pub(crate) project: Entity<Project>,
     pub(crate) previous_focus_handle: FocusHandle,
     pub(crate) focus_handle: FocusHandle,
     pub(crate) tab: Tab,
     pub(crate) include_non_project_items: bool,
+    pub(crate) text_scope: Option<TextScope>,
     pub(crate) query: String,
     pub(crate) file_query: Option<FileSearchQuery>,
     pub(crate) recent_files: Vec<FoundPath>,
@@ -229,6 +242,7 @@ pub(crate) struct SearchEverywhereDelegate {
 impl SearchEverywhereDelegate {
     pub(crate) fn new(
         search_everywhere: WeakEntity<SearchEverywhere>,
+        presentation: Presentation,
         workspace: WeakEntity<Workspace>,
         project: Entity<Project>,
         previous_focus_handle: FocusHandle,
@@ -237,24 +251,17 @@ impl SearchEverywhereDelegate {
         tab: Tab,
         focus_handle: FocusHandle,
     ) -> Self {
-        let mut commands = actions
-            .into_iter()
-            .map(|(name, action)| Command { name, action })
-            .collect::<Vec<_>>();
-        commands.sort_by(|left, right| left.name.cmp(&right.name));
-        let action_candidates = commands
-            .iter()
-            .enumerate()
-            .map(|(index, command)| StringMatchCandidate::new(index, command.name.clone()))
-            .collect();
+        let (commands, action_candidates) = Self::build_commands(actions);
         Self {
             search_everywhere,
+            presentation,
             workspace,
             project,
             previous_focus_handle,
             focus_handle,
             tab,
             include_non_project_items: false,
+            text_scope: None,
             query: String::new(),
             file_query: None,
             recent_files,
@@ -273,8 +280,55 @@ impl SearchEverywhereDelegate {
         }
     }
 
+    fn build_commands(
+        actions: Vec<(SharedString, Box<dyn Action>)>,
+    ) -> (Vec<Command>, Arc<[StringMatchCandidate]>) {
+        let mut commands = actions
+            .into_iter()
+            .map(|(name, action)| Command { name, action })
+            .collect::<Vec<_>>();
+        commands.sort_by(|left, right| left.name.cmp(&right.name));
+        let action_candidates = commands
+            .iter()
+            .enumerate()
+            .map(|(index, command)| StringMatchCandidate::new(index, command.name.clone()))
+            .collect();
+        (commands, action_candidates)
+    }
+
     pub(crate) fn set_focus_handle(&mut self, focus_handle: FocusHandle) {
         self.focus_handle = focus_handle;
+    }
+
+    pub(crate) fn set_previous_focus_handle(&mut self, previous_focus_handle: FocusHandle) {
+        self.previous_focus_handle = previous_focus_handle;
+    }
+
+    pub(crate) fn set_actions(&mut self, actions: Vec<(SharedString, Box<dyn Action>)>) -> bool {
+        let (commands, action_candidates) = Self::build_commands(actions);
+        let unchanged = commands.len() == self.commands.len()
+            && commands
+                .iter()
+                .zip(&self.commands)
+                .all(|(new, old)| new.name == old.name);
+        if unchanged {
+            return false;
+        }
+        self.commands = commands;
+        self.action_candidates = action_candidates;
+        true
+    }
+
+    pub(crate) fn set_recent_files(&mut self, recent_files: Vec<FoundPath>) -> bool {
+        if self.recent_files == recent_files {
+            return false;
+        }
+        self.recent_files = recent_files;
+        true
+    }
+
+    pub(crate) fn set_text_scope(&mut self, text_scope: Option<TextScope>) {
+        self.text_scope = text_scope;
     }
 
     pub(crate) fn tab(&self) -> Tab {
@@ -322,13 +376,7 @@ impl SearchEverywhereDelegate {
     }
 
     fn visible_sections(&self) -> &'static [Section] {
-        const ALL_TAB_SECTIONS: [Section; 4] = [
-            Section::Classes,
-            Section::Files,
-            Section::Symbols,
-            Section::Actions,
-        ];
-        const ALL_TAB_SECTIONS_WITH_TEXT: [Section; 5] = [
+        const ALL_TAB_SECTIONS: [Section; 5] = [
             Section::Classes,
             Section::Files,
             Section::Symbols,
@@ -337,17 +385,7 @@ impl SearchEverywhereDelegate {
         ];
         match self.tab {
             Tab::All | Tab::Files if self.query.is_empty() => &[Section::RecentFiles],
-            Tab::All => {
-                let found = ALL_TAB_SECTIONS
-                    .iter()
-                    .map(|section| self.section_len(*section))
-                    .sum::<usize>();
-                if found < FEW_RESULTS_THRESHOLD {
-                    &ALL_TAB_SECTIONS_WITH_TEXT
-                } else {
-                    &ALL_TAB_SECTIONS
-                }
-            }
+            Tab::All => &ALL_TAB_SECTIONS,
             Tab::Classes => &[Section::Classes],
             Tab::Files => &[Section::Files],
             Tab::Symbols => &[Section::Symbols],
@@ -512,6 +550,7 @@ impl SearchEverywhereDelegate {
             tasks.push(text::search(
                 self.project.clone(),
                 &self.query,
+                self.text_scope.as_ref().map(|scope| scope.matcher.clone()),
                 include_non_project_items,
                 search_id,
                 cancel_flag,
@@ -735,12 +774,40 @@ impl SearchEverywhereDelegate {
             .iter()
             .position(|tab| *tab == self.tab)
             .unwrap_or_default();
-        h_flex().px_2().pt_2().pb_1().w_full().child(
-            ToggleButtonGroup::single_row("search-everywhere-tabs", buttons)
-                .label_size(LabelSize::Small)
-                .style(ToggleButtonGroupStyle::Transparent)
-                .auto_width()
-                .selected_index(selected_index),
+        let group = ToggleButtonGroup::single_row("search-everywhere-tabs", buttons)
+            .label_size(LabelSize::Small)
+            .style(ToggleButtonGroupStyle::Transparent)
+            .selected_index(selected_index);
+        let group = match self.presentation {
+            Presentation::Modal => group.auto_width(),
+            Presentation::Panel => group,
+        };
+        h_flex().px_2().pt_2().pb_1().w_full().child(group)
+    }
+
+    fn render_text_scope(&self, cx: &mut Context<Picker<Self>>) -> Option<AnyElement> {
+        let scope = self.text_scope.as_ref()?;
+        Some(
+            h_flex()
+                .min_w_0()
+                .gap_1()
+                .child(
+                    Label::new(format!("Text in {}", scope.directory))
+                        .size(LabelSize::Small)
+                        .color(Color::Accent)
+                        .single_line()
+                        .truncate(),
+                )
+                .child(
+                    IconButton::new("search-everywhere-clear-text-scope", IconName::Close)
+                        .icon_size(IconSize::XSmall)
+                        .tooltip(Tooltip::text("Clear Text Scope"))
+                        .on_click(cx.listener(|picker, _, window, cx| {
+                            picker.delegate.set_text_scope(None);
+                            picker.refresh(window, cx);
+                        })),
+                )
+                .into_any_element(),
         )
     }
 
@@ -1149,20 +1216,30 @@ impl PickerDelegate for SearchEverywhereDelegate {
         window: &mut Window,
         cx: &mut Context<Picker<Self>>,
     ) -> Option<Div> {
-        Some(
-            v_flex()
+        let query_row = h_flex()
+            .h_9()
+            .px_2p5()
+            .flex_none()
+            .overflow_hidden()
+            .child(div().flex_1().child(editor.render(window, cx)));
+        Some(match self.presentation {
+            Presentation::Modal => v_flex()
                 .child(self.render_tab_bar(cx))
+                .child(query_row.children(self.searchbar_trailer(window, cx)))
+                .child(Divider::horizontal()),
+            Presentation::Panel => v_flex()
+                .child(self.render_tab_bar(cx))
+                .child(query_row)
                 .child(
                     h_flex()
-                        .h_9()
                         .px_2p5()
+                        .pb_1p5()
                         .flex_none()
                         .overflow_hidden()
-                        .child(div().flex_1().child(editor.render(window, cx)))
                         .children(self.searchbar_trailer(window, cx)),
                 )
                 .child(Divider::horizontal()),
-        )
+        })
     }
 
     fn searchbar_trailer(
@@ -1173,7 +1250,8 @@ impl PickerDelegate for SearchEverywhereDelegate {
         let focus_handle = self.focus_handle.clone();
         Some(
             h_flex()
-                .gap_1()
+                .gap_2()
+                .children(self.render_text_scope(cx))
                 .child(
                     Checkbox::new(
                         "search-everywhere-include-non-project-items",

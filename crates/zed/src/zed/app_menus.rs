@@ -1,6 +1,6 @@
 use gpui::{Menu, MenuItem, OsAction};
 use terminal_view::terminal_panel;
-use zed_actions::{Quit, git_panel, project_panel};
+use zed_actions::{Quit, git_panel, project_panel, search_panel};
 
 pub fn app_menus() -> Vec<Menu> {
     let mut view_items = vec![
@@ -37,12 +37,12 @@ pub fn app_menus() -> Vec<Menu> {
         }),
         MenuItem::separator(),
         MenuItem::action("Project Panel", project_panel::ToggleFocus),
-        MenuItem::action("Outline Panel", outline_panel::ToggleFocus),
         MenuItem::action("Terminal Panel", terminal_panel::Toggle),
     ];
 
     view_items.extend([
         MenuItem::action("Git Panel", git_panel::ToggleFocus),
+        MenuItem::action("Search Panel", search_panel::ToggleFocus),
         MenuItem::separator(),
         MenuItem::action("Diagnostics", diagnostics::Deploy),
         MenuItem::separator(),

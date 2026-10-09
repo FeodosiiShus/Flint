@@ -1,5 +1,5 @@
 use gpui::{
-    Action as _, Anchor, Animation, AnimationExt, App, Context, HoverListenerMode, InputPreference,
+    Anchor, Animation, AnimationExt, App, Context, HoverListenerMode, InputPreference,
     KeybindingKeystroke, KeystrokeEvent, Render, ScrollHandle, Subscription, Task, Window,
     anchored, deferred,
 };
@@ -284,9 +284,6 @@ impl Render for PendingKeystrokesIndicator {
 
         let button = ButtonLike::new("pending-keystrokes-indicator")
             .chrome_region(region)
-            .on_click(|_, window, cx| {
-                window.dispatch_action(zed_actions::dev::OpenKeyContextView.boxed_clone(), cx);
-            })
             .when_some(render_state.timeout.as_ref(), |button, timeout| {
                 let remaining_fraction = if timeout.timeout_duration.is_zero() {
                     0.0
@@ -419,9 +416,9 @@ mod tests {
     use super::*;
     use command_palette::humanize_action_name;
     use gpui::{
-        Bounds, Entity, FocusHandle, InputHandler, KeyBinding, KeyDownEvent, Keystroke, Modifiers,
-        Pixels, PlatformInput, Point, TestAppContext, UTF16Selection, VisualTestContext, actions,
-        canvas, point,
+        Action as _, Bounds, Entity, FocusHandle, InputHandler, KeyBinding, KeyDownEvent,
+        Keystroke, Modifiers, Pixels, PlatformInput, Point, TestAppContext, UTF16Selection,
+        VisualTestContext, actions, canvas, point,
     };
 
     actions!(
@@ -470,13 +467,13 @@ mod tests {
 
     /// Binds each keystroke sequence to the action the test view counts.
     fn counted_bindings<const N: usize>(keystrokes: [&str; N]) -> [KeyBinding; N] {
-        keystrokes.map(|keystrokes| binding(keystrokes, zed_actions::dev::OpenKeyContextView))
+        keystrokes.map(|keystrokes| binding(keystrokes, zed_actions::dev::ToggleFpsOverlay))
     }
 
     struct TestView {
         focus_handle: FocusHandle,
         indicator: Entity<PendingKeystrokesIndicator>,
-        open_key_context_view_count: Rc<Cell<usize>>,
+        action_count: Rc<Cell<usize>>,
         input_text: Option<Rc<RefCell<String>>>,
     }
 
@@ -613,13 +610,13 @@ mod tests {
             cx.bind_keys(bindings);
         });
 
-        let open_key_context_view_count = Rc::new(Cell::new(0));
+        let action_count = Rc::new(Cell::new(0));
         let (test_view, cx) = cx.add_window_view({
-            let open_key_context_view_count = open_key_context_view_count.clone();
+            let action_count = action_count.clone();
             |window, cx| TestView {
                 focus_handle: cx.focus_handle(),
                 indicator: cx.new(|cx| PendingKeystrokesIndicator::new(window, cx)),
-                open_key_context_view_count,
+                action_count,
                 input_text: None,
             }
         });
@@ -631,7 +628,7 @@ mod tests {
             window.activate_window();
         });
 
-        (indicator, open_key_context_view_count, cx)
+        (indicator, action_count, cx)
     }
 
     fn start_pending_input_and_hover_indicator(cx: &mut VisualTestContext) {
@@ -715,9 +712,8 @@ mod tests {
                 .on_action(|_: &LongerBinding, _, _| {})
                 .on_action(|_: &LongestBinding, _, _| {})
                 .on_action(
-                    cx.listener(|this, _: &zed_actions::dev::OpenKeyContextView, _, _| {
-                        this.open_key_context_view_count
-                            .set(this.open_key_context_view_count.get() + 1);
+                    cx.listener(|this, _: &zed_actions::dev::ToggleFpsOverlay, _, _| {
+                        this.action_count.set(this.action_count.get() + 1);
                     }),
                 )
                 .child(
@@ -897,7 +893,7 @@ mod tests {
             snapshot.bindings,
             vec![(
                 vec!["j".to_string()],
-                humanize_action_name(zed_actions::dev::OpenKeyContextView.name()),
+                humanize_action_name(zed_actions::dev::ToggleFpsOverlay.name()),
             )]
         );
 
@@ -951,7 +947,7 @@ mod tests {
     fn test_keyboard_popover_respects_overrides_and_unbinding(cx: &mut TestAppContext) {
         // Each override is bound after the default `alt-/`, so it takes precedence.
         for (override_binding, expected_action_count) in [
-            (binding("alt-/", zed_actions::dev::OpenKeyContextView), 1),
+            (binding("alt-/", zed_actions::dev::ToggleFpsOverlay), 1),
             (binding("alt-/", gpui::NoAction), 0),
             (
                 binding("alt-/", gpui::Unbind(ShowPendingBindings.name().into())),
@@ -1289,21 +1285,6 @@ mod tests {
                 .expect("pending input timeout");
             assert!(!timeout.is_paused());
         });
-    }
-
-    #[gpui::test]
-    fn test_clicking_indicator_opens_key_context_view(cx: &mut TestAppContext) {
-        let (_, open_key_context_view_count, cx) = setup_indicator_test(cx, timed_bindings());
-
-        cx.simulate_keystrokes("ctrl-b");
-        cx.run_until_parked();
-
-        let indicator_bounds = cx
-            .debug_bounds("PENDING_KEYSTROKES_INDICATOR")
-            .expect("rendered pending keystrokes indicator");
-        cx.simulate_click(indicator_bounds.center(), Modifiers::none());
-
-        assert_eq!(open_key_context_view_count.get(), 1);
     }
 
     #[gpui::test]

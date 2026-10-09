@@ -26,13 +26,6 @@ fn init_test(cx: &mut TestAppContext) -> Arc<AppState> {
     })
 }
 
-fn entry_target(worktree_id: WorktreeId, path: &str) -> NavigationTarget {
-    NavigationTarget::Entry(ProjectPath {
-        worktree_id,
-        path: rel_path(path).into_arc(),
-    })
-}
-
 fn labels(segments: &[crate::NavigationSegment]) -> Vec<&str> {
     segments
         .iter()
@@ -108,14 +101,14 @@ fn test_segments_list_project_directories_file_and_symbols() {
     assert_eq!(
         targets,
         vec![
-            entry_target(worktree_id, ""),
-            entry_target(worktree_id, "src"),
-            entry_target(worktree_id, "src/main"),
-            entry_target(worktree_id, "src/main/File.rs"),
+            NavigationTarget::Path,
+            NavigationTarget::Path,
+            NavigationTarget::Path,
+            NavigationTarget::Path,
             NavigationTarget::Symbol(0),
             NavigationTarget::Symbol(1),
         ],
-        "the project segment reveals the worktree root and symbols keep their outline index"
+        "path segments carry no navigation and symbols keep their outline index"
     );
 }
 
@@ -128,7 +121,7 @@ fn test_segments_for_single_file_worktree_and_items_without_paths() {
     };
     let segments = build_segments(Some((&single_file, "notes.md")), Vec::new());
     assert_eq!(labels(&segments), vec!["notes.md"]);
-    assert_eq!(segments[0].target, entry_target(worktree_id, ""));
+    assert_eq!(segments[0].target, NavigationTarget::Path);
 
     let symbols_only = build_segments(None, [SharedString::from("fn untitled")]);
     assert_eq!(labels(&symbols_only), vec!["fn untitled"]);
@@ -436,7 +429,9 @@ async fn test_read_only_indicator_toggles_and_hides(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
-async fn test_navigation_bar_reveals_entries_and_jumps_to_symbols(cx: &mut TestAppContext) {
+async fn test_navigation_bar_path_segments_stay_non_interactive_and_symbols_jump(
+    cx: &mut TestAppContext,
+) {
     init_test(cx);
     let fs = FakeFs::new(cx.executor());
     let (workspace, editor, cx) = open_workspace_with_rust_file(fs, cx).await;
@@ -459,6 +454,12 @@ async fn test_navigation_bar_reveals_entries_and_jumps_to_symbols(cx: &mut TestA
     let segments =
         navigation_bar.read_with(cx, |navigation_bar, _| navigation_bar.segments().to_vec());
     assert_eq!(labels(&segments[..3]), vec!["root", "src", "main.rs"]);
+    assert!(
+        segments[..3]
+            .iter()
+            .all(|segment| segment.target == NavigationTarget::Path),
+        "the project, directories and file are plain labels"
+    );
     let symbol = segments
         .get(3)
         .expect("the function around the cursor is a segment");
@@ -479,25 +480,9 @@ async fn test_navigation_bar_reveals_entries_and_jumps_to_symbols(cx: &mut TestA
         })
         .detach();
     });
-    let directory_target = segments[1].target.clone();
-    navigation_bar.update_in(cx, |navigation_bar, window, cx| {
-        navigation_bar.navigate(&directory_target, window, cx)
-    });
-    cx.run_until_parked();
-    let directory_entry = project.read_with(cx, |project, cx| {
-        project
-            .worktrees(cx)
-            .next()
-            .expect("the project has a worktree")
-            .read(cx)
-            .entry_for_path(rel_path("src"))
-            .expect("the directory is in the worktree")
-            .id
-    });
-    assert_eq!(*revealed.borrow(), vec![directory_entry]);
 
     navigation_bar.update_in(cx, |navigation_bar, window, cx| {
-        navigation_bar.navigate(&NavigationTarget::Symbol(0), window, cx)
+        navigation_bar.navigate_to_symbol(0, window, cx)
     });
     cx.run_until_parked();
     let cursor = editor.update(cx, |editor, cx| {
@@ -509,5 +494,9 @@ async fn test_navigation_bar_reveals_entries_and_jumps_to_symbols(cx: &mut TestA
     assert_eq!(
         cursor.row, 0,
         "clicking the symbol moves the cursor to its declaration"
+    );
+    assert!(
+        revealed.borrow().is_empty(),
+        "the navigation bar never reveals entries in the project panel"
     );
 }

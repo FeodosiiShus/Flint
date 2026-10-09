@@ -249,7 +249,7 @@ mod tests {
 
         assert!(gate.is_active(
             worktree_id,
-            &LanguageServerName::new_static("vtsls"),
+            &LanguageServerName::new_static("unlisted-server"),
             || None
         ));
     }

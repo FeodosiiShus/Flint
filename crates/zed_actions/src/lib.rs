@@ -218,9 +218,7 @@ pub mod dev {
             ToggleFpsOverlay,
             /// Resets the debug frame-time overlay's statistics, except for the
             /// total frame count.
-            ResetFrameOverlayStats,
-            /// Opens the key context view for debugging keybindings.
-            OpenKeyContextView
+            ResetFrameOverlayStats
         ]
     );
 }
@@ -250,9 +248,9 @@ pub mod workspace {
     actions!(
         workspace,
         [
-            #[action(deprecated_aliases = ["editor::CopyPath", "outline_panel::CopyPath", "project_panel::CopyPath"])]
+            #[action(deprecated_aliases = ["editor::CopyPath", "project_panel::CopyPath"])]
             CopyPath,
-            #[action(deprecated_aliases = ["editor::CopyRelativePath", "outline_panel::CopyRelativePath", "project_panel::CopyRelativePath"])]
+            #[action(deprecated_aliases = ["editor::CopyRelativePath", "project_panel::CopyRelativePath"])]
             CopyRelativePath,
             /// Opens the selected file with the system's default application.
             #[action(deprecated_aliases = ["project_panel::OpenWithSystem"])]
@@ -415,6 +413,12 @@ pub mod search_everywhere {
             ToggleNonProjectItems
         ]
     );
+}
+
+pub mod search_panel {
+    use gpui::actions;
+
+    actions!(search_panel, [ToggleFocus]);
 }
 
 pub mod project_panel {
@@ -664,22 +668,6 @@ pub mod wsl_actions {
     pub struct OpenWsl {
         #[serde(default)]
         pub create_new_window: Option<bool>,
-    }
-}
-
-pub mod preview {
-    pub mod svg {
-        use gpui::actions;
-
-        actions!(
-            svg,
-            [
-                /// Opens an SVG preview for the current file.
-                OpenPreview,
-                /// Opens an SVG preview in a split pane.
-                OpenPreviewToTheSide,
-            ]
-        );
     }
 }
 

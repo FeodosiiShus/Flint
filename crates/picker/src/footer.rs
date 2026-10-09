@@ -169,22 +169,24 @@ impl<D: PickerDelegate> Picker<D> {
                                 this.set_preview_layout(preview::Layout::Below, window, cx)
                             })),
                     )
-                    .child(
-                        IconButton::new("picker-preview-right", diff_split)
-                            .icon_size(IconSize::Small)
-                            .toggle_state(current == preview::Layout::Right)
-                            .tooltip(move |_window, cx| {
-                                Tooltip::for_action_in(
-                                    "Preview to the Right",
-                                    &SetPreviewRight,
-                                    &right_focus_handle,
-                                    cx,
-                                )
-                            })
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.set_preview_layout(preview::Layout::Right, window, cx)
-                            })),
-                    )
+                    .when(!self.is_panel(), |this| {
+                        this.child(
+                            IconButton::new("picker-preview-right", diff_split)
+                                .icon_size(IconSize::Small)
+                                .toggle_state(current == preview::Layout::Right)
+                                .tooltip(move |_window, cx| {
+                                    Tooltip::for_action_in(
+                                        "Preview to the Right",
+                                        &SetPreviewRight,
+                                        &right_focus_handle,
+                                        cx,
+                                    )
+                                })
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.set_preview_layout(preview::Layout::Right, window, cx)
+                                })),
+                        )
+                    })
             })
     }
 

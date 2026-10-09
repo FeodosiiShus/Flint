@@ -213,15 +213,6 @@ pub fn init(cx: &mut App) {
             },
         );
 
-        // Both on present and dismissed search, we need to unconditionally handle those actions to focus from the editor.
-        workspace.register_action(move |workspace, action: &DeploySearch, window, cx| {
-            if workspace.has_active_modal(window, cx) && !workspace.hide_modal(window, cx) {
-                cx.propagate();
-                return;
-            }
-            ProjectSearchView::deploy_search(workspace, action, window, cx);
-            cx.notify();
-        });
         workspace.register_action(move |workspace, action: &NewSearch, window, cx| {
             if workspace.has_active_modal(window, cx) && !workspace.hide_modal(window, cx) {
                 cx.propagate();
@@ -230,17 +221,6 @@ pub fn init(cx: &mut App) {
             ProjectSearchView::new_search(workspace, action, window, cx);
             cx.notify();
         });
-        workspace.register_action(
-            move |workspace, action: &zed_actions::search::NewSearchInDirectory, window, cx| {
-                ProjectSearchView::new_search_with_filter(
-                    workspace,
-                    action.directory.clone(),
-                    window,
-                    cx,
-                );
-                cx.notify();
-            },
-        );
     })
     .detach();
 }
@@ -1289,10 +1269,6 @@ impl Item for ProjectSearchView {
 }
 
 impl ProjectSearchView {
-    pub fn get_matches(&self, cx: &App) -> Vec<Range<Anchor>> {
-        self.entity.read(cx).match_ranges.clone()
-    }
-
     fn open_text_finder(
         &mut self,
         _: &OpenTextFinder,
@@ -2586,7 +2562,7 @@ impl ProjectSearchView {
     }
 }
 
-pub(crate) fn buffer_search_query(
+pub fn buffer_search_query(
     workspace: &mut Workspace,
     item: &dyn ItemHandle,
     cx: &mut Context<Workspace>,
@@ -3484,22 +3460,6 @@ fn is_buffer_stale(
     } else {
         false
     }
-}
-
-#[cfg(any(test, feature = "test-support"))]
-pub fn perform_project_search(
-    search_view: &Entity<ProjectSearchView>,
-    text: impl Into<std::sync::Arc<str>>,
-    cx: &mut gpui::VisualTestContext,
-) {
-    cx.run_until_parked();
-    search_view.update_in(cx, |search_view, window, cx| {
-        search_view.query_editor.update(cx, |query_editor, cx| {
-            query_editor.set_text(text, window, cx)
-        });
-        search_view.search(SearchMode::Manual, cx);
-    });
-    cx.run_until_parked();
 }
 
 #[cfg(test)]
@@ -5035,14 +4995,9 @@ pub mod tests {
                 .display(workspace.read(cx).path_style(cx))
                 .into_owned()
         });
-        window
-            .update(cx, |_, window, cx| {
-                window.dispatch_action(
-                    Box::new(zed_actions::search::NewSearchInDirectory { directory }),
-                    cx,
-                );
-            })
-            .unwrap();
+        workspace.update_in(cx, |workspace, window, cx| {
+            ProjectSearchView::new_search_with_filter(workspace, directory, window, cx);
+        });
 
         let Some(search_view) = cx.read(|cx| {
             workspace
@@ -5832,7 +5787,9 @@ pub mod tests {
         });
 
         // Deploy a new search
-        cx.dispatch_action(DeploySearch::default());
+        workspace.update_in(cx, |workspace, window, cx| {
+            ProjectSearchView::deploy_search(workspace, &DeploySearch::default(), window, cx)
+        });
 
         // Both panes should now have a project search in them
         workspace.update_in(cx, |workspace, window, cx| {
@@ -5857,7 +5814,9 @@ pub mod tests {
             .unwrap();
 
         // Deploy a new search
-        cx.dispatch_action(DeploySearch::default());
+        workspace.update_in(cx, |workspace, window, cx| {
+            ProjectSearchView::deploy_search(workspace, &DeploySearch::default(), window, cx)
+        });
 
         // The project search view should now be focused in the second pane
         // And the number of items should be unchanged.
@@ -6184,16 +6143,6 @@ pub mod tests {
         });
 
         cx.dispatch_action(Deploy::find());
-
-        workspace.update_in(cx, |workspace, window, cx| {
-            assert!(!workspace.has_active_modal(window, cx));
-            workspace.toggle_modal(window, cx, |_, cx| EmptyModalView {
-                focus_handle: cx.focus_handle(),
-            });
-            assert!(workspace.has_active_modal(window, cx));
-        });
-
-        cx.dispatch_action(DeploySearch::default());
 
         workspace.update_in(cx, |workspace, window, cx| {
             assert!(!workspace.has_active_modal(window, cx));

@@ -848,8 +848,6 @@ actions!(
         SortLinesCaseSensitive,
         /// Stops the language server for the current file.
         StopLanguageServer,
-        /// Switches between source and header files.
-        SwitchSourceHeader,
         /// Inserts a tab character or indents.
         Tab,
         /// Removes a tab character or outdents.
@@ -896,8 +894,6 @@ actions!(
         ToggleInlineDiagnostics,
         /// Toggles line numbers display.
         ToggleLineNumbers,
-        /// Toggles the minimap display.
-        ToggleMinimap,
         /// Swaps the start and end of the current selection.
         SwapSelectionEnds,
         /// Sets a mark at the current position.

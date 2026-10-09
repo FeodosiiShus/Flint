@@ -200,12 +200,10 @@ impl VsCodeSettings {
             helix_mode: None,
             hide_mouse: None,
             markdown_preview: None,
-            journal: None,
             line_indicator_format: None,
             log: None,
             node: self.node_binary_settings(),
             panel: None,
-            outline_panel: self.outline_panel_settings_content(),
             preview_tabs: self.preview_tabs_settings_content(),
             project: self.project_settings_content(),
             project_panel: self.project_panel_settings_content(),
@@ -216,6 +214,7 @@ impl VsCodeSettings {
                 _ => None,
             }),
             remote: RemoteSettingsContent::default(),
+            search_panel: None,
             session: None,
             status_bar: self.status_bar_settings_content(),
             tab_bar: self.tab_bar_settings_content(),
@@ -277,7 +276,6 @@ impl VsCodeSettings {
             lsp_document_links: self.read_bool("editor.links"),
             lsp_highlight_debounce: None,
             middle_click_paste: None,
-            minimap: self.minimap_content(),
             minimum_contrast_for_highlights: None,
             multi_cursor_modifier: self.read_enum("editor.multiCursorModifier", |s| match s {
                 "ctrlCmd" => Some(MultiCursorModifier::CmdOrCtrl),
@@ -472,29 +470,6 @@ impl VsCodeSettings {
         })
     }
 
-    fn minimap_content(&self) -> Option<MinimapContent> {
-        let minimap_enabled = self.read_bool("editor.minimap.enabled").unwrap_or(true);
-        let autohide = self.read_bool("editor.minimap.autohide").unwrap_or(false);
-        let show = match (minimap_enabled, autohide) {
-            (true, false) => Some(ShowMinimap::Always),
-            (true, true) => Some(ShowMinimap::Auto),
-            (false, _) => Some(ShowMinimap::Never),
-        };
-
-        skip_default(MinimapContent {
-            show,
-            thumb: self.read_enum("editor.minimap.showSlider", |s| match s {
-                "always" => Some(MinimapThumb::Always),
-                "mouseover" => Some(MinimapThumb::Hover),
-                _ => None,
-            }),
-            max_width_columns: self
-                .read_u32("editor.minimap.maxColumn")
-                .and_then(|v| NonZeroU32::new(v)),
-            ..Default::default()
-        })
-    }
-
     fn git_panel_settings_content(&self) -> Option<GitPanelSettingsContent> {
         skip_default(GitPanelSettingsContent {
             button: self.read_bool("git.enabled"),
@@ -650,21 +625,6 @@ impl VsCodeSettings {
                 .insert(k.clone());
         }
         skip_default(FileTypeMap(associations))
-    }
-
-    fn outline_panel_settings_content(&self) -> Option<OutlinePanelSettingsContent> {
-        skip_default(OutlinePanelSettingsContent {
-            file_icons: self.read_bool("outline.icons"),
-            folder_indicator: self.read_bool("outline.icons").map(|icons| {
-                if icons {
-                    FolderIndicator::Icon
-                } else {
-                    FolderIndicator::Chevron
-                }
-            }),
-            git_status: self.read_bool("git.decorations.enabled"),
-            ..Default::default()
-        })
     }
 
     fn node_binary_settings(&self) -> Option<NodeBinarySettings> {

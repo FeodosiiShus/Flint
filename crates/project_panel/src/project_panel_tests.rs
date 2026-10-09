@@ -7060,16 +7060,6 @@ async fn setup_select_opened_file_panel(
     cx: &mut TestAppContext,
 ) -> (Entity<Workspace>, Entity<ProjectPanel>, VisualTestContext) {
     init_test_with_editor(cx);
-    cx.update(|cx| {
-        cx.update_global::<SettingsStore, _>(|store, cx| {
-            store.update_user_settings(cx, |settings| {
-                settings
-                    .project_panel
-                    .get_or_insert_default()
-                    .auto_reveal_entries = Some(false);
-            });
-        })
-    });
 
     let fs = FakeFs::new(cx.executor());
     fs.insert_tree(
@@ -7148,7 +7138,7 @@ async fn test_select_opened_file_reveals_active_file_when_panel_is_focused(
     assert_eq!(
         visible_entries_as_strings(&panel, 0..20, cx),
         SELECT_OPENED_FILE_COLLAPSED_TREE,
-        "The opened file is hidden because auto reveal is disabled"
+        "The opened file is hidden because auto reveal is off by default"
     );
     assert!(
         panel_is_focused_for_select_opened_file(&panel, cx),
@@ -7183,7 +7173,7 @@ async fn test_select_opened_file_reveals_active_file_when_center_pane_is_focused
     assert_eq!(
         visible_entries_as_strings(&panel, 0..20, cx),
         SELECT_OPENED_FILE_COLLAPSED_TREE,
-        "The opened file is hidden because auto reveal is disabled"
+        "The opened file is hidden because auto reveal is off by default"
     );
     assert!(
         !panel_is_focused_for_select_opened_file(&panel, cx),
@@ -7200,6 +7190,26 @@ async fn test_select_opened_file_reveals_active_file_when_center_pane_is_focused
     assert!(
         panel_is_focused_for_select_opened_file(&panel, cx),
         "Project panel should be focused after selecting the opened file"
+    );
+}
+
+#[gpui::test]
+async fn test_select_opened_file_opening_file_does_not_select_it_by_default(
+    cx: &mut gpui::TestAppContext,
+) {
+    let (workspace, panel, mut visual_cx) = setup_select_opened_file_panel(cx).await;
+    let cx = &mut visual_cx;
+
+    let auto_reveal_entries =
+        cx.read(|cx| ProjectPanelSettings::get_global(cx).auto_reveal_entries);
+    assert!(!auto_reveal_entries, "Auto reveal should be off by default");
+
+    open_nested_file_for_select_opened_file(&workspace, cx).await;
+
+    assert_eq!(
+        visible_entries_as_strings(&panel, 0..20, cx),
+        SELECT_OPENED_FILE_COLLAPSED_TREE,
+        "Opening a file should neither expand its ancestors nor select it"
     );
 }
 

@@ -18,7 +18,7 @@ const SEGMENT_GAP: Pixels = px(2.);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum NavigationTarget {
-    Entry(ProjectPath),
+    Path,
     Symbol(usize),
 }
 
@@ -39,10 +39,7 @@ pub fn build_segments(
             let label = ancestor.file_name().unwrap_or(root_name);
             NavigationSegment {
                 label: SharedString::from(label.to_string()),
-                target: NavigationTarget::Entry(ProjectPath {
-                    worktree_id: project_path.worktree_id,
-                    path: ancestor.into_arc(),
-                }),
+                target: NavigationTarget::Path,
             }
         }));
     }
@@ -125,47 +122,31 @@ impl NavigationBar {
         &self.segments
     }
 
-    pub fn navigate(
+    pub fn navigate_to_symbol(
         &mut self,
-        target: &NavigationTarget,
+        symbol_index: usize,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        match target {
-            NavigationTarget::Entry(project_path) => {
-                let entry_id = self
-                    .project
-                    .read(cx)
-                    .entry_for_path(project_path, cx)
-                    .map(|entry| entry.id);
-                if let Some(entry_id) = entry_id {
-                    self.project.update(cx, |_, cx| {
-                        cx.emit(project::Event::RevealInProjectPanel(entry_id));
-                    });
-                }
-            }
-            NavigationTarget::Symbol(index) => {
-                let Some(anchor) = self.symbol_anchors.get(*index).copied() else {
-                    return;
-                };
-                let Some(editor) = self
-                    .active_editor
-                    .as_ref()
-                    .and_then(|editor| editor.upgrade())
-                else {
-                    return;
-                };
-                editor.update(cx, |editor, cx| {
-                    editor.change_selections(
-                        SelectionEffects::scroll(Autoscroll::center()),
-                        window,
-                        cx,
-                        |selections| selections.select_anchor_ranges([anchor..anchor]),
-                    );
-                    window.focus(&editor.focus_handle(cx), cx);
-                });
-            }
-        }
+        let Some(anchor) = self.symbol_anchors.get(symbol_index).copied() else {
+            return;
+        };
+        let Some(editor) = self
+            .active_editor
+            .as_ref()
+            .and_then(|editor| editor.upgrade())
+        else {
+            return;
+        };
+        editor.update(cx, |editor, cx| {
+            editor.change_selections(
+                SelectionEffects::scroll(Autoscroll::center()),
+                window,
+                cx,
+                |selections| selections.select_anchor_ranges([anchor..anchor]),
+            );
+            window.focus(&editor.focus_handle(cx), cx);
+        });
     }
 
     fn refresh(&mut self, cx: &mut Context<Self>) {
@@ -238,20 +219,23 @@ impl NavigationBar {
         segment: &NavigationSegment,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let tooltip = match segment.target {
-            NavigationTarget::Entry(_) => "Reveal in Project Panel",
-            NavigationTarget::Symbol(_) => "Go to Symbol",
-        };
-        let target = segment.target.clone();
-        Button::new(("navigation-bar-segment", index), segment.label.clone())
-            .label_size(LabelSize::Small)
-            .chrome_region(ui::ChromeRegion::StatusBar)
-            .tab_index(0isize)
-            .tooltip(Tooltip::text(tooltip))
-            .on_click(cx.listener(move |this, _, window, cx| {
-                this.navigate(&target, window, cx);
-            }))
-            .into_any_element()
+        match segment.target {
+            NavigationTarget::Path => h_flex()
+                .px_1()
+                .child(Label::new(segment.label.clone()).size(LabelSize::Small))
+                .into_any_element(),
+            NavigationTarget::Symbol(symbol_index) => {
+                Button::new(("navigation-bar-segment", index), segment.label.clone())
+                    .label_size(LabelSize::Small)
+                    .chrome_region(ui::ChromeRegion::StatusBar)
+                    .tab_index(0isize)
+                    .tooltip(Tooltip::text("Go to Symbol"))
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.navigate_to_symbol(symbol_index, window, cx);
+                    }))
+                    .into_any_element()
+            }
+        }
     }
 }
 

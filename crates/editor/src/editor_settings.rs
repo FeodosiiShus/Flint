@@ -1,14 +1,11 @@
-use core::num;
-
 use gpui::App;
 use language::CursorShape;
 use project::project_settings::DiagnosticSeverity;
 pub use settings::{
     CodeLens, CompletionDetailAlignment, CompletionMenuItemKind, CurrentLineHighlight, DelayMs,
-    DiffViewStyle, DisplayIn, DocumentColorsRenderMode, DoubleClickInMultibuffer, GitGutterWidth,
-    GoToDefinitionFallback, GoToDefinitionScrollStrategy, MinimapThumb, MinimapThumbBorder,
-    MultiCursorModifier, OpenResultsIn, ScrollBeyondLastLine, ScrollbarDiagnostics,
-    SeedQuerySetting, ShowMinimap, SnippetSortOrder,
+    DiffViewStyle, DocumentColorsRenderMode, DoubleClickInMultibuffer, GitGutterWidth,
+    GoToDefinitionFallback, GoToDefinitionScrollStrategy, MultiCursorModifier, OpenResultsIn,
+    ScrollBeyondLastLine, ScrollbarDiagnostics, SeedQuerySetting, SnippetSortOrder,
 };
 use settings::{RegisterSetting, RelativeLineNumbers, Settings};
 use ui::scrollbars::ShowScrollbar;
@@ -30,7 +27,6 @@ pub struct EditorSettings {
     pub hover_popover_hiding_delay: DelayMs,
     pub toolbar: Toolbar,
     pub scrollbar: Scrollbar,
-    pub minimap: Minimap,
     pub gutter: Gutter,
     pub scroll_beyond_last_line: ScrollBeyondLastLine,
     pub vertical_scroll_margin: f64,
@@ -113,34 +109,6 @@ pub struct Scrollbar {
 }
 
 #[derive(Copy, Clone, Debug, PartialEq)]
-pub struct Minimap {
-    pub show: ShowMinimap,
-    pub display_in: DisplayIn,
-    pub thumb: MinimapThumb,
-    pub thumb_border: MinimapThumbBorder,
-    pub current_line_highlight: Option<CurrentLineHighlight>,
-    pub max_width_columns: num::NonZeroU32,
-}
-
-impl Minimap {
-    pub fn minimap_enabled(&self) -> bool {
-        self.show != ShowMinimap::Never
-    }
-
-    #[inline]
-    pub fn on_active_editor(&self) -> bool {
-        self.display_in == DisplayIn::ActiveEditor
-    }
-
-    pub fn with_show_override(self) -> Self {
-        Self {
-            show: ShowMinimap::Always,
-            ..self
-        }
-    }
-}
-
-#[derive(Copy, Clone, Debug, PartialEq)]
 pub struct Gutter {
     pub min_line_number_digits: usize,
     pub line_numbers: bool,
@@ -182,8 +150,6 @@ pub struct DragAndDropSelection {
 /// Default options for buffer and project search items.
 #[derive(Copy, Clone, Default, Debug, PartialEq, Eq)]
 pub struct SearchSettings {
-    /// Whether to show the project search button in the status bar.
-    pub button: bool,
     /// Whether to only match on whole words.
     pub whole_word: bool,
     /// Whether to match case sensitively.
@@ -203,7 +169,6 @@ impl Settings for EditorSettings {
         let editor = content.editor.clone();
         let cursor_animation = editor.cursor_animation.unwrap();
         let scrollbar = editor.scrollbar.unwrap();
-        let minimap = editor.minimap.unwrap();
         let gutter = editor.gutter.unwrap();
         let axes = scrollbar.axes.unwrap();
         let toolbar = editor.toolbar.unwrap();
@@ -252,14 +217,6 @@ impl Settings for EditorSettings {
                 },
                 rounded_thumb: scrollbar.rounded_thumb.unwrap_or(true),
             },
-            minimap: Minimap {
-                show: minimap.show.unwrap(),
-                display_in: minimap.display_in.unwrap(),
-                thumb: minimap.thumb.unwrap(),
-                thumb_border: minimap.thumb_border.unwrap(),
-                current_line_highlight: minimap.current_line_highlight,
-                max_width_columns: minimap.max_width_columns.unwrap(),
-            },
             gutter: Gutter {
                 min_line_number_digits: gutter.min_line_number_digits.unwrap(),
                 line_numbers: gutter.line_numbers.unwrap(),
@@ -290,7 +247,6 @@ impl Settings for EditorSettings {
             double_click_in_multibuffer: editor.double_click_in_multibuffer.unwrap(),
             search_wrap: editor.search_wrap.unwrap(),
             search: SearchSettings {
-                button: search.button.unwrap(),
                 whole_word: search.whole_word.unwrap(),
                 case_sensitive: search.case_sensitive.unwrap(),
                 include_ignored: search.include_ignored.unwrap(),

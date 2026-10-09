@@ -1,33 +1,40 @@
 mod actions;
 mod delegate;
 mod files;
+mod panel;
 mod symbols;
 mod text;
 
 #[cfg(test)]
 mod search_everywhere_tests;
+#[cfg(test)]
+mod search_panel_tests;
 
 use file_finder::FoundPath;
 use gpui::{
-    App, AppContext, Context, DismissEvent, Entity, EventEmitter, FocusHandle, Focusable,
-    InteractiveElement, ParentElement, Render, Task, WeakEntity, Window,
+    Action, App, AppContext, Context, DismissEvent, Entity, EventEmitter, FocusHandle, Focusable,
+    InteractiveElement, ParentElement, Render, SharedString, Styled, Task, WeakEntity, Window,
 };
 use picker::{Direction, Picker};
 use project::Project;
-use ui::{IntoElement, v_flex};
+use ui::{FluentBuilder, IntoElement, v_flex};
 use workspace::{ModalView, Workspace};
 use zed_actions::search_everywhere::{
     NextSection, NextTab, PreviousSection, PreviousTab, Tab, Toggle, ToggleNonProjectItems,
 };
 
-use delegate::{SearchEverywhereDelegate, activate_tab, adjacent_tab};
+use delegate::{Presentation, SearchEverywhereDelegate, TextScope, activate_tab, adjacent_tab};
+
+pub use panel::{SearchPanel, SearchPanelSettings};
 
 pub fn init(cx: &mut App) {
     cx.observe_new(SearchEverywhere::register).detach();
+    panel::init(cx);
 }
 
 pub struct SearchEverywhere {
     picker: Entity<Picker<SearchEverywhereDelegate>>,
+    presentation: Presentation,
 }
 
 impl SearchEverywhere {
@@ -80,6 +87,7 @@ impl SearchEverywhere {
                             previous_focus_handle,
                             recent_files,
                             tab,
+                            Presentation::Modal,
                             window,
                             cx,
                         )
@@ -95,12 +103,14 @@ impl SearchEverywhere {
         previous_focus_handle: FocusHandle,
         recent_files: Vec<FoundPath>,
         tab: Tab,
+        presentation: Presentation,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
         let commands = command_palette::palette_actions(window, cx);
         let delegate = SearchEverywhereDelegate::new(
             cx.entity().downgrade(),
+            presentation,
             workspace,
             project.clone(),
             previous_focus_handle,
@@ -110,12 +120,72 @@ impl SearchEverywhere {
             cx.focus_handle(),
         );
         let preview = picker_preview::editor_preview(project, window, cx);
-        let picker = cx.new(|cx| Picker::uniform_list_with_preview(delegate, preview, window, cx));
+        let picker = cx.new(|cx| {
+            let picker = Picker::uniform_list_with_preview(delegate, preview, window, cx);
+            match presentation {
+                Presentation::Modal => picker.opaque_background(),
+                Presentation::Panel => picker.fill_container().reopenable(false, cx),
+            }
+        });
         let picker_focus_handle = picker.focus_handle(cx);
         picker.update(cx, |picker, _| {
             picker.delegate.set_focus_handle(picker_focus_handle);
         });
-        Self { picker }
+        Self {
+            picker,
+            presentation,
+        }
+    }
+
+    fn set_context(
+        &mut self,
+        previous_focus_handle: FocusHandle,
+        actions: Option<Vec<(SharedString, Box<dyn Action>)>>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.picker.update(cx, |picker, cx| {
+            picker
+                .delegate
+                .set_previous_focus_handle(previous_focus_handle);
+            if let Some(actions) = actions
+                && picker.delegate.set_actions(actions)
+            {
+                picker.refresh(window, cx);
+            }
+        });
+    }
+
+    fn set_recent_files(
+        &mut self,
+        recent_files: Vec<FoundPath>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.picker.update(cx, |picker, cx| {
+            if picker.delegate.set_recent_files(recent_files) && picker.query(cx).is_empty() {
+                picker.refresh(window, cx);
+            }
+        });
+    }
+
+    fn show_text_search(
+        &mut self,
+        query: Option<String>,
+        scope: Option<TextScope>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.picker.update(cx, |picker, cx| {
+            picker.delegate.set_text_scope(scope);
+            picker.delegate.set_tab(Tab::Text);
+            if let Some(query) = query {
+                picker.set_query(&query, window, cx);
+                picker.select_query(window, cx);
+            }
+            picker.refresh_placeholder(window, cx);
+            picker.refresh(window, cx);
+        });
     }
 
     fn next_tab(&mut self, _: &NextTab, window: &mut Window, cx: &mut Context<Self>) {
@@ -187,6 +257,9 @@ impl Render for SearchEverywhere {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         v_flex()
             .key_context("SearchEverywhere")
+            .when(self.presentation == Presentation::Panel, |this| {
+                this.size_full()
+            })
             .on_action(cx.listener(Self::next_tab))
             .on_action(cx.listener(Self::previous_tab))
             .on_action(cx.listener(Self::next_section))

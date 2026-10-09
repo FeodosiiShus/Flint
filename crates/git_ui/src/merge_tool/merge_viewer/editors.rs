@@ -1,4 +1,4 @@
-use editor::{CurrentLineHighlight, Editor, MinimapVisibility};
+use editor::{CurrentLineHighlight, Editor};
 use gpui::{AppContext as _, Context, Entity, Window};
 use language::language_settings::{ShowWhitespaceSetting, SoftWrap};
 use merge_diff::ThreeSide;
@@ -28,7 +28,7 @@ fn create_pane_editor(
 ) -> Entity<Editor> {
     cx.new(|cx| {
         let mut editor = Editor::for_buffer(buffer, None, window, cx);
-        configure_pane_editor(&mut editor, read_only, appearance, window, cx);
+        configure_pane_editor(&mut editor, read_only, appearance, cx);
         editor
     })
 }
@@ -37,13 +37,11 @@ fn configure_pane_editor(
     editor: &mut Editor,
     read_only: bool,
     appearance: Appearance,
-    window: &mut Window,
     cx: &mut Context<Editor>,
 ) {
     editor.set_read_only(read_only);
     editor.set_input_enabled(!read_only);
     editor.set_should_serialize(false, cx);
-    editor.set_minimap_visibility(MinimapVisibility::Disabled, window, cx);
     editor.set_show_vertical_scrollbar(true, cx);
     editor.set_show_horizontal_scrollbar(true, cx);
     editor.disable_inline_diagnostics();

@@ -44,7 +44,6 @@ use markdown::{Markdown, MarkdownElement, MarkdownFont, MarkdownStyle};
 use migrate::{MigrationBanner, MigrationEvent, MigrationNotification, MigrationType};
 use migrator::migrate_keymap;
 pub use open_listener::*;
-use outline_panel::OutlinePanel;
 use paths::{
     local_debug_file_relative_path, local_settings_file_relative_path,
     local_tasks_file_relative_path,
@@ -59,6 +58,7 @@ use recent_projects::open_remote_project;
 use release_channel::{AppCommitSha, AppVersion, ReleaseChannel};
 use rope::Rope;
 use search::project_search::ProjectSearchBar;
+use search_everywhere::SearchPanel;
 use settings::{
     BaseKeymap, DEFAULT_KEYMAP_PATH, DefaultOpenBehavior, InvalidSettingsError, KeybindSource,
     KeymapFile, KeymapFileLoadResult, MigrationStatus, SPECIFIC_OVERRIDES_KEYMAP_PATH, Settings,
@@ -490,7 +490,6 @@ pub fn initialize_workspace(app_state: Arc<AppState>, cx: &mut App) {
             show_software_emulation_warning_if_needed(specs, window, cx);
         }
 
-        let search_button = cx.new(|_| search::search_status_button::SearchButton::new());
         let diagnostic_summary =
             cx.new(|cx| diagnostics::items::DiagnosticIndicator::new(workspace, cx));
         let active_file_name = cx.new(|_| workspace::active_file_name::ActiveFileName::new());
@@ -521,7 +520,6 @@ pub fn initialize_workspace(app_state: Arc<AppState>, cx: &mut App) {
         let indentation_indicator = cx.new(status_widgets::IndentationIndicator::new);
         let read_only_indicator = cx.new(|_| status_widgets::ReadOnlyIndicator::default());
         workspace.status_bar().update(cx, |status_bar, cx| {
-            status_bar.add_left_item(search_button, window, cx);
             status_bar.add_left_item(lsp_button, window, cx);
             status_bar.add_left_item(diagnostic_summary, window, cx);
             status_bar.add_left_item(branch_indicator, window, cx);
@@ -665,9 +663,9 @@ fn show_software_emulation_warning_if_needed(
 fn initialize_panels(window: &mut Window, cx: &mut Context<Workspace>) -> Task<anyhow::Result<()>> {
     cx.spawn_in(window, async move |workspace_handle, cx| {
         let project_panel = ProjectPanel::load(workspace_handle.clone(), cx.clone());
-        let outline_panel = OutlinePanel::load(workspace_handle.clone(), cx.clone());
         let terminal_panel = TerminalPanel::load(workspace_handle.clone(), cx.clone());
         let git_panel = GitPanel::load(workspace_handle.clone(), cx.clone());
+        let search_panel = SearchPanel::load(workspace_handle.clone(), cx.clone());
 
         async fn add_panel_when_ready(
             panel_task: impl Future<Output = anyhow::Result<Entity<impl workspace::Panel>>> + 'static,
@@ -686,9 +684,9 @@ fn initialize_panels(window: &mut Window, cx: &mut Context<Workspace>) -> Task<a
 
         futures::join!(
             add_panel_when_ready(project_panel, workspace_handle.clone(), cx.clone()),
-            add_panel_when_ready(outline_panel, workspace_handle.clone(), cx.clone()),
             add_panel_when_ready(terminal_panel, workspace_handle.clone(), cx.clone()),
             add_panel_when_ready(git_panel, workspace_handle.clone(), cx.clone()),
+            add_panel_when_ready(search_panel, workspace_handle.clone(), cx.clone()),
         );
 
         workspace_handle.update(cx, |workspace, cx| {
@@ -1043,14 +1041,6 @@ fn register_actions(
         )
         .register_action(
             |workspace: &mut Workspace,
-             _: &outline_panel::ToggleFocus,
-             window: &mut Window,
-             cx: &mut Context<Workspace>| {
-                workspace.toggle_panel_focus::<OutlinePanel>(window, cx);
-            },
-        )
-        .register_action(
-            |workspace: &mut Workspace,
              _: &terminal_panel::ToggleFocus,
              window: &mut Window,
              cx: &mut Context<Workspace>| {
@@ -1210,14 +1200,9 @@ fn initialize_pane(
             toolbar.add_item(project_search_bar, window, cx);
             let lsp_log_item = cx.new(|_| LspLogToolbarItemView::new());
             toolbar.add_item(lsp_log_item, window, cx);
-            let syntax_tree_item = cx.new(|_| language_tools::SyntaxTreeToolbarItemView::new());
-            toolbar.add_item(syntax_tree_item, window, cx);
             let migration_banner =
                 cx.new(|inner_cx| MigrationBanner::new(workspace_handle.clone(), inner_cx));
             toolbar.add_item(migration_banner, window, cx);
-            let highlights_tree_item =
-                cx.new(|_| language_tools::HighlightsTreeToolbarItemView::new());
-            toolbar.add_item(highlights_tree_item, window, cx);
             let project_diff_toolbar = cx.new(|cx| ProjectDiffToolbar::new(workspace, cx));
             toolbar.add_item(project_diff_toolbar, window, cx);
             let staged_diff_toolbar = cx.new(|cx| StagedDiffToolbar::new(workspace, cx));
@@ -3496,6 +3481,7 @@ mod tests {
     #[gpui::test]
     async fn test_open_paths(cx: &mut TestAppContext) {
         let app_state = init_test(cx);
+        enable_project_panel_auto_reveal(cx);
 
         app_state
             .fs
@@ -5380,8 +5366,6 @@ mod tests {
                 "git_graph",
                 "git_panel",
                 "go_to_line",
-                "highlights_tree_view",
-                "journal",
                 "keymap_editor",
                 "keystroke_input",
                 "language_selector",
@@ -5393,7 +5377,6 @@ mod tests {
                 "merge_tool",
                 "multi_workspace",
                 "outline",
-                "outline_panel",
                 "pane",
                 "picker",
                 "project_panel",
@@ -5404,12 +5387,10 @@ mod tests {
                 "remote_debug",
                 "search",
                 "search_everywhere",
+                "search_panel",
                 "settings_editor",
-                "snippets",
                 "stash_picker",
                 "status_widgets",
-                "svg",
-                "syntax_tree_view",
                 "task",
                 "terminal",
                 "terminal_panel",
@@ -5576,6 +5557,19 @@ mod tests {
         init_test_with_state(cx, cx.update(AppState::test))
     }
 
+    fn enable_project_panel_auto_reveal(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            cx.update_global::<SettingsStore, _>(|store, cx| {
+                store.update_user_settings(cx, |settings| {
+                    settings
+                        .project_panel
+                        .get_or_insert_default()
+                        .auto_reveal_entries = Some(true);
+                });
+            });
+        });
+    }
+
     fn set_file_scan_depth(cx: &mut TestAppContext, depth: u32) {
         cx.update(|cx| {
             cx.update_global::<SettingsStore, _>(|store, cx| {
@@ -5606,7 +5600,6 @@ mod tests {
             editor::init(cx);
             git_ui::init(cx);
             project_panel::init(cx);
-            outline_panel::init(cx);
             terminal_view::init(cx);
             tasks_ui::init(cx);
             project::debugger::breakpoint_store::BreakpointStore::init(

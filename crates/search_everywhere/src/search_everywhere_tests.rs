@@ -8,7 +8,8 @@ use lsp::OneOf;
 use picker::{Direction, Picker, PickerDelegate};
 use project::{FakeFs, Project, ProjectEntryId, ProjectPath};
 use serde_json::json;
-use settings::KeymapFile;
+use settings::{KeymapFile, SettingsStore, ThemeColorsContent, ThemeStyleContent};
+use theme::ActiveTheme as _;
 use util::{path, rel_path::rel_path};
 use workspace::{AppState, MultiWorkspace, Workspace};
 use zed_actions::search_everywhere::{Tab, Toggle};
@@ -18,7 +19,7 @@ use crate::{
     delegate::{Entry, SEARCH_DEBOUNCE, SearchEverywhereDelegate, Section},
 };
 
-fn init_test(cx: &mut TestAppContext) -> Arc<AppState> {
+pub(crate) fn init_test(cx: &mut TestAppContext) -> Arc<AppState> {
     cx.update(|cx| {
         let app_state = AppState::test(cx);
         theme_settings::init(theme::LoadThemes::JustBase, cx);
@@ -52,7 +53,7 @@ fn init_test(cx: &mut TestAppContext) -> Arc<AppState> {
     })
 }
 
-fn build_workspace(
+pub(crate) fn build_workspace(
     project: Entity<Project>,
     cx: &mut TestAppContext,
 ) -> (Entity<Workspace>, &mut VisualTestContext) {
@@ -87,12 +88,12 @@ fn open_search_everywhere(
     active_picker(workspace, cx)
 }
 
-fn settle(cx: &mut VisualTestContext) {
+pub(crate) fn settle(cx: &mut VisualTestContext) {
     cx.executor().advance_clock(SEARCH_DEBOUNCE);
     cx.run_until_parked();
 }
 
-fn type_query(cx: &mut VisualTestContext, query: &str) {
+pub(crate) fn type_query(cx: &mut VisualTestContext, query: &str) {
     cx.simulate_input(query);
     settle(cx);
 }
@@ -130,7 +131,7 @@ fn describe_entry(delegate: &SearchEverywhereDelegate, entry: Entry) -> String {
     }
 }
 
-fn entries(
+pub(crate) fn entries(
     picker: &Entity<Picker<SearchEverywhereDelegate>>,
     cx: &mut VisualTestContext,
 ) -> Vec<String> {
@@ -144,7 +145,7 @@ fn entries(
     })
 }
 
-fn selected_entry(
+pub(crate) fn selected_entry(
     picker: &Entity<Picker<SearchEverywhereDelegate>>,
     cx: &mut VisualTestContext,
 ) -> String {
@@ -342,7 +343,7 @@ async fn test_all_tab_groups_results_and_more_row_switches_tab(cx: &mut TestAppC
     assert_eq!(all_entries.last().map(String::as_str), Some("more Files"));
     assert!(
         !all_entries.iter().any(|entry| entry == "# Text"),
-        "text results stay hidden while other sections have enough results"
+        "no file contains the query, so the All tab has no text section"
     );
 
     picker.update_in(cx, |picker, window, cx| {
@@ -708,12 +709,14 @@ async fn test_text_results_in_text_tab_and_all_tab(cx: &mut TestAppContext) {
     assert_eq!(
         entries(&picker, cx),
         vec!["# Text", "notes.md:2"],
-        "with few other results the All tab shows text matches at the bottom"
+        "the All tab shows text matches in their own section"
     );
 }
 
 #[gpui::test]
-async fn test_all_tab_hides_text_when_other_sections_have_enough_results(cx: &mut TestAppContext) {
+async fn test_all_tab_shows_text_matches_even_when_other_sections_are_full(
+    cx: &mut TestAppContext,
+) {
     let app_state = init_test(cx);
     app_state
         .fs
@@ -727,6 +730,8 @@ async fn test_all_tab_hides_text_when_other_sections_have_enough_results(cx: &mu
                 "qzneedle3.txt": "",
                 "qzneedle4.txt": "",
                 "qzneedle5.txt": "",
+                "qzneedle6.txt": "",
+                "qzneedle7.txt": "",
             }),
         )
         .await;
@@ -738,16 +743,91 @@ async fn test_all_tab_hides_text_when_other_sections_have_enough_results(cx: &mu
     let all_entries = entries(&picker, cx);
     assert_eq!(all_entries.first().map(String::as_str), Some("# Files"));
     assert!(
-        !all_entries.iter().any(|entry| entry == "# Text"),
-        "five other results are enough to hide text matches: {all_entries:?}"
+        all_entries.iter().any(|entry| entry == "more Files"),
+        "the files section is capped and offers a more row: {all_entries:?}"
     );
-    picker.read_with(cx, |picker, _| {
-        assert_eq!(
-            picker.delegate.results.text.len(),
-            1,
-            "the text search itself still ran"
-        );
+    assert_eq!(
+        &all_entries[all_entries.len() - 2..],
+        ["# Text", "notes.md:1"],
+        "text matches are listed after the full files section: {all_entries:?}"
+    );
+}
+
+#[gpui::test]
+async fn test_all_tab_aggregates_files_classes_symbols_actions_and_text(cx: &mut TestAppContext) {
+    init_test(cx);
+    let (project, _buffer) = project_with_symbols(
+        vec![
+            symbol_information("BckspWidget", lsp::SymbolKind::CLASS, path!("/dir/test.rs")),
+            symbol_information(
+                "bcksp_factory",
+                lsp::SymbolKind::FUNCTION,
+                path!("/dir/test.rs"),
+            ),
+        ],
+        None,
+        cx,
+    )
+    .await;
+    project
+        .read_with(cx, |project, _| project.fs().clone())
+        .as_fake()
+        .insert_file(path!("/dir/bcksp_notes.md"), "a bcksp line".into())
+        .await;
+    cx.run_until_parked();
+    let (workspace, cx) = build_workspace(project, cx);
+    let editor = cx.new_window_entity(|window, cx| Editor::single_line(window, cx));
+    workspace.update_in(cx, |workspace, window, cx| {
+        workspace.add_item_to_active_pane(Box::new(editor.clone()), None, true, window, cx);
+        editor.update(cx, |editor, cx| window.focus(&editor.focus_handle(cx), cx));
     });
+
+    let picker = open_search_everywhere(None, &workspace, cx);
+    type_query(cx, "bcksp");
+
+    let headers = entries(&picker, cx)
+        .into_iter()
+        .filter(|entry| entry.starts_with("# "))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        headers,
+        ["# Classes", "# Files", "# Symbols", "# Actions", "# Text"],
+        "every provider contributes a section to the All tab"
+    );
+}
+
+#[gpui::test]
+async fn test_search_everywhere_surface_is_opaque_with_translucent_theme(cx: &mut TestAppContext) {
+    let app_state = init_test(cx);
+    cx.update(|cx| {
+        SettingsStore::update_global(cx, |store, cx| {
+            store.update_user_settings(cx, |settings| {
+                settings.theme.experimental_theme_overrides = Some(ThemeStyleContent {
+                    colors: ThemeColorsContent {
+                        elevated_surface_background: Some("#22272f99".into()),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                });
+            });
+        });
+    });
+    let project = Project::test(app_state.fs.clone(), [], cx).await;
+    let (workspace, cx) = build_workspace(project, cx);
+    cx.run_until_parked();
+    let theme_surface = cx.update(|_, cx| cx.theme().colors().elevated_surface_background);
+    assert!(
+        theme_surface.a < 1.0,
+        "the theme override makes the elevated surface translucent"
+    );
+
+    let picker = open_search_everywhere(None, &workspace, cx);
+    let surface = picker.read_with(cx, |picker, cx| picker.opaque_surface_background(cx));
+    let surface = surface.expect("the search everywhere picker paints an opaque surface");
+    assert_eq!(surface.a, 1.0);
+    assert_eq!(surface.h, theme_surface.h);
+    assert_eq!(surface.s, theme_surface.s);
+    assert_eq!(surface.l, theme_surface.l);
 }
 
 #[gpui::test]
