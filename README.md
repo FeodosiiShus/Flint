@@ -8,7 +8,7 @@ Flint is a personal fork of [Zed](https://github.com/zed-industries/zed). It is 
 ## Getting a build
 
 - Every push runs the [`checks.yml`](.github/workflows/checks.yml) workflow: `cargo fmt --check`, `cargo check` of the app, and the tests of the crates Flint changes. It does not build the app.
-- The app is built only on demand: Actions → Build macOS → Run workflow → branch `main`. The DMG is attached to the run as the `flint-macos-aarch64` artifact.
+- The app is built on every push or merge to `main`, and on demand: Actions → Build macOS → Run workflow → branch `main`. The DMG is attached to the run as the `flint-macos-aarch64` artifact.
 - Running Build macOS from a `v*` tag also publishes a GitHub Release with the DMG attached.
 - To run the tests locally, use `script/local-ci-tests` (limits and prerequisites are documented in [AGENTS.md](AGENTS.md) under "Build guidelines"); release builds still run only in GitHub Actions.
 

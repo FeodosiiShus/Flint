@@ -10025,7 +10025,7 @@ pub fn create_and_open_local_file(
 
         workspace
             .update_in(cx, |workspace, window, cx| {
-                workspace.with_local_workspace(window, cx, |workspace, window, cx| {
+                workspace.with_local_workspace(window, cx, move |_, window, cx| {
                     cx.spawn_in(window, async move |workspace, cx| {
                         let path = fs.canonicalize(path).await.unwrap_or(path.to_path_buf());
 
