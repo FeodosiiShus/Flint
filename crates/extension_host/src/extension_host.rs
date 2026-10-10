@@ -51,7 +51,7 @@ use std::{
 };
 use task::TaskTemplates;
 use util::{
-    ResultExt,
+    PathExt, ResultExt,
     paths::{PathStyle, RemotePathBuf},
 };
 use wasm_host::{WasmExtension, WasmHost};
