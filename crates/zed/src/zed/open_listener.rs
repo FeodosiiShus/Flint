@@ -826,11 +826,15 @@ async fn open_workspaces(
             }
             SerializedWorkspaceLocation::Remote(mut connection) => {
                 let app_state = app_state.clone();
-                if let RemoteConnectionOptions::Ssh(options) = &mut connection {
-                    cx.update(|cx| {
-                        RemoteSettings::get_global(cx)
-                            .fill_connection_options_from_settings(options)
-                    });
+                match &mut connection {
+                    RemoteConnectionOptions::Ssh(options) => {
+                        cx.update(|cx| {
+                            RemoteSettings::get_global(cx)
+                                .fill_connection_options_from_settings(options)
+                        });
+                    }
+                    #[cfg(any(test, feature = "test-support"))]
+                    RemoteConnectionOptions::Mock(_) => {}
                 }
                 cx.spawn(async move |cx| {
                     open_remote_project(

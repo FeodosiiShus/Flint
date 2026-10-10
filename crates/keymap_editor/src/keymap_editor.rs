@@ -843,7 +843,7 @@ impl KeymapEditor {
             let is_no_action = gpui::is_no_action(key_binding.action());
             let is_unbound_by_unbind =
                 binding_is_unbound_by_unbind(key_binding, binding_index, &key_bindings);
-            let binding = KeyBinding::new(key_binding, source);
+            let binding = KeyBinding::new(key_binding);
 
             let context = key_binding
                 .predicate()
@@ -1700,14 +1700,12 @@ impl HumanizedActionNameCache {
 #[derive(Clone)]
 struct KeyBinding {
     keystrokes: Rc<[KeybindingKeystroke]>,
-    source: KeybindSource,
 }
 
 impl KeyBinding {
-    fn new(binding: &gpui::KeyBinding, source: KeybindSource) -> Self {
+    fn new(binding: &gpui::KeyBinding) -> Self {
         Self {
             keystrokes: Rc::from(binding.keystrokes()),
-            source,
         }
     }
 }

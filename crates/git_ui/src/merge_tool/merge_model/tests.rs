@@ -1102,7 +1102,9 @@ async fn resetting_a_resolved_change_restores_its_base_lines_and_clears_its_stat
     });
     let (events, _subscription) = record_events(cx, &model);
 
-    model.update(cx, |model, cx| model.run_reset_resolved_change(0, cx));
+    model.update(cx, |model, cx| {
+        model.run_reset_resolved_changes("Revert in merge", &[0], cx)
+    });
 
     assert_eq!(result_text(cx, &model), BASE_TEXT);
     assert_eq!(resolved_flags(cx, &model), vec![false; 4]);
@@ -1162,7 +1164,9 @@ async fn reverting_a_two_sided_resolution_makes_the_next_accept_replace_instead_
     });
     assert_eq!(result_text(cx, &model), "a\nL1\nL2\nR1\nd\n");
 
-    model.update(cx, |model, cx| model.run_reset_resolved_change(0, cx));
+    model.update(cx, |model, cx| {
+        model.run_reset_resolved_changes("Revert in merge", &[0], cx)
+    });
 
     assert_eq!(result_text(cx, &model), "a\nb\nc\nd\n");
     assert_eq!(result_ranges(cx, &model), vec![(1, 3)]);

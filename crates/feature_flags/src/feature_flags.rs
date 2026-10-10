@@ -9,7 +9,7 @@ pub use store::*;
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use gpui::{App, Context, Global, Subscription, Window};
+use gpui::{App, Context, Global, Window};
 
 impl Global for FeatureFlagStore {}
 

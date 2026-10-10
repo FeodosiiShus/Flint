@@ -12,16 +12,11 @@ pub(crate) struct MergeModelRequest {
     pub(crate) ignore_policy: ComparisonPolicy,
 }
 
+#[cfg(test)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct FileProgress {
     pub(crate) resolved: usize,
     pub(crate) total: usize,
-}
-
-impl FileProgress {
-    pub(crate) fn is_partially_resolved(&self) -> bool {
-        self.resolved > 0 && self.resolved < self.total
-    }
 }
 
 #[derive(Default)]
@@ -41,18 +36,21 @@ impl MergeConflictIterativeDataHolder {
         self.models.get(file)
     }
 
+    #[cfg(test)]
     pub(crate) fn is_file_resolved(&self, file: &RepoPath, cx: &App) -> bool {
         self.models
             .get(file)
             .is_some_and(|model| model.read(cx).is_fully_resolved())
     }
 
+    #[cfg(test)]
     pub(crate) fn is_file_reviewed(&self, file: &RepoPath, cx: &App) -> bool {
         self.models
             .get(file)
             .is_some_and(|model| model.read(cx).was_reviewed())
     }
 
+    #[cfg(test)]
     pub(crate) fn file_progress(&self, file: &RepoPath, cx: &App) -> Option<FileProgress> {
         let model = self.models.get(file)?.read(cx);
         Some(FileProgress {
@@ -61,6 +59,7 @@ impl MergeConflictIterativeDataHolder {
         })
     }
 
+    #[cfg(test)]
     pub(crate) fn resolved_files_and_models(
         &self,
         cx: &App,
@@ -109,6 +108,7 @@ impl MergeConflictIterativeDataHolder {
         })
     }
 
+    #[cfg(test)]
     pub(crate) fn resolve_auto_resolvable_conflicts(
         &mut self,
         file: &RepoPath,

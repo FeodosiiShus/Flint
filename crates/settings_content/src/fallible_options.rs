@@ -43,14 +43,6 @@ where
     (Some(value), ParseStatus::Success)
 }
 
-pub(crate) fn ignore<'de, D>(deserializer: D) -> Result<(), D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    serde::de::IgnoredAny::deserialize(deserializer)?;
-    Ok(())
-}
-
 pub(crate) fn deserialize<'de, D, T>(deserializer: D) -> Result<T, D::Error>
 where
     D: serde::Deserializer<'de>,

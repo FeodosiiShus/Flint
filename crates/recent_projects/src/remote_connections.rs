@@ -244,13 +244,13 @@ pub async fn open_remote_project(
                     Some(Arc::new(RemoteClientDelegate::new(
                         window.window_handle(),
                         ui.downgrade(),
-                        if let RemoteConnectionOptions::Ssh(options) = &connection_options {
-                            options
+                        match &connection_options {
+                            RemoteConnectionOptions::Ssh(options) => options
                                 .password
                                 .as_deref()
-                                .and_then(|pw| EncryptedPassword::try_from(pw).ok())
-                        } else {
-                            None
+                                .and_then(|pw| EncryptedPassword::try_from(pw).ok()),
+                            #[cfg(any(test, feature = "test-support"))]
+                            RemoteConnectionOptions::Mock(_) => None,
                         },
                     )))
                 })

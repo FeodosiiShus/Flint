@@ -575,6 +575,7 @@ fn main() {
         status_widgets::init(cx);
         language_tools::init(cx);
         git_ui::init(cx);
+        title_bar::init(cx);
         settings_ui::init(cx);
         keymap_editor::init(cx);
         extensions_ui::init(cx);
@@ -1033,11 +1034,15 @@ pub(crate) async fn restore_or_create_workspace(
                 }
                 SerializedWorkspaceLocation::Remote(connection_options) => {
                     let mut connection_options = connection_options.clone();
-                    if let RemoteConnectionOptions::Ssh(options) = &mut connection_options {
-                        cx.update(|cx| {
-                            RemoteSettings::get_global(cx)
-                                .fill_connection_options_from_settings(options)
-                        });
+                    match &mut connection_options {
+                        RemoteConnectionOptions::Ssh(options) => {
+                            cx.update(|cx| {
+                                RemoteSettings::get_global(cx)
+                                    .fill_connection_options_from_settings(options)
+                            });
+                        }
+                        #[cfg(any(test, feature = "test-support"))]
+                        RemoteConnectionOptions::Mock(_) => {}
                     }
 
                     let paths = multi_workspace

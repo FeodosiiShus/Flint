@@ -358,20 +358,12 @@ impl MergeConflictModel {
         self.ignore_policy
     }
 
-    pub(crate) fn file_conflict_type(&self) -> FileConflictType {
-        self.conflict_type
-    }
-
     pub(crate) fn is_initialized(&self) -> bool {
         self.initialized
     }
 
     pub(crate) fn side_text(&self, side: ThreeSide) -> &str {
         self.sides.side(side).text()
-    }
-
-    pub(crate) fn result_text(&self) -> &str {
-        self.result.text()
     }
 
     pub(crate) fn current_result_text(&self, cx: &App) -> String {

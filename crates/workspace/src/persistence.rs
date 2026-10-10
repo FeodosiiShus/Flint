@@ -1694,29 +1694,20 @@ impl WorkspaceDb {
         options: RemoteConnectionOptions,
     ) -> Result<RemoteConnectionId> {
         let identity = remote_connection_identity(&options);
-        let kind;
-        let user: Option<String>;
-        let mut host = None;
-        let mut port = None;
-
-        match identity {
+        let (kind, host, port, user) = match identity {
             RemoteConnectionIdentity::Ssh {
-                host: identity_host,
+                host,
                 username,
-                port: identity_port,
-            } => {
-                kind = RemoteConnectionKind::Ssh;
-                host = Some(identity_host);
-                port = identity_port;
-                user = username;
-            }
+                port,
+            } => (RemoteConnectionKind::Ssh, Some(host), port, username),
             #[cfg(any(test, feature = "test-support"))]
-            RemoteConnectionIdentity::Mock { id } => {
-                kind = RemoteConnectionKind::Ssh;
-                host = Some(format!("mock-{}", id));
-                user = Some(format!("mock-user-{}", id));
-            }
-        }
+            RemoteConnectionIdentity::Mock { id } => (
+                RemoteConnectionKind::Ssh,
+                Some(format!("mock-{}", id)),
+                None,
+                Some(format!("mock-user-{}", id)),
+            ),
+        };
 
         Self::get_or_create_remote_connection_query(
             this, kind, host, port, user, None, None, None, None, None,

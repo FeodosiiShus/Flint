@@ -159,18 +159,12 @@ impl PlatformTitleBar {
     }
 
     #[cfg(target_os = "macos")]
-    fn update_traffic_light_position(&mut self, height: Pixels, window: &Window, cx: &App) {
-        let region = ui::ChromeRegion::TitleBar;
-        let height_overridden = ui::chrome_height(region, cx).is_some();
-        let icon_size_overridden = ui::chrome_icon_scale(region, cx).is_some();
-        let overridden = height_overridden || icon_size_overridden;
+    fn update_traffic_light_position(&mut self, height: Pixels, window: &Window) {
         let default_position = DEFAULT_TRAFFIC_LIGHT_POSITION;
         let centered_y = default_position.y + (height - DEFAULT_TITLE_BAR_HEIGHT) / 2.;
-        let target_y = overridden.then_some(centered_y);
-        if target_y != self.traffic_light_y {
-            let y = target_y.unwrap_or(default_position.y);
-            window.set_traffic_light_position(gpui::point(default_position.x, y));
-            self.traffic_light_y = target_y;
+        if self.traffic_light_y != Some(centered_y) {
+            window.set_traffic_light_position(gpui::point(default_position.x, centered_y));
+            self.traffic_light_y = Some(centered_y);
         }
     }
 }
@@ -248,7 +242,7 @@ impl Render for PlatformTitleBar {
         let decorations = window.window_decorations();
         let height = platform_title_bar_height(window, cx);
         #[cfg(target_os = "macos")]
-        self.update_traffic_light_position(height, window, cx);
+        self.update_traffic_light_position(height, window);
         let titlebar_color = self.title_bar_color(window, cx);
         let close_action = Box::new(workspace::CloseWindow);
         let children = mem::take(&mut self.children);

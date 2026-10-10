@@ -658,7 +658,8 @@ pub fn connect(
             .password
             .as_deref()
             .and_then(|pw| pw.try_into().ok()),
-        _ => None,
+        #[cfg(feature = "test-support")]
+        RemoteConnectionOptions::Mock(_) => None,
     };
     let (tx, mut rx) = oneshot::channel();
     ui.update(cx, |ui, _cx| ui.set_cancellation_tx(tx));

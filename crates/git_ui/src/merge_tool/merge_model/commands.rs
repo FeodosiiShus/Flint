@@ -47,16 +47,6 @@ impl MergeConflictModel {
         })
     }
 
-    pub(crate) fn run_reset_resolved_change(
-        &mut self,
-        index: usize,
-        cx: &mut Context<Self>,
-    ) -> bool {
-        self.execute_merge_command(COMMAND_RESET_CHANGE, Some(&[index]), cx, |model, cx| {
-            model.reset_resolved_change(index, false, cx);
-        })
-    }
-
     pub(crate) fn run_replace_changes(
         &mut self,
         command_name: &str,

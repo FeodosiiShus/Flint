@@ -798,8 +798,8 @@ fn open_settings_editor_with(
             WindowOptions {
                 titlebar: Some(TitlebarOptions {
                     title: Some("Flint — Settings".into()),
-                    appears_transparent: true,
-                    traffic_light_position: Some(point(px(12.0), px(12.0))),
+                    appears_transparent: false,
+                    traffic_light_position: None,
                 }),
                 focus: true,
                 show: true,
@@ -2334,15 +2334,6 @@ impl SettingsWindow {
         cx.notify();
     }
 
-    fn rebuild_pages(&mut self, window: &mut Window, cx: &mut Context<SettingsWindow>) {
-        self.pages.clear();
-        self.navbar_entries.clear();
-        self.navbar_focus_subscriptions.clear();
-        self.content_handles.clear();
-        self.build_ui(window, cx);
-        self.build_search_index();
-    }
-
     #[track_caller]
     fn fetch_files(&mut self, window: &mut Window, cx: &mut Context<SettingsWindow>) {
         self.worktree_root_dirs.clear();
@@ -2972,7 +2963,6 @@ impl SettingsWindow {
             .w(SIDEBAR_WIDTH)
             .h_full()
             .p_2p5()
-            .when(cfg!(target_os = "macos"), |this| this.pt_10())
             .flex_none()
             .border_r_1()
             .border_color(cx.theme().colors().border)

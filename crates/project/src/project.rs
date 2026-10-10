@@ -82,7 +82,6 @@ use language::{
     Buffer, BufferEditSource, BufferEvent, Capability, CodeLabel, CursorShape, DiskState, Language,
     LanguageName, LanguageRegistry, PointUtf16, ToOffset, ToPointUtf16, Toolchain,
     ToolchainMetadata, ToolchainScope, Transaction, Unclipped, language_settings::InlayHintKind,
-    proto::split_operations,
 };
 use lsp::{
     CodeActionKind, CompletionContext, CompletionItemKind, DocumentHighlightKind, InsertTextMode,
@@ -112,7 +111,7 @@ use std::{
     collections::BTreeMap,
     ffi::OsString,
     future::Future,
-    ops::{Not as _, Range},
+    ops::Range,
     path::{Path, PathBuf},
     pin::pin,
     str::{self, FromStr},
@@ -212,7 +211,6 @@ pub struct Project {
     user_store: Entity<UserStore>,
     fs: Arc<dyn Fs>,
     remote_client: Option<Entity<RemoteClient>>,
-    client_state: ProjectClientState,
     git_store: Entity<GitStore>,
     collaborators: HashMap<proto::PeerId, Collaborator>,
     worktree_store: Entity<WorktreeStore>,
@@ -284,16 +282,6 @@ enum BufferOrderedMessage {
         buffer_id: BufferId,
         operation: proto::Operation,
     },
-    LanguageServerUpdate {
-        language_server_id: LanguageServerId,
-        message: proto::update_language_server::Variant,
-        name: Option<LanguageServerName>,
-    },
-}
-
-#[derive(Debug)]
-enum ProjectClientState {
-    Local,
 }
 
 /// A link to display in a toast notification, useful to point to documentation.
@@ -1273,7 +1261,6 @@ impl Project {
                 buffer_store,
                 image_store,
                 lsp_store,
-                client_state: ProjectClientState::Local,
                 git_store,
                 _subscriptions: vec![cx.on_release(Self::release)],
                 active_entry: None,
@@ -1481,7 +1468,6 @@ impl Project {
                 bookmark_store,
                 breakpoint_store,
                 dap_store,
-                client_state: ProjectClientState::Local,
                 git_store,
                 _subscriptions: vec![
                     cx.on_release(Self::release),
@@ -2773,50 +2759,18 @@ impl Project {
             let is_local = project.read_with(cx, |this, _| this.is_local())?;
 
             for change in changes {
-                match change {
-                    BufferOrderedMessage::Operation {
-                        buffer_id,
-                        operation,
-                    } => {
-                        if needs_resync_with_host {
-                            continue;
-                        }
-
-                        operations_by_buffer_id
-                            .entry(buffer_id)
-                            .or_insert(Vec::new())
-                            .push(operation);
-                    }
-
-                    BufferOrderedMessage::LanguageServerUpdate {
-                        language_server_id,
-                        message,
-                        name,
-                    } => {
-                        flush_operations(
-                            &project,
-                            &mut operations_by_buffer_id,
-                            &mut needs_resync_with_host,
-                            is_local,
-                            cx,
-                        )
-                        .await?;
-
-                        project.read_with(cx, |project, _| {
-                            if let Some(project_id) = project.remote_id() {
-                                project
-                                    .collab_client
-                                    .send(proto::UpdateLanguageServer {
-                                        project_id,
-                                        server_name: name.map(|name| String::from(name.0)),
-                                        language_server_id: language_server_id.to_proto(),
-                                        variant: Some(message),
-                                    })
-                                    .log_err();
-                            }
-                        })?;
-                    }
+                let BufferOrderedMessage::Operation {
+                    buffer_id,
+                    operation,
+                } = change;
+                if needs_resync_with_host {
+                    continue;
                 }
+
+                operations_by_buffer_id
+                    .entry(buffer_id)
+                    .or_insert(Vec::new())
+                    .push(operation);
             }
 
             flush_operations(
@@ -4294,12 +4248,6 @@ impl Project {
             if let Some(worktree) = worktree_store.worktree_for_main_worktree_path(path, cx) {
                 worktree_store.remove_worktree(worktree.read(cx).id(), cx);
             }
-        });
-    }
-
-    fn add_worktree(&mut self, worktree: &Entity<Worktree>, cx: &mut Context<Self>) {
-        self.worktree_store.update(cx, |worktree_store, cx| {
-            worktree_store.add(worktree, cx);
         });
     }
 

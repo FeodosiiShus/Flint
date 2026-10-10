@@ -142,10 +142,6 @@ impl PaneGeometry {
         if point > max_point { max_point } else { point }
     }
 
-    pub(crate) fn line_start_x(&self, line: u32) -> f32 {
-        self.x_of_point(self.clamp_point(Point::new(line, 0)))
-    }
-
     pub(crate) fn offset_point(&self, line: u32, byte_offset: usize) -> Point {
         let start = self.clamp_point(Point::new(line, 0));
         let snapshot = self.snapshot.buffer_snapshot();

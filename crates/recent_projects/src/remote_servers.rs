@@ -1227,6 +1227,7 @@ impl RemoteServerProjects {
                     entries: std::array::from_fn(|_| NavigableEntry::focusable(cx)),
                 }
             }
+            #[cfg(any(test, feature = "test-support"))]
             _ => {
                 log::error!("server index and connection options mismatch");
                 self.mode = Mode::default_mode(&BTreeSet::default(), cx);

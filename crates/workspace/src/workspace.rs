@@ -9533,6 +9533,7 @@ pub fn workspace_windows_for_location(
                 (RemoteConnectionOptions::Mock(a), RemoteConnectionOptions::Mock(b)) => {
                     a.id == b.id
                 }
+                #[cfg(any(test, feature = "test-support"))]
                 _ => false,
             };
 

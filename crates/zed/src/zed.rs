@@ -33,9 +33,9 @@ use git_ui_core::file_diff_view::FileDiffStyleToolbar;
 use gpui::{
     Action, App, AppContext as _, ClipboardItem, Context, DismissEvent, Element, Entity,
     FocusHandle, Focusable, Image, ImageFormat, KeyBinding, ParentElement, PathPromptOptions,
-    PromptLevel, ReadGlobal, SharedString, Size, Task, TaskExt, TitlebarOptions, UpdateGlobal,
-    WeakEntity, Window, WindowBounds, WindowHandle, WindowKind, WindowOptions, actions,
-    image_cache, img, point, px, retain_all,
+    PromptLevel, SharedString, Size, Task, TaskExt, TitlebarOptions, UpdateGlobal, WeakEntity,
+    Window, WindowBounds, WindowHandle, WindowKind, WindowOptions, actions, image_cache, img,
+    point, px, retain_all,
 };
 use language::Capability;
 use language_tools::LanguageServicesPanel;
@@ -1248,7 +1248,6 @@ fn open_about_window(cx: &mut App) {
                     .bg(cx.theme().colors().editor_background)
                     .text_color(cx.theme().colors().text)
                     .p_4()
-                    .when(cfg!(target_os = "macos"), |this| this.pt_10())
                     .gap_4()
                     .text_center()
                     .justify_between()
@@ -1354,8 +1353,8 @@ fn open_about_window(cx: &mut App) {
         WindowOptions {
             titlebar: Some(TitlebarOptions {
                 title: Some("About Flint".into()),
-                appears_transparent: true,
-                traffic_light_position: Some(point(px(12.), px(12.))),
+                appears_transparent: false,
+                traffic_light_position: None,
             }),
             window_bounds: Some(WindowBounds::centered(window_size, cx)),
             is_resizable: false,
@@ -5288,11 +5287,13 @@ mod tests {
             let expected_namespaces = vec![
                 "action",
                 "activity_indicator",
+                "app_menu",
                 "branch_picker",
                 "branches",
                 "branches_popup",
                 "buffer_search",
                 "cli",
+                "collab",
                 "command_palette",
                 "debugger",
                 "dev",

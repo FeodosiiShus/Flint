@@ -55,7 +55,6 @@ pub(crate) enum GutterIconKind {
     AppendFromRight,
     Ignore,
     Resolve,
-    Reset,
 }
 
 impl GutterIconKind {
@@ -67,7 +66,6 @@ impl GutterIconKind {
             GutterIconKind::AppendFromRight => IconName::DiffArrowLeftDown,
             GutterIconKind::Ignore => IconName::DiffRemove,
             GutterIconKind::Resolve => IconName::DiffMagicResolve,
-            GutterIconKind::Reset => IconName::DiffRevert,
         }
     }
 
@@ -79,12 +77,11 @@ impl GutterIconKind {
             | GutterIconKind::AppendFromRight => "Accept",
             GutterIconKind::Ignore => "Ignore",
             GutterIconKind::Resolve => "Resolve",
-            GutterIconKind::Reset => "Revert",
         }
     }
 
     pub(crate) fn offers_ctrl_click(self) -> bool {
-        !matches!(self, GutterIconKind::Resolve | GutterIconKind::Reset)
+        !matches!(self, GutterIconKind::Resolve)
     }
 }
 
@@ -762,7 +759,6 @@ mod tests {
             GutterIconKind::Resolve.icon_name(),
             IconName::DiffMagicResolve
         );
-        assert_eq!(GutterIconKind::Reset.icon_name(), IconName::DiffRevert);
     }
 
     #[test]
@@ -771,7 +767,6 @@ mod tests {
         assert_eq!(GutterIconKind::AppendFromRight.tooltip_title(), "Accept");
         assert_eq!(GutterIconKind::Ignore.tooltip_title(), "Ignore");
         assert_eq!(GutterIconKind::Resolve.tooltip_title(), "Resolve");
-        assert_eq!(GutterIconKind::Reset.tooltip_title(), "Revert");
     }
 
     #[test]
@@ -786,7 +781,6 @@ mod tests {
         );
         assert_eq!(tooltip_hint(GutterIconKind::Ignore, false), None);
         assert_eq!(tooltip_hint(GutterIconKind::Resolve, true), None);
-        assert_eq!(tooltip_hint(GutterIconKind::Reset, true), None);
     }
 
     #[test]

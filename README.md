@@ -106,7 +106,7 @@ Flint can make the title bar, the tab bar, the toolbar, the status bar and the d
 
 ### What each key does
 
-- `title_bar.height` — the exact height of the title bar, but never lower than its buttons. With only `title_bar.icon_size` set, the bar grows when needed to keep at least 4px above and below the buttons. On macOS the window buttons (traffic lights) are re-centered vertically.
+- `title_bar.height` — the exact height of the title bar, but never lower than its buttons. With only `title_bar.icon_size` set, the bar grows when needed to keep at least 4px above and below the buttons. On macOS the window buttons (traffic lights) stay vertically centered in the title bar at any height.
 - `tab_bar.height` — the exact height of the editor tab bar, but never lower than its buttons. Unset, the tab bar is 41 px high (31 px in compact density). Dock panel headers follow it unless `panel.height` is set.
 - `panel.height` — the exact height of the header and toolbar rows of dock panels (Git), but never lower than their buttons. Unset, these rows use the tab bar height (41 px, 31 px compact).
 - `panel.icon_size` — the icon size of the controls in those header, toolbar and footer rows: in the Git panel View Diff, the filter, Stage All, the branch row and Fetch/Push/Pull, the commit editor buttons, Commit and the last-commit row. List rows and the terminal panel tabs are not affected; the terminal panel tabs follow `tab_bar`.
@@ -249,6 +249,11 @@ Each widget can be turned off in `settings.json` or in Settings → Window & Lay
   "show_worktree_name": false
 }
 ```
+
+Window buttons, like WebStorm on macOS:
+
+- Every project window has this title bar, and the window buttons (close, minimize, zoom) sit at its left end, vertically centered. The widgets start after the buttons; in full screen, where macOS hides the buttons, they start at the left edge.
+- The Settings, About, Conflicts and Merge Revisions windows use the standard macOS title bar with the window title, like WebStorm dialogs, so the buttons never cover their content.
 
 ## Status bar
 
@@ -468,7 +473,7 @@ Choosing Resolve… in a notification reopens the dialog; if conflicts are still
 
 - Title "Merge Revisions for <path>". Three panes: Left = Yours (read-only), Result (editable, starts from the base revision) and Right = Theirs (read-only). Each pane has a title strip; the side panes say what they contain ("Your version, branch …", "Changes from branch …", "Rebasing <hash> from …", "Local changes", "Changes from stash", …) with a "Show Details" link that opens the commit details and WebStorm's read-only icon. The Result strip shows the file path (tooltip: the home-relative path). When the line separators of the three texts differ, each strip also shows LF, CRLF or CR in WebStorm's colours.
 - Ribbons link corresponding changes between the panes. Drag a divider to resize the panes; a double-click on a divider gives the Result the full width, and another one restores equal thirds; the mouse wheel over a divider scrolls the Result. Scrolling is synchronised across the panes by default. Folded unchanged fragments (wavy lines in the editors, the gutter and the dividers) expand when you click the folded line, its placeholder or the chevron in the gutter. "Show Line Numbers" off removes the number column of the gutters.
-- Gutter icons on each change: Accept (arrows, which become "append" arrows after the other side was applied to a conflict) and Ignore (cross) on the side panes; in the Result pane a wand (Resolve, for a simple conflict) and Revert. Ctrl+click on Accept resolves the conflict using that side and ignores the other; Ctrl+click on Ignore ignores the whole conflict. On macOS a right-click on an icon does the same, because the system reports Ctrl+click as a right click.
+- Gutter icons on each change: Accept (arrows, which become "append" arrows after the other side was applied to a conflict) and Ignore (cross) on the side panes; in the Result pane a wand (Resolve, for a simple conflict). Ctrl+click on Accept resolves the conflict using that side and ignores the other; Ctrl+click on Ignore ignores the whole conflict. On macOS a right-click on an icon does the same, because the system reports Ctrl+click as a right click.
 - Right-click menu in a pane: Accept, Resolve using Left / Right, Ignore, Resolve Automatically (only the entries that apply to the selection), Revert (shown whenever text is selected; it reverts the resolved changes in the selection), then Collapse Unchanged Fragments and Synchronize Scrolling.
 - Toolbar, left to right: Previous Difference, Next Difference, Collapse Unchanged Fragments, "Apply non-conflicting changes:" Left / All / Right, Resolve Simple Conflicts, Revert Conflict Resolution. The status shows a spinner while differences are computed, then "2 changes, 1 conflict" or a green "All conflicts resolved". The gear menu has Synchronize Scrolling; Ignore Differences (None, Trim whitespaces, Ignore whitespaces); Highlighting Differences (Lines, Words); and an Appearance submenu with Show Whitespaces, Show Line Numbers, Show Indent Guides and Soft-Wrap. Changing Ignore Differences or Highlighting restarts the merge and first asks "Update Highlighting Settings" when the Result was edited.
 - When the last change is processed, a green "All changes have been processed" panel with an "Apply Changes" link appears in the Result pane.

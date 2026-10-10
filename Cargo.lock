@@ -12396,6 +12396,7 @@ dependencies = [
  "theme",
  "theme_extension",
  "theme_settings",
+ "title_bar",
  "tracing",
  "ui",
  "ui_prompt",
@@ -12691,8 +12692,3 @@ checksum = "27bc9d5b815bc103f142aa054f561d9187d191692ec7c2d1e2b4737f8dbd7296"
 dependencies = [
  "zune-core",
 ]
-
-[[patch.unused]]
-name = "windows-capture"
-version = "1.4.3"
-source = "git+https://github.com/zed-industries/windows-capture.git?rev=f0d6c1b6691db75461b732f6d5ff56eed002eeb9#f0d6c1b6691db75461b732f6d5ff56eed002eeb9"
