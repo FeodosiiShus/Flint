@@ -27,7 +27,7 @@ use util::ResultExt;
 pub use rpc::*;
 pub use user::*;
 
-const ZED_SERVER_URL: &str = "https://zed.dev";
+const LOCAL_CLIENT_URL: &str = "http://127.0.0.1";
 
 pub static ZED_APP_PATH: LazyLock<Option<PathBuf>> =
     LazyLock::new(|| std::env::var("ZED_APP_PATH").ok().map(PathBuf::from));
@@ -252,7 +252,7 @@ impl Client {
     pub fn production(cx: &mut App) -> Arc<Self> {
         let http = Arc::new(HttpClientWithUrl::new_url(
             cx.http_client(),
-            ZED_SERVER_URL,
+            LOCAL_CLIENT_URL,
             cx.http_client().proxy().cloned(),
         ));
         Self::new(http)
@@ -658,7 +658,7 @@ mod tests {
         let (done_tx1, done_rx1) = async_channel::unbounded();
         let (done_tx2, done_rx2) = async_channel::unbounded();
         AnyProtoClient::from(client.clone()).add_entity_message_handler(
-            move |entity: Entity<TestEntity>, _: TypedEnvelope<proto::JoinProject>, cx| {
+            move |entity: Entity<TestEntity>, _: TypedEnvelope<proto::UpdateProject>, cx| {
                 match entity.read_with(&cx, |entity, _| entity.id) {
                     1 => done_tx1.try_send(()).unwrap(),
                     2 => done_tx2.try_send(()).unwrap(),
@@ -697,20 +697,16 @@ mod tests {
         drop(subscription3);
 
         client.handle_message(
-            incoming_message(proto::JoinProject {
+            incoming_message(proto::UpdateProject {
                 project_id: 1,
-                committer_name: None,
-                committer_email: None,
-                features: Vec::new(),
+                worktrees: Vec::new(),
             }),
             &cx.to_async(),
         );
         client.handle_message(
-            incoming_message(proto::JoinProject {
+            incoming_message(proto::UpdateProject {
                 project_id: 2,
-                committer_name: None,
-                committer_email: None,
-                features: Vec::new(),
+                worktrees: Vec::new(),
             }),
             &cx.to_async(),
         );

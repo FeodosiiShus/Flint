@@ -17,9 +17,9 @@ use assets::Assets;
 
 use breadcrumbs::Breadcrumbs;
 use collections::VecDeque;
+use diagnostics::ProjectDiagnosticsPanel;
 use editor::{Editor, MultiBuffer};
 use extension_host::ExtensionStore;
-use feature_flags::{FeatureFlagAppExt as _, PanicFeatureFlag};
 use fs::Fs;
 use futures::{StreamExt, channel::mpsc, select_biased};
 use git_ui::branch_diff::BranchDiffToolbar;
@@ -38,7 +38,7 @@ use gpui::{
     image_cache, img, point, px, retain_all,
 };
 use language::Capability;
-use language_tools::lsp_button::{self, LspButton};
+use language_tools::LanguageServicesPanel;
 use language_tools::lsp_log_view::LspLogToolbarItemView;
 use markdown::{Markdown, MarkdownElement, MarkdownFont, MarkdownStyle};
 use migrate::{MigrationBanner, MigrationEvent, MigrationNotification, MigrationType};
@@ -77,7 +77,7 @@ use std::{
 use terminal_view::terminal_panel::{self, TerminalPanel};
 use theme::{ActiveTheme, SystemAppearance, ThemeRegistry, deserialize_icon_theme};
 use theme_settings::{ThemeSettings, load_user_theme};
-use ui::{Navigable, NavigableEntry, PopoverMenuHandle, TintColor, prelude::*};
+use ui::{Navigable, NavigableEntry, TintColor, prelude::*};
 use util::markdown::MarkdownString;
 use util::rel_path::RelPath;
 use util::{ResultExt, asset_str, maybe};
@@ -92,11 +92,8 @@ use workspace::{
 use workspace::{CloseProject, CloseWindow, with_active_or_new_workspace};
 use workspace::{Pane, notifications::DetachAndPromptErr};
 use zed_actions::{
-    About, OpenBrowser, OpenDocs, OpenProjectTasks, OpenServerSettings, OpenSettingsFile,
-    OpenZedUrl, Quit,
+    About, OpenBrowser, OpenProjectTasks, OpenServerSettings, OpenSettingsFile, Quit,
 };
-
-const DOCS_URL: &str = "https://zed.dev/docs/";
 
 actions!(
     zed,
@@ -127,10 +124,6 @@ actions!(
         ToggleFullScreen,
         /// Zooms the window.
         Zoom,
-        /// Triggers a test panic for debugging.
-        TestPanic,
-        /// Triggers a hard crash for debugging.
-        TestCrash,
     ]
 );
 
@@ -178,26 +171,6 @@ pub fn init(cx: &mut App) {
     #[cfg(target_os = "macos")]
     cx.on_action(|_: &ShowAll, cx| cx.unhide_other_apps());
     cx.on_action(quit);
-
-    cx.observe_flag::<PanicFeatureFlag, _>({
-        let mut added = false;
-        move |flag, cx| {
-            if added || !*flag {
-                return;
-            }
-            added = true;
-            cx.on_action(|_: &TestPanic, _| panic!("Ran the TestPanic action"))
-                .on_action(|_: &TestCrash, _| {
-                    unsafe extern "C" {
-                        fn puts(s: *const i8);
-                    }
-                    unsafe {
-                        puts(0xabad1d3a as *const i8);
-                    }
-                });
-        }
-    })
-    .detach();
 
     // When Zed logs to stdout rather than the log file, avoid registering
     // handlers for both `OpenLog` and `RevealLogInFileManager`, as the log file
@@ -490,8 +463,6 @@ pub fn initialize_workspace(app_state: Arc<AppState>, cx: &mut App) {
             show_software_emulation_warning_if_needed(specs, window, cx);
         }
 
-        let diagnostic_summary =
-            cx.new(|cx| diagnostics::items::DiagnosticIndicator::new(workspace, cx));
         let active_file_name = cx.new(|_| workspace::active_file_name::ActiveFileName::new());
         let activity_indicator = activity_indicator::ActivityIndicator::new(workspace, window, cx);
         let active_buffer_encoding =
@@ -501,29 +472,16 @@ pub fn initialize_workspace(app_state: Arc<AppState>, cx: &mut App) {
         let pending_keystrokes_indicator =
             cx.new(|cx| which_key::PendingKeystrokesIndicator::new(window, cx));
 
-        let lsp_button_menu_handle = PopoverMenuHandle::default();
-        let lsp_button =
-            cx.new(|cx| LspButton::new(workspace, lsp_button_menu_handle.clone(), window, cx));
-        workspace.register_action({
-            move |_, _: &lsp_button::ToggleMenu, window, cx| {
-                lsp_button_menu_handle.toggle(window, cx);
-            }
-        });
-
         let cursor_position =
             cx.new(|_| go_to_line::cursor_position::CursorPosition::new(workspace));
         let line_ending_indicator =
             cx.new(|_| line_ending_selector::LineEndingIndicator::default());
         let git_blame_status = cx.new(|_| git_ui::GitBlameStatus::default());
         let branch_indicator = cx.new(|cx| git_ui::BranchIndicator::new(workspace, cx));
-        let navigation_bar = cx.new(|_| status_widgets::NavigationBar::new(workspace));
         let indentation_indicator = cx.new(status_widgets::IndentationIndicator::new);
         let read_only_indicator = cx.new(|_| status_widgets::ReadOnlyIndicator::default());
         workspace.status_bar().update(cx, |status_bar, cx| {
-            status_bar.add_left_item(lsp_button, window, cx);
-            status_bar.add_left_item(diagnostic_summary, window, cx);
             status_bar.add_left_item(branch_indicator, window, cx);
-            status_bar.add_left_item(navigation_bar, window, cx);
             status_bar.add_left_item(active_file_name, window, cx);
             status_bar.add_left_item(git_blame_status, window, cx);
             status_bar.add_left_item(activity_indicator, window, cx);
@@ -556,7 +514,7 @@ fn initialize_file_watcher(fs: &dyn Fs, window: &mut Window, cx: &mut Context<Wo
             db::indoc! {r#"
             inotify_init returned {}
 
-            This may be due to system-wide limits on inotify instances. For troubleshooting see: https://zed.dev/docs/linux
+            This may be due to system-wide limits on inotify instances.
             "#},
             e
         );
@@ -564,13 +522,12 @@ fn initialize_file_watcher(fs: &dyn Fs, window: &mut Window, cx: &mut Context<Wo
             PromptLevel::Critical,
             "Could not start inotify",
             Some(&message),
-            &["Troubleshoot and Quit"],
+            &["Quit"],
             cx,
         );
         cx.spawn(async move |_, cx| {
             if prompt.await == Ok(0) {
                 cx.update(|cx| {
-                    cx.open_url("https://zed.dev/docs/linux#could-not-start-inotify");
                     cx.quit();
                 });
             }
@@ -587,7 +544,7 @@ fn initialize_file_watcher(fs: &dyn Fs, window: &mut Window, cx: &mut Context<Wo
             db::indoc! {r#"
             ReadDirectoryChangesW initialization failed: {}
 
-            This may occur on network filesystems and WSL paths. For troubleshooting see: https://zed.dev/docs/windows
+            This may occur on network filesystems and WSL paths.
             "#},
             e
         );
@@ -595,15 +552,12 @@ fn initialize_file_watcher(fs: &dyn Fs, window: &mut Window, cx: &mut Context<Wo
             PromptLevel::Critical,
             "Could not start ReadDirectoryChangesW",
             Some(&message),
-            &["Troubleshoot and Quit"],
+            &["Quit"],
             cx,
         );
         cx.spawn(async move |_, cx| {
             if prompt.await == Ok(0) {
-                cx.update(|cx| {
-                    cx.open_url("https://zed.dev/docs/windows");
-                    cx.quit()
-                });
+                cx.update(|cx| cx.quit());
             }
         })
         .detach()
@@ -616,18 +570,10 @@ fn show_software_emulation_warning_if_needed(
     cx: &mut Context<Workspace>,
 ) {
     if specs.is_software_emulated && std::env::var("ZED_ALLOW_EMULATED_GPU").is_err() {
-        let (graphics_api, docs_url, open_url) = if cfg!(target_os = "windows") {
-            (
-                "DirectX",
-                "https://zed.dev/docs/windows",
-                "https://zed.dev/docs/windows",
-            )
+        let graphics_api = if cfg!(target_os = "windows") {
+            "DirectX"
         } else {
-            (
-                "Vulkan",
-                "https://zed.dev/docs/linux",
-                "https://zed.dev/docs/linux#zed-fails-to-open-windows",
-            )
+            "Vulkan"
         };
         let message = format!(
             db::indoc! {r#"
@@ -636,22 +582,20 @@ fn show_software_emulation_warning_if_needed(
             Currently you are using a software emulated GPU ({}) which
             will result in awful performance.
 
-            For troubleshooting see: {}
             Set ZED_ALLOW_EMULATED_GPU=1 env var to permanently override.
             "#},
-            graphics_api, specs.device_name, docs_url
+            graphics_api, specs.device_name
         );
         let prompt = window.prompt(
             PromptLevel::Critical,
             "Unsupported GPU",
             Some(&message),
-            &["Skip", "Troubleshoot and Quit"],
+            &["Skip", "Quit"],
             cx,
         );
         cx.spawn(async move |_, cx| {
             if prompt.await == Ok(1) {
                 cx.update(|cx| {
-                    cx.open_url(open_url);
                     cx.quit();
                 });
             }
@@ -666,6 +610,10 @@ fn initialize_panels(window: &mut Window, cx: &mut Context<Workspace>) -> Task<a
         let terminal_panel = TerminalPanel::load(workspace_handle.clone(), cx.clone());
         let git_panel = GitPanel::load(workspace_handle.clone(), cx.clone());
         let search_panel = SearchPanel::load(workspace_handle.clone(), cx.clone());
+        let project_diagnostics_panel =
+            ProjectDiagnosticsPanel::load(workspace_handle.clone(), cx.clone());
+        let language_services_panel =
+            LanguageServicesPanel::load(workspace_handle.clone(), cx.clone());
 
         async fn add_panel_when_ready(
             panel_task: impl Future<Output = anyhow::Result<Entity<impl workspace::Panel>>> + 'static,
@@ -687,6 +635,8 @@ fn initialize_panels(window: &mut Window, cx: &mut Context<Workspace>) -> Task<a
             add_panel_when_ready(terminal_panel, workspace_handle.clone(), cx.clone()),
             add_panel_when_ready(git_panel, workspace_handle.clone(), cx.clone()),
             add_panel_when_ready(search_panel, workspace_handle.clone(), cx.clone()),
+            add_panel_when_ready(project_diagnostics_panel, workspace_handle.clone(), cx.clone()),
+            add_panel_when_ready(language_services_panel, workspace_handle.clone(), cx.clone()),
         );
 
         workspace_handle.update(cx, |workspace, cx| {
@@ -703,13 +653,11 @@ fn register_actions(
     _: &mut Window,
     cx: &mut Context<Workspace>,
 ) {
-    workspace
-        .register_action(|_, _: &OpenDocs, _, cx| cx.open_url(DOCS_URL))
-        .register_action(
-            |workspace: &mut Workspace,
-             _: &DumpAccessibilityTree,
-             window: &mut Window,
-             cx: &mut Context<Workspace>| {
+    workspace.register_action(
+        |workspace: &mut Workspace,
+         _: &DumpAccessibilityTree,
+         window: &mut Window,
+         cx: &mut Context<Workspace>| {
                 let json = accessibility_tree_dump(window);
                 let language = workspace.app_state().languages.language_for_name("JSON");
                 let project = workspace.project().clone();
@@ -785,12 +733,6 @@ fn register_actions(
                 window.reset_debug_frame_overlay_stats();
             },
         )
-        .register_action(|_, action: &OpenZedUrl, _, cx| {
-            OpenListener::global(cx).open(RawOpenRequest {
-                urls: vec![String::from(&*action.url)],
-                ..Default::default()
-            })
-        })
         .register_action(|workspace, _: &OpenUrlPrompt, window, cx| {
             workspace.toggle_modal(window, cx, |window, cx| {
                 open_url_modal::OpenUrlModal::new(window, cx)
@@ -2338,15 +2280,11 @@ fn open_settings_file(
     cx.spawn_in(window, async move |workspace, cx| {
         workspace
             .update_in(cx, |workspace, window, cx| {
-                workspace.with_local_or_wsl_workspace(window, cx, move |workspace, window, cx| {
+                workspace.with_local_workspace(window, cx, move |workspace, window, cx| {
                     let project = workspace.project().clone();
 
                     cx.spawn_in(window, async move |workspace, cx| {
-                        let config_dir = project
-                            .update(cx, |project, cx| {
-                                project.try_windows_path_to_wsl(paths::config_dir().as_path(), cx)
-                            })
-                            .await?;
+                        let config_dir = paths::config_dir().as_path().to_path_buf();
                         // Set up a dedicated worktree for settings, since
                         // otherwise we're dropping and re-starting LSP servers
                         // for each file inside on every settings file
@@ -2717,7 +2655,7 @@ mod tests {
             .update(cx, |multi_workspace, window, cx| {
                 multi_workspace.workspace().update(cx, |workspace, cx| {
                     assert_eq!(workspace.worktrees(cx).count(), 2);
-                    assert!(workspace.right_dock().read(cx).is_open());
+                    assert!(workspace.left_dock().read(cx).is_open());
                     assert!(
                         workspace
                             .active_pane()
@@ -5004,7 +4942,7 @@ mod tests {
     fn emacs_bindings_for(keystroke: &str, context: &str, cx: &mut TestAppContext) -> Vec<String> {
         cx.update(|cx| {
             let mut bindings = settings::KeymapFile::load_asset_allow_partial_failure(
-                "keymaps/default-linux.json",
+                "keymaps/default-macos.json",
                 cx,
             )
             .unwrap();
@@ -5012,7 +4950,7 @@ mod tests {
                 binding.set_meta(settings::KeybindSource::Default.meta());
             }
             let mut emacs_bindings = settings::KeymapFile::load_asset_allow_partial_failure(
-                "keymaps/linux/emacs.json",
+                "keymaps/macos/emacs.json",
                 cx,
             )
             .unwrap();

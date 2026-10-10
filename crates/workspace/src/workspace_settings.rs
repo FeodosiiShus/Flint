@@ -345,7 +345,6 @@ pub struct StatusBarSettings {
     pub line_endings_button: bool,
     pub active_encoding_button: EncodingDisplayOptions,
     pub pending_keystrokes_indicator: bool,
-    pub navigation_bar: bool,
     pub indentation_button: bool,
     pub read_only_button: bool,
 }
@@ -361,7 +360,6 @@ impl Settings for StatusBarSettings {
             line_endings_button: status_bar.line_endings_button.unwrap(),
             active_encoding_button: status_bar.active_encoding_button.unwrap(),
             pending_keystrokes_indicator: status_bar.pending_keystrokes_indicator.unwrap(),
-            navigation_bar: status_bar.navigation_bar.unwrap_or(true),
             indentation_button: status_bar.indentation_button.unwrap_or(true),
             read_only_button: status_bar.read_only_button.unwrap_or(true),
         }

@@ -111,18 +111,6 @@ struct Args {
     /// Run Flint in dev-server mode
     #[arg(long)]
     dev_server_token: Option<String>,
-    /// The username and WSL distribution to use when opening paths. If not specified,
-    /// Zed will attempt to open the paths directly.
-    ///
-    /// The username is optional, and if not specified, the default user for the distribution
-    /// will be used.
-    ///
-    /// Example: `me@Ubuntu` or `Ubuntu`.
-    ///
-    /// WARN: You should not fill in this field by hand.
-    #[cfg(target_os = "windows")]
-    #[arg(long, value_name = "USER@DISTRO")]
-    wsl: Option<String>,
     /// Pairs of file paths to diff. Can be specified multiple times.
     /// When directories are provided, recurses into them and shows all changed files in a single multi-diff view.
     #[arg(long, action = clap::ArgAction::Append, num_args = 2, value_names = ["OLD_PATH", "NEW_PATH"], value_hint = clap::ValueHint::AnyPath)]
@@ -330,6 +318,7 @@ mod tests {
 
     #[test]
     fn test_parse_non_existing_path() {
+        let _lock = CWD_LOCK.lock();
         // Absolute path
         let result = parse_path_with_position(path!("/non/existing/path.txt")).unwrap();
         assert_path_eq!(result, path!("/non/existing/path.txt"));
@@ -418,51 +407,6 @@ mod tests {
     }
 }
 
-fn parse_path_in_wsl(source: &str, wsl: &str) -> Result<String> {
-    let mut source = PathWithPosition::parse_str(source);
-
-    let (user, distro_name) = if let Some((user, distro)) = wsl.split_once('@') {
-        if user.is_empty() {
-            anyhow::bail!("user is empty in wsl argument");
-        }
-        (Some(user), distro)
-    } else {
-        (None, wsl)
-    };
-
-    let mut args = vec!["--distribution", distro_name];
-    if let Some(user) = user {
-        args.push("--user");
-        args.push(user);
-    }
-
-    let command = [
-        OsStr::new("realpath"),
-        OsStr::new("-s"),
-        source.path.as_ref(),
-    ];
-
-    let output = util::command::new_std_command("wsl.exe")
-        .args(&args)
-        .arg("--exec")
-        .args(&command)
-        .output()?;
-    let result = if output.status.success() {
-        String::from_utf8_lossy(&output.stdout).to_string()
-    } else {
-        let fallback = util::command::new_std_command("wsl.exe")
-            .args(&args)
-            .arg("--")
-            .args(&command)
-            .output()?;
-        String::from_utf8_lossy(&fallback.stdout).to_string()
-    };
-
-    source.path = Path::new(result.trim()).to_owned();
-
-    Ok(source.to_string(&|path| path.to_string_lossy().into_owned()))
-}
-
 fn main() {
     if let Err(error) = run() {
         eprintln!("error: {error:#}");
@@ -473,14 +417,6 @@ fn main() {
 fn run() -> Result<()> {
     #[cfg(unix)]
     util::prevent_root_execution();
-
-    // Exit flatpak sandbox if needed
-    #[cfg(target_os = "linux")]
-    {
-        flatpak::try_restart_to_host();
-        flatpak::ld_extra_libs();
-    }
-
     // Intercept version designators
     #[cfg(target_os = "macos")]
     if let Some(channel) = std::env::args().nth(1).filter(|arg| arg.starts_with("--")) {
@@ -512,9 +448,6 @@ fn run() -> Result<()> {
     if let Some(dir) = &user_data_dir {
         paths::set_custom_data_dir(dir);
     }
-
-    #[cfg(target_os = "linux")]
-    let args = flatpak::set_bin_if_no_escape(args);
 
     let app = Detect::detect(args.zed.as_deref()).context("Bundle detection")?;
 
@@ -595,14 +528,7 @@ fn run() -> Result<()> {
             }
         }
 
-        #[cfg(target_os = "windows")]
-        {
-            // On Windows, by default, a child process inherits a copy of the environment block of the parent process.
-            // So we don't need to pass env vars explicitly.
-            None
-        }
-
-        #[cfg(not(any(target_os = "linux", target_os = "freebsd", target_os = "windows")))]
+        #[cfg(not(any(target_os = "linux", target_os = "freebsd")))]
         {
             use collections::HashMap;
 
@@ -645,11 +571,6 @@ fn run() -> Result<()> {
         let _ = temp_dir.keep();
     }
 
-    #[cfg(target_os = "windows")]
-    let wsl = args.wsl.as_ref();
-    #[cfg(not(target_os = "windows"))]
-    let wsl = None;
-
     for path in args.paths_with_position.iter() {
         if URL_PREFIX.iter().any(|&prefix| path.starts_with(prefix)) {
             urls.push(path.to_string());
@@ -663,8 +584,6 @@ fn run() -> Result<()> {
             paths.push(tmp_file.path().to_string_lossy().into_owned());
             let (tmp_file, _) = tmp_file.keep()?;
             anonymous_fd_tmp_files.push((file, tmp_file));
-        } else if let Some(wsl) = wsl {
-            urls.push(format!("file://{}", parse_path_in_wsl(path, wsl)?));
         } else {
             paths.push(parse_path_with_position(path)?);
         }
@@ -691,17 +610,11 @@ fn run() -> Result<()> {
                 let (_, handshake) = server.accept().context("Handshake after Flint spawn")?;
                 let (tx, rx) = (handshake.requests, handshake.responses);
 
-                #[cfg(target_os = "windows")]
-                let wsl = args.wsl;
-                #[cfg(not(target_os = "windows"))]
-                let wsl = None;
-
                 let open_request = CliRequest::Open {
                     paths,
                     urls,
                     diff_paths,
                     diff_all: diff_all_mode,
-                    wsl,
                     wait: args.wait,
                     open_behavior,
                     env,
@@ -996,267 +909,6 @@ mod linux {
                 }
             }
             sock.connect_addr(sock_addr)
-        }
-    }
-}
-
-#[cfg(target_os = "linux")]
-mod flatpak {
-    use std::ffi::OsString;
-    use std::path::{Path, PathBuf};
-    use std::process::Command;
-    use std::{env, process};
-
-    const EXTRA_LIB_ENV_NAME: &str = "ZED_FLATPAK_LIB_PATH";
-    const NO_ESCAPE_ENV_NAME: &str = "ZED_FLATPAK_NO_ESCAPE";
-
-    fn restart_cli_args(flatpak_dir: &Path, invocation_args: &[OsString]) -> Vec<OsString> {
-        let mut args = Vec::with_capacity(invocation_args.len() + 2);
-
-        if !invocation_args.iter().any(|arg| arg == "--zed") {
-            // Positional paths consume all following arguments, so launcher options must precede them.
-            args.push("--zed".into());
-            args.push(flatpak_dir.join("libexec").join("zed-editor").into());
-        }
-
-        args.extend_from_slice(invocation_args);
-        args
-    }
-
-    /// Adds bundled libraries to LD_LIBRARY_PATH if running under flatpak
-    pub fn ld_extra_libs() {
-        let mut paths = if let Ok(paths) = env::var("LD_LIBRARY_PATH") {
-            env::split_paths(&paths).collect()
-        } else {
-            Vec::new()
-        };
-
-        if let Ok(extra_path) = env::var(EXTRA_LIB_ENV_NAME) {
-            paths.push(extra_path.into());
-        }
-
-        unsafe { env::set_var("LD_LIBRARY_PATH", env::join_paths(paths).unwrap()) };
-    }
-
-    /// Restarts outside of the sandbox if currently running within it
-    pub fn try_restart_to_host() {
-        if let Some(flatpak_dir) = get_flatpak_dir() {
-            let mut args = vec!["/usr/bin/flatpak-spawn".into(), "--host".into()];
-            args.append(&mut get_xdg_env_args());
-            args.push("--env=ZED_UPDATE_EXPLANATION=Please use flatpak to update zed".into());
-            args.push(
-                format!(
-                    "--env={EXTRA_LIB_ENV_NAME}={}",
-                    flatpak_dir.join("lib").to_str().unwrap()
-                )
-                .into(),
-            );
-            args.push(flatpak_dir.join("bin").join("zed").into());
-
-            let invocation_args = env::args_os().skip(1).collect::<Vec<_>>();
-            args.extend(restart_cli_args(&flatpak_dir, &invocation_args));
-
-            let error = exec::execvp("/usr/bin/flatpak-spawn", args);
-            eprintln!("failed restart cli on host: {:?}", error);
-            process::exit(1);
-        }
-    }
-
-    pub fn set_bin_if_no_escape(mut args: super::Args) -> super::Args {
-        if env::var(NO_ESCAPE_ENV_NAME).is_ok()
-            && env::var("FLATPAK_ID").is_ok_and(|id| id.starts_with("dev.zed.Zed"))
-            && args.zed.is_none()
-        {
-            args.zed = Some("/app/libexec/zed-editor".into());
-            unsafe { env::set_var("ZED_UPDATE_EXPLANATION", "Please use flatpak to update zed") };
-        }
-        args
-    }
-
-    fn get_flatpak_dir() -> Option<PathBuf> {
-        if env::var(NO_ESCAPE_ENV_NAME).is_ok() {
-            return None;
-        }
-
-        if let Ok(flatpak_id) = env::var("FLATPAK_ID") {
-            if !flatpak_id.starts_with("dev.zed.Zed") {
-                return None;
-            }
-
-            let install_dir = Command::new("/usr/bin/flatpak-spawn")
-                .arg("--host")
-                .arg("flatpak")
-                .arg("info")
-                .arg("--show-location")
-                .arg(flatpak_id)
-                .output()
-                .unwrap();
-            let install_dir = PathBuf::from(String::from_utf8(install_dir.stdout).unwrap().trim());
-            Some(install_dir.join("files"))
-        } else {
-            None
-        }
-    }
-
-    fn get_xdg_env_args() -> Vec<OsString> {
-        let xdg_keys = [
-            "XDG_DATA_HOME",
-            "XDG_CONFIG_HOME",
-            "XDG_CACHE_HOME",
-            "XDG_STATE_HOME",
-        ];
-        env::vars()
-            .filter(|(key, _)| xdg_keys.contains(&key.as_str()))
-            .map(|(key, val)| format!("--env=FLATPAK_{}={}", key, val).into())
-            .collect()
-    }
-
-    #[cfg(test)]
-    mod tests {
-        use clap::Parser as _;
-
-        use super::*;
-
-        #[test]
-        fn test_restart_cli_args() {
-            let flatpak_dir = Path::new("/flatpak");
-            let args = restart_cli_args(flatpak_dir, &["project".into()]);
-            let parsed =
-                crate::Args::try_parse_from(std::iter::once(OsString::from("zed")).chain(args))
-                    .unwrap();
-
-            assert_eq!(parsed.zed, Some(flatpak_dir.join("libexec/zed-editor")));
-            assert_eq!(parsed.paths_with_position, ["project"]);
-
-            let invocation_args = ["--zed".into(), "/custom/zed-editor".into()];
-            assert_eq!(
-                restart_cli_args(flatpak_dir, &invocation_args),
-                invocation_args
-            );
-        }
-    }
-}
-
-#[cfg(target_os = "windows")]
-mod windows {
-    use anyhow::Context;
-    use release_channel::app_identifier;
-    use windows::{
-        Win32::{
-            Foundation::{CloseHandle, ERROR_ALREADY_EXISTS, GENERIC_WRITE, GetLastError},
-            Storage::FileSystem::{
-                CreateFileW, FILE_FLAGS_AND_ATTRIBUTES, FILE_SHARE_MODE, OPEN_EXISTING, WriteFile,
-            },
-            System::Threading::CreateMutexW,
-        },
-        core::HSTRING,
-    };
-
-    use crate::{Detect, InstalledApp};
-    use std::io;
-    use std::path::{Path, PathBuf};
-    use std::process::{ExitStatus, Stdio};
-
-    fn check_single_instance() -> bool {
-        let mutex = unsafe {
-            CreateMutexW(
-                None,
-                false,
-                &HSTRING::from(format!("{}-Instance-Mutex", app_identifier())),
-            )
-            .expect("Unable to create instance sync event")
-        };
-        let last_err = unsafe { GetLastError() };
-        let _ = unsafe { CloseHandle(mutex) };
-        last_err != ERROR_ALREADY_EXISTS
-    }
-
-    struct App(PathBuf);
-
-    impl InstalledApp for App {
-        fn zed_version_string(&self) -> String {
-            format!(
-                "Zed {}{}{} – {}",
-                if *release_channel::RELEASE_CHANNEL_NAME == "stable" {
-                    "".to_string()
-                } else {
-                    format!("{} ", *release_channel::RELEASE_CHANNEL_NAME)
-                },
-                option_env!("RELEASE_VERSION").unwrap_or_default(),
-                match option_env!("ZED_COMMIT_SHA") {
-                    Some(commit_sha) => format!(" {commit_sha} "),
-                    None => "".to_string(),
-                },
-                self.0.display(),
-            )
-        }
-
-        fn launch(&self, ipc_url: String, user_data_dir: Option<&str>) -> anyhow::Result<()> {
-            if check_single_instance() {
-                let mut cmd = std::process::Command::new(self.0.clone());
-                cmd.arg(ipc_url);
-                if let Some(dir) = user_data_dir {
-                    cmd.arg("--user-data-dir").arg(dir);
-                }
-                cmd.stdin(Stdio::null())
-                    .stdout(Stdio::null())
-                    .stderr(Stdio::null());
-                cmd.spawn()?;
-            } else {
-                unsafe {
-                    let pipe = CreateFileW(
-                        &HSTRING::from(format!("\\\\.\\pipe\\{}-Named-Pipe", app_identifier())),
-                        GENERIC_WRITE.0,
-                        FILE_SHARE_MODE::default(),
-                        None,
-                        OPEN_EXISTING,
-                        FILE_FLAGS_AND_ATTRIBUTES::default(),
-                        None,
-                    )?;
-                    let message = ipc_url.as_bytes();
-                    let mut bytes_written = 0;
-                    WriteFile(pipe, Some(message), Some(&mut bytes_written), None)?;
-                    CloseHandle(pipe)?;
-                }
-            }
-            Ok(())
-        }
-
-        fn run_foreground(
-            &self,
-            ipc_url: String,
-            user_data_dir: Option<&str>,
-        ) -> io::Result<ExitStatus> {
-            let mut cmd = std::process::Command::new(self.0.clone());
-            cmd.arg(ipc_url).arg("--foreground");
-            if let Some(dir) = user_data_dir {
-                cmd.arg("--user-data-dir").arg(dir);
-            }
-            cmd.spawn()?.wait()
-        }
-    }
-
-    impl Detect {
-        pub fn detect(path: Option<&Path>) -> anyhow::Result<impl InstalledApp> {
-            let path = if let Some(path) = path {
-                path.to_path_buf().canonicalize()?
-            } else {
-                let cli = std::env::current_exe()?;
-                let dir = cli.parent().context("no parent path for cli")?;
-
-                // ../Zed.exe is the standard, lib/zed is for MSYS2, ./zed.exe is for the target
-                // directory in development builds.
-                let possible_locations = ["../Zed.exe", "../lib/zed/zed-editor.exe", "./zed.exe"];
-                possible_locations
-                    .iter()
-                    .find_map(|p| dir.join(p).canonicalize().ok().filter(|path| path != &cli))
-                    .context(format!(
-                        "could not find any of: {}",
-                        possible_locations.join(", ")
-                    ))?
-            };
-
-            Ok(App(path))
         }
     }
 }

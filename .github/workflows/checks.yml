@@ -90,6 +90,9 @@ jobs:
       - name: Run merge_diff tests
         run: cargo test --locked --package merge_diff
 
+      - name: Run Project Diagnostics and Language Services panel tests
+        run: cargo test --locked --package diagnostics --package language_tools --lib -- project_diagnostics_panel language_services_panel
+
       - name: Run git conflict stage tests
         run: cargo test --locked --package git --package fs --features fs/test-support
 

@@ -1,16 +1,15 @@
+use std::collections::HashSet;
 use std::sync::{Arc, LazyLock};
 
-use collections::HashSet;
 use db::kvp::KeyValueStore;
 use editor::Editor;
-use extension_host::{ExtensionSettings, ExtensionStore};
+use extension_host::ExtensionStore;
 use extension_suggest::SuggestedExtension;
-use gpui::{App, AppContext as _, Context, Entity, Global, SharedString};
+use gpui::{App, AppContext as _, Context, Entity, SharedString};
 use language::{Buffer, PLAIN_TEXT, ServerActivationRule};
 use markdown::{Markdown, MarkdownElement};
+use project::Project;
 use project::lsp_store::LspStoreEvent;
-use project::{Project, WorktreeId};
-use settings::Settings as _;
 use ui::prelude::*;
 use util::ResultExt;
 use workspace::notifications::{
@@ -39,10 +38,9 @@ struct ProjectMarkerExtension {
 }
 
 #[derive(Default)]
-struct RequestedMarkerInstalls(HashSet<&'static str>);
+struct NotifiedMarkerExtensions(HashSet<&'static str>);
 
-impl Global for RequestedMarkerInstalls {}
-
+impl gpui::Global for NotifiedMarkerExtensions {}
 static PROJECT_MARKER_RULES: LazyLock<Vec<ProjectMarkerExtension>> = LazyLock::new(|| {
     PROJECT_MARKER_EXTENSIONS
         .iter()
@@ -53,35 +51,19 @@ static PROJECT_MARKER_RULES: LazyLock<Vec<ProjectMarkerExtension>> = LazyLock::n
         .collect()
 });
 
-fn pending_marker_extensions(cx: &App) -> Vec<&'static ProjectMarkerExtension> {
-    let extension_store = ExtensionStore::global(cx);
-    let extension_store = extension_store.read(cx);
-    let settings = ExtensionSettings::get_global(cx);
-    let requested = cx.try_global::<RequestedMarkerInstalls>();
-    PROJECT_MARKER_RULES
-        .iter()
-        .filter(|extension| {
-            settings.should_auto_install(extension.extension_id)
-                && !extension_store
-                    .installed_extensions()
-                    .contains_key(extension.extension_id)
-                && !extension_store
-                    .outstanding_operations()
-                    .contains_key(extension.extension_id)
-                && !requested.is_some_and(|requested| requested.0.contains(extension.extension_id))
-        })
-        .collect()
-}
-
-fn install_extensions_for_marker_paths<'a>(paths: impl Iterator<Item = &'a str>, cx: &mut App) {
-    let mut pending = pending_marker_extensions(cx);
+fn notify_for_marker_paths<'a>(paths: impl Iterator<Item = &'a str>, cx: &mut App) {
+    let pending = pending_marker_extensions(cx);
+    if pending.is_empty() {
+        return;
+    }
     let mut matched = Vec::new();
+    let mut remaining = pending;
     for path in paths {
-        if pending.is_empty() {
+        if remaining.is_empty() {
             break;
         }
-        pending.retain(|extension| {
-            let is_match = extension.markers.matches_workspace_file(path);
+        remaining.retain(|extension| {
+            let is_match = extension.markers.matches_workspace_file(&path);
             if is_match {
                 matched.push(extension.extension_id);
             }
@@ -91,33 +73,27 @@ fn install_extensions_for_marker_paths<'a>(paths: impl Iterator<Item = &'a str>,
     if matched.is_empty() {
         return;
     }
-
-    cx.default_global::<RequestedMarkerInstalls>()
+    cx.default_global::<NotifiedMarkerExtensions>()
         .0
         .extend(matched.iter().copied());
-    ExtensionStore::global(cx).update(cx, |extension_store, cx| {
-        for extension_id in matched {
-            extension_store.install_latest_extension(Arc::from(extension_id), cx);
-        }
-    });
 }
 
-fn install_extensions_for_worktree(
-    project: &Entity<Project>,
-    worktree_id: WorktreeId,
-    cx: &mut App,
-) {
-    let Some(worktree) = project.read(cx).worktree_for_id(worktree_id, cx) else {
-        return;
-    };
-    let snapshot = worktree.read(cx).snapshot();
-    install_extensions_for_marker_paths(
-        snapshot
-            .entries(false, 0)
-            .filter(|entry| entry.is_file())
-            .map(|entry| entry.path.as_unix_str()),
-        cx,
-    );
+fn pending_marker_extensions(cx: &App) -> Vec<&'static ProjectMarkerExtension> {
+    let extension_store = ExtensionStore::global(cx);
+    let extension_store = extension_store.read(cx);
+    let notified = cx.try_global::<NotifiedMarkerExtensions>();
+    PROJECT_MARKER_RULES
+        .iter()
+        .filter(|extension| {
+            !extension_store
+                .installed_extensions()
+                .contains_key(extension.extension_id)
+                && !extension_store
+                    .outstanding_operations()
+                    .contains_key(extension.extension_id)
+                && !notified.is_some_and(|notified| notified.0.contains(extension.extension_id))
+        })
+        .collect()
 }
 
 fn watch_project_markers(project: Entity<Project>, cx: &mut Context<Workspace>) {
@@ -127,10 +103,20 @@ fn watch_project_markers(project: Entity<Project>, cx: &mut Context<Workspace>) 
 
     cx.subscribe(&project, |_, project, event, cx| match event {
         project::Event::WorktreeAdded(worktree_id) => {
-            install_extensions_for_worktree(&project, *worktree_id, cx);
+            let Some(worktree) = project.read(cx).worktree_for_id(*worktree_id, cx) else {
+                return;
+            };
+            let snapshot = worktree.read(cx).snapshot();
+            notify_for_marker_paths(
+                snapshot
+                    .entries(false, 0)
+                    .filter(|entry| entry.is_file())
+                    .map(|entry| entry.path.as_unix_str()),
+                cx,
+            );
         }
         project::Event::WorktreeUpdatedEntries(_, changes) => {
-            install_extensions_for_marker_paths(
+            notify_for_marker_paths(
                 changes
                     .iter()
                     .filter(|(_, _, change)| *change != PathChange::Removed)
@@ -142,13 +128,19 @@ fn watch_project_markers(project: Entity<Project>, cx: &mut Context<Workspace>) 
     })
     .detach();
 
-    let worktree_ids = project
-        .read(cx)
+    let project = project.read(cx);
+    let worktree_snapshots = project
         .worktrees(cx)
-        .map(|worktree| worktree.read(cx).id())
+        .map(|worktree| worktree.read(cx).snapshot())
         .collect::<Vec<_>>();
-    for worktree_id in worktree_ids {
-        install_extensions_for_worktree(&project, worktree_id, cx);
+    for snapshot in worktree_snapshots {
+        notify_for_marker_paths(
+            snapshot
+                .entries(false, 0)
+                .filter(|entry| entry.is_file())
+                .map(|entry| entry.path.as_unix_str()),
+            cx,
+        );
     }
 }
 
@@ -275,8 +267,6 @@ fn suggest_for_buffer(
                         .into_any_element()
                 })
                 .with_title(suggestion.title)
-                .more_info_message("Learn more")
-                .more_info_url(suggestion.docs_url)
                 .primary_message(suggestion.install_message)
                 .secondary_message("Don't show again")
             });
@@ -342,10 +332,6 @@ fn show_suggestion(
         || extension_store
             .outstanding_operations()
             .contains_key(extension_id)
-        || ExtensionSettings::get_global(cx)
-            .auto_install_extensions
-            .get(extension_id)
-            == Some(&true)
         || suggestion_dismissed(extension_id, cx)
     {
         return;
@@ -357,14 +343,6 @@ fn show_suggestion(
             build_notification(cx)
                 .primary_icon(IconName::Check)
                 .primary_icon_color(Color::Success)
-                .primary_on_click({
-                    let extension_id = extension_id.clone();
-                    move |_window, cx| {
-                        ExtensionStore::global(cx).update(cx, |store, cx| {
-                            store.install_latest_extension(extension_id.clone(), cx);
-                        });
-                    }
-                })
                 .secondary_icon(IconName::Close)
                 .secondary_icon_color(Color::Error)
                 .secondary_on_click(move |_window, cx| dismiss_suggestion(&extension_id, cx))
@@ -379,11 +357,9 @@ mod tests {
     use extension_host::RELOAD_DEBOUNCE_DURATION;
     use fs::RemoveOptions;
     use gpui::{AnyView, TestAppContext, VisualTestContext};
-    use http_client::HttpClient as _;
     use language::{Language, LanguageConfig, LanguageMatcher};
     use project::{Project, WorktreeId};
     use serde_json::json;
-    use settings::SettingsStore;
     use util::path;
     use util::rel_path::rel_path;
     use workspace::{AppState, SplitDirection};
@@ -609,62 +585,6 @@ mod tests {
     }
 
     #[gpui::test]
-    async fn test_no_suggestion_while_install_is_pending(cx: &mut TestAppContext) {
-        let app_state = init_test(cx);
-        app_state
-            .client
-            .http_client()
-            .as_fake()
-            .replace_handler(|_, _| std::future::pending());
-        cx.update(|cx| {
-            ExtensionStore::global(cx).update(cx, |store, cx| {
-                store.install_latest_extension(Arc::from(EMMET_EXTENSION_ID), cx);
-            });
-        });
-        cx.run_until_parked();
-        cx.update(|cx| {
-            assert_eq!(
-                ExtensionStore::global(cx)
-                    .read(cx)
-                    .outstanding_operations()
-                    .keys()
-                    .collect::<Vec<_>>(),
-                vec![&Arc::from(EMMET_EXTENSION_ID)]
-            );
-        });
-        let (workspace, cx) = open_test_workspace(&app_state, cx).await;
-
-        open_file(&workspace, "index.html", cx).await;
-
-        assert_eq!(notification_ids(&workspace, cx), Vec::new());
-    }
-
-    #[gpui::test]
-    async fn test_suggestion_returns_after_failed_install(cx: &mut TestAppContext) {
-        let app_state = init_test(cx);
-        cx.update(|cx| {
-            ExtensionStore::global(cx).update(cx, |store, cx| {
-                store.install_latest_extension(Arc::from(EMMET_EXTENSION_ID), cx);
-            });
-        });
-        cx.run_until_parked();
-        cx.update(|cx| {
-            let store = ExtensionStore::global(cx);
-            let store = store.read(cx);
-            assert_eq!(store.outstanding_operations().len(), 0);
-            assert_eq!(store.installed_extensions().len(), 0);
-        });
-        let (workspace, cx) = open_test_workspace(&app_state, cx).await;
-
-        open_file(&workspace, "index.html", cx).await;
-
-        assert_eq!(
-            notification_ids(&workspace, cx),
-            vec![notification_id(EMMET_EXTENSION_ID)]
-        );
-    }
-
-    #[gpui::test]
     async fn test_suggestion_returns_after_uninstall_through_store(cx: &mut TestAppContext) {
         let app_state = init_test(cx);
         install_emmet_on_disk(&app_state, cx).await;
@@ -687,22 +607,6 @@ mod tests {
 
         assert_eq!(
             notification_ids(&workspace, cx),
-            vec![notification_id(EMMET_EXTENSION_ID)]
-        );
-    }
-
-    #[gpui::test]
-    async fn test_no_suggestion_when_auto_install_is_enabled(cx: &mut TestAppContext) {
-        assert_eq!(
-            suggestions_with_auto_install_setting(true, cx).await,
-            Vec::new()
-        );
-    }
-
-    #[gpui::test]
-    async fn test_suggestion_when_auto_install_is_disabled(cx: &mut TestAppContext) {
-        assert_eq!(
-            suggestions_with_auto_install_setting(false, cx).await,
             vec![notification_id(EMMET_EXTENSION_ID)]
         );
     }
@@ -860,7 +764,7 @@ mod tests {
     }
 
     #[test]
-    fn test_marker_install_table_compiles_for_csharp_and_java_only() {
+    fn test_marker_table_compiles_for_csharp_and_java_only() {
         let extension_ids = PROJECT_MARKER_RULES
             .iter()
             .map(|extension| extension.extension_id)
@@ -874,7 +778,7 @@ mod tests {
     }
 
     #[test]
-    fn test_marker_install_matches_dotnet_markers() {
+    fn test_marker_matches_dotnet_markers() {
         for path in [
             "App.sln",
             "App.slnx",
@@ -887,7 +791,7 @@ mod tests {
     }
 
     #[test]
-    fn test_marker_install_matches_java_markers() {
+    fn test_marker_matches_java_markers() {
         for path in [
             "pom.xml",
             "build.gradle",
@@ -902,7 +806,7 @@ mod tests {
     }
 
     #[test]
-    fn test_marker_install_ignores_source_files_and_lookalikes() {
+    fn test_marker_ignores_source_files_and_lookalikes() {
         for path in [
             "Program.cs",
             "Main.java",
@@ -920,9 +824,7 @@ mod tests {
     }
 
     #[gpui::test]
-    async fn test_marker_install_requests_csharp_for_project_file_in_worktree(
-        cx: &mut TestAppContext,
-    ) {
+    async fn test_marker_notifies_csharp_for_project_file_in_worktree(cx: &mut TestAppContext) {
         let app_state = init_test(cx);
         let (_workspace, cx) = open_workspace_with_tree(
             &app_state,
@@ -931,11 +833,11 @@ mod tests {
         )
         .await;
 
-        assert_eq!(requested_marker_extensions(cx), vec!["csharp"]);
+        assert_eq!(notified_marker_extensions(cx), vec!["csharp"]);
     }
 
     #[gpui::test]
-    async fn test_marker_install_requests_java_for_nested_gradle_file(cx: &mut TestAppContext) {
+    async fn test_marker_notifies_java_for_nested_gradle_file(cx: &mut TestAppContext) {
         let app_state = init_test(cx);
         let (_workspace, cx) = open_workspace_with_tree(
             &app_state,
@@ -944,11 +846,11 @@ mod tests {
         )
         .await;
 
-        assert_eq!(requested_marker_extensions(cx), vec!["java"]);
+        assert_eq!(notified_marker_extensions(cx), vec!["java"]);
     }
 
     #[gpui::test]
-    async fn test_marker_install_requests_every_extension_with_a_marker(cx: &mut TestAppContext) {
+    async fn test_marker_notifies_every_extension_with_a_marker(cx: &mut TestAppContext) {
         let app_state = init_test(cx);
         let (_workspace, cx) = open_workspace_with_tree(
             &app_state,
@@ -957,11 +859,11 @@ mod tests {
         )
         .await;
 
-        assert_eq!(requested_marker_extensions(cx), vec!["csharp", "java"]);
+        assert_eq!(notified_marker_extensions(cx), vec!["csharp", "java"]);
     }
 
     #[gpui::test]
-    async fn test_marker_install_ignores_worktree_without_markers(cx: &mut TestAppContext) {
+    async fn test_marker_ignores_worktree_without_markers(cx: &mut TestAppContext) {
         let app_state = init_test(cx);
         let (_workspace, cx) = open_workspace_with_tree(
             &app_state,
@@ -970,34 +872,11 @@ mod tests {
         )
         .await;
 
-        assert_eq!(requested_marker_extensions(cx), Vec::<&str>::new());
+        assert_eq!(notified_marker_extensions(cx), Vec::<&str>::new());
     }
 
     #[gpui::test]
-    async fn test_marker_install_respects_explicit_opt_out(cx: &mut TestAppContext) {
-        let app_state = init_test(cx);
-        cx.update(|cx| {
-            cx.update_global::<SettingsStore, _>(|store, cx| {
-                store.update_user_settings(cx, |content| {
-                    content
-                        .extension
-                        .auto_install_extensions
-                        .insert(Arc::from("csharp"), false);
-                });
-            });
-        });
-        let (_workspace, cx) = open_workspace_with_tree(
-            &app_state,
-            json!({ "App.sln": "", "pom.xml": "<project />" }),
-            cx,
-        )
-        .await;
-
-        assert_eq!(requested_marker_extensions(cx), vec!["java"]);
-    }
-
-    #[gpui::test]
-    async fn test_marker_install_skips_installed_extension(cx: &mut TestAppContext) {
+    async fn test_marker_skips_installed_extension(cx: &mut TestAppContext) {
         let app_state = init_test(cx);
         install_extension_on_disk("csharp", &app_state, cx).await;
         let (_workspace, cx) = open_workspace_with_tree(
@@ -1007,15 +886,15 @@ mod tests {
         )
         .await;
 
-        assert_eq!(requested_marker_extensions(cx), vec!["java"]);
+        assert_eq!(notified_marker_extensions(cx), vec!["java"]);
     }
 
     #[gpui::test]
-    async fn test_marker_install_triggers_when_marker_file_appears(cx: &mut TestAppContext) {
+    async fn test_marker_triggers_when_marker_file_appears(cx: &mut TestAppContext) {
         let app_state = init_test(cx);
         let (_workspace, cx) =
             open_workspace_with_tree(&app_state, json!({ "main.rs": "fn main() {}" }), cx).await;
-        assert_eq!(requested_marker_extensions(cx), Vec::<&str>::new());
+        assert_eq!(notified_marker_extensions(cx), Vec::<&str>::new());
 
         app_state
             .fs
@@ -1025,21 +904,13 @@ mod tests {
         cx.executor().advance_clock(RELOAD_DEBOUNCE_DURATION);
         cx.run_until_parked();
 
-        assert_eq!(requested_marker_extensions(cx), vec!["java"]);
+        assert_eq!(notified_marker_extensions(cx), vec!["java"]);
     }
 
     fn init_test(cx: &mut TestAppContext) -> Arc<AppState> {
         cx.update(|cx| {
             let app_state = AppState::test(cx);
             AppState::set_global(app_state.clone(), cx);
-            cx.update_global::<SettingsStore, _>(|store, cx| {
-                store.update_user_settings(cx, |content| {
-                    content
-                        .extension
-                        .auto_install_extensions
-                        .insert(Arc::from("html"), false);
-                });
-            });
             cx.set_global(db::AppDatabase::test_new());
             release_channel::init(semver::Version::new(0, 0, 0), cx);
             extension::init(cx);
@@ -1127,14 +998,14 @@ mod tests {
         })
     }
 
-    fn requested_marker_extensions(cx: &mut VisualTestContext) -> Vec<&'static str> {
+    fn notified_marker_extensions(cx: &mut VisualTestContext) -> Vec<&'static str> {
         cx.update(|_, cx| {
-            let mut requested = cx
-                .try_global::<RequestedMarkerInstalls>()
-                .map(|requested| requested.0.iter().copied().collect::<Vec<_>>())
+            let mut notified = cx
+                .try_global::<NotifiedMarkerExtensions>()
+                .map(|notified| notified.0.iter().copied().collect::<Vec<_>>())
                 .unwrap_or_default();
-            requested.sort_unstable();
-            requested
+            notified.sort_unstable();
+            notified
         })
     }
 
@@ -1168,28 +1039,6 @@ mod tests {
                 .read(cx)
                 .id()
         })
-    }
-
-    async fn suggestions_with_auto_install_setting(
-        auto_install: bool,
-        cx: &mut TestAppContext,
-    ) -> Vec<NotificationId> {
-        let app_state = init_test(cx);
-        cx.update(|cx| {
-            cx.update_global::<SettingsStore, _>(|store, cx| {
-                store.update_user_settings(cx, |content| {
-                    content
-                        .extension
-                        .auto_install_extensions
-                        .insert(Arc::from(EMMET_EXTENSION_ID), auto_install);
-                });
-            });
-        });
-        let (workspace, cx) = open_test_workspace(&app_state, cx).await;
-
-        open_file(&workspace, "index.html", cx).await;
-
-        notification_ids(&workspace, cx)
     }
 
     fn notification_ids(

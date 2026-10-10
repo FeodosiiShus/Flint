@@ -1,14 +1,8 @@
 #[cfg(any(test, feature = "test-support"))]
 use crate::transport::mock::ConnectGuard;
 use crate::{
-    SshConnectionOptions,
-    protocol::MessageId,
-    proxy::ProxyLaunchError,
-    transport::{
-        docker::{DockerConnectionOptions, DockerExecConnection},
-        ssh::SshRemoteConnection,
-        wsl::{WslConnectionOptions, WslRemoteConnection},
-    },
+    SshConnectionOptions, protocol::MessageId, proxy::ProxyLaunchError,
+    transport::ssh::SshRemoteConnection,
 };
 use anyhow::{Context as _, Result, anyhow};
 use askpass::EncryptedPassword;
@@ -1227,16 +1221,6 @@ impl ConnectionPool {
                                 .await
                                 .map(|connection| Arc::new(connection) as Arc<dyn RemoteConnection>)
                         }
-                        RemoteConnectionOptions::Wsl(opts) => {
-                            WslRemoteConnection::new(opts, delegate, cx)
-                                .await
-                                .map(|connection| Arc::new(connection) as Arc<dyn RemoteConnection>)
-                        }
-                        RemoteConnectionOptions::Docker(opts) => {
-                            DockerExecConnection::new(opts, delegate, cx)
-                                .await
-                                .map(|connection| Arc::new(connection) as Arc<dyn RemoteConnection>)
-                        }
                         #[cfg(any(test, feature = "test-support"))]
                         RemoteConnectionOptions::Mock(opts) => match cx.update(|cx| {
                             cx.default_global::<crate::transport::mock::MockConnectionRegistry>()
@@ -1282,8 +1266,6 @@ impl ConnectionPool {
 #[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum RemoteConnectionOptions {
     Ssh(SshConnectionOptions),
-    Wsl(WslConnectionOptions),
-    Docker(DockerConnectionOptions),
     #[cfg(any(test, feature = "test-support"))]
     Mock(crate::transport::mock::MockConnectionOptions),
 }
@@ -1295,14 +1277,6 @@ impl RemoteConnectionOptions {
                 .nickname
                 .clone()
                 .unwrap_or_else(|| opts.host.to_string()),
-            RemoteConnectionOptions::Wsl(opts) => opts.distro_name.clone(),
-            RemoteConnectionOptions::Docker(opts) => {
-                if opts.use_podman {
-                    format!("[podman] {}", opts.name)
-                } else {
-                    opts.name.clone()
-                }
-            }
             #[cfg(any(test, feature = "test-support"))]
             RemoteConnectionOptions::Mock(opts) => format!("mock-{}", opts.id),
         }
@@ -1311,8 +1285,6 @@ impl RemoteConnectionOptions {
     pub fn host(&self) -> String {
         match self {
             RemoteConnectionOptions::Ssh(opts) => opts.host.to_string(),
-            RemoteConnectionOptions::Wsl(opts) => opts.distro_name.clone(),
-            RemoteConnectionOptions::Docker(opts) => opts.name.clone(),
             #[cfg(any(test, feature = "test-support"))]
             RemoteConnectionOptions::Mock(opts) => format!("mock-{}", opts.id),
         }
@@ -1493,28 +1465,6 @@ impl From<SshConnectionOptions> for RemoteConnectionOptions {
     fn from(opts: SshConnectionOptions) -> Self {
         RemoteConnectionOptions::Ssh(opts)
     }
-}
-
-impl From<WslConnectionOptions> for RemoteConnectionOptions {
-    fn from(opts: WslConnectionOptions) -> Self {
-        RemoteConnectionOptions::Wsl(opts)
-    }
-}
-
-#[cfg(any(test, feature = "test-support"))]
-impl From<crate::transport::mock::MockConnectionOptions> for RemoteConnectionOptions {
-    fn from(opts: crate::transport::mock::MockConnectionOptions) -> Self {
-        RemoteConnectionOptions::Mock(opts)
-    }
-}
-
-#[cfg(target_os = "windows")]
-/// Open a wsl path (\\wsl.localhost\<distro>\path)
-#[derive(Debug, Clone, PartialEq, Eq, gpui::Action)]
-#[action(namespace = workspace, no_json, no_register)]
-pub struct OpenWslPath {
-    pub distro: WslConnectionOptions,
-    pub paths: Vec<PathBuf>,
 }
 
 #[async_trait(?Send)]

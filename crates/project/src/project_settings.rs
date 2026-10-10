@@ -115,10 +115,6 @@ impl From<settings::NodeBinarySettings> for NodeBinarySettings {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(default)]
 pub struct GlobalLspSettings {
-    /// Whether to show the LSP servers button in the status bar.
-    ///
-    /// Default: `true`
-    pub button: bool,
     /// The maximum amount of time to wait for responses from language servers, in seconds.
     /// A value of `0` will result in no timeout being applied (causing all LSP responses to wait
     /// indefinitely until completed).
@@ -139,7 +135,6 @@ pub struct GlobalLspSettings {
 impl Default for GlobalLspSettings {
     fn default() -> Self {
         Self {
-            button: true,
             request_timeout: DEFAULT_LSP_REQUEST_TIMEOUT_SECS,
             max_buffer_line_length: 20_000,
             notifications: LspNotificationSettings::default(),
@@ -452,9 +447,6 @@ pub struct MergeToolSettings {
 
 #[derive(Clone, Debug)]
 pub struct DiagnosticsSettings {
-    /// Whether to show the project diagnostics button in the status bar.
-    pub button: bool,
-
     /// Whether or not to include warning diagnostics.
     pub include_warnings: bool,
 
@@ -568,12 +560,6 @@ impl Settings for ProjectSettings {
                 .map(|(key, value)| (LanguageServerName(key.into()), value))
                 .collect(),
             global_lsp_settings: GlobalLspSettings {
-                button: content
-                    .global_lsp_settings
-                    .as_ref()
-                    .unwrap()
-                    .button
-                    .unwrap(),
                 request_timeout: content
                     .global_lsp_settings
                     .as_ref()
@@ -612,7 +598,6 @@ impl Settings for ProjectSettings {
                 .map(|(key, value)| (DebugAdapterName(key.into()), DapSettings::from(value)))
                 .collect(),
             diagnostics: DiagnosticsSettings {
-                button: diagnostics.button.unwrap(),
                 include_warnings: diagnostics.include_warnings.unwrap(),
                 lsp_pull_diagnostics: LspPullDiagnosticsSettings {
                     enabled: lsp_pull_diagnostics.enabled.unwrap(),

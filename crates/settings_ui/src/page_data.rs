@@ -52,9 +52,7 @@ macro_rules! concat_sections {
 }
 
 pub(crate) fn settings_data(cx: &App) -> Vec<SettingsPage> {
-    use feature_flags::FeatureFlagAppExt as _;
-
-    let mut pages = vec![
+    vec![
         general_page(cx),
         appearance_page(),
         keymap_page(),
@@ -67,32 +65,7 @@ pub(crate) fn settings_data(cx: &App) -> Vec<SettingsPage> {
         terminal_page(),
         version_control_page(),
         network_page(),
-    ];
-
-    if cx.feature_flag_overrides_enabled() {
-        pages.push(developer_page());
-    }
-
-    pages
-}
-
-fn developer_page() -> SettingsPage {
-    SettingsPage {
-        title: "Developer",
-        items: Box::new([
-            SettingsPageItem::SectionHeader("Feature Flags"),
-            SettingsPageItem::SubPageLink(SubPageLink {
-                title: "Feature Flags".into(),
-                r#type: Default::default(),
-                description: None,
-                search_aliases: &[],
-                json_path: Some("feature_flags"),
-                in_json: true,
-                files: USER,
-                render: crate::pages::render_feature_flags_page,
-            }),
-        ]),
-    }
+    ]
 }
 
 fn general_page(cx: &App) -> SettingsPage {
@@ -3678,7 +3651,7 @@ fn search_and_files_page() -> SettingsPage {
 }
 
 fn window_and_layout_page() -> SettingsPage {
-    fn status_bar_section() -> [SettingsPageItem; 15] {
+    fn status_bar_section() -> [SettingsPageItem; 13] {
         [
             SettingsPageItem::SectionHeader("Status Bar"),
             SettingsPageItem::SettingItem(SettingItem {
@@ -3788,28 +3761,6 @@ fn window_and_layout_page() -> SettingsPage {
                 files: USER,
             }),
             SettingsPageItem::SettingItem(SettingItem {
-                title: "Navigation Bar",
-                description: "Show the path of the active file and the symbols at the cursor on the left of the status bar.",
-                field: Box::new(SettingField {
-                    json_path: Some("status_bar.navigation_bar"),
-                    pick: |settings_content| {
-                        settings_content
-                            .status_bar
-                            .as_ref()?
-                            .navigation_bar
-                            .as_ref()
-                    },
-                    write: |settings_content, value, _| {
-                        settings_content
-                            .status_bar
-                            .get_or_insert_default()
-                            .navigation_bar = value;
-                    },
-                }),
-                metadata: None,
-                files: USER,
-            }),
-            SettingsPageItem::SettingItem(SettingItem {
                 title: "Indentation Button",
                 description: "Show the indentation of the active file in the status bar.",
                 field: Box::new(SettingField {
@@ -3883,19 +3834,6 @@ fn window_and_layout_page() -> SettingsPage {
                     pick: |settings_content| settings_content.terminal.as_ref()?.button.as_ref(),
                     write: |settings_content, value, _| {
                         settings_content.terminal.get_or_insert_default().button = value;
-                    },
-                }),
-                metadata: None,
-                files: USER,
-            }),
-            SettingsPageItem::SettingItem(SettingItem {
-                title: "Diagnostics Button",
-                description: "Show the project diagnostics button in the status bar.",
-                field: Box::new(SettingField {
-                    json_path: Some("diagnostics.button"),
-                    pick: |settings_content| settings_content.diagnostics.as_ref()?.button.as_ref(),
-                    write: |settings_content, value, _| {
-                        settings_content.diagnostics.get_or_insert_default().button = value;
                     },
                 }),
                 metadata: None,
@@ -6547,6 +6485,150 @@ fn panels_page() -> SettingsPage {
         ]
     }
 
+    fn project_diagnostics_panel_section() -> [SettingsPageItem; 4] {
+        [
+            SettingsPageItem::SectionHeader("Project Diagnostics Panel"),
+            SettingsPageItem::SettingItem(SettingItem {
+                title: "Project Diagnostics Panel Button",
+                description: "Show the Project Diagnostics panel button in the tool window bar.",
+                field: Box::new(SettingField {
+                    json_path: Some("project_diagnostics_panel.button"),
+                    pick: |settings_content| {
+                        settings_content
+                            .project_diagnostics_panel
+                            .as_ref()?
+                            .button
+                            .as_ref()
+                    },
+                    write: |settings_content, value, _| {
+                        settings_content
+                            .project_diagnostics_panel
+                            .get_or_insert_default()
+                            .button = value;
+                    },
+                }),
+                metadata: None,
+                files: USER,
+            }),
+            SettingsPageItem::SettingItem(SettingItem {
+                title: "Project Diagnostics Panel Dock",
+                description: "Where to dock the Project Diagnostics panel.",
+                field: Box::new(SettingField {
+                    json_path: Some("project_diagnostics_panel.dock"),
+                    pick: |settings_content| {
+                        settings_content
+                            .project_diagnostics_panel
+                            .as_ref()?
+                            .dock
+                            .as_ref()
+                    },
+                    write: |settings_content, value, _| {
+                        settings_content
+                            .project_diagnostics_panel
+                            .get_or_insert_default()
+                            .dock = value;
+                    },
+                }),
+                metadata: None,
+                files: USER,
+            }),
+            SettingsPageItem::SettingItem(SettingItem {
+                title: "Project Diagnostics Panel Default Width",
+                description: "Default width of the Project Diagnostics panel in pixels.",
+                field: Box::new(SettingField {
+                    json_path: Some("project_diagnostics_panel.default_width"),
+                    pick: |settings_content| {
+                        settings_content
+                            .project_diagnostics_panel
+                            .as_ref()?
+                            .default_width
+                            .as_ref()
+                    },
+                    write: |settings_content, value, _| {
+                        settings_content
+                            .project_diagnostics_panel
+                            .get_or_insert_default()
+                            .default_width = value;
+                    },
+                }),
+                metadata: None,
+                files: USER,
+            }),
+        ]
+    }
+
+    fn language_services_panel_section() -> [SettingsPageItem; 4] {
+        [
+            SettingsPageItem::SectionHeader("Language Services Panel"),
+            SettingsPageItem::SettingItem(SettingItem {
+                title: "Language Services Panel Button",
+                description: "Show the Language Services panel button in the tool window bar.",
+                field: Box::new(SettingField {
+                    json_path: Some("language_services_panel.button"),
+                    pick: |settings_content| {
+                        settings_content
+                            .language_services_panel
+                            .as_ref()?
+                            .button
+                            .as_ref()
+                    },
+                    write: |settings_content, value, _| {
+                        settings_content
+                            .language_services_panel
+                            .get_or_insert_default()
+                            .button = value;
+                    },
+                }),
+                metadata: None,
+                files: USER,
+            }),
+            SettingsPageItem::SettingItem(SettingItem {
+                title: "Language Services Panel Dock",
+                description: "Where to dock the Language Services panel.",
+                field: Box::new(SettingField {
+                    json_path: Some("language_services_panel.dock"),
+                    pick: |settings_content| {
+                        settings_content
+                            .language_services_panel
+                            .as_ref()?
+                            .dock
+                            .as_ref()
+                    },
+                    write: |settings_content, value, _| {
+                        settings_content
+                            .language_services_panel
+                            .get_or_insert_default()
+                            .dock = value;
+                    },
+                }),
+                metadata: None,
+                files: USER,
+            }),
+            SettingsPageItem::SettingItem(SettingItem {
+                title: "Language Services Panel Default Width",
+                description: "Default width of the Language Services panel in pixels.",
+                field: Box::new(SettingField {
+                    json_path: Some("language_services_panel.default_width"),
+                    pick: |settings_content| {
+                        settings_content
+                            .language_services_panel
+                            .as_ref()?
+                            .default_width
+                            .as_ref()
+                    },
+                    write: |settings_content, value, _| {
+                        settings_content
+                            .language_services_panel
+                            .get_or_insert_default()
+                            .default_width = value;
+                    },
+                }),
+                metadata: None,
+                files: USER,
+            }),
+        ]
+    }
+
     fn panel_headers_section() -> [SettingsPageItem; 3] {
         [
             SettingsPageItem::SectionHeader("Panel Headers"),
@@ -6587,6 +6669,8 @@ fn panels_page() -> SettingsPage {
             terminal_panel_section(),
             git_panel_section(),
             search_panel_section(),
+            project_diagnostics_panel_section(),
+            language_services_panel_section(),
         ],
     }
 }

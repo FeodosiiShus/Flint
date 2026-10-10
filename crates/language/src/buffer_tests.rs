@@ -3003,18 +3003,19 @@ fn test_autoindent_query_with_outdent_captures(cx: &mut App) {
     });
 
     cx.new(|cx| {
-        let mut buffer = Buffer::local("", cx).with_language(Arc::new(ruby_lang()), cx);
+        let mut buffer = Buffer::local("", cx).with_language(c_lang(), cx);
 
         let text = r#"
-            class C
-            def a(b, c)
-            puts b
-            puts c
-            rescue
-            puts "errored"
-            exit 1
-            end
-            end
+            int main() {
+            switch (a) {
+            case 1:
+            b++;
+            break;
+            case 2:
+            c++;
+            break;
+            }
+            }
         "#
         .unindent();
 
@@ -3023,15 +3024,16 @@ fn test_autoindent_query_with_outdent_captures(cx: &mut App) {
         assert_eq!(
             buffer.text(),
             r#"
-                class C
-                  def a(b, c)
-                    puts b
-                    puts c
-                  rescue
-                    puts "errored"
-                    exit 1
-                  end
-                end
+                int main() {
+                  switch (a) {
+                    case 1:
+                      b++;
+                      break;
+                    case 2:
+                      c++;
+                      break;
+                  }
+                }
             "#
             .unindent()
         );
@@ -3522,31 +3524,26 @@ fn test_language_scope_at_with_combined_injections(cx: &mut App) {
 
     cx.new(|cx| {
         let text = r#"
-            <ol>
-            <% people.each do |person| %>
-                <li>
-                    <%= person.name %>
-                </li>
-            <% end %>
-            </ol>
+            <div>
+                <span>hello</span>
+            </div>
+            <script>
+                init({ count: 1 });
+            </script>
         "#
         .unindent();
 
+        let html_language = Arc::new(html_lang());
         let language_registry = Arc::new(LanguageRegistry::test(cx.background_executor().clone()));
-        language_registry.add(Arc::new(ruby_lang()));
-        language_registry.add(Arc::new(html_lang()));
-        language_registry.add(Arc::new(erb_lang()));
+        language_registry.add(html_language.clone());
+        language_registry.add(Arc::new(javascript_lang()));
 
         let mut buffer = Buffer::local(text, cx);
         buffer.set_language_registry(language_registry.clone());
-        let language = language_registry
-            .language_for_name("HTML+ERB")
-            .now_or_never()
-            .and_then(Result::ok);
-        buffer.set_language(language, cx);
+        buffer.set_language(Some(html_language), cx);
 
         let snapshot = buffer.snapshot();
-        let html_config = snapshot.language_scope_at(Point::new(2, 4)).unwrap();
+        let html_config = snapshot.language_scope_at(Point::new(1, 6)).unwrap();
         assert_eq!(html_config.line_comment_prefixes(), &[]);
         assert_eq!(
             html_config.block_comment(),
@@ -3558,9 +3555,10 @@ fn test_language_scope_at_with_combined_injections(cx: &mut App) {
             })
         );
 
-        let ruby_config = snapshot.language_scope_at(Point::new(3, 12)).unwrap();
-        assert_eq!(ruby_config.line_comment_prefixes(), &[Arc::from("# ")]);
-        assert_eq!(ruby_config.block_comment(), None);
+        let javascript_config = snapshot.language_scope_at(Point::new(4, 12)).unwrap();
+        assert_eq!(javascript_config.language_name(), "JavaScript");
+        assert_eq!(javascript_config.line_comment_prefixes(), &[]);
+        assert_eq!(javascript_config.block_comment(), None);
 
         buffer
     });
@@ -3761,26 +3759,23 @@ fn test_syntax_layer_at_for_combined_injections(cx: &mut App) {
     init_settings(cx, |_| {});
 
     cx.new(|cx| {
-        // ERB template with HTML and Ruby content
         let text = r#"
 <div>Hello</div>
-<%= link_to "Click", url %>
+<script>
+init({ count: 1 });
+</script>
 <p>World</p>
         "#
         .unindent();
 
+        let html_language = Arc::new(html_lang());
         let language_registry = Arc::new(LanguageRegistry::test(cx.background_executor().clone()));
-        language_registry.add(Arc::new(erb_lang()));
-        language_registry.add(Arc::new(html_lang()));
-        language_registry.add(Arc::new(ruby_lang()));
+        language_registry.add(html_language.clone());
+        language_registry.add(Arc::new(javascript_lang()));
 
         let mut buffer = Buffer::local(text, cx);
         buffer.set_language_registry(language_registry.clone());
-        let language = language_registry
-            .language_for_name("HTML+ERB")
-            .now_or_never()
-            .and_then(Result::ok);
-        buffer.set_language(language, cx);
+        buffer.set_language(Some(html_language), cx);
 
         let snapshot = buffer.snapshot();
 
@@ -3795,25 +3790,25 @@ fn test_syntax_layer_at_for_combined_injections(cx: &mut App) {
             language.name()
         );
 
-        // Test language_at for Ruby code (line 1: "<%= link_to ... %>")
-        let ruby_point = Point::new(1, 6);
-        let language = snapshot.language_at(ruby_point).unwrap();
+        // Test language_at for JavaScript code (line 2: "init({ ... });")
+        let javascript_point = Point::new(2, 6);
+        let language = snapshot.language_at(javascript_point).unwrap();
         assert_eq!(
             language.name().as_ref(),
-            "Ruby",
-            "Expected Ruby at {:?}, got {}",
-            ruby_point,
+            "JavaScript",
+            "Expected JavaScript at {:?}, got {}",
+            javascript_point,
             language.name()
         );
 
-        // Test language_at for HTML after Ruby (line 2: "<p>World</p>")
-        let html_after_ruby = Point::new(2, 2);
-        let language = snapshot.language_at(html_after_ruby).unwrap();
+        // Test language_at for HTML after JavaScript (line 4: "<p>World</p>")
+        let html_after_javascript = Point::new(4, 2);
+        let language = snapshot.language_at(html_after_javascript).unwrap();
         assert_eq!(
             language.name().as_ref(),
             "HTML",
             "Expected HTML at {:?}, got {}",
-            html_after_ruby,
+            html_after_javascript,
             language.name()
         );
 
@@ -3826,31 +3821,25 @@ fn test_languages_at_for_combined_injections(cx: &mut App) {
     init_settings(cx, |_| {});
 
     cx.new(|cx| {
-        // ERB template with HTML and Ruby content
         let text = r#"
 <div>Hello</div>
-<%= yield %>
+<script>
+init({ count: 1 });
+</script>
 <p>World</p>
         "#
         .unindent();
 
+        let html_language = Arc::new(html_lang());
         let language_registry = Arc::new(LanguageRegistry::test(cx.background_executor().clone()));
-        language_registry.add(Arc::new(erb_lang()));
-        language_registry.add(Arc::new(html_lang()));
-        language_registry.add(Arc::new(ruby_lang()));
+        language_registry.add(html_language.clone());
+        language_registry.add(Arc::new(javascript_lang()));
 
         let mut buffer = Buffer::local(text, cx);
         buffer.set_language_registry(language_registry.clone());
-        buffer.set_language(
-            language_registry
-                .language_for_name("HTML+ERB")
-                .now_or_never()
-                .unwrap()
-                .ok(),
-            cx,
-        );
+        buffer.set_language(Some(html_language), cx);
 
-        // Test languages_at for HTML content - should NOT include Ruby
+        // Test languages_at for HTML content - should NOT include JavaScript
         let html_point = Point::new(0, 4);
         let languages = buffer.languages_at(html_point);
         let language_names: Vec<_> = languages.iter().map(|language| language.name()).collect();
@@ -3865,22 +3854,22 @@ fn test_languages_at_for_combined_injections(cx: &mut App) {
         assert!(
             !language_names
                 .iter()
-                .any(|language_name| language_name.as_ref() == "Ruby"),
-            "Did not expect Ruby in languages at {:?}, got {:?}",
+                .any(|language_name| language_name.as_ref() == "JavaScript"),
+            "Did not expect JavaScript in languages at {:?}, got {:?}",
             html_point,
             language_names
         );
 
-        // Test languages_at for Ruby code - should NOT include HTML
-        let ruby_point = Point::new(1, 6);
-        let languages = buffer.languages_at(ruby_point);
+        // Test languages_at for JavaScript code - should include JavaScript but NOT HTML
+        let javascript_point = Point::new(2, 6);
+        let languages = buffer.languages_at(javascript_point);
         let language_names: Vec<_> = languages.iter().map(|language| language.name()).collect();
         assert!(
             language_names
                 .iter()
-                .any(|language_name| language_name.as_ref() == "Ruby"),
-            "Expected Ruby in languages at {:?}, got {:?}",
-            ruby_point,
+                .any(|language_name| language_name.as_ref() == "JavaScript"),
+            "Expected JavaScript in languages at {:?}, got {:?}",
+            javascript_point,
             language_names
         );
         assert!(
@@ -3888,7 +3877,7 @@ fn test_languages_at_for_combined_injections(cx: &mut App) {
                 .iter()
                 .any(|language_name| language_name.as_ref() == "HTML"),
             "Did not expect HTML in languages at {:?}, got {:?}",
-            ruby_point,
+            javascript_point,
             language_names
         );
 
@@ -4985,31 +4974,6 @@ let word=öäpple.bar你 Öäpple word2-öÄpPlE-Pizza-word ÖÄPPLE word
     });
 }
 
-fn ruby_lang() -> Language {
-    Language::new(
-        LanguageConfig {
-            name: "Ruby".into(),
-            matcher: (LanguageMatcher {
-                path_suffixes: vec!["rb".to_string()],
-                ..Default::default()
-            })
-            .into(),
-            line_comments: vec!["# ".into()],
-            ..Default::default()
-        },
-        Some(tree_sitter_ruby::LANGUAGE.into()),
-    )
-    .with_indents_query(
-        r#"
-            (class "end" @end) @indent
-            (method "end" @end) @indent
-            (rescue) @outdent
-            (then) @indent
-        "#,
-    )
-    .unwrap()
-}
-
 fn html_lang() -> Language {
     Language::new(
         LanguageConfig {
@@ -5037,43 +5001,6 @@ fn html_lang() -> Language {
         (script_element
             (raw_text) @injection.content
             (#set! injection.language "javascript"))
-        "#,
-    )
-    .unwrap()
-}
-
-fn erb_lang() -> Language {
-    Language::new(
-        LanguageConfig {
-            name: "HTML+ERB".into(),
-            matcher: (LanguageMatcher {
-                path_suffixes: vec!["erb".to_string()],
-                ..Default::default()
-            })
-            .into(),
-            block_comment: Some(BlockCommentConfig {
-                start: "<%#".into(),
-                prefix: "".into(),
-                end: "%>".into(),
-                tab_size: 0,
-            }),
-            ..Default::default()
-        },
-        Some(tree_sitter_embedded_template::LANGUAGE.into()),
-    )
-    .with_injection_query(
-        r#"
-            (
-                (code) @content
-                (#set! "language" "ruby")
-                (#set! "combined")
-            )
-
-            (
-                (content) @content
-                (#set! "language" "html")
-                (#set! "combined")
-            )
         "#,
     )
     .unwrap()

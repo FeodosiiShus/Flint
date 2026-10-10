@@ -128,10 +128,10 @@ pub fn default_semantic_token_rules() -> Cow<'static, str> {
 pub const DEFAULT_KEYMAP_PATH: &str = "keymaps/default-macos.json";
 
 #[cfg(target_os = "windows")]
-pub const DEFAULT_KEYMAP_PATH: &str = "keymaps/default-windows.json";
+pub const DEFAULT_KEYMAP_PATH: &str = "keymaps/default-macos.json";
 
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-pub const DEFAULT_KEYMAP_PATH: &str = "keymaps/default-linux.json";
+pub const DEFAULT_KEYMAP_PATH: &str = "keymaps/default-macos.json";
 
 pub fn default_keymap() -> Cow<'static, str> {
     asset_str::<SettingsAssets>(DEFAULT_KEYMAP_PATH)

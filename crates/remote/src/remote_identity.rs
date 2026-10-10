@@ -5,30 +5,18 @@ use crate::RemoteConnectionOptions;
 ///
 /// This mirrors workspace persistence identity semantics rather than full
 /// `RemoteConnectionOptions` equality, so runtime-only fields like SSH
-/// nicknames or Docker environment overrides do not affect matching.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+/// nicknames do not affect matching.
 pub enum RemoteConnectionIdentity {
     Ssh {
         host: String,
         username: Option<String>,
         port: Option<u16>,
     },
-    Wsl {
-        distro_name: String,
-        user: Option<String>,
-    },
-    Docker {
-        container_id: String,
-        name: String,
-        remote_user: String,
-    },
     #[cfg(any(test, feature = "test-support"))]
     Mock { id: u64 },
 }
 
 impl RemoteConnectionIdentity {
-    /// A stable string form of this identity, suitable for use in
-    /// persistence keys (e.g. database keys scoped to a remote host).
     pub fn persistence_key(&self) -> String {
         match self {
             Self::Ssh {
@@ -41,16 +29,6 @@ impl RemoteConnectionIdentity {
                 host,
                 port.map(|port| port.to_string()).unwrap_or_default()
             ),
-            Self::Wsl { distro_name, user } => format!(
-                "wsl:{}@{}",
-                user.as_deref().unwrap_or_default(),
-                distro_name
-            ),
-            Self::Docker {
-                container_id,
-                name,
-                remote_user,
-            } => format!("docker:{remote_user}@{name}:{container_id}"),
             #[cfg(any(test, feature = "test-support"))]
             Self::Mock { id } => format!("mock:{id}"),
         }
@@ -64,15 +42,6 @@ impl From<&RemoteConnectionOptions> for RemoteConnectionIdentity {
                 host: options.host.to_string(),
                 username: options.username.clone(),
                 port: options.port,
-            },
-            RemoteConnectionOptions::Wsl(options) => Self::Wsl {
-                distro_name: options.distro_name.clone(),
-                user: options.user.clone(),
-            },
-            RemoteConnectionOptions::Docker(options) => Self::Docker {
-                container_id: options.container_id.clone(),
-                name: options.name.clone(),
-                remote_user: options.remote_user.clone(),
             },
             #[cfg(any(test, feature = "test-support"))]
             RemoteConnectionOptions::Mock(options) => Self::Mock { id: options.id },
@@ -99,10 +68,8 @@ pub fn same_remote_connection_identity(
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeMap;
-
     use super::*;
-    use crate::{DockerConnectionOptions, SshConnectionOptions, WslConnectionOptions};
+    use crate::SshConnectionOptions;
 
     #[test]
     fn ssh_identity_ignores_non_persisted_runtime_fields() {
@@ -151,46 +118,10 @@ mod tests {
     }
 
     #[test]
-    fn wsl_identity_includes_user() {
-        let left = RemoteConnectionOptions::Wsl(WslConnectionOptions {
-            distro_name: "Ubuntu".to_string(),
-            user: Some("anth".to_string()),
-        });
-        let right = RemoteConnectionOptions::Wsl(WslConnectionOptions {
-            distro_name: "Ubuntu".to_string(),
-            user: Some("root".to_string()),
-        });
-
-        assert!(!same_remote_connection_identity(Some(&left), Some(&right),));
-    }
-
-    #[test]
-    fn docker_identity_ignores_non_persisted_runtime_fields() {
-        let left = RemoteConnectionOptions::Docker(DockerConnectionOptions {
-            name: "zed-dev".to_string(),
-            container_id: "container-123".to_string(),
-            remote_user: "anth".to_string(),
-            upload_binary_over_docker_exec: true,
-            use_podman: true,
-            remote_env: BTreeMap::from([("FOO".to_string(), "BAR".to_string())]),
-        });
-        let right = RemoteConnectionOptions::Docker(DockerConnectionOptions {
-            name: "zed-dev".to_string(),
-            container_id: "container-123".to_string(),
-            remote_user: "anth".to_string(),
-            upload_binary_over_docker_exec: false,
-            use_podman: false,
-            remote_env: BTreeMap::new(),
-        });
-
-        assert!(same_remote_connection_identity(Some(&left), Some(&right),));
-    }
-
-    #[test]
     fn local_identity_matches_only_local_identity() {
-        let remote = RemoteConnectionOptions::Wsl(WslConnectionOptions {
-            distro_name: "Ubuntu".to_string(),
-            user: Some("anth".to_string()),
+        let remote = RemoteConnectionOptions::Ssh(SshConnectionOptions {
+            host: "example.com".into(),
+            ..Default::default()
         });
 
         assert!(same_remote_connection_identity(None, None));

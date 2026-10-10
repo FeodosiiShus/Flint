@@ -45,6 +45,7 @@ pub fn app_menus() -> Vec<Menu> {
         MenuItem::action("Search Panel", search_panel::ToggleFocus),
         MenuItem::separator(),
         MenuItem::action("Diagnostics", diagnostics::Deploy),
+        MenuItem::action("Language Services", language_tools::lsp_button::ToggleFocus),
         MenuItem::separator(),
     ]);
 
@@ -269,13 +270,6 @@ pub fn app_menus() -> Vec<Menu> {
             items: vec![
                 MenuItem::action("View Dependency Licenses", zed_actions::OpenLicenses),
                 MenuItem::action("Show Welcome", workspace::welcome::ShowWelcome),
-                MenuItem::separator(),
-                MenuItem::action(
-                    "Documentation",
-                    super::OpenBrowser {
-                        url: "https://zed.dev/docs".into(),
-                    },
-                ),
             ],
         },
     ]

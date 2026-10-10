@@ -1,10 +1,8 @@
 mod conn;
 mod message_stream;
-mod notification;
 mod peer;
 
 pub use conn::Connection;
-pub use notification::*;
 pub use peer::*;
 pub use proto;
 pub use proto::{Receipt, TypedEnvelope, error::*};

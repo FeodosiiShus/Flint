@@ -7,8 +7,10 @@ use gpui::{
 use image::RgbaImage;
 use settings::SettingsStore;
 use std::sync::Arc;
-use theme::LoadThemes;
-use ui::{ActiveTheme, Tab, TabBar, TabPosition, Toggleable, project_gradient_layer};
+use theme::{LoadThemes, UiDensity};
+use ui::{
+    ActiveTheme, IslandTabMetrics, Tab, TabBar, TabPosition, Toggleable, project_gradient_layer,
+};
 
 const GRADIENT_WINDOW_WIDTH: f32 = 200.;
 const GRADIENT_WINDOW_HEIGHT: f32 = 40.;
@@ -17,7 +19,6 @@ const GRADIENT_CHANNEL_TOLERANCE: u8 = 4;
 const TINT_MARGIN: i32 = 20;
 const TAB_STRIP_WIDTH: f32 = 200.;
 const TAB_LABEL_WIDTH: f32 = 48.;
-const ISLAND_TAB_ACCENT_FILL_OPACITY: f32 = 0.15;
 const CHANNEL_TOLERANCE: u8 = 2;
 const CLEAR_CHANNELS: [f32; 3] = [0.; 3];
 
@@ -219,40 +220,74 @@ fn pixels_project_gradient_tints_the_left_edge_and_fades_into_the_surface() {
     }
 }
 
+#[track_caller]
+fn assert_pill_geometry(image: &RgbaImage, pill: &PillBounds, strip_height: Pixels) {
+    let scale = image.height() as f32 / f32::from(strip_height);
+    let metrics = IslandTabMetrics::for_density(UiDensity::Default);
+    let physical = |logical: Pixels| f32::from(logical) * scale;
+    let expected_height = physical(metrics.pill_height);
+    let expected_width =
+        physical(metrics.content_start_padding + px(TAB_LABEL_WIDTH) + metrics.content_end_padding);
+    let expected_left = physical(metrics.first_pill_offset());
+    let measured_height = (pill.bottom - pill.top + 1) as f32;
+    let measured_width = (pill.right - pill.left + 1) as f32;
+    assert!(
+        (measured_height - expected_height).abs() <= 1.,
+        "the pill is {measured_height}px tall, expected {expected_height}px"
+    );
+    assert!(
+        (measured_width - expected_width).abs() <= 1.,
+        "the pill is {measured_width}px wide, expected {expected_width}px"
+    );
+    assert!(
+        (pill.left as f32 - expected_left).abs() <= 1.,
+        "the pill starts {}px from the strip edge, expected {expected_left}px",
+        pill.left
+    );
+    let space_above = pill.top as f32;
+    let space_below = (image.height() - 1 - pill.bottom) as f32;
+    assert!(
+        (space_above - space_below).abs() <= 1.,
+        "the pill is centered vertically: {space_above}px above, {space_below}px below"
+    );
+}
+
 #[test]
-fn pixels_selected_island_tab_in_a_focused_pane_is_an_accent_pill_with_rounded_corners() {
+fn pixels_selected_island_tab_in_a_focused_pane_is_a_filled_pill_with_the_selected_border() {
     let mut cx = headless_app();
     let image = render_island_tab_strip(&mut cx, true);
-    let (bar_background, text_accent) = cx.update(|cx| {
+    let (bar_background, tab_active_background, border_selected, strip_height) = cx.update(|cx| {
         let colors = cx.theme().colors();
-        (colors.editor_background, colors.text_accent)
+        (
+            colors.editor_background,
+            colors.tab_active_background,
+            colors.border_selected,
+            Tab::container_height(cx),
+        )
     });
     let bar = composite_over(bar_background, CLEAR_CHANNELS);
-    let fill = composite_over(text_accent.opacity(ISLAND_TAB_ACCENT_FILL_OPACITY), bar);
-    let expected_border = to_pixel(composite_over(text_accent, fill));
+    let fill = composite_over(tab_active_background, bar);
+    let expected_border = to_pixel(composite_over(border_selected, fill));
     let expected_fill = to_pixel(fill);
     let expected_bar = to_pixel(bar);
     assert!(
-        !pixels_near(expected_fill, expected_bar, CHANNEL_TOLERANCE),
-        "the accent fill {expected_fill:?} should stand out from the bar {expected_bar:?}"
-    );
-    assert!(
         !pixels_near(expected_border, expected_fill, CHANNEL_TOLERANCE),
-        "the accent border {expected_border:?} should stand out from the fill {expected_fill:?}"
+        "the selected border {expected_border:?} should stand out from the fill {expected_fill:?}"
     );
 
     let pill = find_pill(&image, expected_bar);
+    assert_pill_geometry(&image, &pill, strip_height);
     assert_pixel_near(
         pixel_at(&image, pill.center_column(), pill.top),
         expected_border,
         CHANNEL_TOLERANCE,
-        "the pill border is the accent color",
+        "the pill border is the selected border color",
     );
     assert_pixel_near(
         pixel_at(&image, pill.center_column(), pill.center_row()),
         expected_fill,
         CHANNEL_TOLERANCE,
-        "the pill center is the bar tinted with the accent fill",
+        "the pill center is the active tab fill",
     );
     assert_pixel_near(
         pixel_at(&image, pill.left, pill.top),
@@ -263,15 +298,22 @@ fn pixels_selected_island_tab_in_a_focused_pane_is_an_accent_pill_with_rounded_c
 }
 
 #[test]
-fn pixels_selected_island_tab_in_an_unfocused_pane_is_an_unfilled_pill_with_the_border_color() {
+fn pixels_selected_island_tab_in_an_unfocused_pane_is_a_frame_filled_pill_with_the_border_color() {
     let mut cx = headless_app();
     let image = render_island_tab_strip(&mut cx, false);
-    let (bar_background, border) = cx.update(|cx| {
+    let (bar_background, frame_background, border, strip_height) = cx.update(|cx| {
         let colors = cx.theme().colors();
-        (colors.editor_background, colors.border)
+        (
+            colors.editor_background,
+            colors.background,
+            colors.border,
+            Tab::container_height(cx),
+        )
     });
     let bar = composite_over(bar_background, CLEAR_CHANNELS);
-    let expected_border = to_pixel(composite_over(border, bar));
+    let fill = composite_over(frame_background, bar);
+    let expected_border = to_pixel(composite_over(border, fill));
+    let expected_fill = to_pixel(fill);
     let expected_bar = to_pixel(bar);
     assert!(
         !pixels_near(expected_border, expected_bar, CHANNEL_TOLERANCE),
@@ -279,6 +321,7 @@ fn pixels_selected_island_tab_in_an_unfocused_pane_is_an_unfilled_pill_with_the_
     );
 
     let pill = find_pill(&image, expected_bar);
+    assert_pill_geometry(&image, &pill, strip_height);
     assert_pixel_near(
         pixel_at(&image, pill.center_column(), pill.top),
         expected_border,
@@ -287,9 +330,9 @@ fn pixels_selected_island_tab_in_an_unfocused_pane_is_an_unfilled_pill_with_the_
     );
     assert_pixel_near(
         pixel_at(&image, pill.center_column(), pill.center_row()),
-        expected_bar,
+        expected_fill,
         CHANNEL_TOLERANCE,
-        "the unfocused pill has no fill",
+        "the unfocused pill is filled with the frame background",
     );
     assert_pixel_near(
         pixel_at(&image, pill.left, pill.top),

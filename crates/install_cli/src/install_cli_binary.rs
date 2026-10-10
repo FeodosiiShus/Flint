@@ -17,8 +17,6 @@ actions!(
     ]
 );
 
-const CANT_INSTALL_DOCS_URL: &str = "https://zed.dev/docs/macos#cant-install-cli";
-
 /// Attempts to install the CLI symlink. Returns the installed path on success,
 /// or `None` if the user dismissed the macOS administrator authentication
 /// prompt. Returns an error if the install could not be completed, most
@@ -112,8 +110,6 @@ pub fn install_cli_binary(window: &mut Window, cx: &mut Context<Workspace>) {
                                     cx,
                                 )
                                 .with_title("Couldn't install the Flint CLI")
-                                .more_info_message("Show me how")
-                                .more_info_url(CANT_INSTALL_DOCS_URL)
                             })
                         },
                     );

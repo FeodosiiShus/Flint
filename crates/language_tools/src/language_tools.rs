@@ -1,17 +1,22 @@
+pub mod language_services_panel;
 pub mod lsp_button;
 pub mod lsp_log_view;
 
+#[cfg(test)]
+mod language_services_panel_tests;
 #[cfg(test)]
 mod lsp_log_view_tests;
 
 use gpui::{App, AppContext, Entity};
 
+pub use language_services_panel::{LanguageServicesPanel, LanguageServicesPanelSettings};
 pub use lsp_log_view::LspLogView;
 use ui::{Context, Window};
 use workspace::{Item, ItemHandle, SplitDirection, Workspace};
 
 pub fn init(cx: &mut App) {
     lsp_log_view::init(false, cx);
+    language_services_panel::init(cx);
 }
 
 fn get_or_create_tool<T>(

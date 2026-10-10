@@ -125,20 +125,6 @@ zlog.workspace = true
 zlog_settings.workspace = true
 ztracing.workspace = true
 
-[target.'cfg(target_os = "windows")'.dependencies]
-windows.workspace = true
-
-[target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies]
-ashpd.workspace = true
-image.workspace = true
-
-[target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.build-dependencies]
-image.workspace = true
-
-
-[target.'cfg(target_os = "linux")'.build-dependencies]
-pkg-config = "0.3.22"
-
 [dev-dependencies]
 activity_indicator = { workspace = true, features = ["test-support"] }
 editor = { workspace = true, features = ["test-support"] }

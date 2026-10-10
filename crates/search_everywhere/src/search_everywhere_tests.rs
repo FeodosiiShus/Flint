@@ -2,7 +2,9 @@ use std::{cell::RefCell, rc::Rc, sync::Arc, time::Duration};
 
 use editor::Editor;
 use futures::StreamExt;
-use gpui::{App, Entity, Focusable, TestAppContext, VisualContext, VisualTestContext};
+use gpui::{
+    App, Entity, Focusable, TestAppContext, UpdateGlobal as _, VisualContext, VisualTestContext,
+};
 use language::{FakeLspAdapter, Language, LanguageConfig, LanguageMatcher};
 use lsp::OneOf;
 use picker::{Direction, Picker, PickerDelegate};

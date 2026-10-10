@@ -187,16 +187,8 @@ pub fn migrate_settings(text: &str) -> Result<Option<String>> {
             &SETTINGS_QUERY_2025_04_23,
         ),
         MigrationType::TreeSitter(
-            migrations::m_2025_05_05::SETTINGS_PATTERNS,
-            &SETTINGS_QUERY_2025_05_05,
-        ),
-        MigrationType::TreeSitter(
             migrations::m_2025_05_08::SETTINGS_PATTERNS,
             &SETTINGS_QUERY_2025_05_08,
-        ),
-        MigrationType::TreeSitter(
-            migrations::m_2025_06_25::SETTINGS_PATTERNS,
-            &SETTINGS_QUERY_2025_06_25,
         ),
         MigrationType::TreeSitter(
             migrations::m_2025_06_27::SETTINGS_PATTERNS,
@@ -233,9 +225,6 @@ pub fn migrate_settings(text: &str) -> Result<Option<String>> {
             &SETTINGS_QUERY_2025_12_15,
         ),
         MigrationType::Json(migrations::m_2025_01_27::make_auto_indent_an_enum),
-        MigrationType::Json(
-            migrations::m_2026_02_02::move_edit_prediction_provider_to_edit_predictions,
-        ),
         MigrationType::Json(migrations::m_2026_02_03::migrate_experimental_sweep_mercury),
         MigrationType::Json(migrations::m_2026_02_04::migrate_tool_permission_defaults),
         MigrationType::Json(migrations::m_2026_02_25::migrate_builtin_agent_servers_to_registry),
@@ -256,8 +245,6 @@ pub fn migrate_settings(text: &str) -> Result<Option<String>> {
         MigrationType::Json(migrations::m_2026_08_17::make_git_gutter_width_an_enum),
         MigrationType::Json(migrations::m_2026_08_26::rename_folder_icons_to_folder_indicator),
         MigrationType::Json(migrations::m_2026_08_30::nest_markdown_preview_settings),
-        MigrationType::Json(migrations::m_2026_09_16::nest_agent_threads_sidebar_settings),
-        MigrationType::Json(migrations::m_2026_09_29::move_copilot_enterprise_uri),
     ];
     run_migrations(text, migrations)
 }
@@ -345,16 +332,8 @@ define_query!(
     migrations::m_2025_04_23::SETTINGS_PATTERNS
 );
 define_query!(
-    SETTINGS_QUERY_2025_05_05,
-    migrations::m_2025_05_05::SETTINGS_PATTERNS
-);
-define_query!(
     SETTINGS_QUERY_2025_05_08,
     migrations::m_2025_05_08::SETTINGS_PATTERNS
-);
-define_query!(
-    SETTINGS_QUERY_2025_06_25,
-    migrations::m_2025_06_25::SETTINGS_PATTERNS
 );
 define_query!(
     SETTINGS_QUERY_2025_06_27,
@@ -464,37 +443,6 @@ mod tests {
     #[test]
     fn test_empty_content() {
         assert_migrate_settings("", None)
-    }
-
-    #[test]
-    fn test_copilot_enterprise_uri_migration_does_not_restore_deleted_destination() {
-        let input = r#"{
-            // Keep this comment.
-            "edit_predictions": { "copilot": { "enterprise_uri": "https://enterprise.example" } }
-        }"#;
-        let migrated = migrate_settings(input)
-            .expect("migration should succeed")
-            .expect("settings should change");
-        assert!(migrated.contains("// Keep this comment."));
-        let value: serde_json_lenient::Value =
-            parse_json_with_comments(&migrated).expect("migrated settings should parse");
-        let value = serde_json::to_value(value).expect("settings should convert to JSON");
-        assert_eq!(
-            value["copilot"]["enterprise_uri"],
-            "https://enterprise.example"
-        );
-        assert!(value.get("edit_predictions").is_none());
-
-        let mut value = value;
-        value
-            .as_object_mut()
-            .expect("settings should be an object")
-            .remove("copilot");
-        let without_destination = serde_json::to_string(&value).expect("settings should serialize");
-        assert_eq!(
-            migrate_settings(&without_destination).expect("migration should succeed"),
-            None
-        );
     }
 
     #[test]
@@ -962,30 +910,6 @@ mod tests {
     }
 
     #[test]
-    fn test_rename_assistant() {
-        assert_migrate_settings(
-            r#"{
-                "assistant": {
-                    "foo": "bar"
-                },
-                "edit_predictions": {
-                    "enabled_in_assistant": false,
-                }
-            }"#,
-            Some(
-                r#"{
-                "agent": {
-                    "foo": "bar"
-                },
-                "edit_predictions": {
-                    "enabled_in_text_threads": false,
-                }
-            }"#,
-            ),
-        );
-    }
-
-    #[test]
     fn test_comment_duplicated_agent() {
         assert_migrate_settings(
             r#"{
@@ -1073,75 +997,6 @@ mod tests {
     }
 }"#,
             ),
-        );
-    }
-
-    #[test]
-    fn test_remove_version_fields() {
-        assert_migrate_settings(
-            r#"{
-    "language_models": {
-        "anthropic": {
-            "version": "1",
-            "api_url": "https://api.anthropic.com"
-        },
-        "openai": {
-            "version": "1",
-            "api_url": "https://api.openai.com/v1"
-        }
-    },
-    "agent": {
-        "version": "2",
-        "enabled": true,
-        "button": true,
-        "dock": "right",
-        "default_width": 640,
-        "default_height": 320,
-        "default_model": {
-            "provider": "zed.dev",
-            "model": "claude-sonnet-4"
-        }
-    }
-}"#,
-            Some(
-                r#"{
-    "language_models": {
-        "anthropic": {
-            "api_url": "https://api.anthropic.com"
-        },
-        "openai": {
-            "api_url": "https://api.openai.com/v1"
-        }
-    },
-    "agent": {
-        "enabled": true,
-        "button": true,
-        "dock": "right",
-        "default_width": 640,
-        "default_height": 320,
-        "default_model": {
-            "provider": "zed.dev",
-            "model": "claude-sonnet-4"
-        }
-    }
-}"#,
-            ),
-        );
-
-        // Test that version fields in other contexts are not removed
-        assert_migrate_settings(
-            r#"{
-    "language_models": {
-        "other_provider": {
-            "version": "1",
-            "api_url": "https://api.example.com"
-        }
-    },
-    "other_section": {
-        "version": "1"
-    }
-}"#,
-            None,
         );
     }
 
@@ -2608,218 +2463,6 @@ mod tests {
                         }
                     }
                 }"#}),
-        );
-    }
-
-    #[test]
-    fn test_move_edit_prediction_provider_to_edit_predictions() {
-        assert_migrate_with_migrations(
-            &[MigrationType::Json(
-                migrations::m_2026_02_02::move_edit_prediction_provider_to_edit_predictions,
-            )],
-            r#"{ }"#,
-            None,
-        );
-
-        assert_migrate_with_migrations(
-            &[MigrationType::Json(
-                migrations::m_2026_02_02::move_edit_prediction_provider_to_edit_predictions,
-            )],
-            indoc! {r#"
-                {
-                    "features": {
-                        "edit_prediction_provider": "copilot"
-                    }
-                }
-            "#},
-            Some(indoc! {r#"
-                {
-                    "edit_predictions": {
-                        "provider": "copilot"
-                    }
-                }
-            "#}),
-        );
-
-        assert_migrate_with_migrations(
-            &[MigrationType::Json(
-                migrations::m_2026_02_02::move_edit_prediction_provider_to_edit_predictions,
-            )],
-            indoc! {r#"
-                {
-                    "features": {
-                        "edit_prediction_provider": "zed"
-                    },
-                    "edit_predictions": {
-                        "mode": "eager"
-                    }
-                }
-            "#},
-            Some(indoc! {r#"
-                {
-                    "edit_predictions": {
-                        "provider": "zed",
-                        "mode": "eager"
-                    }
-                }
-            "#}),
-        );
-
-        assert_migrate_with_migrations(
-            &[MigrationType::Json(
-                migrations::m_2026_02_02::move_edit_prediction_provider_to_edit_predictions,
-            )],
-            indoc! {r#"
-                {
-                    "features": {
-                        "edit_prediction_provider": "supermaven"
-                    },
-                    "edit_predictions": {
-                        "provider": "copilot"
-                    }
-                }
-            "#},
-            Some(indoc! {r#"
-                {
-                    "edit_predictions": {
-                        "provider": "copilot"
-                    }
-                }
-            "#}),
-        );
-
-        assert_migrate_with_migrations(
-            &[MigrationType::Json(
-                migrations::m_2026_02_02::move_edit_prediction_provider_to_edit_predictions,
-            )],
-            indoc! {r#"
-                {
-                    "edit_predictions": {
-                        "provider": "zed"
-                    }
-                }
-            "#},
-            None,
-        );
-
-        // Non-object edit_predictions (e.g. true) should gracefully skip
-        // instead of bail!-ing and aborting the entire migration chain.
-        assert_migrate_with_migrations(
-            &[MigrationType::Json(
-                migrations::m_2026_02_02::move_edit_prediction_provider_to_edit_predictions,
-            )],
-            indoc! {r#"
-                {
-                    "features": {
-                        "edit_prediction_provider": "copilot"
-                    },
-                    "edit_predictions": true
-                }
-            "#},
-            Some(indoc! {r#"
-                {
-                    "edit_predictions": true
-                }
-            "#}),
-        );
-
-        // Platform key: settings nested inside "macos" should be migrated
-        assert_migrate_with_migrations(
-            &[MigrationType::Json(
-                migrations::m_2026_02_02::move_edit_prediction_provider_to_edit_predictions,
-            )],
-            indoc! {r#"
-                {
-                    "macos": {
-                        "features": {
-                            "edit_prediction_provider": "copilot"
-                        }
-                    }
-                }
-            "#},
-            Some(indoc! {r#"
-                {
-                    "macos": {
-                        "edit_predictions": {
-                            "provider": "copilot"
-                        }
-                    }
-                }
-            "#}),
-        );
-
-        // Profile: settings nested inside profiles should be migrated
-        assert_migrate_with_migrations(
-            &[MigrationType::Json(
-                migrations::m_2026_02_02::move_edit_prediction_provider_to_edit_predictions,
-            )],
-            indoc! {r#"
-                {
-                    "profiles": {
-                        "work": {
-                            "features": {
-                                "edit_prediction_provider": "copilot"
-                            }
-                        }
-                    }
-                }
-            "#},
-            Some(indoc! {r#"
-                {
-                    "profiles": {
-                        "work": {
-                            "edit_predictions": {
-                                "provider": "copilot"
-                            }
-                        }
-                    }
-                }
-            "#}),
-        );
-
-        // Combined: root + platform + profile should all be migrated simultaneously
-        assert_migrate_with_migrations(
-            &[MigrationType::Json(
-                migrations::m_2026_02_02::move_edit_prediction_provider_to_edit_predictions,
-            )],
-            indoc! {r#"
-                {
-                    "features": {
-                        "edit_prediction_provider": "copilot"
-                    },
-                    "macos": {
-                        "features": {
-                            "edit_prediction_provider": "zed"
-                        }
-                    },
-                    "profiles": {
-                        "work": {
-                            "features": {
-                                "edit_prediction_provider": "supermaven"
-                            }
-                        }
-                    }
-                }
-            "#},
-            Some(indoc! {r#"
-                {
-                    "edit_predictions": {
-                        "provider": "copilot"
-                    },
-                    "macos": {
-                        "edit_predictions": {
-                            "provider": "zed"
-                        }
-                    },
-                    "profiles": {
-                        "work": {
-                            "edit_predictions": {
-                                "provider": "supermaven"
-                            }
-                        }
-                    }
-                }
-            "#}),
         );
     }
 
@@ -5413,30 +5056,6 @@ mod tests {
                         "font_family": "Zed Sans",
                         "code_font_family": "Zed Mono",
                         "theme": "One Dark"
-                    }
-                }
-            "#}),
-        );
-    }
-
-    #[test]
-    fn test_nest_agent_threads_sidebar_settings_is_registered() {
-        assert_migrate_settings(
-            indoc! {r#"
-                {
-                    "agent": {
-                        "sidebar_side": "right",
-                        "threads_sidebar_default_width": 420
-                    }
-                }
-            "#},
-            Some(indoc! {r#"
-                {
-                    "agent": {
-                        "threads_sidebar": {
-                            "position": "right",
-                            "default_width": 420
-                        }
                     }
                 }
             "#}),

@@ -10,6 +10,7 @@ Flint is a personal fork of [Zed](https://github.com/zed-industries/zed). It is 
 - Every push runs the [`checks.yml`](.github/workflows/checks.yml) workflow: `cargo fmt --check`, `cargo check` of the app, and the tests of the crates Flint changes. It does not build the app.
 - The app is built only on demand: Actions → Build macOS → Run workflow → branch `main`. The DMG is attached to the run as the `flint-macos-aarch64` artifact.
 - Running Build macOS from a `v*` tag also publishes a GitHub Release with the DMG attached.
+- To run the tests locally, use `script/local-ci-tests` (limits and prerequisites are documented in [AGENTS.md](AGENTS.md) under "Build guidelines"); release builds still run only in GitHub Actions.
 
 To cut a release:
 
@@ -106,11 +107,11 @@ Flint can make the title bar, the tab bar, the toolbar, the status bar and the d
 ### What each key does
 
 - `title_bar.height` — the exact height of the title bar, but never lower than its buttons. With only `title_bar.icon_size` set, the bar grows when needed to keep at least 4px above and below the buttons. On macOS the window buttons (traffic lights) are re-centered vertically.
-- `tab_bar.height` — the exact height of the editor tab bar, but never lower than its buttons. Dock panel headers follow it unless `panel.height` is set.
-- `panel.height` — the exact height of the header and toolbar rows of dock panels (Git), but never lower than their buttons. Unset, these rows use the tab bar height.
+- `tab_bar.height` — the exact height of the editor tab bar, but never lower than its buttons. Unset, the tab bar is 41 px high (31 px in compact density). Dock panel headers follow it unless `panel.height` is set.
+- `panel.height` — the exact height of the header and toolbar rows of dock panels (Git), but never lower than their buttons. Unset, these rows use the tab bar height (41 px, 31 px compact).
 - `panel.icon_size` — the icon size of the controls in those header, toolbar and footer rows: in the Git panel View Diff, the filter, Stage All, the branch row and Fetch/Push/Pull, the commit editor buttons, Commit and the last-commit row. List rows and the terminal panel tabs are not affected; the terminal panel tabs follow `tab_bar`.
 - `toolbar.height`, `status_bar.height` — the minimum height of the bar. The content is centered vertically, and the bar is never smaller than its content.
-- `icon_size` — the size of the primary icons of the bar (Zed's default is 14px). Secondary icons scale proportionally, so a 12px chevron becomes 12·N/14 for `icon_size` N. Buttons grow to at least the icon size plus 8px, and the bars grow so nothing is clipped. Text keeps the UI font size.
+- `icon_size` — the size of the primary icons of the bar (Zed's default is 14px; the editor tab file icon is 16px by default). Secondary icons scale proportionally, so a 12px chevron becomes 12·N/14 for `icon_size` N. Buttons grow to at least the icon size plus 8px, and the bars grow so nothing is clipped. Text keeps the UI font size.
 
 ### Setting the sizes
 
@@ -139,7 +140,7 @@ Flint can make the title bar, the tab bar, the toolbar, the status bar and the d
 
 ### Relationship to `unstable.ui_density`
 
-- `unstable.ui_density` changes only the dynamic spacing paddings: a padding of N px becomes N − 4 px (at least 0) in `compact` and N + 4 px in `comfortable`, except for a few paddings with their own per-density values. The default tab bar height is derived from these paddings, so it changes with density too.
+- `unstable.ui_density` changes the dynamic spacing paddings: a padding of N px becomes N − 4 px (at least 0) in `compact` and N + 4 px in `comfortable`, except for a few paddings with their own per-density values. The default tab bar height does not use these paddings: it is 41 px, and 31 px in `compact`; `comfortable` keeps 41 px.
 - An explicit `height` overrides the density-derived default for its bar.
 - Icon sizes of these five groups are not affected by density. Tool window bar icons are; see [Islands layout and tool window bars](#islands-layout-and-tool-window-bars).
 
@@ -149,10 +150,10 @@ Flint uses WebStorm's [Islands](https://plugins.jetbrains.com/docs/intellij/supp
 
 - The title bar, the tool window bars, the gaps and the status bar share one window background (the theme's `background` color), with no borders between them.
 - The left dock, the right dock, the bottom dock and the editor area are separate rounded islands. Docks use the theme's `panel.background`, the editor area uses `editor.background`. Dock resize handles sit in the gaps. In the default look the frame `#26282c` is lighter than the docks `#191a1c`, and the editor island keeps Eva's `#282c34`, so the islands stand out from the gaps; the terminal body shows the editor colour.
-- Editor tabs: the tab bar has the editor background and no borders. The active tab is a rounded pill with an accent border and a light accent fill while its pane is focused, and a plain border otherwise. Inactive tabs show only their text, with a thin vertical divider between neighbouring tabs: none next to the active tab and none after the last tab of a strip (the pinned tabs and the other tabs are separate strips).
-- Tool window bars run down the left and right window edges. The left bar shows the left dock panels, a separator, a "More Tool Windows" button (a menu of every panel, including panels whose button is hidden), and the bottom dock panels at the bottom. The right bar shows the right dock panels. Click an icon to show or hide its panel; right-click it to move the panel to another dock or hide its button. A filled background marks an open panel, an accent background a focused one. While the bars are shown, the status bar no longer has panel buttons.
+- Editor tabs: the tab bar has the editor background and no borders. The strip is 41 px high (31 px compact). The selected tab is a 28 px pill (24 px compact) with a 6 px radius (4 px compact) and a 1 px inside border, with no underline and no dividers between tabs. In a focused pane the pill has the `#233558` fill and the `#2E4D89` border (the theme's `tab.active_background` and `border.selected`); in an unfocused pane it has the frame fill (the theme's `background`) and the `border` colour. Tabs get the hover fill (`ghost_element_hover`), except the selected tab of a focused pane. Unselected labels and icons are dimmed (labels blended toward the strip background, icons at 75% opacity); selected and hovered tabs use the full text colour. Every tab reserves a 16 px slot at its right end for the close or pin button, so tabs do not change width on hover: the × shows on the selected tab and on hovered tabs, a modified tab shows a dot in the same slot (the × replaces it on hover), and a pinned tab shows the pin. Titles are no longer cut at 24 characters.
+- Tool window bars run down the left and right window edges. The left bar shows the left dock panels (by default Project, Git, Search, Project Diagnostics and Language Services), a separator, a "More Tool Windows" button (a menu of every panel, including panels whose button is hidden), and the bottom dock panels at the bottom. The right bar shows the right dock panels. Click an icon to show or hide its panel; right-click it to move the panel to another dock or hide its button. A filled background marks an open panel, an accent background a focused one. While the bars are shown, the status bar no longer has panel buttons.
 - The right bar disappears when no right dock panel has a button, so it never leaves an empty strip. The editor island then keeps exactly the islands gap to the window edge, the same as on every other side.
-- Tool window headers: every open dock island starts with a header like a WebStorm tool window header: the panel name in semibold, then the panel's own buttons, ⋮ (the panel menu: move to another dock, hide the button) and — (hide the panel). Like WebStorm, the buttons appear only while the pointer is over the tool window or the tool window has focus. Right-clicking the header opens the same menu. A panel that hosts its own tab strip, like the terminal, has no common header: its tabs start at the top of the island. A panel adds its own buttons by implementing `Panel::header_actions`; the Project panel is the only one that does.
+- Tool window headers: every open dock island starts with a header like a WebStorm tool window header: the panel name in semibold, then the panel's own buttons, ⋮ (the panel menu: move to another dock, hide the button) and — (hide the panel). Like WebStorm, the buttons appear only while the pointer is over the tool window or the tool window has focus. Right-clicking the header opens the same menu. A panel that hosts its own tab strip, like the terminal, has no common header: its tabs start at the top of the island. A panel adds its own buttons by implementing `Panel::header_actions`; the Project panel and the Project Diagnostics panel are the only ones that do.
 - Inactive window: when the Flint window is not focused, the title bar widgets, the tool window bar buttons and the status bar items are drawn at 56% opacity, matching the Islands `Island.inactiveAlpha` of 0.44. Backgrounds and the background image are not dimmed.
 
 ```json
@@ -171,8 +172,8 @@ Flint uses WebStorm's [Islands](https://plugins.jetbrains.com/docs/intellij/supp
 - `tool_window_headers.always_show_actions` — show the header buttons (⋮, — and a panel's own buttons) all the time, like WebStorm's "Always show tool window header icons".
 - `"islands": { "enabled": false }` together with `"tool_window_bars": { "show": false }` and `"tool_window_headers": { "show": false }` restores the classic Zed layout: flat docks with borders, square tabs and panel buttons in the status bar.
 - Settings window: Window & Layout → Islands, Tool Window Bars and Tool Window Headers.
-- WebStorm-like defaults that come with it: `tabs.file_icons: true`, `tab_bar.show_nav_history_buttons: false`, and the Git and Search panels docked on the left.
-- Not implemented: WebStorm's split tool windows under the bar separator and the bottom-right bar group, because a Flint dock shows one panel at a time. Opening the Search panel replaces the Project or Git view in the left dock while it is open.
+- WebStorm-like defaults that come with it: `tabs.file_icons: true`, `tab_bar.show_nav_history_buttons: false`, and the Git, Search, Project Diagnostics and Language Services panels docked on the left.
+- Not implemented: WebStorm's split tool windows under the bar separator and the bottom-right bar group, because a Flint dock shows one panel at a time. Opening the Search, Project Diagnostics or Language Services panel replaces the Project or Git view in the left dock while it is open.
 
 ## Default look: Islands Dark chrome on the Eva theme
 
@@ -204,9 +205,11 @@ Flint uses WebStorm's [Islands](https://plugins.jetbrains.com/docs/intellij/supp
 
 ### Known differences from IntelliJ
 
-- The active tab pill border is the accent `#3871e1`; IntelliJ draws `#2e4d89` on `#233558`.
 - The editor island uses Eva's editor background, not `#191a1c`.
-- Heights and icon sizes are the unchanged Zed and Flint defaults. The IntelliJ values can be set with existing settings: `"title_bar": { "height": 40, "icon_size": 20 }` (main toolbar header 40, button icon 20) and `"panel": { "height": 41 }` (tool window header 41).
+- The tab bar default height is 41 px (31 px compact) like IntelliJ, but `tab_bar.height` and `tab_bar.icon_size` still override it, and Zed's other bars keep their unchanged defaults. The IntelliJ values for those can be set with existing settings: `"title_bar": { "height": 40, "icon_size": 20 }` (main toolbar header 40, button icon 20) and `"panel": { "height": 41 }` (tool window header 41).
+- Tabs: the label font stays the UI font size (13.1 px at the default `ui_font_size` of 15) where IntelliJ uses Inter 13 px; non-editor tabs (terminal, diagnostics) take the new colours but not the label size; `close_position: left` mirrors the right-hand paddings, which are IntelliJ's numbers; compact mode uses a 2 px right padding derived from IntelliJ's compact insets.
+- Tabs: the modified dot is always shown (IntelliJ only with "Mark modified"), it is not clickable and its colour is the theme accent, not IntelliJ's `#548AF7`; with `close_button: hidden` a modified tab still shows the dot, so its width can change; the drag ghost shows only icon and label.
+- The unselected label blend is computed in Flint as the square root of 0.7·text² + 0.3·editor background² per channel, over the editor background, not IntelliJ's strip background `#191a1c`.
 - IntelliJ's `Island.borderWidth` is 6; the Flint gap default of 4 is left as is.
 - Split dividers between editor panes use `border` (`#40434a`), not IntelliJ's `#26282c`, which is invisible on Eva's editor background.
 - Filled buttons that sit on the modal layer (the Restricted Mode and disconnected-project dialogs) have the same colour as the dialog, because IntelliJ's popup colour `#26282c` equals the frame colour; only their label and their pressed state are visible.
@@ -249,9 +252,9 @@ Each widget can be turned off in `settings.json` or in Settings → Window & Lay
 
 ## Status bar
 
-The status bar works like WebStorm's [status bar and navigation bar](https://www.jetbrains.com/help/webstorm/guided-tour-around-the-user-interface.html):
+The status bar works like WebStorm's [status bar](https://www.jetbrains.com/help/webstorm/guided-tour-around-the-user-interface.html):
 
-- Left: a navigation bar `project › directory › … › file › symbol`. The project, directories and file are plain labels and are not clickable; clicking a symbol (the outline items around the cursor) moves the cursor to it. When the path is wider than half the window, the middle segments collapse into `…`, keeping the first and the last segment. It replaces the active file name (`show_active_file`) while it is enabled.
+- Left: the git branch widget, then the active file name, git blame and the transient activity indicator. The active file name is shown only when `status_bar.show_active_file` is `true` (default `false`); git blame and the activity indicator appear only when they have something to show. There is no navigation bar, and the Project Diagnostics checkmark and the language servers lightning button are no longer in the status bar: see [Project Diagnostics panel](#project-diagnostics-panel) and [Language Services panel](#language-services-panel).
 - Right, left to right: cursor position, line ending, encoding, indentation, read-only lock, language.
 - Indentation shows `N spaces` or `Tab` for the active file. Clicking it (or `status widgets: select indentation`) opens a picker with 2 spaces, 4 spaces, 8 spaces and Tab; the choice is written to `languages.<Language>.tab_size` / `hard_tabs` in your user `settings.json` (to the top-level `tab_size` / `hard_tabs` for files without a language).
 - The lock shows whether the active file is read-only. Clicking it toggles read-only mode like `workspace: toggle read only file`; it is disabled for editors that are read-only by construction.
@@ -261,7 +264,6 @@ Each widget can be turned off in `settings.json`, in Settings → Window & Layou
 
 ```json
 "status_bar": {
-  "navigation_bar": true,
   "indentation_button": true,
   "read_only_button": true,
   "line_endings_button": true,
@@ -389,6 +391,29 @@ The Search tool window sits in the left dock next to Project and Git, with the t
 - `/` to list settings groups.
 - The Git tab (branches and commits).
 - The filter popup (for example, only recent files) and "Open in Find tool window" for tabs other than Text.
+
+### Project Diagnostics panel
+
+The Project Diagnostics tool window sits in the left dock next to Project, Git and Search, with the title "Project Diagnostics Panel". It hosts the project diagnostics view that used to open as an editor tab, and it replaces the old checkmark in the status bar.
+
+- Its tool window bar button uses the warning icon (tooltip "Project Diagnostics Panel"). While the project has errors, the button shows the error count as a badge; there is no badge at 0 errors.
+- Toggle it with `diagnostics: deploy`: `Cmd-Shift-M` on macOS, `Ctrl-Shift-M` on Linux and Windows with the default keymaps, `Cmd-6` (`Alt-6` on Linux) with the JetBrains keymaps, or View → Diagnostics. The first press opens the panel and focuses it; a second press returns focus to the editor. With the JetBrains keymaps `Cmd-6` (`Alt-6`) also hides the dock while the panel has focus.
+- Settings: `project_diagnostics_panel.button` (default `true`; "Hide Button" in the button's right-click menu sets it to `false`), `project_diagnostics_panel.dock` (`left`, `right` or `bottom`, default `left`) and `project_diagnostics_panel.default_width` (default 360), also under Panels → Project Diagnostics Panel in the settings window. In the bottom dock the panel is 320 px high. The panel's dock position is restored on restart. The old `diagnostics.button` setting no longer exists.
+- The diagnostics view is created when the panel is first shown, so no diagnostics buffers are opened before that; until then the panel shows "Checking diagnostics…".
+- Header buttons: Refresh Diagnostics (it becomes Stop Diagnostics Update while an update runs; shown once the view exists) and Toggle Warnings.
+- Compared with the old editor tab and status bar item, these are gone: the buffer search button and the include-warnings colour state of the pane toolbar, navigation history, the tab itself (title, splitting, per-tab badge), the status bar message for the diagnostic under the cursor and the one-click "show warnings" status bar behaviour. The "Show N warnings" button of the empty state remains. The Toggle Warnings header button cannot show an on or off colour. The panel has no zoom.
+- A Flint dock shows one panel at a time, so opening this panel in the left dock replaces the visible Project, Git or Search panel.
+
+### Language Services panel
+
+The Language Services tool window sits in the left dock next to Project, Git, Search and Project Diagnostics, with the title "Language Services Panel". It replaces the lightning button and its popover in the status bar.
+
+- Its tool window bar button uses the bolt icon (tooltip "Language Services Panel"). While the panel is not shown, the button shows the number of language servers in an error or warning state as a badge; there is no badge when there are none.
+- Toggle it with `lsp_tool: toggle focus`: `Ctrl-Cmd-L` on macOS, `Ctrl-Alt-L` on Linux, `Shift-Alt-L` on Windows, or View → Language Services. The JetBrains keymaps add no key for it and no key that hides the dock while it has focus.
+- The panel lists the language servers grouped by worktree and follows the active editor. A restricted-mode banner comes first and opens the worktree security dialog on click. Each server row shows a status dot (green running, yellow starting, red error, yellow warning, grey stopped), the name, the status, the version and the memory use, and the server message if any. Row buttons: View Message (only with a message), View Logs (only when logs exist), Restart Server and Stop Server (only when the server can be stopped). Restart All Servers and Stop All Servers sit at the end of the list. An empty list shows "No language servers".
+- Settings: `language_services_panel.button` (default `true`; "Hide Button" in the button's right-click menu sets it to `false`), `language_services_panel.dock` (`left`, `right` or `bottom`, default `left`) and `language_services_panel.default_width` (default 360), also under Panels → Language Services Panel in the settings window. The old `global_lsp_settings.button` setting no longer exists.
+- Compared with the old popover: there are no hover submenus, because the per-server actions are row buttons, and the panel is a docked list that does not close on an outside click. The panel has no header buttons.
+- A Flint dock shows one panel at a time, so opening this panel in the left dock replaces the visible Project, Git, Search or Project Diagnostics panel.
 
 ## Merge conflicts
 

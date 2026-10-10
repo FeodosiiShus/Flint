@@ -1,7 +1,7 @@
 use super::*;
 use crate::{
-    LanguageConfig, LanguageMatcher, LanguageName, LanguageQueries,
-    buffer_tests::markdown_inline_lang, markdown_lang, rust_lang,
+    LanguageConfig, LanguageMatcher, LanguageQueries, buffer_tests::markdown_inline_lang,
+    markdown_lang, rust_lang,
 };
 use gpui::App;
 use indoc::indoc;
@@ -270,7 +270,7 @@ fn test_dynamic_language_injection(cx: &mut App) {
     registry.add(markdown.clone());
     registry.add(markdown_inline.clone());
     registry.add(rust_lang());
-    registry.add(Arc::new(ruby_lang()));
+    registry.add(Arc::new(python_lang()));
 
     let mut buffer = Buffer::new(
         ReplicaId::LOCAL,
@@ -300,9 +300,9 @@ fn test_dynamic_language_injection(cx: &mut App) {
         ],
     );
 
-    // Replace `rs` with a path to ending in `.rb` in code block.
+    // Replace `rs` with a path to ending in `.py` in code block.
     let macro_name_range = range_for_text(&buffer, "rs");
-    buffer.edit([(macro_name_range, "foo/bar/baz.rb")]);
+    buffer.edit([(macro_name_range, "foo/bar/baz.py")]);
     syntax_map.interpolate(&buffer);
     syntax_map.reparse(markdown.clone(), &buffer);
     syntax_map.reparse(markdown_inline.clone(), &buffer);
@@ -313,12 +313,11 @@ fn test_dynamic_language_injection(cx: &mut App) {
         &[
             "(document (section (paragraph (inline)) (fenced_code_block (fenced_code_block_delimiter) (info_string (language)) (block_continuation) (code_fence_content (block_continuation)) (fenced_code_block_delimiter))))",
             "(inline (code_span (code_span_delimiter) (code_span_delimiter)))",
-            "...(call method: (identifier) arguments: (argument_list (call method: (identifier) arguments: (argument_list) block: (block)...",
+            "...(expression_statement (assignment left: (identifier) right: (identifier))...",
         ],
     );
-
-    // Replace Ruby with a language that hasn't been loaded yet.
-    let macro_name_range = range_for_text(&buffer, "foo/bar/baz.rb");
+    // Replace Python with a language that hasn't been loaded yet.
+    let macro_name_range = range_for_text(&buffer, "foo/bar/baz.py");
     buffer.edit([(macro_name_range, "html")]);
     syntax_map.interpolate(&buffer);
     syntax_map.reparse(markdown.clone(), &buffer);
@@ -333,7 +332,6 @@ fn test_dynamic_language_injection(cx: &mut App) {
         ],
     );
     assert!(syntax_map.contains_unknown_injections());
-
     registry.add(Arc::new(html_lang()));
     syntax_map.reparse(markdown, &buffer);
     syntax_map.reparse(markdown_inline, &buffer);
@@ -674,328 +672,6 @@ fn test_removing_injection_by_replacing_across_boundary(cx: &mut App) {
 }
 
 #[gpui::test]
-fn test_combined_injections_simple(cx: &mut App) {
-    let (buffer, syntax_map) = test_edit_sequence(
-        "ERB",
-        &[
-            "
-                <body>
-                    <% if @one %>
-                        <div class=one>
-                    <% else %>
-                        <div class=two>
-                    <% end %>
-                    </div>
-                </body>
-            ",
-            "
-                <body>
-                    <% if @one %>
-                        <div class=one>
-                    ˇ else ˇ
-                        <div class=two>
-                    <% end %>
-                    </div>
-                </body>
-            ",
-            "
-                <body>
-                    <% if @one «;» end %>
-                    </div>
-                </body>
-            ",
-        ],
-        cx,
-    );
-
-    assert_capture_ranges(
-        &syntax_map,
-        &buffer,
-        &["tag", "ivar"],
-        "
-            <«body»>
-                <% if «@one» ; end %>
-                </«div»>
-            </«body»>
-        ",
-    );
-}
-
-#[gpui::test]
-fn test_combined_injections_empty_ranges(cx: &mut App) {
-    test_edit_sequence(
-        "ERB",
-        &[
-            "
-                <% if @one %>
-                <% else %>
-                <% end %>
-            ",
-            "
-                <% if @one %>
-                ˇ<% end %>
-            ",
-        ],
-        cx,
-    );
-}
-
-#[gpui::test]
-fn test_combined_injections_edit_edges_of_ranges(cx: &mut App) {
-    let (buffer, syntax_map) = test_edit_sequence(
-        "ERB",
-        &[
-            "
-                <%= one @two %>
-                <%= three @four %>
-            ",
-            "
-                <%= one @two %ˇ
-                <%= three @four %>
-            ",
-            "
-                <%= one @two %«>»
-                <%= three @four %>
-            ",
-        ],
-        cx,
-    );
-
-    assert_capture_ranges(
-        &syntax_map,
-        &buffer,
-        &["tag", "ivar"],
-        "
-            <%= one «@two» %>
-            <%= three «@four» %>
-        ",
-    );
-}
-
-#[gpui::test]
-fn test_combined_injections_splitting_some_injections(cx: &mut App) {
-    let (_buffer, _syntax_map) = test_edit_sequence(
-        "ERB",
-        &[
-            r#"
-                <%A if b(:c) %>
-                d
-                <% end %>
-                eee
-                <% f %>
-            "#,
-            r#"
-                <%« AAAAAAA %>
-                hhhhhhh
-                <%=» if b(:c) %>
-                d
-                <% end %>
-                eee
-                <% f %>
-            "#,
-        ],
-        cx,
-    );
-}
-
-#[gpui::test]
-fn test_combined_injections_editing_after_last_injection(cx: &mut App) {
-    test_edit_sequence(
-        "ERB",
-        &[
-            r#"
-                <% foo %>
-                <div></div>
-                <% bar %>
-            "#,
-            r#"
-                <% foo %>
-                <div></div>
-                <% bar %>«
-                more text»
-            "#,
-        ],
-        cx,
-    );
-}
-
-#[gpui::test]
-fn test_combined_injections_inside_injections(cx: &mut App) {
-    let (buffer, syntax_map) = test_edit_sequence(
-        "Markdown",
-        &[
-            r#"
-                here is
-                some
-                ERB code:
-
-                ```erb
-                <ul>
-                <% people.each do |person| %>
-                    <li><%= person.name %></li>
-                    <li><%= person.age %></li>
-                <% end %>
-                </ul>
-                ```
-            "#,
-            r#"
-                here is
-                some
-                ERB code:
-
-                ```erb
-                <ul>
-                <% people«2».each do |person| %>
-                    <li><%= person.name %></li>
-                    <li><%= person.age %></li>
-                <% end %>
-                </ul>
-                ```
-            "#,
-            // Inserting a comment character inside one code directive
-            // does not cause the other code directive to become a comment,
-            // because newlines are included in between each injection range.
-            r#"
-                here is
-                some
-                ERB code:
-
-                ```erb
-                <ul>
-                <% people2.each do |person| %>
-                    <li><%= «# »person.name %></li>
-                    <li><%= person.age %></li>
-                <% end %>
-                </ul>
-                ```
-            "#,
-        ],
-        cx,
-    );
-
-    // Check that the code directive below the ruby comment is
-    // not parsed as a comment.
-    assert_capture_ranges(
-        &syntax_map,
-        &buffer,
-        &["method"],
-        "
-            here is
-            some
-            ERB code:
-
-            ```erb
-            <ul>
-            <% people2.«each» do |person| %>
-                <li><%= # person.name %></li>
-                <li><%= person.«age» %></li>
-            <% end %>
-            </ul>
-            ```
-        ",
-    );
-}
-
-#[gpui::test]
-fn test_empty_combined_injections_inside_injections(cx: &mut App) {
-    let (buffer, syntax_map) = test_edit_sequence(
-        "Markdown",
-        &[r#"
-            ```erb
-            hello
-            ```
-
-            goodbye
-        "#],
-        cx,
-    );
-
-    assert_layers_for_range(
-        &syntax_map,
-        &buffer,
-        Point::new(0, 0)..Point::new(5, 0),
-        &[
-            // Markdown document
-            "(document (section (fenced_code_block (fenced_code_block_delimiter) (info_string (language)) (block_continuation) (code_fence_content (block_continuation)) (fenced_code_block_delimiter)) (paragraph (inline))))",
-            // ERB template in the code block
-            "(template...",
-            // Markdown inline content
-            "(inline)",
-            // The ruby syntax tree should be empty, since there are
-            // no interpolations in the ERB template.
-            "(program)",
-            // HTML within the ERB
-            "(document (text))",
-        ],
-    );
-}
-
-#[gpui::test]
-fn test_combined_injection_with_leading_content_layer_ordering(cx: &mut App) {
-    // Regression test for "layers out of order".
-    //
-    // A combined injection stores its layer `range` as the parent's full
-    // `outer_range`, but the parse queue orders steps by `ParseStep::range()`,
-    // which for a combined injection is the parsed node span. When the parent
-    // layer has content before its first injected range (here: leading HEEx
-    // markup before the first `<% %>` directive), those two ranges start at
-    // different offsets. A nested combined injection then inherits the wide
-    // `outer_range` (starting at 0) but is ordered by the narrow node span,
-    // landing after a sibling injection and breaking the sorted-by-start
-    // invariant.
-    let registry = Arc::new(LanguageRegistry::test(cx.background_executor().clone()));
-    let heex = Arc::new(heex_lang());
-    let elixir = Arc::new(
-        Language::new(
-            LanguageConfig {
-                name: LanguageName::new_static("Elixir"),
-                matcher: Arc::new(LanguageMatcher {
-                    path_suffixes: vec![String::from("ex")],
-                    ..Default::default()
-                }),
-                ..LanguageConfig::default()
-            },
-            Some(tree_sitter::Language::new(tree_sitter_elixir::LANGUAGE)),
-        )
-        .with_injection_query(
-            r#"
-            ((string (quoted_content) @injection.content)
-             (#set! injection.language "html")
-             (#set! injection.combined))
-            ((string (quoted_content) @injection.content)
-             (#set! injection.language "Markdown")
-             (#set! injection.combined))
-            "#,
-        )
-        .unwrap(),
-    );
-    registry.add(heex.clone());
-    registry.add(elixir);
-    registry.add(Arc::new(html_lang()));
-    registry.add(markdown_lang());
-
-    let buffer = Buffer::new(
-        ReplicaId::LOCAL,
-        BufferId::new(1).unwrap(),
-        r#"
-<div>leading markup before any directive</div>
-<a href={"early-attr"}>x</a>
-<%= "mid" %>
-<% y = "code" %>
-<b class={"late-attr"}>z</b>
-<%= "tail" %>
-"#
-        .unindent(),
-    );
-
-    let mut syntax_map = SyntaxMap::new(&buffer);
-    syntax_map.set_language_registry(registry);
-    // In debug builds, `reparse` runs `check_invariants`, which panics with
-    // "layers out of order" if the produced layers are not correctly sorted.
-    syntax_map.reparse(heex, &buffer);
-}
-
-#[gpui::test]
 fn test_comment_triggered_injection_toggle(cx: &mut App) {
     let registry = Arc::new(LanguageRegistry::test(cx.background_executor().clone()));
 
@@ -1143,90 +819,6 @@ fn test_injection_grouped_by_host(cx: &mut App) {
     }
 }
 
-#[gpui::test]
-fn test_syntax_map_languages_loading_with_erb(cx: &mut App) {
-    let text = r#"
-        <body>
-            <% if @one %>
-                <div class=one>
-            <% else %>
-                <div class=two>
-            <% end %>
-            </div>
-        </body>
-    "#
-    .unindent();
-
-    let registry = Arc::new(LanguageRegistry::test(cx.background_executor().clone()));
-    let mut buffer = Buffer::new(ReplicaId::LOCAL, BufferId::new(1).unwrap(), text);
-
-    let mut syntax_map = SyntaxMap::new(&buffer);
-    syntax_map.set_language_registry(registry.clone());
-
-    let language = Arc::new(erb_lang());
-
-    log::info!("parsing");
-    registry.add(language.clone());
-    syntax_map.reparse(language.clone(), &buffer);
-
-    log::info!("loading html");
-    registry.add(Arc::new(html_lang()));
-    syntax_map.reparse(language.clone(), &buffer);
-
-    log::info!("loading ruby");
-    registry.add(Arc::new(ruby_lang()));
-    syntax_map.reparse(language.clone(), &buffer);
-
-    assert_capture_ranges(
-        &syntax_map,
-        &buffer,
-        &["tag", "ivar"],
-        "
-            <«body»>
-                <% if «@one» %>
-                    <«div» class=one>
-                <% else %>
-                    <«div» class=two>
-                <% end %>
-                </«div»>
-            </«body»>
-        ",
-    );
-
-    let text = r#"
-        <body>
-            <% if @one«_hundred» %>
-                <div class=one>
-            <% else %>
-                <div class=two>
-            <% end %>
-            </div>
-        </body>
-    "#
-    .unindent();
-
-    log::info!("editing");
-    buffer.edit_via_marked_text(&text);
-    syntax_map.interpolate(&buffer);
-    syntax_map.reparse(language, &buffer);
-
-    assert_capture_ranges(
-        &syntax_map,
-        &buffer,
-        &["tag", "ivar"],
-        "
-            <«body»>
-                <% if «@one_hundred» %>
-                    <«div» class=one>
-                <% else %>
-                    <«div» class=two>
-                <% end %>
-                </«div»>
-            </«body»>
-        ",
-    );
-}
-
 #[gpui::test(iterations = 50)]
 fn test_random_syntax_map_edits_rust_macros(rng: StdRng, cx: &mut App) {
     let text = r#"
@@ -1254,35 +846,6 @@ fn test_random_syntax_map_edits_rust_macros(rng: StdRng, cx: &mut App) {
 }
 
 #[gpui::test(iterations = 50)]
-fn test_random_syntax_map_edits_with_erb(rng: StdRng, cx: &mut App) {
-    let text = r#"
-        <div id="main">
-        <% if one?(:two) %>
-            <p class="three" four>
-            <%= yield :five %>
-            </p>
-        <% elsif Six.seven(8) %>
-            <p id="three" four>
-            <%= yield :five %>
-            </p>
-        <% else %>
-            <span>Ok</span>
-        <% end %>
-        </div>
-    "#
-    .unindent()
-    .repeat(5);
-
-    let registry = Arc::new(LanguageRegistry::test(cx.background_executor().clone()));
-    let language = Arc::new(erb_lang());
-    registry.add(language.clone());
-    registry.add(Arc::new(ruby_lang()));
-    registry.add(Arc::new(html_lang()));
-
-    test_random_edits(text, registry, language, rng);
-}
-
-#[gpui::test(iterations = 50)]
 fn test_random_syntax_map_edits_with_python_sql(rng: StdRng, cx: &mut App) {
     let text = r#"
         # sql
@@ -1304,39 +867,6 @@ fn test_random_syntax_map_edits_with_python_sql(rng: StdRng, cx: &mut App) {
     registry.add(language.clone());
     registry.add(Arc::new(comment_lang()));
     registry.add(Arc::new(sql_lang()));
-
-    test_random_edits(text, registry, language, rng);
-}
-
-#[gpui::test(iterations = 50)]
-fn test_random_syntax_map_edits_with_heex(rng: StdRng, cx: &mut App) {
-    let text = r#"
-        defmodule TheModule do
-            def the_method(assigns) do
-                ~H"""
-                <%= if @empty do %>
-                    <div class="h-4"></div>
-                <% else %>
-                    <div class="max-w-2xl w-full animate-pulse">
-                    <div class="flex-1 space-y-4">
-                        <div class={[@bg_class, "h-4 rounded-lg w-3/4"]}></div>
-                        <div class={[@bg_class, "h-4 rounded-lg"]}></div>
-                        <div class={[@bg_class, "h-4 rounded-lg w-5/6"]}></div>
-                    </div>
-                    </div>
-                <% end %>
-                """
-            end
-        end
-    "#
-    .unindent()
-    .repeat(3);
-
-    let registry = Arc::new(LanguageRegistry::test(cx.background_executor().clone()));
-    let language = Arc::new(elixir_lang());
-    registry.add(language.clone());
-    registry.add(Arc::new(heex_lang()));
-    registry.add(Arc::new(html_lang()));
 
     test_random_edits(text, registry, language, rng);
 }
@@ -1560,12 +1090,8 @@ fn check_interpolation(
 
 fn test_edit_sequence(language_name: &str, steps: &[&str], cx: &mut App) -> (Buffer, SyntaxMap) {
     let registry = Arc::new(LanguageRegistry::test(cx.background_executor().clone()));
-    registry.add(Arc::new(elixir_lang()));
-    registry.add(Arc::new(heex_lang()));
     registry.add(rust_lang());
-    registry.add(Arc::new(ruby_lang()));
     registry.add(Arc::new(html_lang()));
-    registry.add(Arc::new(erb_lang()));
     registry.add(markdown_lang());
     registry.add(Arc::new(markdown_inline_lang()));
 
@@ -1638,120 +1164,6 @@ fn html_lang() -> Language {
             (tag_name) @tag
             (erroneous_end_tag_name) @tag
             (attribute_name) @property
-        "#,
-    )
-    .unwrap()
-}
-
-fn ruby_lang() -> Language {
-    Language::new(
-        LanguageConfig {
-            name: "Ruby".into(),
-            matcher: (LanguageMatcher {
-                path_suffixes: vec!["rb".to_string()],
-                ..Default::default()
-            })
-            .into(),
-            ..Default::default()
-        },
-        Some(tree_sitter_ruby::LANGUAGE.into()),
-    )
-    .with_highlights_query(
-        r#"
-            ["if" "do" "else" "end"] @keyword
-            (instance_variable) @ivar
-            (call method: (identifier) @method)
-        "#,
-    )
-    .unwrap()
-}
-
-fn erb_lang() -> Language {
-    Language::new(
-        LanguageConfig {
-            name: "ERB".into(),
-            matcher: (LanguageMatcher {
-                path_suffixes: vec!["erb".to_string()],
-                ..Default::default()
-            })
-            .into(),
-            ..Default::default()
-        },
-        Some(tree_sitter_embedded_template::LANGUAGE.into()),
-    )
-    .with_highlights_query(
-        r#"
-            ["<%" "%>"] @keyword
-        "#,
-    )
-    .unwrap()
-    .with_injection_query(
-        r#"
-            (
-                (code) @injection.content
-                (#set! injection.language "ruby")
-                (#set! injection.combined)
-            )
-
-            (
-                (content) @injection.content
-                (#set! injection.language "html")
-                (#set! injection.combined)
-            )
-        "#,
-    )
-    .unwrap()
-}
-
-fn elixir_lang() -> Language {
-    Language::new(
-        LanguageConfig {
-            name: "Elixir".into(),
-            matcher: (LanguageMatcher {
-                path_suffixes: vec!["ex".into()],
-                ..Default::default()
-            })
-            .into(),
-            ..Default::default()
-        },
-        Some(tree_sitter_elixir::LANGUAGE.into()),
-    )
-    .with_highlights_query(
-        r#"
-
-        "#,
-    )
-    .unwrap()
-}
-
-fn heex_lang() -> Language {
-    Language::new(
-        LanguageConfig {
-            name: "HEEx".into(),
-            matcher: (LanguageMatcher {
-                path_suffixes: vec!["heex".into()],
-                ..Default::default()
-            })
-            .into(),
-            ..Default::default()
-        },
-        Some(tree_sitter_heex::LANGUAGE.into()),
-    )
-    .with_injection_query(
-        r#"
-        (
-          (directive
-            [
-              (partial_expression_value)
-              (expression_value)
-              (ending_expression_value)
-            ] @injection.content)
-          (#set! injection.language "elixir")
-          (#set! injection.combined)
-        )
-
-        ((expression (expression_value) @injection.content)
-         (#set! injection.language "elixir"))
         "#,
     )
     .unwrap()

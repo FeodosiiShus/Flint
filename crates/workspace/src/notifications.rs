@@ -1319,10 +1319,7 @@ pub mod simple_message_notification {
                     ErrorSeverity::Critical
                 }
                 fn primary_action(&self) -> ErrorAction {
-                    ErrorAction::link(
-                        "See Docs",
-                        "https://zed.dev/docs/linux#i-cant-open-any-files",
-                    )
+                    ErrorAction::dismiss()
                 }
             }
 
@@ -1337,10 +1334,7 @@ pub mod simple_message_notification {
                     ErrorSeverity::Critical
                 }
                 fn primary_action(&self) -> ErrorAction {
-                    ErrorAction::link("Update Zed", "https://zed.dev/releases")
-                }
-                fn secondary_action(&self) -> Option<ErrorAction> {
-                    Some(ErrorAction::dismiss())
+                    ErrorAction::dismiss()
                 }
             }
 

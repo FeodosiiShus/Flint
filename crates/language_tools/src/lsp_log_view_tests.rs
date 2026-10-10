@@ -683,7 +683,9 @@ async fn test_local_views_and_downstream_peers_own_rpc_streams_independently(
 }
 
 #[gpui::test]
-async fn test_unsharing_releases_only_project_downstream_rpc_streams(cx: &mut TestAppContext) {
+async fn test_remote_id_cleared_releases_only_project_downstream_rpc_streams(
+    cx: &mut TestAppContext,
+) {
     init_test(cx);
 
     let fs = FakeFs::new(cx.background_executor.clone());
@@ -718,12 +720,9 @@ async fn test_unsharing_releases_only_project_downstream_rpc_streams(cx: &mut Te
         store.retain_view_log_stream(local_view_key, LogKind::Rpc, cx);
     });
 
-    project
-        .update(cx, |project, cx| project.shared(1, cx))
-        .expect("project should be shareable");
-    project
-        .update(cx, |project, cx| project.unshare(cx))
-        .expect("shared project should unshare");
+    project.update(cx, |_, cx| {
+        cx.emit(ProjectEvent::RemoteIdChanged(None));
+    });
 
     log_store.update(cx, |store, cx| {
         for (server_key, rpc_enabled) in server_keys.iter().zip([false, true, true]) {
@@ -733,7 +732,7 @@ async fn test_unsharing_releases_only_project_downstream_rpc_streams(cx: &mut Te
                     .get(server_key)
                     .map(|state| state.rpc_state.is_some()),
                 Some(rpc_enabled),
-                "unsharing must preserve local views and other projects"
+                "clearing the remote id must preserve local views and other projects"
             );
         }
         store.release_view_log_stream(local_view_key, LogKind::Rpc, cx);
@@ -742,7 +741,7 @@ async fn test_unsharing_releases_only_project_downstream_rpc_streams(cx: &mut Te
                 .language_servers
                 .get(local_view_key)
                 .is_some_and(|state| state.rpc_state.is_none()),
-            "unsharing must release every downstream peer even while a local view owns the stream"
+            "clearing the remote id must release every downstream peer even while a local view owns the stream"
         );
     });
 }

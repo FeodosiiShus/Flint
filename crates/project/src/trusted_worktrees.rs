@@ -5,8 +5,8 @@
 //! This will set up a [`gpui::Global`] with [`TrustedWorktrees`] entity that will persist, restore and allow querying for worktree trust.
 //! It's also possible to subscribe on [`TrustedWorktreesEvent`] events of this entity to track trust changes dynamically.
 //!
-//! The implementation can synchronize trust information with the remote hosts: currently, WSL and SSH.
-//! Docker and Collab remotes do not employ trust mechanism, as manage that themselves.
+//! The implementation can synchronize trust information with the remote hosts: currently, SSH.
+//! Collab remotes do not employ trust mechanism, as they manage that themselves.
 //!
 //! Unless `trust_all_worktrees` auto trust is enabled, does not trust anything that was not persisted before.
 //! When dealing with "restricted" and other related concepts in the API, it means all explicitly restricted, after any of the [`TrustedWorktreesStore::can_trust`] and [`TrustedWorktreesStore::can_trust_global`] calls.
@@ -162,14 +162,6 @@ impl From<RemoteConnectionOptions> for RemoteHostLocation {
             RemoteConnectionOptions::Ssh(ssh) => (
                 ssh.username.map(SharedString::new),
                 SharedString::new(ssh.host.to_string()),
-            ),
-            RemoteConnectionOptions::Wsl(wsl) => (
-                wsl.user.map(SharedString::new),
-                SharedString::new(wsl.distro_name),
-            ),
-            RemoteConnectionOptions::Docker(docker_connection_options) => (
-                Some(SharedString::new(docker_connection_options.name)),
-                SharedString::new(docker_connection_options.container_id),
             ),
             #[cfg(feature = "test-support")]
             RemoteConnectionOptions::Mock(mock) => {

@@ -195,6 +195,10 @@ pub struct SettingsContent {
 
     pub search_panel: Option<SearchPanelSettingsContent>,
 
+    pub project_diagnostics_panel: Option<ProjectDiagnosticsPanelSettingsContent>,
+
+    pub language_services_panel: Option<LanguageServicesPanelSettingsContent>,
+
     pub tabs: Option<ItemSettingsContent>,
     pub tab_bar: Option<TabBarSettingsContent>,
     pub status_bar: Option<StatusBarSettingsContent>,
@@ -279,44 +283,8 @@ pub struct SettingsContent {
     /// Default: 5
     pub modeline_lines: Option<usize>,
 
-    /// Local overrides for feature flags, keyed by flag name.
-    pub feature_flags: Option<FeatureFlagsMap>,
-}
-
-#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize, MergeFrom)]
-#[serde(transparent)]
-pub struct FeatureFlagsMap(pub HashMap<String, String>);
-
-// A manual `JsonSchema` impl keeps this type's schema registered under a
-// unique name. The derived impl on a `#[serde(transparent)]` newtype around
-// `HashMap<String, String>` would inline to the map's own schema name (`Map_of_string`),
-// which is shared with every other `HashMap<String, String>` setting field in
-// `SettingsContent`. A named placeholder lets `json_schema_store` find and
-// replace just this field's schema at runtime without clobbering the others.
-impl JsonSchema for FeatureFlagsMap {
-    fn schema_name() -> std::borrow::Cow<'static, str> {
-        "FeatureFlagsMap".into()
-    }
-
-    fn json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
-        schemars::json_schema!({
-            "type": "object",
-            "additionalProperties": { "type": "string" }
-        })
-    }
-}
-
-impl std::ops::Deref for FeatureFlagsMap {
-    type Target = HashMap<String, String>;
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-impl std::ops::DerefMut for FeatureFlagsMap {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.0
-    }
+    #[serde(default, skip_serializing)]
+    pub feature_flags: Option<serde_json::Value>,
 }
 
 impl SettingsContent {
@@ -328,7 +296,8 @@ impl SettingsContent {
 fallible_options::flattened_deserialize!(SettingsContent {
     sections: { project, theme, extension, workspace, editor, remote },
     options: {
-        command_palette, file_finder, git_panel, search_panel, tabs, tab_bar, status_bar, panel, preview_tabs,
+        command_palette, file_finder, git_panel, search_panel, project_diagnostics_panel,
+        language_services_panel, tabs, tab_bar, status_bar, panel, preview_tabs,
         base_keymap, debugger, diagnostics,
         git,
         global_lsp_settings, markdown_preview, helix_mode, hide_mouse,
@@ -533,6 +502,22 @@ pub enum DockPosition {
 #[with_fallible_options]
 #[derive(Clone, PartialEq, Default, Serialize, Deserialize, JsonSchema, MergeFrom, Debug)]
 pub struct SearchPanelSettingsContent {
+    pub button: Option<bool>,
+    pub dock: Option<DockPosition>,
+    pub default_width: Option<PixelSetting>,
+}
+
+#[with_fallible_options]
+#[derive(Clone, PartialEq, Default, Serialize, Deserialize, JsonSchema, MergeFrom, Debug)]
+pub struct ProjectDiagnosticsPanelSettingsContent {
+    pub button: Option<bool>,
+    pub dock: Option<DockPosition>,
+    pub default_width: Option<PixelSetting>,
+}
+
+#[with_fallible_options]
+#[derive(Clone, PartialEq, Default, Serialize, Deserialize, JsonSchema, MergeFrom, Debug)]
+pub struct LanguageServicesPanelSettingsContent {
     pub button: Option<bool>,
     pub dock: Option<DockPosition>,
     pub default_width: Option<PixelSetting>,
@@ -995,8 +980,7 @@ pub struct WhichKeySettingsContent {
 // to allow new values to be added.
 //
 // Consider using a HashMap<String, bool> instead of this type
-// (like auto_install_extensions) so that user settings files can both add
-// and remove values from the set.
+// so that user settings files can both add and remove values from the set.
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct ExtendingVec<T>(pub Vec<T>);
 

@@ -20,7 +20,6 @@ actions!(
 );
 
 const COMMIT_TAG_LIST_WIDTH_IN_REMS: Rems = rems(10.);
-const CUSTOM_GIT_COMMANDS_DOCS_SLUG: &str = "tasks#custom-git-commands";
 
 pub(crate) struct CommitContextMenuData {
     pub(crate) sha: Oid,
@@ -148,14 +147,9 @@ pub(crate) fn commit_context_menu(
                             .icon(IconName::ArrowUpRight)
                             .icon_color(Color::Muted)
                             .icon_position(IconPosition::End)
-                            .handler(|_window, cx| {
-                                let docs_url =
-                                    release_channel::docs_url(CUSTOM_GIT_COMMANDS_DOCS_SLUG, cx);
-                                cx.open_url(&docs_url);
-                            }),
+                            .disabled(true),
                     );
                 }
-
                 for (task_source_kind, resolved_task) in git_tasks {
                     let label = resolved_task.display_label().to_string();
                     let workspace = workspace.clone();

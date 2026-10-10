@@ -1723,10 +1723,6 @@ impl Workspace {
                     this.update_window_title(window, cx);
                 }
 
-                project::Event::CollaboratorLeft(peer_id) => {
-                    this.collaborator_left(*peer_id, window, cx);
-                }
-
                 &project::Event::WorktreeRemoved(_) => {
                     this.update_window_title(window, cx);
                     this.serialize_workspace(window, cx);
@@ -3429,7 +3425,7 @@ impl Workspace {
         self.titlebar_item.clone()
     }
 
-    /// Call the given callback with a workspace whose project is local or remote via WSL (allowing host access).
+    /// Call the given callback with a workspace whose project is local.
     ///
     /// If the given workspace has a local project, then it will be passed
     /// to the callback. Otherwise, a new empty window will be created.
@@ -3444,47 +3440,6 @@ impl Workspace {
         F: 'static + FnOnce(&mut Workspace, &mut Window, &mut Context<Workspace>) -> T,
     {
         if self.project.read(cx).is_local() {
-            Task::ready(Ok(callback(self, window, cx)))
-        } else {
-            let env = self.project.read(cx).cli_environment(cx);
-            let task = Self::new_local(
-                Vec::new(),
-                self.app_state.clone(),
-                None,
-                env,
-                None,
-                OpenMode::Activate,
-                cx,
-            );
-            cx.spawn_in(window, async move |_vh, cx| {
-                let OpenResult {
-                    window: multi_workspace_window,
-                    ..
-                } = task.await?;
-                multi_workspace_window.update(cx, |multi_workspace, window, cx| {
-                    let workspace = multi_workspace.workspace().clone();
-                    workspace.update(cx, |workspace, cx| callback(workspace, window, cx))
-                })
-            })
-        }
-    }
-
-    /// Call the given callback with a workspace whose project is local or remote via WSL (allowing host access).
-    ///
-    /// If the given workspace has a local project, then it will be passed
-    /// to the callback. Otherwise, a new empty window will be created.
-    pub fn with_local_or_wsl_workspace<T, F>(
-        &mut self,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-        callback: F,
-    ) -> Task<Result<T>>
-    where
-        T: 'static,
-        F: 'static + FnOnce(&mut Workspace, &mut Window, &mut Context<Workspace>) -> T,
-    {
-        let project = self.project.read(cx);
-        if project.is_local() || project.is_via_wsl_with_host_interop(cx) {
             Task::ready(Ok(callback(self, window, cx)))
         } else {
             let env = self.project.read(cx).cli_environment(cx);
@@ -6165,20 +6120,6 @@ impl Workspace {
             .cloned()
     }
 
-    fn collaborator_left(&mut self, peer_id: PeerId, window: &mut Window, cx: &mut Context<Self>) {
-        self.follower_states.retain(|leader_id, state| {
-            if *leader_id == CollaboratorId::PeerId(peer_id) {
-                for item in state.items_by_leader_view_id.values() {
-                    item.view.set_leader_id(None, window, cx);
-                }
-                false
-            } else {
-                true
-            }
-        });
-        cx.notify();
-    }
-
     pub fn start_following(
         &mut self,
         leader_id: impl Into<CollaboratorId>,
@@ -6203,13 +6144,8 @@ impl Workspace {
         );
         cx.notify();
 
-        match leader_id {
-            CollaboratorId::PeerId(_) => None,
-            CollaboratorId::Agent => {
-                self.leader_updated(leader_id, window, cx)?;
-                Some(Task::ready(Ok(())))
-            }
-        }
+        self.leader_updated(leader_id, window, cx)?;
+        Some(Task::ready(Ok(())))
     }
 
     pub fn follow_next_collaborator(
@@ -6218,38 +6154,21 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let collaborators = self.project.read(cx).collaborators();
-        let next_leader_id = if let Some(leader_id) = self.leader_for_pane(&self.active_pane) {
-            let mut collaborators = collaborators.keys().copied();
-            for peer_id in collaborators.by_ref() {
-                if CollaboratorId::PeerId(peer_id) == leader_id {
-                    break;
-                }
-            }
-            collaborators.next().map(CollaboratorId::PeerId)
+        let next_leader_id = if self.leader_for_pane(&self.active_pane).is_some() {
+            None
         } else if let Some(last_leader_id) =
             self.last_leaders_by_pane.get(&self.active_pane.downgrade())
         {
             match last_leader_id {
-                CollaboratorId::PeerId(peer_id) => {
-                    if collaborators.contains_key(peer_id) {
-                        Some(*last_leader_id)
-                    } else {
-                        None
-                    }
-                }
                 CollaboratorId::Agent => Some(CollaboratorId::Agent),
+                _ => None,
             }
         } else {
             None
         };
 
         let pane = self.active_pane.clone();
-        let Some(leader_id) = next_leader_id.or_else(|| {
-            Some(CollaboratorId::PeerId(
-                collaborators.keys().copied().next()?,
-            ))
-        }) else {
+        let Some(leader_id) = next_leader_id else {
             return;
         };
         if self.unfollow_in_pane(&pane, window, cx) == Some(leader_id) {
@@ -6698,26 +6617,14 @@ impl Workspace {
         cx.notify();
 
         let leader_id = leader_id.into();
-        let (panel_id, item) = match leader_id {
-            CollaboratorId::PeerId(_) => return None,
-            CollaboratorId::Agent => (None, self.active_item_for_agent()?),
-        };
+        let item = self.active_item_for_agent()?;
 
         let state = self.follower_states.get(&leader_id)?;
         let mut transfer_focus = state.center_pane.read(cx).has_focus(window, cx);
-        let pane;
-        if let Some(panel_id) = panel_id {
-            pane = self
-                .activate_panel_for_proto_id(panel_id, window, cx)?
-                .pane(cx)?;
-            let state = self.follower_states.get_mut(&leader_id)?;
-            state.dock_pane = Some(pane.clone());
-        } else {
-            pane = state.center_pane.clone();
-            let state = self.follower_states.get_mut(&leader_id)?;
-            if let Some(dock_pane) = state.dock_pane.take() {
-                transfer_focus |= dock_pane.focus_handle(cx).contains_focused(window, cx);
-            }
+        let pane = state.center_pane.clone();
+        let state = self.follower_states.get_mut(&leader_id)?;
+        if let Some(dock_pane) = state.dock_pane.take() {
+            transfer_focus |= dock_pane.focus_handle(cx).contains_focused(window, cx);
         }
 
         pane.update(cx, |pane, cx| {
@@ -8408,18 +8315,11 @@ fn leader_border_for_pane(
     _: &Window,
     cx: &App,
 ) -> Option<Div> {
-    let (leader_id, _follower_state) = follower_states.iter().find_map(|(leader_id, state)| {
-        if state.pane() == pane {
-            Some((*leader_id, state))
-        } else {
-            None
-        }
-    })?;
+    follower_states
+        .values()
+        .find(|state| state.pane() == pane)?;
 
-    let mut leader_color = match leader_id {
-        CollaboratorId::PeerId(_) => return None,
-        CollaboratorId::Agent => cx.theme().players().agent().cursor,
-    };
+    let mut leader_color = cx.theme().players().agent().cursor;
     leader_color.fade_out(0.3);
     Some(
         div()
@@ -9629,13 +9529,6 @@ pub fn workspace_windows_for_location(
                 (RemoteConnectionOptions::Ssh(a), RemoteConnectionOptions::Ssh(b)) => {
                     (&a.host, &a.username, &a.port) == (&b.host, &b.username, &b.port)
                 }
-                (RemoteConnectionOptions::Wsl(a), RemoteConnectionOptions::Wsl(b)) => {
-                    // The WSL username is not consistently populated in the workspace location, so ignore it for now.
-                    a.distro_name == b.distro_name
-                }
-                (RemoteConnectionOptions::Docker(a), RemoteConnectionOptions::Docker(b)) => {
-                    a.container_id == b.container_id
-                }
                 #[cfg(any(test, feature = "test-support"))]
                 (RemoteConnectionOptions::Mock(a), RemoteConnectionOptions::Mock(b)) => {
                     a.id == b.id
@@ -9945,10 +9838,6 @@ pub fn open_paths(
     cx: &mut App,
 ) -> Task<anyhow::Result<OpenResult>> {
     let abs_paths = abs_paths.to_vec();
-    #[cfg(target_os = "windows")]
-    let wsl_path = abs_paths
-        .iter()
-        .find_map(|p| util::paths::WslPath::from_path(p));
 
     cx.spawn(async move |cx| {
         let (mut existing, mut open_visible) = find_existing_workspace(
@@ -9970,10 +9859,8 @@ pub fn open_paths(
 
             if all_metadatas.into_iter().all(|file| !file.is_dir) {
                 cx.update(|cx| {
-                    let windows = workspace_windows_for_location(
-                        &SerializedWorkspaceLocation::Local,
-                        cx,
-                    );
+                    let windows =
+                        workspace_windows_for_location(&SerializedWorkspaceLocation::Local, cx);
                     let window = cx
                         .active_window()
                         .and_then(|window| window.downcast::<MultiWorkspace>())
@@ -10005,19 +9892,15 @@ pub fn open_paths(
 
             if use_existing_window {
                 let target_window = cx.update(|cx| {
-                    let windows = workspace_windows_for_location(
-                        &SerializedWorkspaceLocation::Local,
-                        cx,
-                    );
+                    let windows =
+                        workspace_windows_for_location(&SerializedWorkspaceLocation::Local, cx);
                     let window = cx
                         .active_window()
                         .and_then(|window| window.downcast::<MultiWorkspace>())
                         .filter(|window| windows.contains(window))
                         .or_else(|| windows.into_iter().next());
                     window.filter(|window| {
-                        window
-                            .read(cx)
-                            .is_ok_and(|mw| mw.multi_workspace_enabled())
+                        window.read(cx).is_ok_and(|mw| mw.multi_workspace_enabled())
                     })
                 });
 
@@ -10063,7 +9946,11 @@ pub fn open_paths(
                 });
             });
 
-            Ok(OpenResult { window: existing, workspace: target_workspace, opened_items: open_task })
+            Ok(OpenResult {
+                window: existing,
+                workspace: target_workspace,
+                opened_items: open_task,
+            })
         } else {
             let result = cx
                 .update(move |cx| {
@@ -10080,7 +9967,8 @@ pub fn open_paths(
                 .await;
 
             if let Ok(ref result) = result {
-                result.window
+                result
+                    .window
                     .update(cx, |_, window, _cx| {
                         window.activate_window();
                     })
@@ -10090,37 +9978,6 @@ pub fn open_paths(
             result
         };
 
-        #[cfg(target_os = "windows")]
-        if let Some(util::paths::WslPath{distro, path}) = wsl_path
-            && let Ok(ref result) = result
-        {
-            result.window
-                .update(cx, move |multi_workspace, _window, cx| {
-                    struct OpenInWsl;
-                    let workspace = multi_workspace.workspace().clone();
-                    workspace.update(cx, |workspace, cx| {
-                        workspace.show_notification(NotificationId::unique::<OpenInWsl>(), cx, move |cx| {
-                            let display_path = util::markdown::MarkdownInlineCode(&path.to_string_lossy());
-                            let msg = format!("{display_path} is inside a WSL filesystem, some features may not work unless you open it with WSL remote");
-                            cx.new(move |cx| {
-                                MessageNotification::new(msg, cx)
-                                    .primary_message("Open in WSL")
-                                    .primary_icon(IconName::FolderOpen)
-                                    .primary_on_click(move |window, cx| {
-                                        window.dispatch_action(Box::new(remote::OpenWslPath {
-                                                distro: remote::WslConnectionOptions {
-                                                        distro_name: distro.clone(),
-                                                    user: None,
-                                                },
-                                                paths: vec![path.clone().into()],
-                                            }), cx)
-                                    })
-                            })
-                        });
-                    });
-                })
-                .unwrap();
-        };
         result
     })
 }
@@ -10168,14 +10025,9 @@ pub fn create_and_open_local_file(
 
         workspace
             .update_in(cx, |workspace, window, cx| {
-                workspace.with_local_or_wsl_workspace(window, cx, |workspace, window, cx| {
-                    let path = workspace
-                        .project
-                        .read_with(cx, |project, cx| project.try_windows_path_to_wsl(path, cx));
+                workspace.with_local_workspace(window, cx, |workspace, window, cx| {
                     cx.spawn_in(window, async move |workspace, cx| {
-                        let path = path.await?;
-
-                        let path = fs.canonicalize(&path).await.unwrap_or(path);
+                        let path = fs.canonicalize(path).await.unwrap_or(path.to_path_buf());
 
                         let mut items = workspace
                             .update_in(cx, |workspace, window, cx| {
@@ -11769,36 +11621,6 @@ mod tests {
         fs.set_branch_name(Path::new(path!("/root1/.git")), Some("other"));
         cx.executor().run_until_parked();
         assert_eq!(cx.window_title().as_deref(), Some("root1 — a.txt"));
-    }
-
-    #[gpui::test]
-    async fn test_window_title_collab_indicator_remains_appended(cx: &mut TestAppContext) {
-        init_test(cx);
-
-        let fs = FakeFs::new(cx.executor());
-        let project = Project::test(fs, ["root1".as_ref()], cx).await;
-        project.update(cx, |project, _| project.mark_as_collab_for_testing());
-        let (workspace, cx) =
-            cx.add_window_view(|window, cx| Workspace::test_new(project.clone(), window, cx));
-
-        let item = cx.new(|cx| {
-            TestItem::new(cx).with_project_items(&[TestProjectItem::new(1, "src/one.txt", cx)])
-        });
-
-        workspace.update_in(cx, |workspace, window, cx| {
-            workspace.add_item_to_active_pane(Box::new(item), None, true, window, cx)
-        });
-
-        cx.update(|_, cx| {
-            SettingsStore::update_global(cx, |settings, cx| {
-                settings.update_user_settings(cx, |settings| {
-                    settings.workspace.window_title_format =
-                        Some("${projectName}${separator}${fileName}".to_string());
-                })
-            });
-        });
-        cx.executor().run_until_parked();
-        assert_eq!(cx.window_title().as_deref(), Some("root1 — one.txt ↙"));
     }
 
     #[gpui::test]
@@ -18596,43 +18418,6 @@ mod tests {
             workspace.read_with(cx, |workspace, _| {
                 assert_eq!(workspace.panes.len(), 3);
             });
-        }
-
-        #[gpui::test]
-        async fn test_open_url_or_file_resolves_remote_base_path(cx: &mut TestAppContext) {
-            init_test(cx);
-            cx.update(register_project_item::<TestPngItemView>);
-
-            let project = Project::test(FakeFs::new(cx.executor()), [], cx).await;
-            let worktree = project.update(cx, |project, cx| {
-                let worktree = project.add_test_remote_worktree("/remote/project", cx);
-                project.mark_as_collab_for_testing();
-                worktree
-            });
-            let worktree_id = worktree.read_with(cx, |worktree, _| worktree.id());
-            let (workspace, cx) =
-                cx.add_window_view(|window, cx| Workspace::test_new(project, window, cx));
-
-            workspace.update_in(cx, |workspace, window, cx| {
-                workspace.open_url_or_file(
-                    "./sibling.png",
-                    Some(Path::new("/remote/project/docs")),
-                    window,
-                    cx,
-                );
-            });
-            cx.run_until_parked();
-
-            let opened_item = workspace
-                .read_with(cx, |workspace, cx| {
-                    workspace
-                        .active_item(cx)
-                        .and_then(|item| item.downcast::<TestPngItemView>())
-                })
-                .expect("resolved remote project item should be opened");
-            let project_path = opened_item.read_with(cx, |item, _| item.project_path.clone());
-            assert_eq!(project_path.worktree_id, worktree_id);
-            assert_eq!(project_path.path.as_ref(), rel_path("docs/sibling.png"));
         }
 
         #[gpui::test]

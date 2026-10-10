@@ -59,7 +59,6 @@ pub enum CliRequest {
         urls: Vec<String>,
         diff_paths: Vec<[String; 2]>,
         diff_all: bool,
-        wsl: Option<String>,
         wait: bool,
         #[serde(default)]
         open_behavior: OpenBehavior,

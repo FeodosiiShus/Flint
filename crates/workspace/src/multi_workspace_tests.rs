@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use super::*;
-use crate::item::test::TestItem;
+use crate::{AppState, item::test::TestItem};
 use client::proto;
 use fs::{FakeFs, Fs};
 use gpui::{TestAppContext, VisualTestContext};
@@ -1546,23 +1546,59 @@ async fn test_nearest_retained_workspace(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
-async fn test_nearest_retained_workspace_skips_disconnected_workspace(cx: &mut TestAppContext) {
+async fn test_nearest_retained_workspace_skips_disconnected_workspace(
+    cx: &mut TestAppContext,
+    server_cx: &mut TestAppContext,
+) {
     init_test(cx);
+    cx.update(|cx| {
+        release_channel::init_test(
+            release_channel::AppVersion::global(cx),
+            release_channel::ReleaseChannel::Dev,
+            cx,
+        );
+    });
+    server_cx.update(|cx| {
+        release_channel::init_test(
+            release_channel::AppVersion::global(cx),
+            release_channel::ReleaseChannel::Dev,
+            cx,
+        );
+    });
     let fs = FakeFs::new(cx.executor());
     fs.insert_tree("/project-a", json!({})).await;
-    fs.insert_tree("/project-b", json!({})).await;
 
-    let project_a = Project::test(fs.clone(), ["/project-a".as_ref()], cx).await;
-    let project_b = Project::test(fs, ["/project-b".as_ref()], cx).await;
+    let project_a = Project::test(fs, ["/project-a".as_ref()], cx).await;
+    let app_state = cx.update(AppState::test);
+    let (options, server_session, connect_guard) = remote::RemoteClient::fake_server(cx, server_cx);
+    let ping_handler = server_cx.new(|_| ());
+    server_session.add_request_handler::<client::proto::Ping, _, _, _>(
+        ping_handler.downgrade(),
+        |_, _, _| async { Ok(client::proto::Ack {}) },
+    );
+    drop(connect_guard);
+    let remote_client = remote::RemoteClient::connect_mock(options, cx).await;
+    let project_b = cx.update(|cx| {
+        Project::remote(
+            remote_client.clone(),
+            app_state.client.clone(),
+            app_state.node_runtime.clone(),
+            app_state.user_store.clone(),
+            app_state.languages.clone(),
+            app_state.fs.clone(),
+            false,
+            cx,
+        )
+    });
     let key_a = project_a.read_with(cx, |project, cx| project.project_group_key(cx));
     let (multi_workspace, cx) = setup_multi_workspace(&[project_a.clone(), project_b.clone()], cx);
 
-    project_b.update(cx, |project, cx| {
-        project.mark_as_collab_for_testing();
-        project.disconnected_from_host(cx);
-    });
+    remote_client.update(cx, |client, cx| client.force_server_not_running(cx));
     cx.run_until_parked();
-
+    assert!(
+        project_b.read_with(cx, |project, cx| project.is_disconnected(cx)),
+        "the remote project should report as disconnected"
+    );
     multi_workspace.update(cx, |multi_workspace, cx| {
         let group_a_index = multi_workspace
             .project_groups(cx)

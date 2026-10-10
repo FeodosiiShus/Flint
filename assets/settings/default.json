@@ -21,7 +21,7 @@
       "border": "#40434a",
       "border.variant": "#33353b",
       "border.focused": "#3871e1",
-      "border.selected": "#3871e1",
+      "border.selected": "#2e4d89",
       "border.disabled": "#33353b",
       "element.background": "#33353b",
       "element.hover": "#ffffff10",
@@ -50,7 +50,7 @@
       "toolbar.background": "#282c34",
       "tab_bar.background": "#282c34",
       "tab.inactive_background": "#282c34",
-      "tab.active_background": "#2a364e",
+      "tab.active_background": "#233558",
       "panel.background": "#191a1c",
       "panel.focused_border": "#3871e1",
       "scrollbar.thumb.background": "#80808059",
@@ -990,6 +990,16 @@
     "dock": "left",
     "default_width": 360,
   },
+  "project_diagnostics_panel": {
+    "button": true,
+    "dock": "left",
+    "default_width": 360,
+  },
+  "language_services_panel": {
+    "button": true,
+    "dock": "left",
+    "default_width": 360,
+  },
   "git_panel": {
     // Whether to show the git panel button in the status bar.
     "button": true,
@@ -1364,8 +1374,6 @@
   "lsp_document_links": true,
   // Diagnostics configuration.
   "diagnostics": {
-    // Whether to show the project diagnostics button in the status bar.
-    "button": true,
     // Whether to show warnings or not by default.
     //
     // Default: true
@@ -1558,7 +1566,6 @@
     // If the input has a timeout, a countdown is shown and hovering pauses it.
     // Its binding preview popover is disabled when "which_key.enabled" is true.
     "pending_keystrokes_indicator": true,
-    "navigation_bar": true,
     "indentation_button": true,
     "read_only_button": true,
     "height": null,
@@ -2283,8 +2290,6 @@
   },
   // Common language server settings.
   "global_lsp_settings": {
-    // Whether to show the LSP servers button in the status bar.
-    "button": true,
     // The maximum amount of time to wait for responses from language servers, in seconds.
     // A value of 0 will result in no timeout being applied.
     //

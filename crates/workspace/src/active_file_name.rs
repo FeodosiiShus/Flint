@@ -25,8 +25,7 @@ impl ActiveFileName {
 
 impl Render for ActiveFileName {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let status_bar_settings = StatusBarSettings::get_global(cx);
-        if !status_bar_settings.show_active_file || status_bar_settings.navigation_bar {
+        if !StatusBarSettings::get_global(cx).show_active_file {
             return Empty.into_any_element();
         }
 

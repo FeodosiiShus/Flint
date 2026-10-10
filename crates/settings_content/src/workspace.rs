@@ -589,7 +589,6 @@ pub struct StatusBarSettingsContent {
     ///
     /// Default: true
     pub pending_keystrokes_indicator: Option<bool>,
-    pub navigation_bar: Option<bool>,
     pub indentation_button: Option<bool>,
     pub read_only_button: Option<bool>,
     pub height: Option<u32>,

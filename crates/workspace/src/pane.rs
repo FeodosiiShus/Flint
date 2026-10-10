@@ -323,6 +323,10 @@ actions!(
 
 const MAX_NAVIGATION_HISTORY_LEN: usize = 1024;
 const HIDDEN_TAB_VISIBILITY_TOLERANCE: Pixels = px(1.);
+const ISLAND_TAB_ICON_SIZE: f32 = 16.;
+const ISLAND_TAB_ICON_LABEL_GAP: Pixels = px(4.);
+const ISLAND_TAB_DIRTY_DOT_BOX_SIZE: f32 = 13.;
+const ISLAND_TAB_DIRTY_DOT_DIAMETER: f32 = 6.;
 
 pub enum Event {
     AddItem {
@@ -2851,21 +2855,23 @@ impl Pane {
             .unwrap_or(false);
 
         let pane_focused = self.has_focus(window, cx);
-        let label = item.tab_content(
-            TabContentParams {
-                detail: Some(detail),
-                selected: is_active,
-                preview: is_preview,
-                deemphasized: !pane_focused,
-                max_title_len: None,
-                truncate_title_middle: false,
-            },
-            window,
-            cx,
-        );
+        let islands = WorkspaceSettings::get_global(cx).islands.enabled;
+        let (unhovered_label_color, hovered_label_color) = {
+            let colors = cx.theme().colors();
+            (
+                Color::Custom(ui::island_tab_label_color(is_active, false, colors)),
+                Color::Custom(ui::island_tab_label_color(is_active, true, colors)),
+            )
+        };
 
-        let tab_icon_size = ui::chrome_icon_size(ui::ChromeRegion::TabBar, IconSize::Small, cx);
-        let icon = self.tab_icon_element(item, is_active, tab_icon_size, window, cx);
+        let tab_icon_size =
+            if islands && ui::chrome_icon_scale(ui::ChromeRegion::TabBar, cx).is_none() {
+                IconSize::Custom(gpui::rems(
+                    ISLAND_TAB_ICON_SIZE / f32::from(window.rem_size()),
+                ))
+            } else {
+                ui::chrome_icon_size(ui::ChromeRegion::TabBar, IconSize::Small, cx)
+            };
 
         let settings = ItemSettings::get_global(cx);
         let close_side = &settings.close_position;
@@ -2877,13 +2883,6 @@ impl Pane {
         let is_last_item = ix == self.items.len() - 1;
         let is_pinned = self.is_tab_pinned(ix);
         let position_relative_to_active_item = ix.cmp(&self.active_item_index);
-        let strip_last_index = if is_pinned {
-            self.pinned_tab_count.saturating_sub(1)
-        } else {
-            self.items.len().saturating_sub(1)
-        };
-        let has_trailing_divider =
-            tab_has_trailing_divider(ix, self.active_item_index, strip_last_index);
 
         let read_only_toggle = |toggleable: bool| {
             IconButton::new("toggle_read_only", IconName::FileLock)
@@ -2912,9 +2911,207 @@ impl Pane {
                 }))
         };
 
-        let has_file_icon = icon.is_some();
-
         let capability = item.capability(cx);
+
+        let tab_row = |hovered: bool, window: &Window, cx: &App| -> AnyElement {
+            let icon = self.tab_icon_element(item, is_active, tab_icon_size, window, cx);
+            let has_file_icon = icon.is_some();
+            let label = item.tab_content(
+                TabContentParams {
+                    detail: Some(detail),
+                    selected: is_active,
+                    preview: is_preview,
+                    deemphasized: !pane_focused,
+                    max_title_len: None,
+                    truncate_title_middle: false,
+                    label_color: islands.then_some(if hovered {
+                        hovered_label_color
+                    } else {
+                        unhovered_label_color
+                    }),
+                },
+                window,
+                cx,
+            );
+            let icon_opacity = ui::island_tab_icon_opacity(is_active, hovered);
+            h_flex()
+                .map(|this| {
+                    if islands {
+                        this.gap(ISLAND_TAB_ICON_LABEL_GAP)
+                    } else {
+                        this.gap_1()
+                    }
+                })
+                .children(if let Some(icon) = icon {
+                    Some(if islands {
+                        div().opacity(icon_opacity).child(icon).into_any_element()
+                    } else {
+                        icon
+                    })
+                } else if !capability.editable() {
+                    Some(read_only_toggle(capability == Capability::Read).into_any_element())
+                } else {
+                    None
+                })
+                .child(label)
+                .when(capability == Capability::Read && has_file_icon, |this| {
+                    this.child(read_only_toggle(true))
+                })
+                .into_any_element()
+        };
+
+        let indicator_color = item_indicator_color(item, cx);
+        let dirty_dot_color = indicator_color.map(|color| color.color(cx));
+        let close_button_reveals_on_hover = (islands && indicator_color.is_some())
+            || (matches!(show_close_button, ShowCloseButton::Hover) && !(islands && is_active));
+        let close_action: &'static dyn Action = &CloseActiveItem {
+            save_intent: None,
+            close_pinned: false,
+        };
+        let end_slot_button: Option<(IconButton, &'static str, &'static dyn Action)> = if is_pinned
+        {
+            Some((
+                IconButton::new("unpin tab", IconName::Pin).on_click(cx.listener(
+                    move |pane, _, window, cx| {
+                        pane.unpin_tab_at(ix, window, cx);
+                    },
+                )),
+                "Unpin Tab",
+                &TogglePinTab,
+            ))
+        } else {
+            match show_close_button {
+                ShowCloseButton::Hidden => None,
+                ShowCloseButton::Always | ShowCloseButton::Hover => {
+                    let close_button = IconButton::new("close tab", IconName::Close);
+                    let close_button = if close_button_reveals_on_hover {
+                        close_button.visible_on_hover("")
+                    } else {
+                        close_button
+                    };
+                    Some((
+                        close_button.on_click(cx.listener(move |pane, _, window, cx| {
+                            pane.close_item_by_id(item_id, SaveIntent::Close, window, cx)
+                                .detach_and_log_err(cx);
+                        })),
+                        "Close Tab",
+                        close_action,
+                    ))
+                }
+            }
+        };
+        let end_slot_button = end_slot_button.map(|(button, tooltip_text, action)| {
+            button
+                .shape(IconButtonShape::Square)
+                .icon_color(Color::Muted)
+                .size(ButtonSize::None)
+                .icon_size(IconSize::Small)
+                .chrome_region(ui::ChromeRegion::TabBar)
+                .map(|this| {
+                    if is_active {
+                        let focus_handle = focus_handle.clone();
+                        this.tooltip(move |window, cx| {
+                            Tooltip::for_action_in(
+                                tooltip_text,
+                                action,
+                                &window.focused(cx).unwrap_or_else(|| focus_handle.clone()),
+                                cx,
+                            )
+                        })
+                    } else {
+                        this.tooltip(Tooltip::text(tooltip_text))
+                    }
+                })
+        });
+        let tab_end_slot: Option<AnyElement> = if islands {
+            let dirty_dot = dirty_dot_color.filter(|_| !is_pinned).map(|color| {
+                div()
+                    .size(px(ISLAND_TAB_DIRTY_DOT_BOX_SIZE))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(
+                        div()
+                            .size(px(ISLAND_TAB_DIRTY_DOT_DIAMETER))
+                            .rounded_full()
+                            .bg(color),
+                    )
+            });
+            match (end_slot_button, dirty_dot) {
+                (Some(button), Some(dot)) => Some(
+                    div()
+                        .relative()
+                        .size_full()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(button)
+                        .child(
+                            div()
+                                .absolute()
+                                .inset_0()
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .group_hover("", |style| style.invisible())
+                                .child(dot),
+                        )
+                        .into_any_element(),
+                ),
+                (Some(button), None) => Some(button.into_any_element()),
+                (None, Some(dot)) => Some(dot.into_any_element()),
+                (None, None) => None,
+            }
+        } else {
+            end_slot_button.map(IntoElement::into_any_element)
+        };
+
+        let island_minimum_content_width =
+            ui::IslandTabMetrics::for_density(ThemeSettings::get_global(cx).ui_density)
+                .minimum_content_width;
+        let pane_tab_content = h_flex()
+            .id(("pane-tab-content", ix))
+            .when(islands, |this| this.min_w(island_minimum_content_width))
+            .map(|this| {
+                if islands && !is_active {
+                    this.relative()
+                        .child(
+                            div()
+                                .flex()
+                                .group_hover("", |style| style.invisible())
+                                .child(tab_row(false, window, cx)),
+                        )
+                        .child(
+                            div()
+                                .absolute()
+                                .top_0()
+                                .left_0()
+                                .size_full()
+                                .flex()
+                                .invisible()
+                                .group_hover("", |style| style.visible())
+                                .child(tab_row(true, window, cx)),
+                        )
+                } else {
+                    this.child(tab_row(true, window, cx))
+                }
+            })
+            .map(|this| match tab_tooltip_content {
+                Some(TabTooltipContent::Text(text)) => {
+                    if capability.editable() {
+                        this.tooltip(Tooltip::text(text))
+                    } else {
+                        this.tooltip(move |_, cx| {
+                            let text = text.clone();
+                            Tooltip::with_meta(text, None, "Read-Only Tab", cx)
+                        })
+                    }
+                }
+                Some(TabTooltipContent::Custom(element_fn)) => {
+                    this.tooltip(move |window, cx| element_fn(window, cx))
+                }
+                None => this,
+            });
         let tab = Tab::new(ix)
             .position(if is_first_item {
                 TabPosition::First
@@ -2929,8 +3126,7 @@ impl Pane {
             })
             .toggle_state(is_active)
             .focused(pane_focused)
-            .islands(WorkspaceSettings::get_global(cx).islands.enabled)
-            .trailing_divider(has_trailing_divider)
+            .islands(islands)
             .on_click(cx.listener({
                 let item_handle = item.boxed_clone();
                 move |pane: &mut Self, event: &ClickEvent, window, cx| {
@@ -3009,94 +3205,9 @@ impl Pane {
                 this.drag_split_direction = None;
                 this.handle_external_paths_drop(paths, window, cx)
             }))
-            .start_slot::<Indicator>(indicator)
-            .map(|this| {
-                let end_slot_action: &'static dyn Action;
-                let end_slot_tooltip_text: &'static str;
-                let end_slot = if is_pinned {
-                    end_slot_action = &TogglePinTab;
-                    end_slot_tooltip_text = "Unpin Tab";
-                    IconButton::new("unpin tab", IconName::Pin)
-                        .shape(IconButtonShape::Square)
-                        .icon_color(Color::Muted)
-                        .size(ButtonSize::None)
-                        .icon_size(IconSize::Small)
-                        .chrome_region(ui::ChromeRegion::TabBar)
-                        .on_click(cx.listener(move |pane, _, window, cx| {
-                            pane.unpin_tab_at(ix, window, cx);
-                        }))
-                } else {
-                    end_slot_action = &CloseActiveItem {
-                        save_intent: None,
-                        close_pinned: false,
-                    };
-                    end_slot_tooltip_text = "Close Tab";
-                    match show_close_button {
-                        ShowCloseButton::Always => IconButton::new("close tab", IconName::Close),
-                        ShowCloseButton::Hover => {
-                            IconButton::new("close tab", IconName::Close).visible_on_hover("")
-                        }
-                        ShowCloseButton::Hidden => return this,
-                    }
-                    .shape(IconButtonShape::Square)
-                    .icon_color(Color::Muted)
-                    .size(ButtonSize::None)
-                    .icon_size(IconSize::Small)
-                    .chrome_region(ui::ChromeRegion::TabBar)
-                    .on_click(cx.listener(move |pane, _, window, cx| {
-                        pane.close_item_by_id(item_id, SaveIntent::Close, window, cx)
-                            .detach_and_log_err(cx);
-                    }))
-                }
-                .map(|this| {
-                    if is_active {
-                        let focus_handle = focus_handle.clone();
-                        this.tooltip(move |window, cx| {
-                            Tooltip::for_action_in(
-                                end_slot_tooltip_text,
-                                end_slot_action,
-                                &window.focused(cx).unwrap_or_else(|| focus_handle.clone()),
-                                cx,
-                            )
-                        })
-                    } else {
-                        this.tooltip(Tooltip::text(end_slot_tooltip_text))
-                    }
-                });
-                this.end_slot(end_slot)
-            })
-            .child(
-                h_flex()
-                    .id(("pane-tab-content", ix))
-                    .gap_1()
-                    .children(if let Some(icon) = icon {
-                        Some(icon)
-                    } else if !capability.editable() {
-                        Some(read_only_toggle(capability == Capability::Read).into_any_element())
-                    } else {
-                        None
-                    })
-                    .child(label)
-                    .map(|this| match tab_tooltip_content {
-                        Some(TabTooltipContent::Text(text)) => {
-                            if capability.editable() {
-                                this.tooltip(Tooltip::text(text))
-                            } else {
-                                this.tooltip(move |_, cx| {
-                                    let text = text.clone();
-                                    Tooltip::with_meta(text, None, "Read-Only Tab", cx)
-                                })
-                            }
-                        }
-                        Some(TabTooltipContent::Custom(element_fn)) => {
-                            this.tooltip(move |window, cx| element_fn(window, cx))
-                        }
-                        None => this,
-                    })
-                    .when(capability == Capability::Read && has_file_icon, |this| {
-                        this.child(read_only_toggle(true))
-                    }),
-            );
+            .start_slot::<Indicator>(if islands { None } else { indicator })
+            .end_slot::<AnyElement>(tab_end_slot)
+            .child(pane_tab_content);
 
         let single_entry_to_resolve = (self.items[ix].buffer_kind(cx) == ItemBufferKind::Singleton)
             .then(|| self.items[ix].project_entry_ids(cx).get(0).copied())
@@ -3322,10 +3433,11 @@ impl Pane {
 
                             let visible_in_project_panel = relative_path.is_some()
                                 && worktree.is_some_and(|worktree| worktree.read(cx).is_visible());
-                            let is_local = pane.read(cx).project.upgrade().is_some_and(|project| {
-                                let project = project.read(cx);
-                                project.is_local() || project.is_via_wsl_with_host_interop(cx)
-                            });
+                            let is_local = pane
+                                .read(cx)
+                                .project
+                                .upgrade()
+                                .is_some_and(|project| project.read(cx).is_local());
                             let is_remote = pane
                                 .read(cx)
                                 .project
@@ -4231,28 +4343,22 @@ impl Pane {
         let mut to_pane = cx.entity();
         let mut split_direction = self.drag_split_direction;
         let paths = paths.paths().to_vec();
-        let (should_block, needs_wsl_translation) = self
+        let should_block = self
             .workspace
             .update(cx, |workspace, cx| {
                 let project = workspace.project().read(cx);
 
                 if project.is_via_collab() {
                     workspace.show_error("Cannot drop files on a remote project", cx);
-                    return (true, false);
+                    return true;
                 }
                 if project.is_via_remote_server() {
-                    if !project.is_via_wsl(cx) {
-                        workspace.show_error(
-                            "Cannot drop local files on a remote SSH/Docker project",
-                            cx,
-                        );
-                        return (true, false);
-                    }
-                    return (false, true);
+                    workspace.show_error("Cannot drop local files on a remote SSH project", cx);
+                    return true;
                 }
-                (false, false)
+                false
             })
-            .unwrap_or((true, false));
+            .unwrap_or(true);
         if should_block {
             return;
         }
@@ -4260,9 +4366,7 @@ impl Pane {
         self.workspace
             .update(cx, |workspace, cx| {
                 let fs = Arc::clone(workspace.project().read(cx).fs());
-                let project = workspace.project().clone();
                 cx.spawn_in(window, async move |workspace, cx| {
-                    // `fs` is the host's file system even for remote projects, so probe the paths as they were dropped, before translating them to the remote's path style.
                     let mut is_file_checks = FuturesUnordered::new();
                     for path in &paths {
                         is_file_checks.push(fs.is_file(path))
@@ -4278,40 +4382,6 @@ impl Pane {
                     if !has_files_to_open {
                         split_direction = None;
                     }
-
-                    let paths = if needs_wsl_translation {
-                        let mut translated = Vec::with_capacity(paths.len());
-                        for path in &paths {
-                            log::debug!("dropped Windows path {}", path.display());
-                            let fut = project.read_with(cx, |project, cx| {
-                                project.try_windows_path_to_wsl(path, cx)
-                            });
-                            match fut.await {
-                                Ok(wsl_path) => {
-                                    log::debug!("translated to WSL path {}", wsl_path.display());
-                                    translated.push(wsl_path);
-                                }
-                                Err(e) => log::warn!(
-                                    "wslpath failed for {}: {e:#}, dropping this path",
-                                    path.display()
-                                ),
-                            }
-                        }
-                        if translated.is_empty() && !paths.is_empty() {
-                            workspace
-                                .update_in(cx, |workspace, _, cx| {
-                                    workspace.show_error(
-                                        "Could not translate the dropped paths into WSL paths",
-                                        cx,
-                                    );
-                                })
-                                .ok();
-                            return;
-                        }
-                        translated
-                    } else {
-                        paths
-                    };
 
                     if let Ok((open_task, to_pane)) =
                         workspace.update_in(cx, |workspace, window, cx| {
@@ -4424,10 +4494,6 @@ struct HiddenTab {
     item_id: EntityId,
     label: SharedString,
     is_active: bool,
-}
-
-fn tab_has_trailing_divider(index: usize, active_index: usize, strip_last_index: usize) -> bool {
-    index != strip_last_index && index != active_index && index + 1 != active_index
 }
 
 fn hidden_tab_indices(
@@ -4640,11 +4706,7 @@ impl Render for Pane {
         let Some(project) = self.project.upgrade() else {
             return div().track_focus(&self.focus_handle(cx));
         };
-        // WSL remotes accept dropped host files too, since their paths can be translated with `wslpath`; see `Pane::handle_external_paths_drop`.
-        let accepts_external_paths = {
-            let project = project.read(cx);
-            project.is_local() || project.is_via_wsl(cx)
-        };
+        let accepts_external_paths = project.read(cx).is_local();
 
         v_flex()
             .key_context(key_context)
@@ -5270,21 +5332,29 @@ pub fn tab_details(items: &[Box<dyn ItemHandle>], _window: &Window, cx: &App) ->
     })
 }
 
-pub fn render_item_indicator(item: Box<dyn ItemHandle>, cx: &App) -> Option<Indicator> {
-    maybe!({
-        let indicator_color = match (item.has_conflict(cx), item.is_dirty(cx)) {
-            (true, _) => Color::Warning,
-            (_, true) => Color::Accent,
-            (false, false) => return None,
-        };
+pub fn item_indicator_color(item: &dyn ItemHandle, cx: &App) -> Option<Color> {
+    match (item.has_conflict(cx), item.is_dirty(cx)) {
+        (true, _) => Some(Color::Warning),
+        (_, true) => Some(Color::Accent),
+        (false, false) => None,
+    }
+}
 
-        Some(Indicator::dot().color(indicator_color))
-    })
+pub fn render_item_indicator(item: Box<dyn ItemHandle>, cx: &App) -> Option<Indicator> {
+    item_indicator_color(item.as_ref(), cx).map(|color| Indicator::dot().color(color))
 }
 
 impl Render for DraggedTab {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let ui_font = ThemeSettings::get_global(cx).ui_font.clone();
+        let islands = WorkspaceSettings::get_global(cx).islands.enabled;
+        let label_color = islands.then(|| {
+            Color::Custom(ui::island_tab_label_color(
+                self.is_active,
+                false,
+                cx.theme().colors(),
+            ))
+        });
         let label = self.item.tab_content(
             TabContentParams {
                 detail: Some(self.detail),
@@ -5293,6 +5363,7 @@ impl Render for DraggedTab {
                 deemphasized: false,
                 max_title_len: None,
                 truncate_title_middle: false,
+                label_color,
             },
             window,
             cx,
@@ -5307,8 +5378,14 @@ impl Render for DraggedTab {
         );
         Tab::new("")
             .toggle_state(self.is_active)
-            .children(icon)
-            .child(label)
+            .focused(true)
+            .islands(islands)
+            .child(
+                h_flex()
+                    .gap(ISLAND_TAB_ICON_LABEL_GAP)
+                    .children(icon)
+                    .child(label),
+            )
             .render(window, cx)
             .font(ui_font)
     }
@@ -9137,169 +9214,6 @@ mod tests {
             cx.debug_bounds("hidden_tabs_button").is_some(),
             "the hidden tabs button should be shown once tabs overflow"
         );
-    }
-
-    const ISLAND_TAB_DIVIDER_SELECTORS: [&str; 10] = [
-        "TAB_DIVIDER-0",
-        "TAB_DIVIDER-1",
-        "TAB_DIVIDER-2",
-        "TAB_DIVIDER-3",
-        "TAB_DIVIDER-4",
-        "TAB_DIVIDER-5",
-        "TAB_DIVIDER-6",
-        "TAB_DIVIDER-7",
-        "TAB_DIVIDER-8",
-        "TAB_DIVIDER-9",
-    ];
-
-    fn set_islands_enabled(cx: &mut TestAppContext, enabled: bool) {
-        cx.update_global(|store: &mut SettingsStore, cx| {
-            store.update_user_settings(cx, |settings| {
-                settings.workspace.islands.get_or_insert_default().enabled = Some(enabled);
-            });
-        });
-    }
-
-    fn painted_island_tab_divider_indices(
-        tab_count: usize,
-        cx: &mut VisualTestContext,
-    ) -> Vec<usize> {
-        ISLAND_TAB_DIVIDER_SELECTORS
-            .into_iter()
-            .take(tab_count)
-            .enumerate()
-            .filter(|(_, selector)| cx.debug_bounds(*selector).is_some())
-            .map(|(index, _)| index)
-            .collect()
-    }
-
-    #[test]
-    fn island_tab_divider_rule_skips_selected_neighbours_and_strip_end() {
-        let dividers = |active_index: usize, strip_last_index: usize| {
-            (0..=strip_last_index)
-                .filter(|index| tab_has_trailing_divider(*index, active_index, strip_last_index))
-                .collect::<Vec<_>>()
-        };
-        assert_eq!(dividers(0, 4), vec![1, 2, 3]);
-        assert_eq!(dividers(2, 4), vec![0, 3]);
-        assert_eq!(dividers(4, 4), vec![0, 1, 2]);
-        assert_eq!(dividers(1, 1), Vec::<usize>::new());
-        assert_eq!(dividers(7, 3), vec![0, 1, 2]);
-    }
-
-    #[gpui::test]
-    async fn island_tab_dividers_sit_between_adjacent_unselected_tabs(cx: &mut TestAppContext) {
-        init_test(cx);
-        let fs = FakeFs::new(cx.executor());
-        let project = Project::test(fs, None, cx).await;
-        let (workspace, cx) =
-            cx.add_window_view(|window, cx| Workspace::test_new(project, window, cx));
-        let pane = workspace.read_with(cx, |workspace, _| workspace.active_pane().clone());
-        cx.simulate_resize(size(px(1200.), px(600.)));
-
-        set_labeled_items(&pane, ["A", "B", "C*", "D", "E"], cx);
-        cx.run_until_parked();
-
-        assert_eq!(
-            painted_island_tab_divider_indices(5, cx),
-            vec![0, 3],
-            "only gaps with no selected tab beside them and that are not the strip end get a divider"
-        );
-
-        let tab_bounds = cx.debug_bounds("TAB-0").expect("TAB-0 should be painted");
-        let divider_bounds = cx
-            .debug_bounds("TAB_DIVIDER-0")
-            .expect("the first tab should have a trailing divider");
-        assert_eq!(divider_bounds.size.width, px(1.));
-        assert!(
-            (divider_bounds.right() - tab_bounds.right()).abs() < px(0.5),
-            "the divider sits on the trailing edge of its tab"
-        );
-        assert!(
-            divider_bounds.size.height > px(0.)
-                && divider_bounds.size.height < tab_bounds.size.height * 0.75,
-            "the divider is a short mark, not full height: {divider_bounds:?} in {tab_bounds:?}"
-        );
-        assert!(
-            (divider_bounds.center().y - tab_bounds.center().y).abs() < px(0.5),
-            "the divider is centered vertically in the tab"
-        );
-
-        set_labeled_items(&pane, ["A", "B", "C", "D", "E*"], cx);
-        cx.run_until_parked();
-        assert_eq!(
-            painted_island_tab_divider_indices(5, cx),
-            vec![0, 1, 2],
-            "no divider before the selected last tab or after it"
-        );
-
-        set_labeled_items(&pane, ["A*", "B", "C", "D", "E"], cx);
-        cx.run_until_parked();
-        assert_eq!(
-            painted_island_tab_divider_indices(5, cx),
-            vec![1, 2, 3],
-            "no divider after the selected first tab, none after the last tab"
-        );
-    }
-
-    #[gpui::test]
-    async fn island_tab_dividers_stay_inside_the_pinned_and_unpinned_strips(
-        cx: &mut TestAppContext,
-    ) {
-        init_test(cx);
-        let fs = FakeFs::new(cx.executor());
-        let project = Project::test(fs, None, cx).await;
-        let (workspace, cx) =
-            cx.add_window_view(|window, cx| Workspace::test_new(project, window, cx));
-        let pane = workspace.read_with(cx, |workspace, _| workspace.active_pane().clone());
-        cx.simulate_resize(size(px(1200.), px(600.)));
-
-        let item_a = add_labeled_item(&pane, "A", false, cx);
-        let item_b = add_labeled_item(&pane, "B", false, cx);
-        add_labeled_item(&pane, "C", false, cx);
-        add_labeled_item(&pane, "D", false, cx);
-        add_labeled_item(&pane, "E", false, cx);
-        pane.update_in(cx, |pane, window, cx| {
-            let ix = pane.index_for_item_id(item_a.item_id()).unwrap();
-            pane.pin_tab_at(ix, window, cx);
-            let ix = pane.index_for_item_id(item_b.item_id()).unwrap();
-            pane.pin_tab_at(ix, window, cx);
-        });
-        assert_item_labels(&pane, ["A!", "B!", "C", "D", "E*"], cx);
-        cx.run_until_parked();
-
-        assert_eq!(
-            painted_island_tab_divider_indices(5, cx),
-            vec![0, 2],
-            "the last pinned tab and the last unpinned tab end their strips without a divider"
-        );
-    }
-
-    #[gpui::test]
-    async fn island_tab_dividers_are_absent_when_islands_are_disabled(cx: &mut TestAppContext) {
-        init_test(cx);
-        let fs = FakeFs::new(cx.executor());
-        let project = Project::test(fs, None, cx).await;
-        let (workspace, cx) =
-            cx.add_window_view(|window, cx| Workspace::test_new(project, window, cx));
-        let pane = workspace.read_with(cx, |workspace, _| workspace.active_pane().clone());
-        cx.simulate_resize(size(px(1200.), px(600.)));
-
-        set_labeled_items(&pane, ["A", "B", "C*", "D", "E"], cx);
-        cx.run_until_parked();
-        assert_eq!(painted_island_tab_divider_indices(5, cx), vec![0, 3]);
-
-        set_islands_enabled(cx, false);
-        cx.run_until_parked();
-        assert_eq!(
-            painted_island_tab_divider_indices(5, cx),
-            Vec::<usize>::new(),
-            "the classic tab bar keeps its own borders and draws no island dividers"
-        );
-
-        set_islands_enabled(cx, true);
-        cx.run_until_parked();
-        assert_eq!(painted_island_tab_divider_indices(5, cx), vec![0, 3]);
     }
 
     #[test]

@@ -1,6 +1,5 @@
 mod components;
 mod page_data;
-mod pages;
 
 use anyhow::{Context as _, Result};
 use editor::{Editor, EditorEvent};
@@ -1673,17 +1672,6 @@ impl SettingsWindow {
             }
 
             cx.notify();
-        })
-        .detach();
-
-        use feature_flags::FeatureFlagAppExt as _;
-        let mut last_is_staff = cx.is_staff();
-        cx.observe_global_in::<feature_flags::FeatureFlagStore>(window, move |this, window, cx| {
-            let is_staff = cx.is_staff();
-            if is_staff != last_is_staff {
-                last_is_staff = is_staff;
-                this.rebuild_pages(window, cx);
-            }
         })
         .detach();
 
@@ -3839,7 +3827,7 @@ impl SettingsWindow {
                             .clone()
                             .update(cx, |workspace, cx| {
                                 workspace
-                                    .with_local_or_wsl_workspace(
+                                    .with_local_workspace(
                                         window,
                                         cx,
                                         open_user_settings_in_workspace,
@@ -4232,14 +4220,8 @@ fn open_user_settings_in_workspace(
     let project = workspace.project().clone();
 
     cx.spawn_in(window, async move |workspace, cx| {
-        let (config_dir, settings_file) = project.update(cx, |project, cx| {
-            (
-                project.try_windows_path_to_wsl(paths::config_dir().as_path(), cx),
-                project.try_windows_path_to_wsl(paths::settings_file().as_path(), cx),
-            )
-        });
-        let config_dir = config_dir.await?;
-        let settings_file = settings_file.await?;
+        let config_dir = paths::config_dir().as_path().to_path_buf();
+        let settings_file = paths::settings_file().as_path().to_path_buf();
         project
             .update(cx, |project, cx| {
                 project.find_or_create_worktree(&config_dir, false, cx)

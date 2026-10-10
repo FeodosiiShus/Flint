@@ -35579,7 +35579,7 @@ async fn test_multi_buffer_navigation_with_folded_buffers(cx: &mut TestAppContex
     init_test(cx, |_| {});
     cx.update(|cx| {
         let default_key_bindings = settings::KeymapFile::load_asset_allow_partial_failure(
-            "keymaps/default-linux.json",
+            "keymaps/default-macos.json",
             cx,
         )
         .unwrap();
@@ -41971,7 +41971,6 @@ async fn test_inlay_hints_request_timeout(cx: &mut TestAppContext) {
                 settings.global_lsp_settings = Some(GlobalLspSettingsContent {
                     request_timeout: Some(BASE_TIMEOUT.as_secs()),
                     max_buffer_line_length: None,
-                    button: Some(true),
                     notifications: None,
                     semantic_token_rules: None,
                 });
@@ -42074,7 +42073,6 @@ async fn test_inlay_hints_request_timeout(cx: &mut TestAppContext) {
                 settings.global_lsp_settings = Some(GlobalLspSettingsContent {
                     request_timeout: Some(BASE_TIMEOUT.as_secs() * 4),
                     max_buffer_line_length: None,
-                    button: Some(true),
                     notifications: None,
                     semantic_token_rules: None,
                 });

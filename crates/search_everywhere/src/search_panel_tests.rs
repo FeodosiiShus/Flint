@@ -1,5 +1,8 @@
 use editor::Editor;
-use gpui::{Action as _, Entity, Focusable, TestAppContext, VisualContext, VisualTestContext};
+use gpui::{
+    Action as _, AppContext as _, Entity, Focusable, TestAppContext, VisualContext,
+    VisualTestContext,
+};
 use picker::Picker;
 use project::Project;
 use serde_json::json;

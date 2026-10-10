@@ -423,10 +423,6 @@ pub struct FetchSettings {
 #[with_fallible_options]
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema, MergeFrom)]
 pub struct GlobalLspSettingsContent {
-    /// Whether to show the LSP servers button in the status bar.
-    ///
-    /// Default: `true`
-    pub button: Option<bool>,
     /// The maximum amount of time to wait for responses from language servers, in seconds.
     /// A value of `0` will result in no timeout being applied (causing all LSP responses to wait indefinitely until completed).
     ///
@@ -873,9 +869,6 @@ pub enum GitPathStyle {
 #[with_fallible_options]
 #[derive(Clone, Debug, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema, MergeFrom)]
 pub struct DiagnosticsSettingsContent {
-    /// Whether to show the project diagnostics button in the status bar.
-    pub button: Option<bool>,
-
     /// Whether or not to include warning diagnostics.
     ///
     /// Default: true

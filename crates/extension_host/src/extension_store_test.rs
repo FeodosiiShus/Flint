@@ -9,7 +9,6 @@ use crate::{
     },
     load_plugin_queries, remote_sync_retry_delay,
 };
-use async_compression::futures::bufread::GzipEncoder;
 use async_trait::async_trait;
 use client::{AnyProtoClient, TypedEnvelope, proto};
 use collections::{BTreeMap, HashMap, HashSet};
@@ -18,25 +17,18 @@ use extension::{
     DebugScenario, DebugTaskDefinition, Extension, ExtensionHostProxy, KeyValueStoreDelegate,
     LibManifestEntry, StartDebuggingRequestArgumentsRequest, Symbol, WorktreeDelegate,
 };
-use fs::{FakeFs, Fs, RealFs, RemoveOptions};
-use futures::{AsyncReadExt, FutureExt, StreamExt, io::BufReader};
-use gpui::{AppContext as _, BackgroundExecutor, Entity, EntityId, TaskExt, TestAppContext};
-use http_client::{FakeHttpClient, Response};
-use language::{
-    BinaryStatus, LanguageConfig, LanguageMatcher, LanguageName, LanguageRegistry, QueryFiles,
-};
+use fs::{FakeFs, Fs, RemoveOptions};
+use futures::StreamExt;
+use gpui::{AppContext as _, Entity, EntityId, TaskExt, TestAppContext};
+use http_client::FakeHttpClient;
+use language::{LanguageConfig, LanguageMatcher, LanguageName, LanguageRegistry, QueryFiles};
 use language_extension::LspAccess;
 use lsp::LanguageServerName;
 use node_runtime::NodeRuntime;
-use parking_lot::Mutex;
-use project::{DEFAULT_COMPLETION_CONTEXT, Project};
-use release_channel::AppVersion;
-use remote::{ConnectionState, RemoteClient, RemoteClientEvent, RemoteConnectionOptions};
-use reqwest_client::ReqwestClient;
+use project::Project;
 use serde_json::json;
 use settings::SettingsStore;
 use std::{
-    ffi::OsString,
     path::{Path, PathBuf},
     sync::{
         Arc,
@@ -322,39 +314,39 @@ async fn test_extension_store(cx: &mut TestAppContext) {
                         }"#,
                     }
                 },
-                "zed-ruby": {
+                "zed-python": {
                     "extension.json": r#"{
-                        "id": "zed-ruby",
-                        "name": "Zed Ruby",
+                        "id": "zed-python",
+                        "name": "Zed Python",
                         "version": "1.0.0",
                         "grammars": {
-                            "ruby": "grammars/ruby.wasm",
-                            "embedded_template": "grammars/embedded_template.wasm"
+                            "python": "grammars/python.wasm",
+                            "c": "grammars/c.wasm"
                         },
                         "languages": {
-                            "ruby": "languages/ruby",
-                            "erb": "languages/erb"
+                            "python": "languages/python",
+                            "c": "languages/c"
                         }
                     }"#,
                     "grammars": {
-                        "ruby.wasm": "",
-                        "embedded_template.wasm": "",
+                        "python.wasm": "",
+                        "c.wasm": "",
                     },
                     "languages": {
-                        "ruby": {
+                        "python": {
                             "config.toml": r#"
-                                name = "Ruby"
-                                grammar = "ruby"
-                                path_suffixes = ["rb"]
+                                name = "Python"
+                                grammar = "python"
+                                path_suffixes = ["py"]
                             "#,
                             "highlights.scm": "",
                             "outline.scm": "",
                         },
-                        "erb": {
+                        "c": {
                             "config.toml": r#"
-                                name = "ERB"
-                                grammar = "embedded_template"
-                                path_suffixes = ["erb"]
+                                name = "C"
+                                grammar = "c"
+                                path_suffixes = ["c", "h"]
                             "#,
                             "highlights.scm": "",
                         }
@@ -368,11 +360,11 @@ async fn test_extension_store(cx: &mut TestAppContext) {
     let mut expected_index = ExtensionIndex {
         extensions: [
             (
-                "zed-ruby".into(),
+                "zed-python".into(),
                 ExtensionIndexEntry {
                     manifest: Arc::new(ExtensionManifest {
-                        id: "zed-ruby".into(),
-                        name: "Zed Ruby".into(),
+                        id: "zed-python".into(),
+                        name: "Zed Python".into(),
                         version: "1.0.0".into(),
                         schema_version: SchemaVersion::ZERO,
                         description: None,
@@ -382,12 +374,12 @@ async fn test_extension_store(cx: &mut TestAppContext) {
                         icon_themes: Vec::new(),
                         lib: Default::default(),
                         languages: vec![
-                            rel_path_buf("languages/erb"),
-                            rel_path_buf("languages/ruby"),
+                            rel_path_buf("languages/c"),
+                            rel_path_buf("languages/python"),
                         ],
                         grammars: [
-                            ("embedded_template".into(), GrammarManifestEntry::default()),
-                            ("ruby".into(), GrammarManifestEntry::default()),
+                            ("c".into(), GrammarManifestEntry::default()),
+                            ("python".into(), GrammarManifestEntry::default()),
                         ]
                         .into_iter()
                         .collect(),
@@ -433,14 +425,14 @@ async fn test_extension_store(cx: &mut TestAppContext) {
         .collect(),
         languages: [
             (
-                "ERB".into(),
+                "C".into(),
                 ExtensionIndexLanguageEntry {
-                    extension: "zed-ruby".into(),
-                    path: "languages/erb".into(),
-                    grammar: Some("embedded_template".into()),
+                    extension: "zed-python".into(),
+                    path: "languages/c".into(),
+                    grammar: Some("c".into()),
                     hidden: false,
                     matcher: (LanguageMatcher {
-                        path_suffixes: vec!["erb".into()],
+                        path_suffixes: vec!["c".into(), "h".into()],
                         first_line_pattern: None,
                         ..LanguageMatcher::default()
                     })
@@ -449,14 +441,14 @@ async fn test_extension_store(cx: &mut TestAppContext) {
                 },
             ),
             (
-                "Ruby".into(),
+                "Python".into(),
                 ExtensionIndexLanguageEntry {
-                    extension: "zed-ruby".into(),
-                    path: "languages/ruby".into(),
-                    grammar: Some("ruby".into()),
+                    extension: "zed-python".into(),
+                    path: "languages/python".into(),
+                    grammar: Some("python".into()),
                     hidden: false,
                     matcher: (LanguageMatcher {
-                        path_suffixes: vec!["rb".into()],
+                        path_suffixes: vec!["py".into()],
                         first_line_pattern: None,
                         ..LanguageMatcher::default()
                     })
@@ -540,19 +532,9 @@ async fn test_extension_store(cx: &mut TestAppContext) {
         assert_eq!(
             language_registry.language_names(),
             [
-                LanguageName::new_static("ERB"),
+                LanguageName::new_static("C"),
                 LanguageName::new_static("Plain Text"),
-                LanguageName::new_static("Ruby"),
-            ]
-        );
-        assert_eq!(
-            theme_registry.list_names(),
-            [
-                "Monokai Dark",
-                "Monokai Light",
-                "Monokai Pro Dark",
-                "Monokai Pro Light",
-                "One Dark",
+                LanguageName::new_static("Python"),
             ]
         );
     });
@@ -688,29 +670,17 @@ async fn test_extension_store(cx: &mut TestAppContext) {
             assert_eq!(actual_language.matcher, expected_language.matcher);
             assert_eq!(actual_language.hidden, expected_language.hidden);
         }
-
         assert_eq!(
             language_registry.language_names(),
             [
-                LanguageName::new_static("ERB"),
+                LanguageName::new_static("C"),
                 LanguageName::new_static("Plain Text"),
-                LanguageName::new_static("Ruby"),
+                LanguageName::new_static("Python"),
             ]
         );
         assert_eq!(
             language_registry.grammar_names(),
-            ["embedded_template".into(), "ruby".into()]
-        );
-        assert_eq!(
-            theme_registry.list_names(),
-            [
-                "Gruvbox",
-                "Monokai Dark",
-                "Monokai Light",
-                "Monokai Pro Dark",
-                "Monokai Pro Light",
-                "One Dark",
-            ]
+            ["c".into(), "python".into()]
         );
 
         // The on-disk manifest limits the number of FS calls that need to be made
@@ -718,18 +688,16 @@ async fn test_extension_store(cx: &mut TestAppContext) {
         assert_eq!(fs.read_dir_call_count(), prev_fs_read_dir_call_count);
         assert_eq!(fs.metadata_call_count(), prev_fs_metadata_call_count + 2);
     });
-
     store.update(cx, |store, cx| {
         store
-            .uninstall_extension("zed-ruby".into(), cx)
+            .uninstall_extension("zed-python".into(), cx)
             .detach_and_log_err(cx);
     });
 
+    expected_index.extensions.remove("zed-python");
+    expected_index.languages.remove("Python");
+    expected_index.languages.remove("C");
     cx.executor().advance_clock(RELOAD_DEBOUNCE_DURATION);
-    expected_index.extensions.remove("zed-ruby");
-    expected_index.languages.remove("Ruby");
-    expected_index.languages.remove("ERB");
-
     store.read_with(cx, |store, _| {
         assert_eq!(store.extension_index.extensions, expected_index.extensions);
         assert_eq!(store.extension_index.themes, expected_index.themes);
@@ -756,530 +724,6 @@ async fn test_extension_store(cx: &mut TestAppContext) {
         );
         assert_eq!(language_registry.grammar_names(), []);
     });
-}
-
-#[gpui::test]
-async fn test_extension_store_with_test_extension(cx: &mut TestAppContext) {
-    init_test(cx);
-    cx.executor().allow_parking();
-
-    let executor = cx.executor();
-    async fn await_or_timeout<T>(
-        executor: &BackgroundExecutor,
-        what: &'static str,
-        seconds: u64,
-        future: impl std::future::Future<Output = T>,
-    ) -> T {
-        let timeout = executor.timer(std::time::Duration::from_secs(seconds));
-
-        futures::select! {
-            output = future.fuse() => output,
-            _ = futures::FutureExt::fuse(timeout) => panic!(
-            "[test_extension_store_with_test_extension] timed out after {seconds}s while {what}"
-        )
-        }
-    }
-
-    let root_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap();
-    let cache_dir = root_dir.join("target");
-    let test_extension_id = "test-extension";
-    let test_extension_dir = root_dir.join("extensions").join(test_extension_id);
-
-    let fs = RealFs::new(None, cx.executor());
-    let extensions_tree = TempTree::new(json!({
-        "installed": {},
-        "work": {}
-    }));
-    let project_dir = TempTree::new(json!({
-        "test.gleam": ""
-    }));
-
-    let extensions_dir = extensions_tree.path().canonicalize().unwrap();
-    let project_dir = project_dir.path().canonicalize().unwrap();
-
-    let project = await_or_timeout(
-        &executor,
-        "awaiting Project::test",
-        5,
-        Project::test(fs.clone(), [project_dir.as_path()], cx),
-    )
-    .await;
-
-    let proxy = Arc::new(ExtensionHostProxy::new());
-    let theme_registry = Arc::new(ThemeRegistry::new(Box::new(())));
-    theme_extension::init(proxy.clone(), theme_registry.clone(), cx.executor());
-    let language_registry = project.read_with(cx, |project, _cx| project.languages().clone());
-    let lsp_store_id = project.read_with(cx, |project, _| project.lsp_store().entity_id());
-    language_extension::init(
-        LspAccess::ViaLspStore(
-            project
-                .update(cx, |project, _| project.lsp_store())
-                .downgrade(),
-        ),
-        proxy.clone(),
-        language_registry.clone(),
-    );
-    let node_runtime = NodeRuntime::unavailable();
-
-    let (mut status_updates, _status_updates_subscription) =
-        language_registry.language_server_binary_statuses();
-
-    struct FakeLanguageServerVersion {
-        version: String,
-        binary_contents: String,
-        http_request_count: usize,
-    }
-
-    let language_server_version = Arc::new(Mutex::new(FakeLanguageServerVersion {
-        version: "v1.2.3".into(),
-        binary_contents: "the-binary-contents".into(),
-        http_request_count: 0,
-    }));
-
-    let extension_client = FakeHttpClient::create({
-        let language_server_version = language_server_version.clone();
-        move |request| {
-            let language_server_version = language_server_version.clone();
-            async move {
-                let version = language_server_version.lock().version.clone();
-                let binary_contents = language_server_version.lock().binary_contents.clone();
-
-                let github_releases_uri = "https://api.github.com/repos/gleam-lang/gleam/releases";
-                let asset_download_uri =
-                    format!("https://fake-download.example.com/gleam-{version}");
-
-                let uri = request.uri().to_string();
-                if uri == github_releases_uri {
-                    language_server_version.lock().http_request_count += 1;
-                    Ok(Response::new(
-                        json!([
-                            {
-                                "tag_name": version,
-                                "prerelease": false,
-                                "tarball_url": "",
-                                "zipball_url": "",
-                                "assets": [
-                                    {
-                                        "name": format!("gleam-{version}-aarch64-apple-darwin.tar.gz"),
-                                        "browser_download_url": asset_download_uri
-                                    },
-                                    {
-                                        "name": format!("gleam-{version}-x86_64-unknown-linux-musl.tar.gz"),
-                                        "browser_download_url": asset_download_uri
-                                    },
-                                    {
-                                        "name": format!("gleam-{version}-aarch64-unknown-linux-musl.tar.gz"),
-                                        "browser_download_url": asset_download_uri
-                                    },
-                                    {
-                                        "name": format!("gleam-{version}-x86_64-pc-windows-msvc.tar.gz"),
-                                        "browser_download_url": asset_download_uri
-                                    }
-                                ]
-                            }
-                        ])
-                        .to_string()
-                        .into(),
-                    ))
-                } else if uri == asset_download_uri {
-                    language_server_version.lock().http_request_count += 1;
-                    let mut bytes = Vec::<u8>::new();
-                    let mut archive = async_tar::Builder::new(&mut bytes);
-                    let mut header = async_tar::Header::new_gnu();
-                    header.set_size(binary_contents.len() as u64);
-                    archive
-                        .append_data(&mut header, "gleam", binary_contents.as_bytes())
-                        .await
-                        .unwrap();
-                    archive.into_inner().await.unwrap();
-                    let mut gzipped_bytes = Vec::new();
-                    let mut encoder = GzipEncoder::new(BufReader::new(bytes.as_slice()));
-                    encoder.read_to_end(&mut gzipped_bytes).await.unwrap();
-                    Ok(Response::new(gzipped_bytes.into()))
-                } else {
-                    Ok(Response::builder().status(404).body("not found".into())?)
-                }
-            }
-        }
-    });
-    let user_agent = cx.update(|cx| {
-        format!(
-            "Zed/{} ({}; {})",
-            AppVersion::global(cx),
-            std::env::consts::OS,
-            std::env::consts::ARCH
-        )
-    });
-    let builder_client =
-        Arc::new(ReqwestClient::user_agent(&user_agent).expect("Could not create HTTP client"));
-
-    let extension_store = cx.new(|cx| {
-        ExtensionStore::new(
-            extensions_dir.clone(),
-            Some(cache_dir),
-            proxy,
-            fs.clone(),
-            extension_client.clone(),
-            builder_client,
-            node_runtime,
-            cx,
-        )
-    });
-
-    // Ensure that debounces fire.
-    let mut events = cx.events(&extension_store);
-    let executor = cx.executor();
-    let _task = cx.executor().spawn(async move {
-        while let Some(event) = events.next().await {
-            if let Event::StartedReloading = event {
-                executor.advance_clock(RELOAD_DEBOUNCE_DURATION);
-            }
-        }
-    });
-
-    extension_store.update(cx, |_, cx| {
-        cx.subscribe(&extension_store, |_, _, event, _| {
-            if matches!(event, Event::ExtensionFailedToLoad(_)) {
-                panic!("extension failed to load");
-            }
-        })
-        .detach();
-    });
-
-    let mut extension_events = cx.events(&cx.update(|cx| {
-        extension::ExtensionEvents::try_global(cx)
-            .expect("ExtensionEvents should be initialized in tests")
-    }));
-
-    let executor = cx.executor();
-    await_or_timeout(
-        &executor,
-        "awaiting install_dev_extension",
-        60,
-        extension_store.update(cx, |store, cx| {
-            store.install_dev_extension(test_extension_dir.clone(), cx)
-        }),
-    )
-    .await
-    .unwrap();
-
-    await_or_timeout(
-        &executor,
-        "awaiting ExtensionsInstalledChanged",
-        10,
-        async {
-            while let Some(event) = extension_events.next().await {
-                if matches!(event, extension::Event::ExtensionsInstalledChanged) {
-                    return;
-                }
-            }
-
-            panic!(
-                "[test_extension_store_with_test_extension] extension event stream ended before ExtensionsInstalledChanged"
-            );
-        },
-    )
-    .await;
-
-    let mut fake_servers = language_registry.register_fake_lsp_server(
-        LanguageServerName("gleam".into()),
-        lsp::ServerCapabilities {
-            completion_provider: Some(Default::default()),
-            ..Default::default()
-        },
-        None,
-    );
-    cx.executor().run_until_parked();
-
-    let mut project_events = cx.events(&project);
-    let buffer_path = project_dir.join("test.gleam");
-    let (buffer, _handle) = await_or_timeout(
-        &executor,
-        "awaiting open_local_buffer_with_lsp",
-        5,
-        project.update(cx, |project, cx| {
-            project.open_local_buffer_with_lsp(buffer_path.clone(), cx)
-        }),
-    )
-    .await
-    .unwrap();
-    cx.executor().run_until_parked();
-
-    let buffer_remote_id = buffer.read_with(cx, |buffer, _cx| buffer.remote_id());
-
-    let fake_server = await_or_timeout(
-        &executor,
-        "awaiting first fake server spawn",
-        10,
-        fake_servers.next(),
-    )
-    .await
-    .unwrap();
-
-    let work_dir = extensions_dir.join(format!("work/{test_extension_id}"));
-    let expected_server_path = work_dir.join("gleam-v1.2.3/gleam");
-    let expected_binary_contents = language_server_version.lock().binary_contents.clone();
-
-    // check that IO operations in extension work correctly
-    assert!(work_dir.join("dir-created-with-rel-path").exists());
-    assert!(work_dir.join("dir-created-with-abs-path").exists());
-    assert!(work_dir.join("file-created-with-abs-path").exists());
-    assert!(work_dir.join("file-created-with-rel-path").exists());
-
-    assert_eq!(fake_server.binary.path, expected_server_path);
-    assert_eq!(fake_server.binary.arguments, [OsString::from("lsp")]);
-    assert_eq!(
-        await_or_timeout(
-            &executor,
-            "awaiting fs.load(expected_server_path)",
-            5,
-            fs.load(&expected_server_path)
-        )
-        .await
-        .unwrap(),
-        expected_binary_contents
-    );
-    assert_eq!(language_server_version.lock().http_request_count, 2);
-    assert_eq!(
-        [
-            await_or_timeout(
-                &executor,
-                "awaiting status_updates #1",
-                5,
-                status_updates.next()
-            )
-            .await
-            .unwrap(),
-            await_or_timeout(
-                &executor,
-                "awaiting status_updates #2",
-                5,
-                status_updates.next()
-            )
-            .await
-            .unwrap(),
-            await_or_timeout(
-                &executor,
-                "awaiting status_updates #3",
-                5,
-                status_updates.next()
-            )
-            .await
-            .unwrap(),
-            await_or_timeout(
-                &executor,
-                "awaiting status_updates #4",
-                5,
-                status_updates.next()
-            )
-            .await
-            .unwrap(),
-        ],
-        [
-            (
-                Some(lsp_store_id),
-                LanguageServerName::new_static("gleam"),
-                BinaryStatus::Starting
-            ),
-            (
-                Some(lsp_store_id),
-                LanguageServerName::new_static("gleam"),
-                BinaryStatus::CheckingForUpdate
-            ),
-            (
-                Some(lsp_store_id),
-                LanguageServerName::new_static("gleam"),
-                BinaryStatus::Downloading
-            ),
-            (
-                Some(lsp_store_id),
-                LanguageServerName::new_static("gleam"),
-                BinaryStatus::None
-            )
-        ]
-    );
-
-    // The extension creates custom labels for completion items.
-    fake_server.set_request_handler::<lsp::request::Completion, _, _>(|_, _| async move {
-        Ok(Some(lsp::CompletionResponse::Array(vec![
-            lsp::CompletionItem {
-                label: "foo".into(),
-                kind: Some(lsp::CompletionItemKind::FUNCTION),
-                detail: Some("fn() -> Result(Nil, Error)".into()),
-                ..Default::default()
-            },
-            lsp::CompletionItem {
-                label: "bar.baz".into(),
-                kind: Some(lsp::CompletionItemKind::FUNCTION),
-                detail: Some("fn(List(a)) -> a".into()),
-                ..Default::default()
-            },
-            lsp::CompletionItem {
-                label: "Quux".into(),
-                kind: Some(lsp::CompletionItemKind::CONSTRUCTOR),
-                detail: Some("fn(String) -> T".into()),
-                ..Default::default()
-            },
-            lsp::CompletionItem {
-                label: "my_string".into(),
-                kind: Some(lsp::CompletionItemKind::CONSTANT),
-                detail: Some("String".into()),
-                ..Default::default()
-            },
-        ])))
-    });
-
-    // `register_fake_lsp_server` can yield a server instance before the client has fully registered
-    // the buffer with the project LSP plumbing. Wait for the project to observe that registration
-    // before issuing requests like completion.
-    await_or_timeout(
-        &executor,
-        "awaiting LanguageServerBufferRegistered",
-        5,
-        async {
-            while let Some(event) = project_events.next().await {
-                if let project::Event::LanguageServerBufferRegistered { buffer_id, .. } = event {
-                    if buffer_id == buffer_remote_id {
-                        return;
-                    }
-                }
-            }
-
-            panic!(
-                "[test_extension_store_with_test_extension] project event stream ended before buffer registration for {}",
-                buffer_path.display()
-            );
-        },
-    )
-    .await;
-
-    let completion_labels = await_or_timeout(
-        &executor,
-        "awaiting completions",
-        5,
-        project.update(cx, |project, cx| {
-            project.completions(&buffer, 0, DEFAULT_COMPLETION_CONTEXT, cx)
-        }),
-    )
-    .await
-    .unwrap()
-    .into_iter()
-    .flat_map(|response| response.completions)
-    .map(|c| c.label.text)
-    .collect::<Vec<_>>();
-    assert_eq!(
-        completion_labels,
-        [
-            "foo: fn() -> Result(Nil, Error)".to_string(),
-            "bar.baz: fn(List(a)) -> a".to_string(),
-            "Quux: fn(String) -> T".to_string(),
-            "my_string: String".to_string(),
-        ]
-    );
-
-    // Simulate a new version of the language server being released
-    language_server_version.lock().version = "v2.0.0".into();
-    language_server_version.lock().binary_contents = "the-new-binary-contents".into();
-    language_server_version.lock().http_request_count = 0;
-
-    // Start a new instance of the language server.
-    project.update(cx, |project, cx| {
-        project.restart_language_servers_for_buffers(
-            vec![buffer.clone()],
-            HashSet::default(),
-            true,
-            cx,
-        )
-    });
-    cx.executor().run_until_parked();
-
-    // The extension has cached the binary path, and does not attempt
-    // to reinstall it.
-    let fake_server = await_or_timeout(
-        &executor,
-        "awaiting second fake server spawn",
-        5,
-        fake_servers.next(),
-    )
-    .await
-    .unwrap();
-    assert_eq!(fake_server.binary.path, expected_server_path);
-    assert_eq!(
-        await_or_timeout(
-            &executor,
-            "awaiting fs.load(expected_server_path) after restart",
-            5,
-            fs.load(&expected_server_path)
-        )
-        .await
-        .unwrap(),
-        expected_binary_contents
-    );
-    assert_eq!(language_server_version.lock().http_request_count, 0);
-
-    // Reload the extension, clearing its cache.
-    // Start a new instance of the language server.
-    await_or_timeout(
-        &executor,
-        "awaiting extension_store.reload(test-extension)",
-        5,
-        extension_store.update(cx, |store, cx| {
-            store.reload(Some("test-extension".into()), cx)
-        }),
-    )
-    .await;
-    cx.executor().run_until_parked();
-    project.update(cx, |project, cx| {
-        project.restart_language_servers_for_buffers(
-            vec![buffer.clone()],
-            HashSet::default(),
-            true,
-            cx,
-        )
-    });
-
-    // The extension re-fetches the latest version of the language server.
-    let fake_server = await_or_timeout(
-        &executor,
-        "awaiting third fake server spawn",
-        5,
-        fake_servers.next(),
-    )
-    .await
-    .unwrap();
-    let new_expected_server_path =
-        extensions_dir.join(format!("work/{test_extension_id}/gleam-v2.0.0/gleam"));
-    let expected_binary_contents = language_server_version.lock().binary_contents.clone();
-    assert_eq!(fake_server.binary.path, new_expected_server_path);
-    assert_eq!(fake_server.binary.arguments, [OsString::from("lsp")]);
-    assert_eq!(
-        await_or_timeout(
-            &executor,
-            "awaiting fs.load(new_expected_server_path)",
-            5,
-            fs.load(&new_expected_server_path)
-        )
-        .await
-        .unwrap(),
-        expected_binary_contents
-    );
-
-    // The old language server directory has been cleaned up.
-    assert!(
-        await_or_timeout(
-            &executor,
-            "awaiting fs.metadata(expected_server_path)",
-            5,
-            fs.metadata(&expected_server_path)
-        )
-        .await
-        .unwrap()
-        .is_none()
-    );
 }
 
 fn init_test(cx: &mut TestAppContext) {

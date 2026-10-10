@@ -131,11 +131,15 @@ pub struct TabContentParams {
     /// Maximum character length for the title. None = use the item's own default (typically MAX_TAB_TITLE_LEN).
     pub max_title_len: Option<usize>,
     pub truncate_title_middle: bool,
+    pub label_color: Option<Color>,
 }
 
 impl TabContentParams {
     /// Returns the text color to be used for the tab content.
     pub fn text_color(&self) -> Color {
+        if let Some(label_color) = self.label_color {
+            return label_color;
+        }
         if self.deemphasized {
             if self.selected {
                 Color::Muted

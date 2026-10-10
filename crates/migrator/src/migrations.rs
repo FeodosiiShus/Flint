@@ -185,19 +185,7 @@ pub(crate) mod m_2025_04_23 {
     pub(crate) use settings::SETTINGS_PATTERNS;
 }
 
-pub(crate) mod m_2025_05_05 {
-    mod settings;
-
-    pub(crate) use settings::SETTINGS_PATTERNS;
-}
-
 pub(crate) mod m_2025_05_08 {
-    mod settings;
-
-    pub(crate) use settings::SETTINGS_PATTERNS;
-}
-
-pub(crate) mod m_2025_06_25 {
     mod settings;
 
     pub(crate) use settings::SETTINGS_PATTERNS;
@@ -293,12 +281,6 @@ pub(crate) mod m_2025_01_27 {
     pub(crate) use settings::make_auto_indent_an_enum;
 }
 
-pub(crate) mod m_2026_02_02 {
-    mod settings;
-
-    pub(crate) use settings::move_edit_prediction_provider_to_edit_predictions;
-}
-
 pub(crate) mod m_2026_02_03 {
     mod settings;
 
@@ -375,16 +357,4 @@ pub(crate) mod m_2026_08_30 {
     mod settings;
 
     pub(crate) use settings::nest_markdown_preview_settings;
-}
-
-pub(crate) mod m_2026_09_16 {
-    mod settings;
-
-    pub(crate) use settings::nest_agent_threads_sidebar_settings;
-}
-
-pub(crate) mod m_2026_09_29 {
-    mod settings;
-
-    pub(crate) use settings::move_copilot_enterprise_uri;
 }

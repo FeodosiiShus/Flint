@@ -24,8 +24,11 @@ fn extension_benchmarks(c: &mut Criterion) {
     let mut group = c.benchmark_group("load");
 
     let mut manifest = manifest();
-    let wasm_bytes = wasm_bytes(&cx, &mut manifest, RealFs::new(None, cx.executor()));
-    let manifest = Arc::new(manifest);
+    let Ok(wasm_bytes) = try_wasm_bytes(&cx, &mut manifest, RealFs::new(None, cx.executor()))
+    else {
+        eprintln!("skipping extension load benchmark: extensions/test-extension cannot build");
+        return;
+    };
     let extensions_dir = TempTree::new(json!({
         "installed": {},
         "work": {}
@@ -69,7 +72,11 @@ fn init() -> TestAppContext {
     cx
 }
 
-fn wasm_bytes(cx: &TestAppContext, manifest: &mut ExtensionManifest, fs: Arc<dyn Fs>) -> Vec<u8> {
+fn try_wasm_bytes(
+    cx: &TestAppContext,
+    manifest: &mut ExtensionManifest,
+    fs: Arc<dyn Fs>,
+) -> anyhow::Result<Vec<u8>> {
     let extension_builder = extension_builder();
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -86,9 +93,8 @@ fn wasm_bytes(cx: &TestAppContext, manifest: &mut ExtensionManifest, fs: Arc<dyn
                 max_concurrency: CompilationConcurrency::Unbounded,
             },
             fs,
-        ))
-        .unwrap();
-    std::fs::read(path.join("extension.wasm")).unwrap()
+        ))?;
+    Ok(std::fs::read(path.join("extension.wasm"))?)
 }
 
 fn extension_builder() -> ExtensionBuilder {

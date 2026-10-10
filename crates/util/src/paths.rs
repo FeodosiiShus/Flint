@@ -86,10 +86,6 @@ pub trait PathExt {
         }
     }
 
-    /// Converts a local path to one that can be used inside of WSL.
-    /// Returns `None` if the path cannot be converted into a WSL one (network share).
-    fn local_to_wsl(&self) -> Option<PathBuf>;
-
     /// Returns a file's "full" joined collection of extensions, in the case where a file does not
     /// just have a singular extension but instead has multiple (e.g File.tar.gz, Component.stories.tsx)
     ///
@@ -133,35 +129,6 @@ impl<T: AsRef<Path>> PathExt for T {
         path.extension()
             .and_then(|e| e.to_str())
             .or_else(|| path.file_stem()?.to_str())
-    }
-
-    fn local_to_wsl(&self) -> Option<PathBuf> {
-        // quite sketchy to convert this back to path at the end, but a lot of functions only accept paths
-        // todo: ideally rework them..?
-        let mut new_path = std::ffi::OsString::new();
-        for component in self.as_ref().components() {
-            match component {
-                std::path::Component::Prefix(prefix) => {
-                    let drive_letter = prefix.as_os_str().to_string_lossy().to_lowercase();
-                    let drive_letter = drive_letter.strip_suffix(':')?;
-
-                    new_path.push(format!("/mnt/{}", drive_letter));
-                }
-                std::path::Component::RootDir => {}
-                std::path::Component::CurDir => {
-                    new_path.push("/.");
-                }
-                std::path::Component::ParentDir => {
-                    new_path.push("/..");
-                }
-                std::path::Component::Normal(os_str) => {
-                    new_path.push("/");
-                    new_path.push(os_str);
-                }
-            }
-        }
-
-        Some(new_path.into())
     }
 
     fn multiple_extensions(&self) -> Option<String> {
@@ -1298,68 +1265,6 @@ pub fn compare_paths(
             (Some(_), None) => break Ordering::Greater,
             (None, Some(_)) => break Ordering::Less,
             (None, None) => break Ordering::Equal,
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct WslPath {
-    pub distro: String,
-
-    // the reason this is an OsString and not any of the path types is that it needs to
-    // represent a unix path (with '/' separators) on windows. `from_path` does this by
-    // manually constructing it from the path components of a given windows path.
-    pub path: std::ffi::OsString,
-}
-
-impl WslPath {
-    pub fn from_path<P: AsRef<Path>>(path: P) -> Option<WslPath> {
-        if cfg!(not(target_os = "windows")) {
-            return None;
-        }
-        use std::{
-            ffi::OsString,
-            path::{Component, Prefix},
-        };
-
-        let mut components = path.as_ref().components();
-        let Some(Component::Prefix(prefix)) = components.next() else {
-            return None;
-        };
-        let (server, distro) = match prefix.kind() {
-            Prefix::UNC(server, distro) => (server, distro),
-            Prefix::VerbatimUNC(server, distro) => (server, distro),
-            _ => return None,
-        };
-        let Some(Component::RootDir) = components.next() else {
-            return None;
-        };
-
-        let server_str = server.to_string_lossy();
-        if server_str == "wsl.localhost" || server_str == "wsl$" {
-            let mut result = OsString::from("");
-            for c in components {
-                use Component::*;
-                match c {
-                    Prefix(p) => unreachable!("got {p:?}, but already stripped prefix"),
-                    RootDir => unreachable!("got root dir, but already stripped root"),
-                    CurDir => continue,
-                    ParentDir => result.push("/.."),
-                    Normal(s) => {
-                        result.push("/");
-                        result.push(s);
-                    }
-                }
-            }
-            if result.is_empty() {
-                result.push("/");
-            }
-            Some(WslPath {
-                distro: distro.to_string_lossy().to_string(),
-                path: result,
-            })
-        } else {
-            None
         }
     }
 }
@@ -3151,47 +3056,6 @@ mod tests {
         let base = Path::new("/a/b/c/long.app.tar.gz");
         let suffix = Path::new("app.tar.gz");
         assert_eq!(strip_path_suffix(base, suffix), None);
-    }
-
-    #[cfg(target_os = "windows")]
-    #[test]
-    fn test_wsl_path() {
-        use super::WslPath;
-        let path = "/a/b/c";
-        assert_eq!(WslPath::from_path(&path), None);
-
-        let path = r"\\wsl.localhost";
-        assert_eq!(WslPath::from_path(&path), None);
-
-        let path = r"\\wsl.localhost\Distro";
-        assert_eq!(
-            WslPath::from_path(&path),
-            Some(WslPath {
-                distro: "Distro".to_owned(),
-                path: "/".into(),
-            })
-        );
-
-        let path = r"\\wsl.localhost\Distro\blue";
-        assert_eq!(
-            WslPath::from_path(&path),
-            Some(WslPath {
-                distro: "Distro".to_owned(),
-                path: "/blue".into()
-            })
-        );
-
-        let path = r"\\wsl$\archlinux\tomato\.\paprika\..\aubergine.txt";
-        assert_eq!(
-            WslPath::from_path(&path),
-            Some(WslPath {
-                distro: "archlinux".to_owned(),
-                path: "/tomato/paprika/../aubergine.txt".into()
-            })
-        );
-
-        let path = r"\\windows.localhost\Distro\foo";
-        assert_eq!(WslPath::from_path(&path), None);
     }
 
     #[test]

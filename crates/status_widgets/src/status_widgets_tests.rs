@@ -1,10 +1,10 @@
-use std::{cell::RefCell, rc::Rc, sync::Arc};
+use std::sync::Arc;
 
 use editor::Editor;
 use fs::Fs;
-use gpui::{AppContext as _, BorrowAppContext as _, Entity, TestAppContext, VisualTestContext, px};
-use language::{Point, rust_lang};
-use project::{FakeFs, Project, ProjectEntryId, ProjectPath, WorktreeId};
+use gpui::{AppContext as _, BorrowAppContext as _, Entity, TestAppContext, VisualTestContext};
+use language::rust_lang;
+use project::{FakeFs, Project};
 use serde_json::json;
 use settings::{SettingsContent, SettingsStore};
 use ui::SharedString;
@@ -13,8 +13,7 @@ use workspace::{AppState, MultiWorkspace, StatusItemView, Workspace};
 
 use crate::{
     INDENTATION_OPTIONS, Indentation, IndentationIndicator, IndentationOption, IndentationSelector,
-    NavigationBar, NavigationTarget, ReadOnlyIndicator, ReadOnlyState, build_segments,
-    hidden_middle_range,
+    ReadOnlyIndicator, ReadOnlyState,
 };
 
 fn init_test(cx: &mut TestAppContext) -> Arc<AppState> {
@@ -24,13 +23,6 @@ fn init_test(cx: &mut TestAppContext) -> Arc<AppState> {
         crate::init(cx);
         app_state
     })
-}
-
-fn labels(segments: &[crate::NavigationSegment]) -> Vec<&str> {
-    segments
-        .iter()
-        .map(|segment| segment.label.as_ref())
-        .collect()
 }
 
 async fn open_workspace_with_rust_file(
@@ -76,108 +68,6 @@ async fn open_workspace_with_rust_file(
         .expect("the item is an editor");
     cx.run_until_parked();
     (workspace, editor, cx)
-}
-
-#[test]
-fn test_segments_list_project_directories_file_and_symbols() {
-    let worktree_id = WorktreeId::from_usize(1);
-    let project_path = ProjectPath {
-        worktree_id,
-        path: rel_path("src/main/File.rs").into_arc(),
-    };
-    let segments = build_segments(
-        Some((&project_path, "project")),
-        [SharedString::from("impl Foo"), SharedString::from("fn bar")],
-    );
-
-    assert_eq!(
-        labels(&segments),
-        vec!["project", "src", "main", "File.rs", "impl Foo", "fn bar"]
-    );
-    let targets = segments
-        .iter()
-        .map(|segment| segment.target.clone())
-        .collect::<Vec<_>>();
-    assert_eq!(
-        targets,
-        vec![
-            NavigationTarget::Path,
-            NavigationTarget::Path,
-            NavigationTarget::Path,
-            NavigationTarget::Path,
-            NavigationTarget::Symbol(0),
-            NavigationTarget::Symbol(1),
-        ],
-        "path segments carry no navigation and symbols keep their outline index"
-    );
-}
-
-#[test]
-fn test_segments_for_single_file_worktree_and_items_without_paths() {
-    let worktree_id = WorktreeId::from_usize(7);
-    let single_file = ProjectPath {
-        worktree_id,
-        path: rel_path("").into_arc(),
-    };
-    let segments = build_segments(Some((&single_file, "notes.md")), Vec::new());
-    assert_eq!(labels(&segments), vec!["notes.md"]);
-    assert_eq!(segments[0].target, NavigationTarget::Path);
-
-    let symbols_only = build_segments(None, [SharedString::from("fn untitled")]);
-    assert_eq!(labels(&symbols_only), vec!["fn untitled"]);
-    assert_eq!(symbols_only[0].target, NavigationTarget::Symbol(0));
-
-    assert!(build_segments(None, Vec::new()).is_empty());
-}
-
-#[test]
-fn test_hidden_middle_range_keeps_all_segments_when_they_fit() {
-    let widths = [px(40.), px(30.), px(50.)];
-    assert_eq!(
-        hidden_middle_range(&widths, px(10.), px(10.), px(140.)),
-        None
-    );
-    assert_eq!(
-        hidden_middle_range(&widths, px(10.), px(10.), px(139.)),
-        Some(1..2),
-        "one pixel short of the full row hides the middle segment"
-    );
-}
-
-#[test]
-fn test_hidden_middle_range_truncates_from_the_middle() {
-    let widths = [px(50.); 6];
-    let separator = px(10.);
-    let marker = px(10.);
-
-    assert_eq!(
-        hidden_middle_range(&widths, separator, marker, px(350.)),
-        None
-    );
-    assert_eq!(
-        hidden_middle_range(&widths, separator, marker, px(349.)),
-        Some(3..4),
-        "five segments plus the marker take 5 * 50 + 10 + 5 * 10 = 310 px"
-    );
-    assert_eq!(
-        hidden_middle_range(&widths, separator, marker, px(300.)),
-        Some(2..4),
-        "four segments plus the marker take 4 * 50 + 10 + 4 * 10 = 250 px"
-    );
-    assert_eq!(
-        hidden_middle_range(&widths, separator, marker, px(10.)),
-        Some(1..5),
-        "the first and the last segment always stay visible"
-    );
-}
-
-#[test]
-fn test_hidden_middle_range_never_hides_one_of_two_segments() {
-    assert_eq!(
-        hidden_middle_range(&[px(500.), px(500.)], px(10.), px(10.), px(100.)),
-        None
-    );
-    assert_eq!(hidden_middle_range(&[], px(10.), px(10.), px(0.)), None);
 }
 
 #[test]
@@ -425,78 +315,5 @@ async fn test_read_only_indicator_toggles_and_hides(cx: &mut TestAppContext) {
         indicator.read_with(cx, |indicator, _| indicator.state()),
         None,
         "without an active editor there is nothing to lock"
-    );
-}
-
-#[gpui::test]
-async fn test_navigation_bar_path_segments_stay_non_interactive_and_symbols_jump(
-    cx: &mut TestAppContext,
-) {
-    init_test(cx);
-    let fs = FakeFs::new(cx.executor());
-    let (workspace, editor, cx) = open_workspace_with_rust_file(fs, cx).await;
-    let project = workspace.read_with(cx, |workspace, _| workspace.project().clone());
-
-    let navigation_bar = workspace.update_in(cx, |workspace, window, cx| {
-        let navigation_bar = cx.new(|_| NavigationBar::new(workspace));
-        workspace.status_bar().update(cx, |status_bar, cx| {
-            status_bar.add_left_item(navigation_bar.clone(), window, cx);
-        });
-        navigation_bar
-    });
-    editor.update_in(cx, |editor, window, cx| {
-        editor.change_selections(Default::default(), window, cx, |selections| {
-            selections.select_ranges([Point::new(1, 8)..Point::new(1, 8)])
-        });
-    });
-    cx.run_until_parked();
-
-    let segments =
-        navigation_bar.read_with(cx, |navigation_bar, _| navigation_bar.segments().to_vec());
-    assert_eq!(labels(&segments[..3]), vec!["root", "src", "main.rs"]);
-    assert!(
-        segments[..3]
-            .iter()
-            .all(|segment| segment.target == NavigationTarget::Path),
-        "the project, directories and file are plain labels"
-    );
-    let symbol = segments
-        .get(3)
-        .expect("the function around the cursor is a segment");
-    assert_eq!(symbol.target, NavigationTarget::Symbol(0));
-    assert!(
-        symbol.label.contains("main"),
-        "the symbol segment names the enclosing function, got {:?}",
-        symbol.label
-    );
-
-    let revealed: Rc<RefCell<Vec<ProjectEntryId>>> = Rc::default();
-    cx.update(|_, cx| {
-        let revealed = revealed.clone();
-        cx.subscribe(&project, move |_, event, _| {
-            if let project::Event::RevealInProjectPanel(entry_id) = event {
-                revealed.borrow_mut().push(*entry_id);
-            }
-        })
-        .detach();
-    });
-
-    navigation_bar.update_in(cx, |navigation_bar, window, cx| {
-        navigation_bar.navigate_to_symbol(0, window, cx)
-    });
-    cx.run_until_parked();
-    let cursor = editor.update(cx, |editor, cx| {
-        editor
-            .selections
-            .newest::<Point>(&editor.display_snapshot(cx))
-            .head()
-    });
-    assert_eq!(
-        cursor.row, 0,
-        "clicking the symbol moves the cursor to its declaration"
-    );
-    assert!(
-        revealed.borrow().is_empty(),
-        "the navigation bar never reveals entries in the project panel"
     );
 }

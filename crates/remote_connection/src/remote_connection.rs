@@ -241,32 +241,16 @@ impl RemoteConnectionModal {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let (connection_string, nickname, is_wsl, is_devcontainer) = match connection_options {
-            RemoteConnectionOptions::Ssh(options) => (
-                options.connection_string(),
-                options.nickname.clone(),
-                false,
-                false,
-            ),
-            RemoteConnectionOptions::Wsl(options) => {
-                (options.distro_name.clone(), None, true, false)
+        let (connection_string, nickname) = match connection_options {
+            RemoteConnectionOptions::Ssh(options) => {
+                (options.connection_string(), options.nickname.clone())
             }
-            RemoteConnectionOptions::Docker(options) => (options.name.clone(), None, false, true),
             #[cfg(feature = "test-support")]
-            RemoteConnectionOptions::Mock(options) => {
-                (format!("mock-{}", options.id), None, false, false)
-            }
+            RemoteConnectionOptions::Mock(options) => (format!("mock-{}", options.id), None),
         };
         Self {
             prompt: cx.new(|cx| {
-                RemoteConnectionPrompt::new(
-                    connection_string,
-                    nickname,
-                    is_wsl,
-                    is_devcontainer,
-                    window,
-                    cx,
-                )
+                RemoteConnectionPrompt::new(connection_string, nickname, false, false, window, cx)
             }),
             finished: false,
             paths,

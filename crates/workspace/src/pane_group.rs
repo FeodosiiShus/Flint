@@ -364,21 +364,15 @@ impl PaneLeaderDecorator for ActivePaneDecorator<'_> {
 
 impl PaneLeaderDecorator for PaneRenderContext<'_> {
     fn decorate(&self, pane: &Entity<Pane>, cx: &App) -> LeaderDecoration {
-        let follower_state = self.follower_states.iter().find_map(|(leader_id, state)| {
-            if state.center_pane == *pane {
-                Some((*leader_id, state))
-            } else {
-                None
-            }
-        });
-        let Some((leader_id, follower_state)) = follower_state else {
+        let follower_state = self
+            .follower_states
+            .values()
+            .find(|state| state.center_pane == *pane);
+        let Some(follower_state) = follower_state else {
             return LeaderDecoration::default();
         };
 
-        let mut leader_color = match leader_id {
-            CollaboratorId::PeerId(_) => return LeaderDecoration::default(),
-            CollaboratorId::Agent => cx.theme().players().agent().cursor,
-        };
+        let mut leader_color = cx.theme().players().agent().cursor;
 
         let is_in_panel = follower_state.dock_pane.is_some();
         if is_in_panel {

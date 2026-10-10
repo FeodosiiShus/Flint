@@ -111,15 +111,7 @@ impl BaseKeymap {
 
         #[cfg(not(target_os = "macos"))]
         match self {
-            BaseKeymap::JetBrains => Some("keymaps/linux/jetbrains.json"),
-            BaseKeymap::SublimeText => Some("keymaps/linux/sublime_text.json"),
-            BaseKeymap::Atom => Some("keymaps/linux/atom.json"),
-            BaseKeymap::Emacs => Some("keymaps/linux/emacs.json"),
-            BaseKeymap::Cursor => Some("keymaps/linux/cursor.json"),
-            BaseKeymap::TextMate => None,
-            BaseKeymap::VSCode => Some("keymaps/linux/vscode.json"),
-            BaseKeymap::Zed => None,
-            BaseKeymap::None => None,
+            _ => None,
         }
     }
 

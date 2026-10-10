@@ -20,7 +20,7 @@ use paths::{global_ssh_config_file, user_ssh_config_file};
 use picker::{Picker, PickerDelegate, PickerEditorPosition};
 use project::{Fs, Project};
 use remote::{
-    RemoteClient, RemoteConnectionOptions, SshConnectionOptions, WslConnectionOptions,
+    RemoteClient, RemoteConnectionOptions, SshConnectionOptions,
     remote_client::ConnectionIdentifier,
 };
 use settings::{
@@ -82,54 +82,10 @@ impl CreateRemoteServer {
     }
 }
 
-#[cfg(target_os = "windows")]
-struct AddWslDistro {
-    picker: Entity<Picker<crate::wsl_picker::WslPickerDelegate>>,
-    connection_prompt: Option<Entity<RemoteConnectionPrompt>>,
-    _creating: Option<Task<()>>,
-}
-
-#[cfg(target_os = "windows")]
-impl AddWslDistro {
-    fn new(window: &mut Window, cx: &mut Context<RemoteServerProjects>) -> Self {
-        use crate::wsl_picker::{WslDistroSelected, WslPickerDelegate, WslPickerDismissed};
-
-        let delegate = WslPickerDelegate::new();
-        let picker = cx.new(|cx| Picker::uniform_list(delegate, window, cx).embedded());
-
-        cx.subscribe_in(
-            &picker,
-            window,
-            |this, _, _: &WslDistroSelected, window, cx| {
-                this.confirm(&menu::Confirm, window, cx);
-            },
-        )
-        .detach();
-
-        cx.subscribe_in(
-            &picker,
-            window,
-            |this, _, _: &WslPickerDismissed, window, cx| {
-                this.cancel(&menu::Cancel, window, cx);
-            },
-        )
-        .detach();
-
-        AddWslDistro {
-            picker,
-            connection_prompt: None,
-            _creating: None,
-        }
-    }
-}
-
 enum ProjectPickerData {
     Ssh {
         connection_string: SharedString,
         nickname: Option<SharedString>,
-    },
-    Wsl {
-        distro_name: SharedString,
     },
 }
 
@@ -198,14 +154,6 @@ impl ProjectPicker {
                 connection_string: connection.connection_string().into(),
                 nickname: connection.nickname.clone().map(|nick| nick.into()),
             },
-            RemoteConnectionOptions::Wsl(connection) => ProjectPickerData::Wsl {
-                distro_name: connection.distro_name.clone().into(),
-            },
-            RemoteConnectionOptions::Docker(_) => ProjectPickerData::Ssh {
-                // Not implemented as a project picker at this time
-                connection_string: "".into(),
-                nickname: None,
-            },
             #[cfg(any(test, feature = "test-support"))]
             RemoteConnectionOptions::Mock(options) => ProjectPickerData::Ssh {
                 connection_string: format!("mock-{}", options.id).into(),
@@ -258,16 +206,6 @@ impl ProjectPicker {
                                     if let Some(server) = settings
                                         .remote
                                         .ssh_connections
-                                        .as_mut()
-                                        .and_then(|connections| connections.get_mut(index.0))
-                                    {
-                                        server.projects.insert(RemoteProject { paths });
-                                    };
-                                }
-                                ServerIndex::Wsl(index) => {
-                                    if let Some(server) = settings
-                                        .remote
-                                        .wsl_connections
                                         .as_mut()
                                         .and_then(|connections| connections.get_mut(index.0))
                                     {
@@ -350,26 +288,19 @@ impl ProjectPicker {
 impl gpui::Render for ProjectPicker {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         v_flex()
-            .child(match &self.data {
-                ProjectPickerData::Ssh {
+            .child({
+                let ProjectPickerData::Ssh {
                     connection_string,
                     nickname,
-                } => SshConnectionHeader {
+                } = &self.data;
+                SshConnectionHeader {
                     connection_string: connection_string.clone(),
                     paths: Default::default(),
                     nickname: nickname.clone(),
                     is_wsl: false,
                     is_devcontainer: false,
                 }
-                .render(window, cx),
-                ProjectPickerData::Wsl { distro_name } => SshConnectionHeader {
-                    connection_string: distro_name.clone(),
-                    paths: Default::default(),
-                    nickname: None,
-                    is_wsl: true,
-                    is_devcontainer: false,
-                }
-                .render(window, cx),
+                .render(window, cx)
             })
             .child(
                 div()
@@ -389,28 +320,13 @@ impl std::fmt::Display for SshServerIndex {
     }
 }
 
-#[repr(transparent)]
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
-struct WslServerIndex(usize);
-impl std::fmt::Display for WslServerIndex {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.0.fmt(f)
-    }
-}
-
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 enum ServerIndex {
     Ssh(SshServerIndex),
-    Wsl(WslServerIndex),
 }
 impl From<SshServerIndex> for ServerIndex {
     fn from(index: SshServerIndex) -> Self {
         Self::Ssh(index)
-    }
-}
-impl From<WslServerIndex> for ServerIndex {
-    fn from(index: WslServerIndex) -> Self {
-        Self::Wsl(index)
     }
 }
 
@@ -436,7 +352,6 @@ impl RemoteEntry {
         match self {
             Self::Project { connection, .. } => match connection {
                 Connection::Ssh(c) => c.nickname.as_deref().unwrap_or(&c.host),
-                Connection::Wsl(c) => &c.distro_name,
             },
             Self::SshConfig { host, .. } => host,
         }
@@ -502,25 +417,7 @@ impl DefaultState {
                 }
             });
 
-        let wsl_servers = ssh_settings
-            .wsl_connections()
-            .enumerate()
-            .map(|(index, connection)| {
-                let projects = connection
-                    .projects
-                    .iter()
-                    .map(|project| ProjectEntry {
-                        project: project.clone(),
-                    })
-                    .collect();
-                RemoteEntry::Project {
-                    projects,
-                    index: ServerIndex::Wsl(WslServerIndex(index)),
-                    connection: connection.into(),
-                }
-            });
-
-        let mut servers = ssh_servers.chain(wsl_servers).collect::<Vec<RemoteEntry>>();
+        let mut servers = ssh_servers.collect::<Vec<RemoteEntry>>();
 
         if read_ssh_config {
             let mut extra_servers_from_config = ssh_config_servers.clone();
@@ -564,18 +461,12 @@ enum ViewServerOptionsState {
         server_index: SshServerIndex,
         entries: [NavigableEntry; 4],
     },
-    Wsl {
-        connection: WslConnectionOptions,
-        server_index: WslServerIndex,
-        entries: [NavigableEntry; 2],
-    },
 }
 
 impl ViewServerOptionsState {
     fn entries(&self) -> &[NavigableEntry] {
         match self {
             Self::Ssh { entries, .. } => entries,
-            Self::Wsl { entries, .. } => entries,
         }
     }
 }
@@ -586,8 +477,6 @@ enum Mode {
     EditNickname(EditNicknameState),
     ProjectPicker(Entity<ProjectPicker>),
     CreateRemoteServer(CreateRemoteServer),
-    #[cfg(target_os = "windows")]
-    AddWslDistro(AddWslDistro),
 }
 
 impl Mode {
@@ -601,7 +490,6 @@ impl Mode {
 
 enum RemoteMatch {
     AddServer,
-    AddWsl,
     Separator,
     ServerHeader {
         server: usize,
@@ -670,9 +558,6 @@ impl RemoteServerPickerDelegate {
         let mut matches = Vec::new();
         if self.query.trim().is_empty() {
             matches.push(RemoteMatch::AddServer);
-            if cfg!(target_os = "windows") {
-                matches.push(RemoteMatch::AddWsl);
-            }
         }
 
         let push_server = |matches: &mut Vec<RemoteMatch>,
@@ -766,16 +651,15 @@ impl RemoteServerPickerDelegate {
     ) -> Option<AnyElement> {
         let server = self.state.servers.get(server_index)?;
         let connection = server.connection().into_owned();
-        let (main_label, aux_label, is_wsl) = match &connection {
+        let (main_label, aux_label) = match &connection {
             Connection::Ssh(connection) => {
                 if let Some(nickname) = connection.nickname.clone() {
                     let aux_label = SharedString::from(format!("({})", connection.host));
-                    (nickname, Some(aux_label), false)
+                    (nickname, Some(aux_label))
                 } else {
-                    (connection.host.clone(), None, false)
+                    (connection.host.clone(), None)
                 }
             }
-            Connection::Wsl(connection) => (connection.distro_name.clone(), None, true),
         };
         Some(
             h_flex()
@@ -790,13 +674,6 @@ impl RemoteServerPickerDelegate {
                         .max_w_96()
                         .overflow_hidden()
                         .text_ellipsis()
-                        .when(is_wsl, |this| {
-                            this.child(
-                                Label::new("WSL:")
-                                    .size(LabelSize::Small)
-                                    .color(Color::Muted),
-                            )
-                        })
                         .child(
                             HighlightedLabel::new(main_label, host_positions.to_vec())
                                 .size(LabelSize::Small)
@@ -920,15 +797,6 @@ impl PickerDelegate for RemoteServerPickerDelegate {
                     })
                     .ok();
             }
-            RemoteMatch::AddWsl => {
-                #[cfg(target_os = "windows")]
-                remote_server_projects
-                    .update(cx, |this, cx| {
-                        this.mode = Mode::AddWslDistro(AddWslDistro::new(window, cx));
-                        cx.notify();
-                    })
-                    .ok();
-            }
             RemoteMatch::Project {
                 server, project, ..
             } => {
@@ -1025,9 +893,6 @@ impl PickerDelegate for RemoteServerPickerDelegate {
             } => self.render_server_header(*server, host_positions),
             RemoteMatch::AddServer => {
                 Some(self.render_action_item(ix, IconName::Plus, "Connect SSH Server", selected))
-            }
-            RemoteMatch::AddWsl => {
-                Some(self.render_action_item(ix, IconName::Plus, "Add WSL Distro", selected))
             }
             RemoteMatch::OpenFolder { .. } => {
                 Some(self.render_action_item(ix, IconName::Plus, "Open Folder", selected))
@@ -1145,24 +1010,6 @@ impl PickerDelegate for RemoteServerPickerDelegate {
 }
 
 impl RemoteServerProjects {
-    #[cfg(target_os = "windows")]
-    pub fn wsl(
-        create_new_window: bool,
-        fs: Arc<dyn Fs>,
-        window: &mut Window,
-        workspace: WeakEntity<Workspace>,
-        cx: &mut Context<Self>,
-    ) -> Self {
-        Self::new_inner(
-            Mode::AddWslDistro(AddWslDistro::new(window, cx)),
-            create_new_window,
-            fs,
-            window,
-            workspace,
-            cx,
-        )
-    }
-
     pub fn new(
         create_new_window: bool,
         fs: Arc<dyn Fs>,
@@ -1366,77 +1213,6 @@ impl RemoteServerProjects {
         });
     }
 
-    #[cfg(target_os = "windows")]
-    fn connect_wsl_distro(
-        &mut self,
-        picker: Entity<Picker<crate::wsl_picker::WslPickerDelegate>>,
-        distro: String,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let connection_options = WslConnectionOptions {
-            distro_name: distro,
-            user: None,
-        };
-
-        let prompt = cx.new(|cx| {
-            RemoteConnectionPrompt::new(
-                connection_options.distro_name.clone(),
-                None,
-                true,
-                false,
-                window,
-                cx,
-            )
-        });
-        let connection = connect(
-            ConnectionIdentifier::setup(),
-            connection_options.clone().into(),
-            prompt.clone(),
-            window,
-            cx,
-        )
-        .prompt_err("Failed to connect", window, cx, |_, _, _| None);
-
-        let wsl_picker = picker.clone();
-        let creating = cx.spawn_in(window, async move |this, cx| {
-            match connection.await {
-                Some(Some(client)) => this.update_in(cx, |this, window, cx| {
-                    this.retained_connections.push(client);
-                    let Some(fs) = this
-                        .workspace
-                        .read_with(cx, |workspace, cx| {
-                            workspace.project().read(cx).fs().clone()
-                        })
-                        .log_err()
-                    else {
-                        return;
-                    };
-
-                    crate::add_wsl_distro(fs, &connection_options, cx);
-                    this.mode = Mode::default_mode(&BTreeSet::new(), cx);
-                    this.focus_handle(cx).focus(window, cx);
-                    cx.notify();
-                }),
-                _ => this.update(cx, |this, cx| {
-                    this.mode = Mode::AddWslDistro(AddWslDistro {
-                        picker: wsl_picker,
-                        connection_prompt: None,
-                        _creating: None,
-                    });
-                    cx.notify();
-                }),
-            }
-            .log_err();
-        });
-
-        self.mode = Mode::AddWslDistro(AddWslDistro {
-            picker,
-            connection_prompt: Some(prompt),
-            _creating: Some(creating),
-        });
-    }
-
     fn view_server_options(
         &mut self,
         (server_index, connection): (ServerIndex, RemoteConnectionOptions),
@@ -1446,13 +1222,6 @@ impl RemoteServerProjects {
         self.mode = Mode::ViewServerOptions(match (server_index, connection) {
             (ServerIndex::Ssh(server_index), RemoteConnectionOptions::Ssh(connection)) => {
                 ViewServerOptionsState::Ssh {
-                    connection,
-                    server_index,
-                    entries: std::array::from_fn(|_| NavigableEntry::focusable(cx)),
-                }
-            }
-            (ServerIndex::Wsl(server_index), RemoteConnectionOptions::Wsl(connection)) => {
-                ViewServerOptionsState::Wsl {
                     connection,
                     server_index,
                     entries: std::array::from_fn(|_| NavigableEntry::focusable(cx)),
@@ -1599,12 +1368,6 @@ impl RemoteServerProjects {
                 self.mode = Mode::default_mode(&self.ssh_config_servers, cx);
                 self.focus_handle.focus(window, cx);
             }
-            #[cfg(target_os = "windows")]
-            Mode::AddWslDistro(state) => {
-                let delegate = &state.picker.read(cx).delegate;
-                let distro = delegate.selected_distro().unwrap();
-                self.connect_wsl_distro(state.picker.clone(), distro, window, cx);
-            }
         }
     }
 
@@ -1724,14 +1487,8 @@ impl RemoteServerProjects {
         project: &RemoteProject,
         cx: &mut Context<Self>,
     ) {
-        match server {
-            ServerIndex::Ssh(server) => {
-                self.delete_ssh_project(server, project, cx);
-            }
-            ServerIndex::Wsl(server) => {
-                self.delete_wsl_project(server, project, cx);
-            }
-        }
+        let ServerIndex::Ssh(server) = server;
+        self.delete_ssh_project(server, project, cx);
     }
 
     fn delete_ssh_project(
@@ -1748,32 +1505,6 @@ impl RemoteServerProjects {
                 .and_then(|connections| connections.get_mut(server.0))
             {
                 server.projects.remove(&project);
-            }
-        });
-    }
-
-    fn delete_wsl_project(
-        &mut self,
-        server: WslServerIndex,
-        project: &RemoteProject,
-        cx: &mut Context<Self>,
-    ) {
-        let project = project.clone();
-        self.update_settings_file(cx, move |setting, _| {
-            if let Some(server) = setting
-                .wsl_connections
-                .as_mut()
-                .and_then(|connections| connections.get_mut(server.0))
-            {
-                server.projects.remove(&project);
-            }
-        });
-    }
-
-    fn delete_wsl_distro(&mut self, server: WslServerIndex, cx: &mut Context<Self>) {
-        self.update_settings_file(cx, move |setting, _| {
-            if let Some(connections) = setting.wsl_connections.as_mut() {
-                connections.remove(server.0);
             }
         });
     }
@@ -1876,198 +1607,6 @@ impl RemoteServerProjects {
                         }
                     }),
             )
-    }
-
-    #[cfg(target_os = "windows")]
-    fn render_add_wsl_distro(
-        &self,
-        state: &AddWslDistro,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement {
-        let connection_prompt = state.connection_prompt.clone();
-
-        state.picker.update(cx, |picker, cx| {
-            picker.focus_handle(cx).focus(window, cx);
-        });
-
-        v_flex()
-            .id("add-wsl-distro")
-            .overflow_hidden()
-            .size_full()
-            .flex_1()
-            .map(|this| {
-                if let Some(connection_prompt) = connection_prompt {
-                    this.child(connection_prompt)
-                } else {
-                    this.child(state.picker.clone())
-                }
-            })
-    }
-
-    fn render_view_options(
-        &mut self,
-        options: ViewServerOptionsState,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement {
-        let last_entry = options.entries().last().unwrap();
-
-        let mut view = Navigable::new(
-            div()
-                .track_focus(&self.focus_handle(cx))
-                .size_full()
-                .child(match &options {
-                    ViewServerOptionsState::Ssh { connection, .. } => SshConnectionHeader {
-                        connection_string: connection.host.to_string().into(),
-                        paths: Default::default(),
-                        nickname: connection.nickname.clone().map(|s| s.into()),
-                        is_wsl: false,
-                        is_devcontainer: false,
-                    }
-                    .render(window, cx)
-                    .into_any_element(),
-                    ViewServerOptionsState::Wsl { connection, .. } => SshConnectionHeader {
-                        connection_string: connection.distro_name.clone().into(),
-                        paths: Default::default(),
-                        nickname: None,
-                        is_wsl: true,
-                        is_devcontainer: false,
-                    }
-                    .render(window, cx)
-                    .into_any_element(),
-                })
-                .child(
-                    v_flex()
-                        .pb_1()
-                        .child(ListSeparator)
-                        .map(|this| match &options {
-                            ViewServerOptionsState::Ssh {
-                                connection,
-                                entries,
-                                server_index,
-                            } => this.child(self.render_edit_ssh(
-                                connection,
-                                *server_index,
-                                entries,
-                                window,
-                                cx,
-                            )),
-                            ViewServerOptionsState::Wsl {
-                                connection,
-                                entries,
-                                server_index,
-                            } => this.child(self.render_edit_wsl(
-                                connection,
-                                *server_index,
-                                entries,
-                                window,
-                                cx,
-                            )),
-                        })
-                        .child(ListSeparator)
-                        .child({
-                            div()
-                                .id("ssh-options-copy-server-address")
-                                .track_focus(&last_entry.focus_handle)
-                                .on_action(cx.listener(|this, _: &menu::Confirm, window, cx| {
-                                    this.mode = Mode::default_mode(&this.ssh_config_servers, cx);
-                                    cx.focus_self(window);
-                                    cx.notify();
-                                }))
-                                .child(
-                                    ListItem::new("go-back")
-                                        .toggle_state(
-                                            last_entry.focus_handle.contains_focused(window, cx),
-                                        )
-                                        .inset(true)
-                                        .spacing(ui::ListItemSpacing::Sparse)
-                                        .start_slot(
-                                            Icon::new(IconName::ArrowLeft).color(Color::Muted),
-                                        )
-                                        .child(Label::new("Go Back"))
-                                        .on_click(cx.listener(|this, _, window, cx| {
-                                            this.mode =
-                                                Mode::default_mode(&this.ssh_config_servers, cx);
-                                            cx.focus_self(window);
-                                            cx.notify()
-                                        })),
-                                )
-                        }),
-                )
-                .into_any_element(),
-        );
-
-        for entry in options.entries() {
-            view = view.entry(entry.clone());
-        }
-
-        view.render(window, cx).into_any_element()
-    }
-
-    fn render_edit_wsl(
-        &self,
-        connection: &WslConnectionOptions,
-        index: WslServerIndex,
-        entries: &[NavigableEntry],
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement {
-        let distro_name = SharedString::new(connection.distro_name.clone());
-
-        v_flex().child({
-            fn remove_wsl_distro(
-                remote_servers: Entity<RemoteServerProjects>,
-                index: WslServerIndex,
-                distro_name: SharedString,
-                window: &mut Window,
-                cx: &mut App,
-            ) {
-                let prompt_message = format!("Remove WSL distro `{}`?", distro_name);
-
-                let confirmation = window.prompt(
-                    PromptLevel::Warning,
-                    &prompt_message,
-                    None,
-                    &["Yes, remove it", "No, keep it"],
-                    cx,
-                );
-
-                cx.spawn(async move |cx| {
-                    if confirmation.await.ok() == Some(0) {
-                        remote_servers.update(cx, |this, cx| {
-                            this.delete_wsl_distro(index, cx);
-                        });
-                        remote_servers.update(cx, |this, cx| {
-                            this.mode = Mode::default_mode(&this.ssh_config_servers, cx);
-                            cx.notify();
-                        });
-                    }
-                    anyhow::Ok(())
-                })
-                .detach_and_log_err(cx);
-            }
-            div()
-                .id("wsl-options-remove-distro")
-                .track_focus(&entries[0].focus_handle)
-                .on_action(cx.listener({
-                    let distro_name = distro_name.clone();
-                    move |_, _: &menu::Confirm, window, cx| {
-                        remove_wsl_distro(cx.entity(), index, distro_name.clone(), window, cx);
-                    }
-                }))
-                .child(
-                    ListItem::new("remove-distro")
-                        .toggle_state(entries[0].focus_handle.contains_focused(window, cx))
-                        .inset(true)
-                        .spacing(ui::ListItemSpacing::Sparse)
-                        .start_slot(Icon::new(IconName::Trash).color(Color::Error))
-                        .child(Label::new("Remove Distro").color(Color::Error))
-                        .on_click(cx.listener(move |_, _, window, cx| {
-                            remove_wsl_distro(cx.entity(), index, distro_name.clone(), window, cx);
-                        })),
-                )
-        })
     }
 
     fn render_edit_ssh(
@@ -2417,10 +1956,6 @@ impl Render for RemoteServerProjects {
                     .into_any_element(),
                 Mode::EditNickname(state) => self
                     .render_edit_nickname(state, window, cx)
-                    .into_any_element(),
-                #[cfg(target_os = "windows")]
-                Mode::AddWslDistro(state) => self
-                    .render_add_wsl_distro(state, window, cx)
                     .into_any_element(),
             })
     }

@@ -1,4 +1,4 @@
-pub mod items;
+mod project_diagnostics_panel;
 mod toolbar_controls;
 
 mod buffer_diagnostics;
@@ -6,6 +6,9 @@ mod diagnostic_renderer;
 
 #[cfg(test)]
 mod diagnostics_tests;
+
+#[cfg(test)]
+mod project_diagnostics_panel_tests;
 
 use anyhow::Result;
 use buffer_diagnostics::BufferDiagnosticsEditor;
@@ -30,6 +33,7 @@ use project::{
     DiagnosticSummary, Project, ProjectPath,
     project_settings::{DiagnosticSeverity, ProjectSettings},
 };
+pub use project_diagnostics_panel::{ProjectDiagnosticsPanel, ProjectDiagnosticsPanelSettings};
 use settings::Settings;
 use std::{
     any::{Any, TypeId},
@@ -66,9 +70,18 @@ actions!(
 pub(crate) struct IncludeWarnings(bool);
 impl Global for IncludeWarnings {}
 
+impl IncludeWarnings {
+    fn current(cx: &App) -> bool {
+        match cx.try_global::<IncludeWarnings>() {
+            Some(include_warnings) => include_warnings.0,
+            None => ProjectSettings::get_global(cx).diagnostics.include_warnings,
+        }
+    }
+}
+
 pub fn init(cx: &mut App) {
     editor::set_diagnostic_renderer(diagnostic_renderer::DiagnosticRenderer {}, cx);
-    cx.observe_new(ProjectDiagnosticsEditor::register).detach();
+    project_diagnostics_panel::init(cx);
     cx.observe_new(BufferDiagnosticsEditor::register).detach();
 }
 
@@ -164,14 +177,6 @@ enum RetainExcerpts {
 }
 
 impl ProjectDiagnosticsEditor {
-    pub fn register(
-        workspace: &mut Workspace,
-        _window: Option<&mut Window>,
-        _: &mut Context<Workspace>,
-    ) {
-        workspace.register_action(Self::deploy);
-    }
-
     fn new(
         include_warnings: bool,
         project_handle: Entity<Project>,
@@ -388,39 +393,6 @@ impl ProjectDiagnosticsEditor {
             }
             Ok(())
         }));
-    }
-
-    fn deploy(
-        workspace: &mut Workspace,
-        _: &Deploy,
-        window: &mut Window,
-        cx: &mut Context<Workspace>,
-    ) {
-        if let Some(existing) = workspace.item_of_type::<ProjectDiagnosticsEditor>(cx) {
-            let is_active = workspace
-                .active_item(cx)
-                .is_some_and(|item| item.item_id() == existing.item_id());
-
-            workspace.activate_item(&existing, true, !is_active, window, cx);
-        } else {
-            let workspace_handle = cx.entity().downgrade();
-
-            let include_warnings = match cx.try_global::<IncludeWarnings>() {
-                Some(include_warnings) => include_warnings.0,
-                None => ProjectSettings::get_global(cx).diagnostics.include_warnings,
-            };
-
-            let diagnostics = cx.new(|cx| {
-                ProjectDiagnosticsEditor::new(
-                    include_warnings,
-                    workspace.project().clone(),
-                    workspace_handle,
-                    window,
-                    cx,
-                )
-            });
-            workspace.add_item_to_active_pane(Box::new(diagnostics), None, true, window, cx);
-        }
     }
 
     fn toggle_warnings(&mut self, _: &ToggleWarnings, _: &mut Window, cx: &mut Context<Self>) {
@@ -727,6 +699,7 @@ impl ProjectDiagnosticsEditor {
     fn update_diagnostic_summary(&mut self, cx: &mut Context<Self>) {
         self.summary = self.project.read(cx).diagnostic_summary(false, cx);
         cx.emit(EditorEvent::TitleChanged);
+        cx.notify();
     }
 }
 

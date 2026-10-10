@@ -750,6 +750,8 @@ impl Item for Editor {
     }
 
     fn tab_content(&self, params: TabContentParams, _: &Window, cx: &App) -> AnyElement {
+        let plain_label_color = entry_label_color(params.selected);
+        let base_label_color = params.label_color.unwrap_or(plain_label_color);
         let label_color = if ItemSettings::get_global(cx).git_status {
             self.buffer()
                 .read(cx)
@@ -771,9 +773,16 @@ impl Item for Editor {
                         params.selected,
                     ))
                 })
-                .unwrap_or_else(|| entry_label_color(params.selected))
+                .map(|color| {
+                    if color == plain_label_color {
+                        base_label_color
+                    } else {
+                        color
+                    }
+                })
+                .unwrap_or(base_label_color)
         } else {
-            entry_label_color(params.selected)
+            base_label_color
         };
 
         let description = params.detail.and_then(|detail| {
@@ -804,13 +813,11 @@ impl Item for Editor {
                 this.w_full().min_w_0().overflow_hidden()
             })
             .child(
-                Label::new(if params.truncate_title_middle {
-                    self.title(cx).to_string()
-                } else {
-                    util::truncate_and_trailoff(
-                        &self.title(cx),
-                        params.max_title_len.unwrap_or(MAX_TAB_TITLE_LEN),
-                    )
+                Label::new(match params.max_title_len {
+                    Some(max_title_len) if !params.truncate_title_middle => {
+                        util::truncate_and_trailoff(&self.title(cx), max_title_len)
+                    }
+                    _ => self.title(cx).to_string(),
                 })
                 .single_line()
                 .color(label_color)

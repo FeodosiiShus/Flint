@@ -1204,7 +1204,7 @@ impl ProjectPanel {
             let is_read_only = project.is_read_only(cx);
             let is_remote = project.is_remote();
             let is_collab = project.is_via_collab();
-            let is_local = project.is_local() || project.is_via_wsl_with_host_interop(cx);
+            let is_local = project.is_local();
 
             let settings = ProjectPanelSettings::get_global(cx);
             let visible_worktrees_count = project.visible_worktrees(cx).count();
@@ -7545,14 +7545,11 @@ impl Render for ProjectPanel {
                                 .on_action(cx.listener(Self::redo))
                         })
                 })
-                .when(
-                    project.is_local() || project.is_via_wsl_with_host_interop(cx),
-                    |el| {
-                        el.on_action(cx.listener(Self::reveal_in_finder))
-                            .on_action(cx.listener(Self::open_system))
-                            .on_action(cx.listener(Self::open_in_terminal))
-                    },
-                )
+                .when(project.is_local(), |el| {
+                    el.on_action(cx.listener(Self::reveal_in_finder))
+                        .on_action(cx.listener(Self::open_system))
+                        .on_action(cx.listener(Self::open_in_terminal))
+                })
                 .when(project.is_via_remote_server(), |el| {
                     el.on_action(cx.listener(Self::open_in_terminal))
                         .on_action(cx.listener(Self::download_from_remote))

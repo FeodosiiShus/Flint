@@ -1,0 +1,42 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#F4F5F6"/>
+      <stop offset="0.55" stop-color="#D8D9DB"/>
+      <stop offset="1" stop-color="#B9BABD"/>
+    </linearGradient>
+    <radialGradient id="vign" cx="50%" cy="50%" r="72%">
+      <stop offset="60%" stop-color="#1C1E26" stop-opacity="0"/>
+      <stop offset="100%" stop-color="#1C1E26" stop-opacity="0.22"/>
+    </radialGradient>
+    <linearGradient id="face" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#343847"/>
+      <stop offset="0.5" stop-color="#1E212B"/>
+      <stop offset="1" stop-color="#0F1015"/>
+    </linearGradient>
+    <linearGradient id="toplight" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#868999"/>
+      <stop offset="1" stop-color="#696E81"/>
+    </linearGradient>
+    <linearGradient id="seal" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#F26367"/>
+      <stop offset="0.5" stop-color="#EF454A"/>
+      <stop offset="1" stop-color="#C93A3E"/>
+    </linearGradient>
+  </defs>
+  <rect x="32" y="32" width="960" height="960" rx="225" fill="url(#bg)"/>
+  <rect x="32" y="32" width="960" height="960" rx="225" fill="url(#vign)"/>
+  <g transform="translate(515 512) scale(1.08) translate(-515 -512)">
+    <path d="M330,250 L672,250 L700,278 L700,366 L672,394 L474,394 L474,470 L582,470 L610,498 L610,574 L582,602 L474,602 L474,746 L446,774 L330,774 Z" fill="url(#face)"/>
+    <path d="M446,394 L474,394 L474,746 L446,774 Z" fill="#0B0C10"/>
+    <path d="M672,278 L700,278 L700,366 L672,394 Z" fill="#0B0C10"/>
+    <path d="M582,498 L610,498 L610,574 L582,602 Z" fill="#0B0C10"/>
+    <path d="M474,574 L610,574 L582,602 L474,602 Z" fill="#0B0C10"/>
+    <path d="M330,746 L474,746 L446,774 L330,774 Z" fill="#0B0C10"/>
+    <path d="M330,394 L446,394 L446,414 L330,414 Z" fill="#000000" opacity="0.6"/>
+    <path d="M330,602 L446,602 L446,622 L330,622 Z" fill="#000000" opacity="0.6"/>
+    <path d="M330,250 L672,250 L672,278 L330,278 Z" fill="url(#toplight)"/>
+    <path d="M474,470 L582,470 L582,498 L474,498 Z" fill="url(#toplight)"/>
+    <path d="M474,378 L688,378 L672,394 L474,394 Z" fill="url(#seal)"/>
+  </g>
+</svg>
