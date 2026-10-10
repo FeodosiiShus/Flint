@@ -861,7 +861,7 @@ mod tests {
     use super::*;
     use crate::toolbar_widgets::project_accent_index;
     use gpui::{
-        Background, Modifiers, TestAppContext, UpdateGlobal as _, VisualTestContext, point,
+        Background, Modifiers, Quad, TestAppContext, UpdateGlobal as _, VisualTestContext, point,
     };
     use settings::{SettingsContent, SettingsStore};
     use std::{cell::RefCell, rc::Rc};
@@ -1004,13 +1004,22 @@ mod tests {
                     .frame_content_opacity(false),
             )
         });
-        let (search_field_background, search_field_border) = cx.update(|_, cx| {
-            let colors = cx.theme().colors();
-            (
-                Background::from(colors.element_background),
-                colors.border_variant,
-            )
-        });
+        let search_field_border = cx.update(|_, cx| cx.theme().colors().border_variant);
+        let scale_factor = cx.update(|window, _| window.scale_factor());
+        let search_field = cx
+            .debug_bounds(SEARCH_FIELD_DEBUG_SELECTOR)
+            .expect("the search field should be rendered in the title bar")
+            .scale(scale_factor);
+        let search_field_border_colors = |quads: &[Quad]| {
+            quads
+                .iter()
+                .filter(|quad| {
+                    quad.border_widths.any(|width| width.0 > 0.)
+                        && search_field.contains(&quad.bounds.center())
+                })
+                .map(|quad| quad.border_color)
+                .collect::<Vec<_>>()
+        };
         assert!(
             inactive_opacity < 1.,
             "inactive windows dim their frame content by default"
@@ -1024,11 +1033,8 @@ mod tests {
             "an active window paints the gradient at full strength"
         );
         assert!(
-            active_quads.iter().any(|quad| {
-                quad.background == search_field_background
-                    && quad.border_color == search_field_border
-            }),
-            "an active window paints the title bar widgets at full strength"
+            search_field_border_colors(active_quads.as_slice()).contains(&search_field_border),
+            "an active window paints the search field border at full strength"
         );
 
         cx.deactivate_window();
@@ -1048,12 +1054,14 @@ mod tests {
                 .any(|quad| quad.background == gradient),
             "no undimmed gradient remains in an inactive window"
         );
+        let inactive_search_field_borders = search_field_border_colors(inactive_quads.as_slice());
         assert!(
-            inactive_quads.iter().any(|quad| {
-                quad.background == search_field_background.opacity(inactive_opacity)
-                    && quad.border_color == search_field_border.opacity(inactive_opacity)
-            }),
-            "an inactive window dims the title bar widgets"
+            inactive_search_field_borders.contains(&search_field_border.opacity(inactive_opacity)),
+            "an inactive window dims the search field border"
+        );
+        assert!(
+            !inactive_search_field_borders.contains(&search_field_border),
+            "no undimmed search field border remains in an inactive window"
         );
         assert!(
             !inactive_quads.iter().any(|quad| {
