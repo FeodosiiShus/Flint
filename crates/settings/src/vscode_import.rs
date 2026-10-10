@@ -200,7 +200,6 @@ impl VsCodeSettings {
             helix_mode: None,
             hide_mouse: None,
             markdown_preview: None,
-            line_indicator_format: None,
             log: None,
             node: self.node_binary_settings(),
             panel: None,
@@ -218,7 +217,6 @@ impl VsCodeSettings {
             project_diagnostics_panel: None,
             language_services_panel: None,
             session: None,
-            status_bar: self.status_bar_settings_content(),
             tab_bar: self.tab_bar_settings_content(),
             tabs: self.item_settings_content(),
             terminal: self.terminal_settings_content(),
@@ -333,7 +331,6 @@ impl VsCodeSettings {
                 _ => None,
             }),
             min_line_number_digits: None,
-            runnables: None,
             breakpoints: None,
             bookmarks: None,
             folds: self.read_enum("editor.showFoldingControls", |s| match s {
@@ -593,7 +590,6 @@ impl VsCodeSettings {
             tab_size: self
                 .read_u32("editor.tabSize")
                 .and_then(|n| NonZeroU32::new(n)),
-            tasks: None,
             use_auto_surround: self.read_enum("editor.autoSurround", |s| match s {
                 "languageDefined" | "quotes" | "brackets" => Some(true),
                 "never" => Some(false),
@@ -712,22 +708,6 @@ impl VsCodeSettings {
             height: None,
             icon_size: None,
             show_hidden_tabs_button: None,
-        })
-    }
-
-    fn status_bar_settings_content(&self) -> Option<StatusBarSettingsContent> {
-        skip_default(StatusBarSettingsContent {
-            show: self.read_bool("workbench.statusBar.visible"),
-            show_active_file: None,
-            active_language_button: None,
-            cursor_position_button: None,
-            line_endings_button: None,
-            active_encoding_button: None,
-            pending_keystrokes_indicator: None,
-            indentation_button: None,
-            read_only_button: None,
-            height: None,
-            icon_size: None,
         })
     }
 

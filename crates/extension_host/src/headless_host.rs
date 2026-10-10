@@ -796,7 +796,6 @@ fn register_language_from_config(proxy: &ExtensionHostProxy, config: LanguageCon
                 Ok(LoadedLanguage {
                     config,
                     queries: LanguageQueries::default(),
-                    context_provider: None,
                     toolchain_provider: None,
                     manifest_name: None,
                 })

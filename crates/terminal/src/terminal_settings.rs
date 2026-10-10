@@ -10,8 +10,8 @@ use settings::{
     TerminalDockPosition, TerminalLineHeight, VenvSettings, WorkingDirectory,
     merge_from::MergeFrom,
 };
-use task::Shell;
 use theme_settings::FontFamilyName;
+use util::shell::Shell;
 
 #[derive(Copy, Clone, Debug, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 pub struct Toolbar {

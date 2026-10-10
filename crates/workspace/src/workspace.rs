@@ -1,4 +1,3 @@
-pub mod active_file_name;
 mod background_image;
 pub mod dock;
 pub mod history_manager;
@@ -19,8 +18,6 @@ pub mod path_link;
 mod persistence;
 pub mod searchable;
 pub mod security_modal;
-mod status_bar;
-pub mod tasks;
 mod theme_preview;
 mod toast_layer;
 mod tool_window_bar;
@@ -52,7 +49,7 @@ use client::{
     proto::{self, ErrorCode, PanelId, PeerId},
 };
 use collections::{HashMap, HashSet, TypeIdHashMap, hash_map};
-use dock::{Dock, DockPosition, PanelButtons, PanelHandle, RESIZE_HANDLE_SIZE};
+use dock::{Dock, DockPosition, PanelHandle, RESIZE_HANDLE_SIZE};
 use futures::{
     Future, FutureExt, StreamExt,
     channel::{
@@ -119,12 +116,11 @@ use settings::{
     CenteredPaddingSettings, DefaultOpenBehavior, Settings, SettingsLocation, SettingsStore,
 };
 
+pub use dock::HideButtonSetting;
 use sqlez::{
     bindable::{Bind, Column, StaticColumnCount},
     statement::Statement,
 };
-use status_bar::StatusBar;
-pub use status_bar::{HideStatusItem, StatusItemView, add_hide_button_entry};
 use std::{
     any::TypeId,
     borrow::Cow,
@@ -134,7 +130,6 @@ use std::{
     env,
     hash::Hash,
     path::{Path, PathBuf},
-    process::ExitStatus,
     rc::Rc,
     sync::{
         Arc, LazyLock,
@@ -142,7 +137,7 @@ use std::{
     },
     time::Duration,
 };
-use task::{DebugScenario, SharedTaskContext, SpawnInTerminal};
+use task::{DebugScenario, SharedTaskContext};
 use theme::{ActiveTheme, ClientDecorationsExt, SystemAppearance};
 use theme_settings::ThemeSettings;
 use tool_window_bar::{ToolWindowBar, ToolWindowBarSide};
@@ -161,12 +156,11 @@ use util::{
 use uuid::Uuid;
 pub use workspace_settings::{
     AccessibleMode, AutosaveSetting, BackgroundImageLayerSettings, BackgroundImageSettings,
-    BottomDockLayout, EncodingDisplayOptions, FocusFollowsMouse, INACTIVE_FRAME_CONTENT_OPACITY,
-    IslandsSettings, RestoreOnStartupBehavior, StatusBarSettings, TabBarSettings,
-    ToolWindowBarsSettings, ToolWindowHeadersSettings, WorkspaceSettings,
-    closing_last_window_quits_app, observe_accessible_mode,
+    BottomDockLayout, FocusFollowsMouse, INACTIVE_FRAME_CONTENT_OPACITY, IslandsSettings,
+    RestoreOnStartupBehavior, TabBarSettings, ToolWindowBarsSettings, ToolWindowHeadersSettings,
+    WorkspaceSettings, closing_last_window_quits_app, observe_accessible_mode,
 };
-use zed_actions::{Spawn, theme::ToggleMode};
+use zed_actions::theme::ToggleMode;
 
 use crate::{dock::PanelSizeState, item::ItemBufferKind, notifications::NotificationId};
 use crate::{
@@ -328,17 +322,7 @@ static ZED_WINDOW_POSITION: LazyLock<Option<Point<Pixels>>> = LazyLock::new(|| {
         .and_then(parse_pixel_position_env_var)
 });
 
-pub trait TerminalProvider {
-    fn spawn(
-        &self,
-        task: SpawnInTerminal,
-        window: &mut Window,
-        cx: &mut App,
-    ) -> Task<Option<Result<ExitStatus>>>;
-}
-
 pub trait DebuggerProvider {
-    // `active_buffer` is used to resolve build task's name against language-specific tasks.
     fn start_session(
         &self,
         definition: DebugScenario,
@@ -349,15 +333,6 @@ pub trait DebuggerProvider {
         cx: &mut App,
     );
 
-    fn spawn_task_or_modal(
-        &self,
-        workspace: &mut Workspace,
-        action: &Spawn,
-        window: &mut Window,
-        cx: &mut Context<Workspace>,
-    );
-
-    fn task_scheduled(&self, cx: &mut App);
     fn debug_scenario_scheduled(&self, cx: &mut App);
     fn debug_scenario_scheduled_last(&self, cx: &App) -> bool;
 
@@ -396,8 +371,8 @@ actions!(
         ActivatePreviousPane,
         /// Activates the last pane in the workspace.
         ActivateLastPane,
-        /// Moves focus to the next major region of the window (editor, open
-        /// panels, status bar), cycling and wrapping around. Intended as a
+        /// Moves focus to the next major region of the window (title bar,
+        /// editor, open panels), cycling and wrapping around. Intended as a
         /// discoverable, screen-reader-friendly way to navigate the window.
         FocusNextPart,
         /// Moves focus to the previous major region of the window. See
@@ -1563,7 +1538,7 @@ struct DispatchingKeystrokes {
 /// Collects everything project-related for a certain window opened.
 /// In some way, is a counterpart of a window, as the [`WindowHandle`] could be downcast into `Workspace`.
 ///
-/// A `Workspace` usually consists of 1 or more projects, a central pane group, 3 docks and a status bar.
+/// A `Workspace` usually consists of 1 or more projects, a central pane group and 3 docks.
 /// The `Workspace` owns everybody's state and serves as a default, "global context",
 /// that can be used to register a global action to be triggered from any place in the window.
 pub struct Workspace {
@@ -1581,7 +1556,6 @@ pub struct Workspace {
     panes_by_item: HashMap<EntityId, WeakEntity<Pane>>,
     active_pane: Entity<Pane>,
     last_active_center_pane: Option<WeakEntity<Pane>>,
-    status_bar: Entity<StatusBar>,
     left_tool_window_bar: Entity<ToolWindowBar>,
     right_tool_window_bar: Entity<ToolWindowBar>,
     pub(crate) modal_layer: Entity<ModalLayer>,
@@ -1615,12 +1589,10 @@ pub struct Workspace {
     bounds_save_task_queued: Option<Task<()>>,
     on_prompt_for_new_path: Option<PromptForNewPath>,
     on_prompt_for_open_path: Option<PromptForOpenPath>,
-    terminal_provider: Option<Box<dyn TerminalProvider>>,
     debugger_provider: Option<Arc<dyn DebuggerProvider>>,
     serializable_items_tx: UnboundedSender<Box<dyn SerializableItemHandle>>,
     _items_serializer: Task<Result<()>>,
     session_id: Option<String>,
-    scheduled_tasks: Vec<Task<()>>,
     last_open_dock_positions: Vec<DockPosition>,
     removing: bool,
     _panels_task: Option<Task<Result<()>>>,
@@ -1926,21 +1898,10 @@ impl Workspace {
         let left_dock = Dock::new(DockPosition::Left, modal_layer.clone(), window, cx);
         let bottom_dock = Dock::new(DockPosition::Bottom, modal_layer.clone(), window, cx);
         let right_dock = Dock::new(DockPosition::Right, modal_layer.clone(), window, cx);
-        let left_dock_buttons = cx.new(|cx| PanelButtons::new(left_dock.clone(), cx));
-        let bottom_dock_buttons = cx.new(|cx| PanelButtons::new(bottom_dock.clone(), cx));
-        let right_dock_buttons = cx.new(|cx| PanelButtons::new(right_dock.clone(), cx));
         let multi_workspace = window
             .root::<MultiWorkspace>()
             .flatten()
             .map(|mw| mw.downgrade());
-        let status_bar = cx.new(|cx| {
-            let mut status_bar =
-                StatusBar::new(&center_pane.clone(), multi_workspace.clone(), window, cx);
-            status_bar.add_left_item(left_dock_buttons, window, cx);
-            status_bar.add_right_item(right_dock_buttons, window, cx);
-            status_bar.add_right_item(bottom_dock_buttons, window, cx);
-            status_bar
-        });
         let left_tool_window_bar = cx.new(|cx| {
             ToolWindowBar::new(
                 ToolWindowBarSide::Left,
@@ -2070,7 +2031,6 @@ impl Workspace {
             panes_by_item: Default::default(),
             active_pane: center_pane.clone(),
             last_active_center_pane: Some(center_pane.downgrade()),
-            status_bar,
             left_tool_window_bar,
             right_tool_window_bar,
             modal_layer,
@@ -2107,13 +2067,10 @@ impl Workspace {
             bounds_save_task_queued: None,
             on_prompt_for_new_path: None,
             on_prompt_for_open_path: None,
-            terminal_provider: None,
             debugger_provider: None,
             serializable_items_tx,
             _items_serializer,
             session_id: Some(session_id),
-
-            scheduled_tasks: Vec::new(),
             last_open_dock_positions: Vec::new(),
             removing: false,
             sidebar_focus_handle: None,
@@ -2835,16 +2792,8 @@ impl Workspace {
         }
     }
 
-    pub fn status_bar(&self) -> &Entity<StatusBar> {
-        &self.status_bar
-    }
-
     pub fn set_sidebar_focus_handle(&mut self, handle: Option<FocusHandle>) {
         self.sidebar_focus_handle = handle;
-    }
-
-    pub fn status_bar_visible(&self, cx: &App) -> bool {
-        StatusBarSettings::get_global(cx).show
     }
 
     pub fn multi_workspace(&self) -> Option<&WeakEntity<MultiWorkspace>> {
@@ -2855,11 +2804,7 @@ impl Workspace {
         &mut self,
         multi_workspace: WeakEntity<MultiWorkspace>,
         active_workspace_id: Rc<Cell<EntityId>>,
-        cx: &mut App,
     ) {
-        self.status_bar.update(cx, |status_bar, cx| {
-            status_bar.set_multi_workspace(multi_workspace.clone(), cx);
-        });
         self.multi_workspace = Some(multi_workspace);
         self.active_workspace_id = Some(active_workspace_id);
     }
@@ -3299,16 +3244,8 @@ impl Workspace {
         self.on_prompt_for_open_path = Some(prompt)
     }
 
-    pub fn set_terminal_provider(&mut self, provider: impl TerminalProvider + 'static) {
-        self.terminal_provider = Some(Box::new(provider));
-    }
-
     pub fn set_debugger_provider(&mut self, provider: impl DebuggerProvider + 'static) {
         self.debugger_provider = Some(Arc::new(provider));
-    }
-
-    pub fn debugger_provider(&self) -> Option<Arc<dyn DebuggerProvider>> {
-        self.debugger_provider.clone()
     }
 
     pub fn prompt_for_open_path(
@@ -5727,11 +5664,6 @@ impl Workspace {
     ) {
         self.flush_deferred_saves(window, cx);
 
-        // This is explicitly hoisted out of the following check for pane identity as
-        // terminal panel panes are not registered as a center panes.
-        self.status_bar.update(cx, |status_bar, cx| {
-            status_bar.set_active_pane(&pane, window, cx);
-        });
         if self.active_pane != pane {
             self.set_active_pane(&pane, window, cx);
         }
@@ -7906,8 +7838,8 @@ impl Workspace {
     }
 
     /// Returns the currently-visible major window regions ("parts"), in a stable
-    /// cyclic order: title bar, left dock, editor, right dock, bottom dock,
-    /// status bar. Closed docks are skipped. Used by
+    /// cyclic order: title bar, left dock, editor, right dock, bottom dock.
+    /// Closed docks are skipped. Used by
     /// [`FocusNextPart`]/[`FocusPreviousPart`] so keyboard and screen-reader
     /// users can move between regions without a mouse.
     fn focusable_parts(&self, cx: &App) -> Vec<FocusablePart> {
@@ -7955,11 +7887,6 @@ impl Workspace {
         parts.extend(dock_part(
             &self.bottom_dock,
             &self.region_focus_handles.bottom_dock,
-        ));
-        // The status bar is an ARIA toolbar, so region navigation lands on its
-        // first control rather than the toolbar container.
-        parts.push(FocusablePart::toolbar(
-            self.status_bar.read(cx).focus_handle(cx),
         ));
         parts
     }
@@ -8465,7 +8392,7 @@ struct FocusablePart {
 }
 
 enum PartBehavior {
-    /// An ARIA toolbar (title bar, status bar). Region navigation focuses the
+    /// An ARIA toolbar (the title bar). Region navigation focuses the
     /// container and descends to its first control, which is usable for
     /// everyone, so this is not gated on assistive technology.
     Toolbar,
@@ -9167,9 +9094,6 @@ impl Render for Workspace {
                                 .children(self.render_notifications(window, cx)),
                         ),
                     )
-                    .when(self.status_bar_visible(cx), |parent| {
-                        parent.child(self.status_bar.clone())
-                    })
                     .child(self.toast_layer.clone()),
             )
     }
@@ -9732,7 +9656,6 @@ pub fn open_workspace_by_id(
         None,
         project::LocalProjectFlags {
             init_worktree_trust: true,
-            ..project::LocalProjectFlags::default()
         },
         cx,
     );
@@ -14483,51 +14406,6 @@ mod tests {
     }
 
     #[gpui::test]
-    async fn test_status_bar_hides_panel_buttons_when_tool_window_bars_are_shown(
-        cx: &mut TestAppContext,
-    ) {
-        let (_workspace, _panels, cx) = tool_window_bar_test_workspace(cx).await;
-
-        for selector in [
-            "panel_buttons_Left",
-            "panel_buttons_Bottom",
-            "panel_buttons_Right",
-        ] {
-            assert_eq!(
-                cx.debug_bounds(selector),
-                None,
-                "{selector} must not be in the status bar while tool window bars are shown"
-            );
-        }
-
-        cx.update(|_, cx| {
-            SettingsStore::update_global(cx, |store, cx| {
-                store.update_user_settings(cx, |settings| {
-                    settings
-                        .workspace
-                        .tool_window_bars
-                        .get_or_insert_default()
-                        .show = Some(false);
-                });
-            });
-        });
-        cx.run_until_parked();
-
-        assert_eq!(cx.debug_bounds("tool_window_bar_left"), None);
-        assert_eq!(cx.debug_bounds("tool_window_bar_right"), None);
-        for selector in [
-            "panel_buttons_Left",
-            "panel_buttons_Bottom",
-            "panel_buttons_Right",
-        ] {
-            assert!(
-                cx.debug_bounds(selector).is_some(),
-                "{selector} returns to the status bar when tool window bars are hidden"
-            );
-        }
-    }
-
-    #[gpui::test]
     async fn test_center_island_is_inset_by_the_gap(cx: &mut TestAppContext) {
         let (_workspace, _panels, cx) = tool_window_bar_test_workspace(cx).await;
 
@@ -14586,24 +14464,6 @@ mod tests {
                 })
                 .and_then(|quad| quad.background.as_solid())
                 .expect("a solid background is painted at the position")
-        })
-    }
-
-    fn painted_alphas_of(
-        color: Hsla,
-        region: Bounds<Pixels>,
-        cx: &mut VisualTestContext,
-    ) -> Vec<f32> {
-        cx.update(|window, _| {
-            let region = region.scale(window.scale_factor());
-            window
-                .painted_quads()
-                .into_iter()
-                .filter(|quad| quad.bounds.intersects(&region))
-                .filter_map(|quad| quad.background.as_solid())
-                .filter(|painted| (painted.h, painted.s, painted.l) == (color.h, color.s, color.l))
-                .map(|painted| painted.a)
-                .collect()
         })
     }
 
@@ -15297,52 +15157,6 @@ mod tests {
             innermost_painted_background(button.center(), cx),
             active_button,
             "an inactive window keeps its frame content when dimming is turned off"
-        );
-    }
-
-    #[gpui::test]
-    async fn inactive_window_dims_status_bar_content_only(cx: &mut TestAppContext) {
-        let (_workspace, _panels, cx) = tool_window_bar_test_workspace(cx).await;
-        cx.update(|window, cx| {
-            SettingsStore::update_global(cx, |store, cx| {
-                store.update_user_settings(cx, |settings| {
-                    settings
-                        .workspace
-                        .tool_window_bars
-                        .get_or_insert_default()
-                        .show = Some(false);
-                });
-            });
-            window.activate_window();
-        });
-        cx.run_until_parked();
-
-        let panel_buttons = cx
-            .debug_bounds("panel_buttons_Left")
-            .expect("the panel buttons return to the status bar without tool window bars");
-        let border = cx.update(|_, cx| cx.theme().colors().border);
-        let window_width = cx.update(|window, _| window.viewport_size().width);
-        let status_bar_middle = point(window_width / 2., panel_buttons.center().y);
-        let active_dividers = painted_alphas_of(border, panel_buttons, cx);
-        assert!(
-            !active_dividers.is_empty(),
-            "the status bar paints a divider next to the left panel buttons"
-        );
-        let active_background = innermost_painted_background(status_bar_middle, cx);
-
-        cx.deactivate_window();
-        let inactive_dividers = painted_alphas_of(border, panel_buttons, cx);
-        assert_eq!(inactive_dividers.len(), active_dividers.len());
-        for (active, inactive) in active_dividers.into_iter().zip(inactive_dividers) {
-            assert!(
-                (inactive - active * INACTIVE_FRAME_CONTENT_OPACITY).abs() < 1e-6,
-                "an inactive window dims the status bar items: active {active}, inactive {inactive}"
-            );
-        }
-        assert_eq!(
-            innermost_painted_background(status_bar_middle, cx),
-            active_background,
-            "the status bar background is never dimmed"
         );
     }
 
@@ -18469,46 +18283,6 @@ mod tests {
                 .await;
             assert!(handle.is_err());
         }
-    }
-
-    #[gpui::test]
-    async fn test_status_bar_visibility(cx: &mut TestAppContext) {
-        init_test(cx);
-
-        let fs = FakeFs::new(cx.executor());
-        let project = Project::test(fs, [], cx).await;
-        let (workspace, _cx) =
-            cx.add_window_view(|window, cx| Workspace::test_new(project.clone(), window, cx));
-
-        // Test with status bar shown (default)
-        workspace.read_with(cx, |workspace, cx| {
-            let visible = workspace.status_bar_visible(cx);
-            assert!(visible, "Status bar should be visible by default");
-        });
-
-        // Test with status bar hidden
-        cx.update_global(|store: &mut SettingsStore, cx| {
-            store.update_user_settings(cx, |settings| {
-                settings.status_bar.get_or_insert_default().show = Some(false);
-            });
-        });
-
-        workspace.read_with(cx, |workspace, cx| {
-            let visible = workspace.status_bar_visible(cx);
-            assert!(!visible, "Status bar should be hidden when show is false");
-        });
-
-        // Test with status bar shown explicitly
-        cx.update_global(|store: &mut SettingsStore, cx| {
-            store.update_user_settings(cx, |settings| {
-                settings.status_bar.get_or_insert_default().show = Some(true);
-            });
-        });
-
-        workspace.read_with(cx, |workspace, cx| {
-            let visible = workspace.status_bar_visible(cx);
-            assert!(visible, "Status bar should be visible when show is true");
-        });
     }
 
     #[gpui::test]

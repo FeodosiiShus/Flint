@@ -382,8 +382,6 @@ pub trait DebugAdapter: 'static + Send + Sync {
         }
     }
 
-    fn dap_schema(&self) -> serde_json::Value;
-
     fn label_for_child_session(&self, _args: &StartDebuggingRequestArguments) -> Option<String> {
         None
     }
@@ -414,10 +412,6 @@ impl FakeAdapter {
 impl DebugAdapter for FakeAdapter {
     fn name(&self) -> DebugAdapterName {
         DebugAdapterName(Self::ADAPTER_NAME.into())
-    }
-
-    fn dap_schema(&self) -> serde_json::Value {
-        serde_json::Value::Null
     }
 
     async fn request_kind(

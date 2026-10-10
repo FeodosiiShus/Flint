@@ -556,7 +556,6 @@ fn main() {
         outline::init(cx);
         project_symbols::init(cx);
         project_panel::init(cx);
-        tasks_ui::init(cx);
         search::init(cx);
         lsp_locations::init(cx);
         cx.set_global(workspace::PaneSearchBarCallbacks {
@@ -572,7 +571,6 @@ fn main() {
         encoding_selector::init(cx);
         language_selector::init(cx);
         line_ending_selector::init(cx);
-        status_widgets::init(cx);
         language_tools::init(cx);
         git_ui::init(cx);
         title_bar::init(cx);

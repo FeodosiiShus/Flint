@@ -34,8 +34,8 @@ use settings::{DefaultOpenBehavior, Settings, WorktreeId};
 use workspace::ProjectGroupKey;
 
 use ui::{
-    ButtonLike, ContextMenu, Divider, HighlightedLabel, KeyBinding, ListItem, ListItemSpacing,
-    ListSubHeader, PopoverMenu, PopoverMenuHandle, TintColor, Tooltip, prelude::*,
+    ContextMenu, Divider, HighlightedLabel, KeyBinding, ListItem, ListItemSpacing, ListSubHeader,
+    PopoverMenu, PopoverMenuHandle, TintColor, Tooltip, prelude::*,
 };
 use util::{ResultExt, paths::PathExt};
 use workspace::{
@@ -104,12 +104,6 @@ fn is_selectable_entry(entry: &ProjectPickerEntry) -> bool {
             | ProjectPickerEntry::ProjectGroup(_)
             | ProjectPickerEntry::RecentProject(_)
     )
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ProjectPickerStyle {
-    Modal,
-    Popover,
 }
 
 pub async fn get_recent_projects(
@@ -385,16 +379,14 @@ impl ModalView for RecentProjects {
 impl RecentProjects {
     fn new(
         delegate: RecentProjectsDelegate,
-        fs: Option<Arc<dyn Fs>>,
-        rem_width: f32,
+        fs: Arc<dyn Fs>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let style = delegate.style;
         let picker = cx.new(|cx| {
             Picker::list(delegate, window, cx)
                 .list_measure_all()
-                .initial_width(rems(rem_width))
+                .initial_width(rems(42.))
                 .show_scrollbar(true)
         });
 
@@ -403,26 +395,12 @@ impl RecentProjects {
             picker.delegate.focus_handle = picker_focus_handle;
         });
 
-        let mut subscriptions = vec![cx.subscribe(&picker, |_, _, _, cx| cx.emit(DismissEvent))];
+        let subscriptions = vec![cx.subscribe(&picker, |_, _, _, cx| cx.emit(DismissEvent))];
 
-        if style == ProjectPickerStyle::Popover {
-            let picker_focus = picker.focus_handle(cx);
-            subscriptions.push(
-                cx.on_focus_out(&picker_focus, window, |this, _, window, cx| {
-                    let submenu_focused = this.picker.update(cx, |picker, cx| {
-                        picker.delegate.actions_menu_handle.is_focused(window, cx)
-                    });
-                    if !submenu_focused {
-                        cx.emit(DismissEvent);
-                    }
-                }),
-            );
-        }
         // We do not want to block the UI on a potentially lengthy call to DB, so we're gonna swap
         // out workspace locations once the future runs to completion.
         let db = WorkspaceDb::global(cx);
         cx.spawn_in(window, async move |this, cx| {
-            let Some(fs) = fs else { return };
             let workspaces = db
                 .recent_project_workspaces(fs.as_ref())
                 .await
@@ -453,7 +431,7 @@ impl RecentProjects {
     ) {
         let weak = cx.entity().downgrade();
         let open_folders = get_open_folders(workspace, cx);
-        let fs = Some(workspace.app_state().fs.clone());
+        let fs = workspace.app_state().fs.clone();
 
         let create_new_window = create_new_window.unwrap_or_else(|| default_open_in_new_window(cx));
 
@@ -464,46 +442,9 @@ impl RecentProjects {
                 focus_handle,
                 open_folders,
                 window_project_groups,
-                ProjectPickerStyle::Modal,
             );
 
-            Self::new(delegate, fs, 42., window, cx)
-        })
-    }
-
-    pub fn popover(
-        workspace: WeakEntity<Workspace>,
-        window_project_groups: Vec<ProjectGroupKey>,
-        create_new_window: Option<bool>,
-        focus_handle: FocusHandle,
-        window: &mut Window,
-        cx: &mut App,
-    ) -> Entity<Self> {
-        let (open_folders, fs) = workspace
-            .upgrade()
-            .map(|workspace| {
-                let workspace = workspace.read(cx);
-                (
-                    get_open_folders(workspace, cx),
-                    Some(workspace.app_state().fs.clone()),
-                )
-            })
-            .unwrap_or_else(|| (Vec::new(), None));
-
-        let create_new_window = create_new_window.unwrap_or_else(|| default_open_in_new_window(cx));
-
-        cx.new(|cx| {
-            let delegate = RecentProjectsDelegate::new(
-                workspace,
-                create_new_window,
-                focus_handle,
-                open_folders,
-                window_project_groups,
-                ProjectPickerStyle::Popover,
-            );
-            let list = Self::new(delegate, fs, 20., window, cx);
-            list.picker.focus_handle(cx).focus(window, cx);
-            list
+            Self::new(delegate, fs, window, cx)
         })
     }
 
@@ -614,11 +555,9 @@ pub struct RecentProjectsDelegate {
     workspaces: Vec<RecentWorkspace>,
     filtered_entries: Vec<ProjectPickerEntry>,
     selected_index: usize,
-    render_paths: bool,
     create_new_window: bool,
     snap_selection_to_first_non_header_match: bool,
     focus_handle: FocusHandle,
-    style: ProjectPickerStyle,
     actions_menu_handle: PopoverMenuHandle<ContextMenu>,
 }
 
@@ -629,9 +568,7 @@ impl RecentProjectsDelegate {
         focus_handle: FocusHandle,
         open_folders: Vec<OpenFolderEntry>,
         window_project_groups: Vec<ProjectGroupKey>,
-        style: ProjectPickerStyle,
     ) -> Self {
-        let render_paths = style == ProjectPickerStyle::Modal;
         Self {
             workspace,
             open_folders,
@@ -640,10 +577,8 @@ impl RecentProjectsDelegate {
             filtered_entries: Vec::new(),
             selected_index: 0,
             create_new_window,
-            render_paths,
             snap_selection_to_first_non_header_match: true,
             focus_handle,
-            style,
             actions_menu_handle: PopoverMenuHandle::default(),
         }
     }
@@ -1005,7 +940,6 @@ impl PickerDelegate for RecentProjectsDelegate {
                 let is_active = folder.is_active;
                 let worktree_id = folder.worktree_id;
                 let positions = positions.clone();
-                let show_path = self.style == ProjectPickerStyle::Modal;
 
                 let secondary_actions = h_flex()
                     .gap_1()
@@ -1036,9 +970,6 @@ impl PickerDelegate for RecentProjectsDelegate {
 
                 let icon = icon_for_remote_connection(folder.connection_options.as_ref());
                 let show_icon = self.filtered_entries_include_remote_project();
-
-                let tooltip_path: SharedString = path.to_string_lossy().to_string().into();
-                let tooltip_branch = branch.clone();
 
                 Some(
                     ListItem::new(ix)
@@ -1079,28 +1010,12 @@ impl PickerDelegate for RecentProjectsDelegate {
                                                     )
                                                 }),
                                         )
-                                        .when(show_path, |this| {
-                                            this.child(
-                                                Label::new(path.to_string_lossy().to_string())
-                                                    .size(LabelSize::Small)
-                                                    .color(Color::Muted),
-                                            )
-                                        }),
-                                )
-                                .when(!show_path, |this| {
-                                    this.tooltip(move |_, cx| {
-                                        if let Some(branch) = tooltip_branch.clone() {
-                                            Tooltip::with_meta(
-                                                format!("{}/{}", name, branch),
-                                                None,
-                                                tooltip_path.clone(),
-                                                cx,
-                                            )
-                                        } else {
-                                            Tooltip::simple(tooltip_path.clone(), cx)
-                                        }
-                                    })
-                                }),
+                                        .child(
+                                            Label::new(path.to_string_lossy().to_string())
+                                                .size(LabelSize::Small)
+                                                .color(Color::Muted),
+                                        ),
+                                ),
                         )
                         .end_slot(secondary_actions)
                         .show_end_slot_on_hover()
@@ -1217,13 +1132,7 @@ impl PickerDelegate for RecentProjectsDelegate {
                                 .when(show_icon, |this| {
                                     this.child(Icon::new(icon).color(Color::Muted))
                                 })
-                                .child({
-                                    let mut highlighted = highlighted_match;
-                                    if !self.render_paths {
-                                        highlighted.paths.clear();
-                                    }
-                                    highlighted.render(window, cx)
-                                })
+                                .child(highlighted_match.render(window, cx))
                                 .tooltip(Tooltip::text(tooltip_path)),
                         )
                         .end_slot(secondary_actions)
@@ -1398,13 +1307,7 @@ impl PickerDelegate for RecentProjectsDelegate {
                                 .when(show_icon, |this| {
                                     this.child(Icon::new(icon).color(Color::Muted))
                                 })
-                                .child({
-                                    let mut highlighted = highlighted_match;
-                                    if !self.render_paths {
-                                        highlighted.paths.clear();
-                                    }
-                                    highlighted.render(window, cx)
-                                })
+                                .child(highlighted_match.render(window, cx))
                                 .tooltip(move |_, cx| {
                                     Tooltip::with_meta(
                                         primary_confirm_tooltip,
@@ -1424,7 +1327,6 @@ impl PickerDelegate for RecentProjectsDelegate {
 
     fn render_footer(&self, _: &mut Window, cx: &mut Context<Picker<Self>>) -> Option<AnyElement> {
         let focus_handle = self.focus_handle.clone();
-        let popover_style = matches!(self.style, ProjectPickerStyle::Popover);
 
         let is_already_open_entry = matches!(
             self.filtered_entries.get(self.selected_index),
@@ -1441,77 +1343,6 @@ impl PickerDelegate for RecentProjectsDelegate {
             }
             _ => false,
         };
-
-        if popover_style {
-            return Some(
-                v_flex()
-                    .flex_1()
-                    .p_1p5()
-                    .gap_1()
-                    .border_t_1()
-                    .border_color(cx.theme().colors().border_variant)
-                    .child({
-                        ButtonLike::new("open_local_folder")
-                            .child(
-                                h_flex()
-                                    .w_full()
-                                    .gap_1()
-                                    .justify_between()
-                                    .child(Label::new("Open Local Folders"))
-                                    .child(KeyBinding::for_action_in(
-                                        &workspace::Open {
-                                            create_new_window: Some(self.create_new_window),
-                                        },
-                                        &focus_handle,
-                                        cx,
-                                    )),
-                            )
-                            .on_click({
-                                let workspace = self.workspace.clone();
-                                let create_new_window = self.create_new_window;
-                                move |_, window, cx| {
-                                    open_local_project(
-                                        workspace.clone(),
-                                        create_new_window,
-                                        window,
-                                        cx,
-                                    );
-                                }
-                            })
-                    })
-                    .child(
-                        ButtonLike::new("open_remote_folder")
-                            .child(
-                                h_flex()
-                                    .w_full()
-                                    .gap_1()
-                                    .justify_between()
-                                    .child(Label::new("Open Remote Folder"))
-                                    .child(KeyBinding::for_action(
-                                        &OpenRemote {
-                                            from_existing_connection: false,
-                                            create_new_window: Some(self.create_new_window),
-                                        },
-                                        cx,
-                                    )),
-                            )
-                            .on_click({
-                                let create_new_window = self.create_new_window;
-                                move |_, window, cx| {
-                                    window.dispatch_action(
-                                        OpenRemote {
-                                            from_existing_connection: false,
-                                            create_new_window: Some(create_new_window),
-                                        }
-                                        .boxed_clone(),
-                                        cx,
-                                    )
-                                }
-                            }),
-                    )
-                    .into_any(),
-            );
-        }
 
         let selected_entry = self.filtered_entries.get(self.selected_index);
 
@@ -2334,7 +2165,6 @@ mod tests {
                 cx.focus_handle(),
                 vec![open_folder(0), open_folder(1)],
                 vec![project_group(0), project_group(1)],
-                ProjectPickerStyle::Modal,
             );
             delegate.set_workspaces(recent_workspaces());
             Picker::list(delegate, window, cx)
@@ -2435,7 +2265,6 @@ mod tests {
             cx.update(|cx| cx.focus_handle()),
             Vec::new(),
             vec![project_group(0), remote_project_group(1)],
-            ProjectPickerStyle::Modal,
         );
         delegate.filtered_entries = vec![
             ProjectPickerEntry::ProjectGroup(StringMatch {
@@ -2485,7 +2314,6 @@ mod tests {
             cx.update(|cx| cx.focus_handle()),
             vec![local_open_folder],
             Vec::new(),
-            ProjectPickerStyle::Modal,
         );
 
         let paths = PathList::new(&[shared_path]);
@@ -2776,30 +2604,32 @@ mod tests {
         let mut augmented_groups = groups.clone();
         augmented_groups.push(remote_key.clone());
 
-        // Create the popover (same as the title bar does)
-        let popover: Entity<RecentProjects> = cx.update(|cx| {
+        let recent_projects: Entity<RecentProjects> = cx.update(|cx| {
             let window = cx.windows()[0];
             window
                 .update(cx, |_, window, cx| {
-                    RecentProjects::popover(
-                        workspace.downgrade(),
-                        augmented_groups,
-                        Some(false),
-                        fh,
-                        window,
-                        cx,
-                    )
+                    workspace.update(cx, |workspace, cx| {
+                        RecentProjects::open(
+                            workspace,
+                            Some(false),
+                            augmented_groups,
+                            window,
+                            fh,
+                            cx,
+                        );
+                        workspace.active_modal::<RecentProjects>(cx)
+                    })
                 })
                 .unwrap()
+                .expect("the recent projects modal should open")
         });
 
         cx.run_until_parked();
 
-        // Get the picker from the popover
         let picker: Entity<Picker<RecentProjectsDelegate>> = cx.update(|cx| {
             let window = cx.windows()[0];
             window
-                .update(cx, |_, _window, cx| popover.read(cx).picker.clone())
+                .update(cx, |_, _window, cx| recent_projects.read(cx).picker.clone())
                 .unwrap()
         });
 
@@ -2888,27 +2718,24 @@ mod tests {
         );
         let groups = vec![active_key];
 
-        let popover: Entity<RecentProjects> = cx.update(|cx| {
+        let recent_projects: Entity<RecentProjects> = cx.update(|cx| {
             let window = cx.windows()[0];
             window
                 .update(cx, |_, window, cx| {
-                    RecentProjects::popover(
-                        workspace.downgrade(),
-                        groups,
-                        Some(false),
-                        fh,
-                        window,
-                        cx,
-                    )
+                    workspace.update(cx, |workspace, cx| {
+                        RecentProjects::open(workspace, Some(false), groups, window, fh, cx);
+                        workspace.active_modal::<RecentProjects>(cx)
+                    })
                 })
                 .unwrap()
+                .expect("the recent projects modal should open")
         });
         cx.run_until_parked();
 
         let picker: Entity<Picker<RecentProjectsDelegate>> = cx.update(|cx| {
             let window = cx.windows()[0];
             window
-                .update(cx, |_, _window, cx| popover.read(cx).picker.clone())
+                .update(cx, |_, _window, cx| recent_projects.read(cx).picker.clone())
                 .unwrap()
         });
         cx.run_until_parked();

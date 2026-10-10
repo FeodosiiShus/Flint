@@ -15,7 +15,6 @@ impl Settings for ChromeSizeSettings {
         let title_bar = content.title_bar.as_ref();
         let tab_bar = content.tab_bar.as_ref();
         let toolbar = content.editor.toolbar.as_ref();
-        let status_bar = content.status_bar.as_ref();
         let panel = content.panel.as_ref();
         Self(ChromeSizes {
             title_bar_height: clamp_height(title_bar.and_then(|bar| bar.height)),
@@ -24,8 +23,6 @@ impl Settings for ChromeSizeSettings {
             tab_bar_icon_size: clamp_icon_size(tab_bar.and_then(|bar| bar.icon_size)),
             toolbar_height: clamp_height(toolbar.and_then(|bar| bar.height)),
             toolbar_icon_size: clamp_icon_size(toolbar.and_then(|bar| bar.icon_size)),
-            status_bar_height: clamp_height(status_bar.and_then(|bar| bar.height)),
-            status_bar_icon_size: clamp_icon_size(status_bar.and_then(|bar| bar.icon_size)),
             panel_height: clamp_height(panel.and_then(|panel| panel.height)),
             panel_icon_size: clamp_icon_size(panel.and_then(|panel| panel.icon_size)),
         })
@@ -50,8 +47,8 @@ mod tests {
 
     use gpui::px;
     use settings::{
-        EditorSettingsContent, PanelChromeSettingsContent, StatusBarSettingsContent,
-        TabBarSettingsContent, TitleBarSettingsContent, ToolbarContent,
+        EditorSettingsContent, PanelChromeSettingsContent, TabBarSettingsContent,
+        TitleBarSettingsContent, ToolbarContent,
     };
 
     fn chrome_sizes(content: &SettingsContent) -> ChromeSizes {
@@ -66,11 +63,6 @@ mod tests {
                 ..Default::default()
             }),
             tab_bar: Some(TabBarSettingsContent {
-                height,
-                icon_size,
-                ..Default::default()
-            }),
-            status_bar: Some(StatusBarSettingsContent {
                 height,
                 icon_size,
                 ..Default::default()
@@ -98,8 +90,6 @@ mod tests {
             tab_bar_icon_size: icon_size,
             toolbar_height: height,
             toolbar_icon_size: icon_size,
-            status_bar_height: height,
-            status_bar_icon_size: icon_size,
             panel_height: height,
             panel_icon_size: icon_size,
         }
@@ -143,7 +133,6 @@ mod tests {
             "title_bar": { "height": null, "icon_size": null },
             "tab_bar": { "height": null, "icon_size": null },
             "toolbar": { "height": null, "icon_size": null },
-            "status_bar": { "height": null, "icon_size": null },
             "panel": { "height": null, "icon_size": null }
         }"#;
         let content: SettingsContent = settings::parse_json_with_comments(json)?;
@@ -247,24 +236,6 @@ mod tests {
     }
 
     #[test]
-    fn chrome_size_maps_status_bar_group() {
-        let content = SettingsContent {
-            status_bar: Some(StatusBarSettingsContent {
-                height: Some(30),
-                icon_size: Some(15),
-                ..Default::default()
-            }),
-            ..Default::default()
-        };
-        let expected = ChromeSizes {
-            status_bar_height: Some(px(30.)),
-            status_bar_icon_size: Some(px(15.)),
-            ..Default::default()
-        };
-        assert_eq!(chrome_sizes(&content), expected);
-    }
-
-    #[test]
     fn chrome_size_maps_panel_group() {
         let content = SettingsContent {
             panel: Some(PanelChromeSettingsContent {
@@ -311,7 +282,6 @@ mod tests {
             "title_bar": { "height": 40, "icon_size": 18 },
             "tab_bar": { "height": 36, "icon_size": 16 },
             "toolbar": { "height": 100, "icon_size": 20 },
-            "status_bar": { "height": 30, "icon_size": 4 },
             "panel": { "height": 50, "icon_size": 40 }
         }"#;
         let content: SettingsContent = settings::parse_json_with_comments(json)?;
@@ -322,8 +292,6 @@ mod tests {
             tab_bar_icon_size: Some(px(16.)),
             toolbar_height: Some(px(64.)),
             toolbar_icon_size: Some(px(20.)),
-            status_bar_height: Some(px(30.)),
-            status_bar_icon_size: Some(px(10.)),
             panel_height: Some(px(50.)),
             panel_icon_size: Some(px(32.)),
         };

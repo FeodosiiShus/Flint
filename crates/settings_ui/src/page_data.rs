@@ -1884,7 +1884,7 @@ fn editor_page() -> SettingsPage {
             SettingsPageItem::SectionHeader("Which-key Menu"),
             SettingsPageItem::SettingItem(SettingItem {
                 title: "Show Which-key Menu",
-                description: "Display the which-key menu with matching bindings while a multi-stroke binding is pending. The pending keystrokes indicator remains visible, but its binding preview popover is disabled.",
+                description: "Display the which-key menu with matching bindings while a multi-stroke binding is pending.",
                 field: Box::new(SettingField {
                     json_path: Some("which_key.enabled"),
                     pick: |settings_content| {
@@ -2288,7 +2288,7 @@ fn editor_page() -> SettingsPage {
         ]
     }
 
-    fn gutter_section() -> [SettingsPageItem; 10] {
+    fn gutter_section() -> [SettingsPageItem; 9] {
         [
             SettingsPageItem::SectionHeader("Gutter"),
             SettingsPageItem::SettingItem(SettingItem {
@@ -2322,29 +2322,6 @@ fn editor_page() -> SettingsPage {
                     pick: |settings_content| settings_content.editor.relative_line_numbers.as_ref(),
                     write: |settings_content, value, _| {
                         settings_content.editor.relative_line_numbers = value;
-                    },
-                }),
-                metadata: None,
-                files: USER,
-            }),
-            SettingsPageItem::SettingItem(SettingItem {
-                title: "Show Runnables",
-                description: "Show runnable buttons in the gutter.",
-                field: Box::new(SettingField {
-                    json_path: Some("gutter.runnables"),
-                    pick: |settings_content| {
-                        settings_content
-                            .editor
-                            .gutter
-                            .as_ref()
-                            .and_then(|gutter| gutter.runnables.as_ref())
-                    },
-                    write: |settings_content, value, _| {
-                        settings_content
-                            .editor
-                            .gutter
-                            .get_or_insert_default()
-                            .runnables = value;
                     },
                 }),
                 metadata: None,
@@ -3651,251 +3628,7 @@ fn search_and_files_page() -> SettingsPage {
 }
 
 fn window_and_layout_page() -> SettingsPage {
-    fn status_bar_section() -> [SettingsPageItem; 13] {
-        [
-            SettingsPageItem::SectionHeader("Status Bar"),
-            SettingsPageItem::SettingItem(SettingItem {
-                title: "Project Panel Button",
-                description: "Show the project panel button in the status bar.",
-                field: Box::new(SettingField {
-                    json_path: Some("project_panel.button"),
-                    pick: |settings_content| {
-                        settings_content.project_panel.as_ref()?.button.as_ref()
-                    },
-                    write: |settings_content, value, _| {
-                        settings_content
-                            .project_panel
-                            .get_or_insert_default()
-                            .button = value;
-                    },
-                }),
-                metadata: None,
-                files: USER,
-            }),
-            SettingsPageItem::SettingItem(SettingItem {
-                title: "Active Language Button",
-                description: "Show the active language button in the status bar.",
-                field: Box::new(SettingField {
-                    json_path: Some("status_bar.active_language_button"),
-                    pick: |settings_content| {
-                        settings_content
-                            .status_bar
-                            .as_ref()?
-                            .active_language_button
-                            .as_ref()
-                    },
-                    write: |settings_content, value, _| {
-                        settings_content
-                            .status_bar
-                            .get_or_insert_default()
-                            .active_language_button = value;
-                    },
-                }),
-                metadata: None,
-                files: USER,
-            }),
-            SettingsPageItem::SettingItem(SettingItem {
-                title: "Active Encoding Button",
-                description: "Control when to show the active encoding in the status bar.",
-                field: Box::new(SettingField {
-                    json_path: Some("status_bar.active_encoding_button"),
-                    pick: |settings_content| {
-                        settings_content
-                            .status_bar
-                            .as_ref()?
-                            .active_encoding_button
-                            .as_ref()
-                    },
-                    write: |settings_content, value, _| {
-                        settings_content
-                            .status_bar
-                            .get_or_insert_default()
-                            .active_encoding_button = value;
-                    },
-                }),
-                metadata: None,
-                files: USER,
-            }),
-            SettingsPageItem::SettingItem(SettingItem {
-                title: "Cursor Position Button",
-                description: "Show the cursor position button in the status bar.",
-                field: Box::new(SettingField {
-                    json_path: Some("status_bar.cursor_position_button"),
-                    pick: |settings_content| {
-                        settings_content
-                            .status_bar
-                            .as_ref()?
-                            .cursor_position_button
-                            .as_ref()
-                    },
-                    write: |settings_content, value, _| {
-                        settings_content
-                            .status_bar
-                            .get_or_insert_default()
-                            .cursor_position_button = value;
-                    },
-                }),
-                metadata: None,
-                files: USER,
-            }),
-            SettingsPageItem::SettingItem(SettingItem {
-                title: "Line Endings Button",
-                description: "Show the active line endings button in the status bar.",
-                field: Box::new(SettingField {
-                    json_path: Some("status_bar.line_endings_button"),
-                    pick: |settings_content| {
-                        settings_content
-                            .status_bar
-                            .as_ref()?
-                            .line_endings_button
-                            .as_ref()
-                    },
-                    write: |settings_content, value, _| {
-                        settings_content
-                            .status_bar
-                            .get_or_insert_default()
-                            .line_endings_button = value;
-                    },
-                }),
-                metadata: None,
-                files: USER,
-            }),
-            SettingsPageItem::SettingItem(SettingItem {
-                title: "Indentation Button",
-                description: "Show the indentation of the active file in the status bar.",
-                field: Box::new(SettingField {
-                    json_path: Some("status_bar.indentation_button"),
-                    pick: |settings_content| {
-                        settings_content
-                            .status_bar
-                            .as_ref()?
-                            .indentation_button
-                            .as_ref()
-                    },
-                    write: |settings_content, value, _| {
-                        settings_content
-                            .status_bar
-                            .get_or_insert_default()
-                            .indentation_button = value;
-                    },
-                }),
-                metadata: None,
-                files: USER,
-            }),
-            SettingsPageItem::SettingItem(SettingItem {
-                title: "Read-Only Button",
-                description: "Show a lock button in the status bar that toggles read-only mode of the active file.",
-                field: Box::new(SettingField {
-                    json_path: Some("status_bar.read_only_button"),
-                    pick: |settings_content| {
-                        settings_content
-                            .status_bar
-                            .as_ref()?
-                            .read_only_button
-                            .as_ref()
-                    },
-                    write: |settings_content, value, _| {
-                        settings_content
-                            .status_bar
-                            .get_or_insert_default()
-                            .read_only_button = value;
-                    },
-                }),
-                metadata: None,
-                files: USER,
-            }),
-            SettingsPageItem::SettingItem(SettingItem {
-                title: "Pending Keystrokes Indicator",
-                description: "Show an indicator while a multi-stroke key binding is pending. If the input has a timeout, a countdown is shown and hovering pauses it. Its binding preview popover is disabled when the which-key menu is enabled.",
-                field: Box::new(SettingField {
-                    json_path: Some("status_bar.pending_keystrokes_indicator"),
-                    pick: |settings_content| {
-                        settings_content
-                            .status_bar
-                            .as_ref()?
-                            .pending_keystrokes_indicator
-                            .as_ref()
-                    },
-                    write: |settings_content, value, _| {
-                        settings_content
-                            .status_bar
-                            .get_or_insert_default()
-                            .pending_keystrokes_indicator = value;
-                    },
-                }),
-                metadata: None,
-                files: USER,
-            }),
-            SettingsPageItem::SettingItem(SettingItem {
-                title: "Terminal Button",
-                description: "Show the terminal button in the status bar.",
-                field: Box::new(SettingField {
-                    json_path: Some("terminal.button"),
-                    pick: |settings_content| settings_content.terminal.as_ref()?.button.as_ref(),
-                    write: |settings_content, value, _| {
-                        settings_content.terminal.get_or_insert_default().button = value;
-                    },
-                }),
-                metadata: None,
-                files: USER,
-            }),
-            SettingsPageItem::SettingItem(SettingItem {
-                title: "Active File Name",
-                description: "Show the name of the active file in the status bar.",
-                field: Box::new(SettingField {
-                    json_path: Some("status_bar.show_active_file"),
-                    pick: |settings_content| {
-                        settings_content
-                            .status_bar
-                            .as_ref()?
-                            .show_active_file
-                            .as_ref()
-                    },
-                    write: |settings_content, value, _| {
-                        settings_content
-                            .status_bar
-                            .get_or_insert_default()
-                            .show_active_file = value;
-                    },
-                }),
-                metadata: None,
-                files: USER,
-            }),
-            SettingsPageItem::SettingItem(SettingItem {
-                title: "Height",
-                description: "Minimum height of the status bar in pixels (24–64). Unset uses the default.",
-                field: Box::new(SettingField {
-                    json_path: Some("status_bar.height"),
-                    pick: |settings_content| settings_content.status_bar.as_ref()?.height.as_ref(),
-                    write: |settings_content, value, _| {
-                        settings_content.status_bar.get_or_insert_default().height = value;
-                    },
-                }),
-                metadata: None,
-                files: USER,
-            }),
-            SettingsPageItem::SettingItem(SettingItem {
-                title: "Icon Size",
-                description: "Size of the status bar icons in pixels (10–32). Secondary icons scale proportionally. Unset uses the default.",
-                field: Box::new(SettingField {
-                    json_path: Some("status_bar.icon_size"),
-                    pick: |settings_content| {
-                        settings_content.status_bar.as_ref()?.icon_size.as_ref()
-                    },
-                    write: |settings_content, value, _| {
-                        settings_content
-                            .status_bar
-                            .get_or_insert_default()
-                            .icon_size = value;
-                    },
-                }),
-                metadata: None,
-                files: USER,
-            }),
-        ]
-    }
-
-    fn title_bar_section() -> [SettingsPageItem; 15] {
+    fn title_bar_section() -> [SettingsPageItem; 11] {
         [
             SettingsPageItem::SectionHeader("Title Bar"),
             SettingsPageItem::SettingItem(SettingItem {
@@ -3959,28 +3692,6 @@ fn window_and_layout_page() -> SettingsPage {
                             .title_bar
                             .get_or_insert_default()
                             .show_worktree_name = value;
-                    },
-                }),
-                metadata: None,
-                files: USER,
-            }),
-            SettingsPageItem::SettingItem(SettingItem {
-                title: "Show Project Items",
-                description: "Show the project host and name in the titlebar.",
-                field: Box::new(SettingField {
-                    json_path: Some("title_bar.show_project_items"),
-                    pick: |settings_content| {
-                        settings_content
-                            .title_bar
-                            .as_ref()?
-                            .show_project_items
-                            .as_ref()
-                    },
-                    write: |settings_content, value, _| {
-                        settings_content
-                            .title_bar
-                            .get_or_insert_default()
-                            .show_project_items = value;
                     },
                 }),
                 metadata: None,
@@ -4167,28 +3878,6 @@ fn window_and_layout_page() -> SettingsPage {
                 files: USER,
             }),
             SettingsPageItem::SettingItem(SettingItem {
-                title: "Show Project Badge",
-                description: "Show a colored badge with the project initials before the project name.",
-                field: Box::new(SettingField {
-                    json_path: Some("title_bar.show_project_badge"),
-                    pick: |settings_content| {
-                        settings_content
-                            .title_bar
-                            .as_ref()?
-                            .show_project_badge
-                            .as_ref()
-                    },
-                    write: |settings_content, value, _| {
-                        settings_content
-                            .title_bar
-                            .get_or_insert_default()
-                            .show_project_badge = value;
-                    },
-                }),
-                metadata: None,
-                files: USER,
-            }),
-            SettingsPageItem::SettingItem(SettingItem {
                 title: "Show Project Gradient",
                 description: "Tint the main toolbar with the project color, like WebStorm's project gradient.",
                 field: Box::new(SettingField {
@@ -4211,30 +3900,8 @@ fn window_and_layout_page() -> SettingsPage {
                 files: USER,
             }),
             SettingsPageItem::SettingItem(SettingItem {
-                title: "Show Run Widget",
-                description: "Show the task picker, rerun and debug buttons in the titlebar.",
-                field: Box::new(SettingField {
-                    json_path: Some("title_bar.show_run_widget"),
-                    pick: |settings_content| {
-                        settings_content
-                            .title_bar
-                            .as_ref()?
-                            .show_run_widget
-                            .as_ref()
-                    },
-                    write: |settings_content, value, _| {
-                        settings_content
-                            .title_bar
-                            .get_or_insert_default()
-                            .show_run_widget = value;
-                    },
-                }),
-                metadata: None,
-                files: USER,
-            }),
-            SettingsPageItem::SettingItem(SettingItem {
                 title: "Show Search Button",
-                description: "Show the Search Everywhere button at the right edge of the titlebar.",
+                description: "Show the Search Everywhere field after the branch picker in the titlebar.",
                 field: Box::new(SettingField {
                     json_path: Some("title_bar.show_search_button"),
                     pick: |settings_content| {
@@ -4249,28 +3916,6 @@ fn window_and_layout_page() -> SettingsPage {
                             .title_bar
                             .get_or_insert_default()
                             .show_search_button = value;
-                    },
-                }),
-                metadata: None,
-                files: USER,
-            }),
-            SettingsPageItem::SettingItem(SettingItem {
-                title: "Show Settings Button",
-                description: "Show the settings button at the right edge of the titlebar.",
-                field: Box::new(SettingField {
-                    json_path: Some("title_bar.show_settings_button"),
-                    pick: |settings_content| {
-                        settings_content
-                            .title_bar
-                            .as_ref()?
-                            .show_settings_button
-                            .as_ref()
-                    },
-                    write: |settings_content, value, _| {
-                        settings_content
-                            .title_bar
-                            .get_or_insert_default()
-                            .show_settings_button = value;
                     },
                 }),
                 metadata: None,
@@ -4872,7 +4517,7 @@ fn window_and_layout_page() -> SettingsPage {
             }),
             SettingsPageItem::SettingItem(SettingItem {
                 title: "Dim Inactive Window",
-                description: "Dim the contents of the title bar, tool window bars and status bar while the window is inactive. Backgrounds are not dimmed.",
+                description: "Dim the contents of the title bar and tool window bars while the window is inactive. Backgrounds are not dimmed.",
                 field: Box::new(SettingField {
                     json_path: Some("islands.dim_inactive_window"),
                     pick: |settings_content| {
@@ -4902,7 +4547,7 @@ fn window_and_layout_page() -> SettingsPage {
             SettingsPageItem::SectionHeader("Tool Window Bars"),
             SettingsPageItem::SettingItem(SettingItem {
                 title: "Show Tool Window Bars",
-                description: "Show vertical bars with panel buttons at the left and right window edges instead of panel buttons in the status bar.",
+                description: "Show vertical bars with panel buttons at the left and right window edges. When off, no panel buttons are shown and panels open through actions and key bindings.",
                 field: Box::new(SettingField {
                     json_path: Some("tool_window_bars.show"),
                     pick: |settings_content| {
@@ -5265,7 +4910,6 @@ fn window_and_layout_page() -> SettingsPage {
     SettingsPage {
         title: "Window & Layout",
         items: concat_sections![
-            status_bar_section(),
             title_bar_section(),
             tab_bar_section(),
             tab_settings_section(),
@@ -5282,9 +4926,27 @@ fn window_and_layout_page() -> SettingsPage {
 }
 
 fn panels_page() -> SettingsPage {
-    fn project_panel_section() -> [SettingsPageItem; 31] {
+    fn project_panel_section() -> [SettingsPageItem; 32] {
         [
             SettingsPageItem::SectionHeader("Project Panel"),
+            SettingsPageItem::SettingItem(SettingItem {
+                title: "Project Panel Button",
+                description: "Show the project panel button in the tool window bar.",
+                field: Box::new(SettingField {
+                    json_path: Some("project_panel.button"),
+                    pick: |settings_content| {
+                        settings_content.project_panel.as_ref()?.button.as_ref()
+                    },
+                    write: |settings_content, value, _| {
+                        settings_content
+                            .project_panel
+                            .get_or_insert_default()
+                            .button = value;
+                    },
+                }),
+                metadata: None,
+                files: USER,
+            }),
             SettingsPageItem::SettingItem(SettingItem {
                 title: "Project Panel Dock",
                 description: "Where to dock the project panel.",
@@ -6016,9 +5678,22 @@ fn panels_page() -> SettingsPage {
         ]
     }
 
-    fn terminal_panel_section() -> [SettingsPageItem; 5] {
+    fn terminal_panel_section() -> [SettingsPageItem; 6] {
         [
             SettingsPageItem::SectionHeader("Terminal Panel"),
+            SettingsPageItem::SettingItem(SettingItem {
+                title: "Terminal Button",
+                description: "Show the terminal button in the tool window bar.",
+                field: Box::new(SettingField {
+                    json_path: Some("terminal.button"),
+                    pick: |settings_content| settings_content.terminal.as_ref()?.button.as_ref(),
+                    write: |settings_content, value, _| {
+                        settings_content.terminal.get_or_insert_default().button = value;
+                    },
+                }),
+                metadata: None,
+                files: USER,
+            }),
             SettingsPageItem::SettingItem(SettingItem {
                 title: "Terminal Dock",
                 description: "Where to dock the terminal panel.",
@@ -6093,7 +5768,7 @@ fn panels_page() -> SettingsPage {
             SettingsPageItem::SectionHeader("Git Panel"),
             SettingsPageItem::SettingItem(SettingItem {
                 title: "Git Panel Button",
-                description: "Show the Git panel button in the status bar.",
+                description: "Show the Git panel button in the tool window bar.",
                 field: Box::new(SettingField {
                     json_path: Some("git_panel.button"),
                     pick: |settings_content| settings_content.git_panel.as_ref()?.button.as_ref(),
@@ -7712,73 +7387,31 @@ fn version_control_page() -> SettingsPage {
     fn inline_git_blame_section() -> [SettingsPageItem; 6] {
         [
             SettingsPageItem::SectionHeader("Inline Git Blame"),
-            SettingsPageItem::DynamicItem(DynamicItem {
-                discriminant: SettingItem {
-                    title: "Enabled",
-                    description: "Whether or not to show Git blame data for the currently focused line.",
-                    field: Box::new(SettingField {
-                        json_path: Some("git.inline_blame.enabled"),
-                        pick: |settings_content| {
-                            settings_content
-                                .git
-                                .as_ref()?
-                                .inline_blame
-                                .as_ref()?
-                                .enabled
-                                .as_ref()
-                        },
-                        write: |settings_content, value, _| {
-                            settings_content
-                                .git
-                                .get_or_insert_default()
-                                .inline_blame
-                                .get_or_insert_default()
-                                .enabled = value;
-                        },
-                    }),
-                    metadata: None,
-                    files: USER,
-                },
-                pick_discriminant: |settings_content| {
-                    Some(
-                        *settings_content
+            SettingsPageItem::SettingItem(SettingItem {
+                title: "Enabled",
+                description: "Whether or not to show Git blame data for the currently focused line.",
+                field: Box::new(SettingField {
+                    json_path: Some("git.inline_blame.enabled"),
+                    pick: |settings_content| {
+                        settings_content
                             .git
                             .as_ref()?
                             .inline_blame
                             .as_ref()?
                             .enabled
-                            .as_ref()? as usize,
-                    )
-                },
-                fields: vec![
-                    vec![],
-                    vec![SettingItem {
-                        title: "Location",
-                        description: "Where to render Git blame when it is enabled.",
-                        field: Box::new(SettingField {
-                            json_path: Some("git.inline_blame.location"),
-                            pick: |settings_content| {
-                                settings_content
-                                    .git
-                                    .as_ref()?
-                                    .inline_blame
-                                    .as_ref()?
-                                    .location
-                                    .as_ref()
-                            },
-                            write: |settings_content, value, _| {
-                                settings_content
-                                    .git
-                                    .get_or_insert_default()
-                                    .inline_blame
-                                    .get_or_insert_default()
-                                    .location = value;
-                            },
-                        }),
-                        metadata: None,
-                        files: USER,
-                    }],
-                ],
+                            .as_ref()
+                    },
+                    write: |settings_content, value, _| {
+                        settings_content
+                            .git
+                            .get_or_insert_default()
+                            .inline_blame
+                            .get_or_insert_default()
+                            .enabled = value;
+                    },
+                }),
+                metadata: None,
+                files: USER,
             }),
             SettingsPageItem::SettingItem(SettingItem {
                 title: "Delay",
@@ -9153,76 +8786,6 @@ fn language_settings_data() -> Box<[SettingsPageItem]> {
         ]
     }
 
-    fn tasks_section() -> [SettingsPageItem; 4] {
-        [
-            SettingsPageItem::SectionHeader("Tasks"),
-            SettingsPageItem::SettingItem(SettingItem {
-                title: "Enabled",
-                description: "Whether tasks are enabled for this language.",
-                field: Box::new(SettingField {
-                    json_path: Some("languages.$(language).tasks.enabled"),
-                    pick: |settings_content| {
-                        language_settings_field(settings_content, |language| {
-                            language.tasks.as_ref()?.enabled.as_ref()
-                        })
-                    },
-                    write: |settings_content, value, _| {
-                        language_settings_field_mut(settings_content, value, |language, value| {
-                            language.tasks.get_or_insert_default().enabled = value;
-                        })
-                    },
-                }),
-                metadata: None,
-                files: USER | PROJECT,
-            }),
-            SettingsPageItem::SettingItem(SettingItem {
-                title: "Variables",
-                description: "Extra task variables to set for a particular language.",
-                field: Box::new(
-                    SettingField {
-                        json_path: Some("languages.$(language).tasks.variables"),
-                        pick: |settings_content| {
-                            language_settings_field(settings_content, |language| {
-                                language.tasks.as_ref()?.variables.as_ref()
-                            })
-                        },
-                        write: |settings_content, value, _| {
-                            language_settings_field_mut(
-                                settings_content,
-                                value,
-                                |language, value| {
-                                    language.tasks.get_or_insert_default().variables = value;
-                                },
-                            )
-                        },
-                    }
-                    .unimplemented(),
-                ),
-                metadata: None,
-                files: USER | PROJECT,
-            }),
-            SettingsPageItem::SettingItem(SettingItem {
-                title: "Prefer LSP",
-                description: "Use LSP tasks over Zed language extension tasks.",
-                field: Box::new(SettingField {
-                    json_path: Some("languages.$(language).tasks.prefer_lsp"),
-                    pick: |settings_content| {
-                        language_settings_field(settings_content, |language| {
-                            language.tasks.as_ref()?.prefer_lsp.as_ref()
-                        })
-                    },
-                    write: |settings_content, value, _| {
-                        language_settings_field_mut(settings_content, value, |language, value| {
-                            language.tasks.get_or_insert_default().prefer_lsp = value;
-                        })
-                    },
-                }),
-                metadata: None,
-                files: USER | PROJECT,
-            }),
-        ]
-    }
-
     fn miscellaneous_section() -> [SettingsPageItem; 8] {
         [
             SettingsPageItem::SectionHeader("Miscellaneous"),
@@ -9409,7 +8972,6 @@ fn language_settings_data() -> Box<[SettingsPageItem]> {
             inlay_hints_section(),
             code_lens_item,
             lsp_document_colors_item,
-            tasks_section(),
             miscellaneous_section(),
             global_only_miscellaneous_sub_section(),
         )
@@ -9424,7 +8986,6 @@ fn language_settings_data() -> Box<[SettingsPageItem]> {
             completions_section(),
             inlay_hints_section(),
             code_lens_item,
-            tasks_section(),
             miscellaneous_section(),
         )
     }

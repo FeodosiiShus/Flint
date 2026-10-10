@@ -175,7 +175,7 @@ pub struct TerminalSettingsContent {
     ///
     /// Default: true
     pub open_links_in_mouse_mode: Option<bool>,
-    /// Whether to show the terminal button in the status bar.
+    /// Whether to show the terminal button in the tool window bar.
     ///
     /// Default: true
     pub button: Option<bool>,

@@ -11,7 +11,6 @@ pub enum ChromeRegion {
     TitleBar,
     TabBar,
     Toolbar,
-    StatusBar,
     Panel,
 }
 
@@ -21,7 +20,6 @@ pub fn chrome_height(region: ChromeRegion, cx: &App) -> Option<Pixels> {
         ChromeRegion::TitleBar => sizes.title_bar_height,
         ChromeRegion::TabBar => sizes.tab_bar_height,
         ChromeRegion::Toolbar => sizes.toolbar_height,
-        ChromeRegion::StatusBar => sizes.status_bar_height,
         ChromeRegion::Panel => sizes.panel_height,
     }
 }
@@ -84,7 +82,6 @@ fn configured_icon_size(region: ChromeRegion, cx: &App) -> Option<Pixels> {
         ChromeRegion::TitleBar => sizes.title_bar_icon_size,
         ChromeRegion::TabBar => sizes.tab_bar_icon_size,
         ChromeRegion::Toolbar => sizes.toolbar_icon_size,
-        ChromeRegion::StatusBar => sizes.status_bar_icon_size,
         ChromeRegion::Panel => sizes.panel_icon_size,
     }
 }

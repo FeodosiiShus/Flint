@@ -4,9 +4,7 @@ use collections::FxHashMap;
 use gpui::{App, BackgroundExecutor, Global, SharedString};
 use language::LanguageName;
 use parking_lot::RwLock;
-use task::{
-    AdapterSchema, AdapterSchemas, DebugRequest, DebugScenario, SpawnInTerminal, TaskTemplate,
-};
+use task::{DebugRequest, DebugScenario, SpawnInTerminal, TaskTemplate};
 
 use crate::adapters::{DebugAdapter, DebugAdapterName};
 use std::{collections::BTreeMap, sync::Arc};
@@ -66,21 +64,6 @@ impl DapRegistry {
     pub fn adapter_language(&self, adapter_name: &str) -> Option<LanguageName> {
         self.adapter(adapter_name)
             .and_then(|adapter| adapter.adapter_language_name())
-    }
-
-    pub fn adapters_schema(&self) -> task::AdapterSchemas {
-        let mut schemas = vec![];
-
-        let adapters = &self.0.read().adapters;
-
-        for (name, adapter) in adapters.into_iter() {
-            schemas.push(AdapterSchema {
-                adapter: name.clone().into(),
-                schema: adapter.dap_schema(),
-            });
-        }
-
-        AdapterSchemas(schemas)
     }
 
     pub fn locators(&self) -> FxHashMap<SharedString, Arc<dyn DapLocator>> {

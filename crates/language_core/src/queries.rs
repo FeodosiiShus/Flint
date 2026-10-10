@@ -21,8 +21,6 @@ pub enum QueryFile {
     Overrides,
     #[strum(serialize = "redactions.scm")]
     Redactions,
-    #[strum(serialize = "runnables.scm")]
-    Runnables,
     #[strum(serialize = "debugger.scm")]
     Debugger,
     #[strum(serialize = "textobjects.scm")]
@@ -45,7 +43,6 @@ bitflags::bitflags! {
         const INJECTIONS = 1 << 4;
         const OVERRIDES = 1 << 5;
         const REDACTIONS = 1 << 6;
-        const RUNNABLES = 1 << 7;
         const DEBUGGER = 1 << 8;
         const TEXT_OBJECTS = 1 << 9;
     }
@@ -67,7 +64,6 @@ impl From<QueryFile> for QueryFiles {
             QueryFile::Injections => Self::INJECTIONS,
             QueryFile::Overrides => Self::OVERRIDES,
             QueryFile::Redactions => Self::REDACTIONS,
-            QueryFile::Runnables => Self::RUNNABLES,
             QueryFile::Debugger => Self::DEBUGGER,
             QueryFile::TextObjects => Self::TEXT_OBJECTS,
         }
@@ -125,7 +121,6 @@ pub struct LanguageQueries {
     pub injections: Option<Cow<'static, str>>,
     pub overrides: Option<Cow<'static, str>>,
     pub redactions: Option<Cow<'static, str>>,
-    pub runnables: Option<Cow<'static, str>>,
     pub text_objects: Option<Cow<'static, str>>,
     pub debugger: Option<Cow<'static, str>>,
 }
@@ -146,7 +141,6 @@ impl LanguageQueries {
                 QueryFile::Injections => &mut queries.injections,
                 QueryFile::Overrides => &mut queries.overrides,
                 QueryFile::Redactions => &mut queries.redactions,
-                QueryFile::Runnables => &mut queries.runnables,
                 QueryFile::Debugger => &mut queries.debugger,
                 QueryFile::TextObjects => &mut queries.text_objects,
             };
@@ -173,7 +167,6 @@ mod tests {
         assert_eq!(queries.injections.as_deref(), Some("injections.scm"));
         assert_eq!(queries.overrides.as_deref(), Some("overrides.scm"));
         assert_eq!(queries.redactions.as_deref(), Some("redactions.scm"));
-        assert_eq!(queries.runnables.as_deref(), Some("runnables.scm"));
         assert_eq!(queries.debugger.as_deref(), Some("debugger.scm"));
         assert_eq!(queries.text_objects.as_deref(), Some("textobjects.scm"));
 

@@ -238,24 +238,6 @@ pub fn app_menus() -> Vec<Menu> {
             ],
         },
         Menu {
-            name: "Run".into(),
-            disabled: false,
-            items: vec![
-                MenuItem::action(
-                    "Spawn Task",
-                    zed_actions::Spawn::ViaModal {
-                        reveal_target: None,
-                    },
-                ),
-                MenuItem::separator(),
-                MenuItem::action("Edit tasks.json…", zed_actions::OpenProjectTasks),
-                MenuItem::action("Edit debug.json…", zed_actions::OpenProjectDebugTasks),
-                MenuItem::separator(),
-                MenuItem::action("Toggle Breakpoint", editor::actions::ToggleBreakpoint),
-                MenuItem::action("Edit Breakpoint", editor::actions::EditLogBreakpoint),
-            ],
-        },
-        Menu {
             name: "Window".into(),
             disabled: false,
             items: vec![

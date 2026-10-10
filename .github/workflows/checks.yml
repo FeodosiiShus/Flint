@@ -78,9 +78,6 @@ jobs:
       - name: Run title bar tests
         run: cargo test --locked --package title_bar
 
-      - name: Run status bar widget tests
-        run: cargo test --locked --package status_widgets
-
       - name: Run Search Everywhere tests
         run: cargo test --locked --package search_everywhere --package file_finder --package project_symbols --package command_palette --package picker
 
@@ -112,7 +109,7 @@ jobs:
         run: cargo test --locked --package gpui
 
       - name: Run islands, tool window bar, tool window header and tab tests
-        run: cargo test --locked --package workspace --package ui --lib -- tool_window_bar tool_window_header island inactive_window status_bar_hides_panel_buttons workspace_settings tab::tests hidden_tabs test_new_tab_scrolls_into_view_completely test_pinned_tabs_scroll_to_item_uses_correct_index project_gradient
+        run: cargo test --locked --package workspace --package ui --lib -- tool_window_bar tool_window_header island inactive_window workspace_settings tab::tests hidden_tabs test_new_tab_scrolls_into_view_completely test_pinned_tabs_scroll_to_item_uses_correct_index project_gradient
 
       - name: Run islands chrome pixel tests
         run: cargo test --locked --package ui --test islands_chrome_pixels
@@ -140,9 +137,6 @@ jobs:
 
       - name: Run marker-driven extension install tests
         run: cargo test --locked --package extensions_ui --lib marker_install
-
-      - name: Run which key pending keystrokes tests
-        run: cargo test --locked --package which_key --lib pending_keystrokes_indicator
 
       - name: Run language server activation tests
         run: cargo test --locked --package project --features project/test-support --lib server_activation

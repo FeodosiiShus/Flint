@@ -683,9 +683,8 @@
     "context": "Workspace",
     "use_key_equivalents": true,
     "bindings": {
-      "alt-/": "which_key::ShowPendingBindings",
       // Move focus between the major regions of the window (editor, open
-      // panels, status bar). Accessibility navigation; mirrors VS Code's
+      // panels, title bar). Accessibility navigation; mirrors VS Code's
       // "Focus Next/Previous Part". `cmd-f6` mirrors `f6` so region navigation
       // stays available even while a debug session rebinds plain `f6` to Pause.
       "f6": "workspace::FocusNextPart",
@@ -833,34 +832,6 @@
     "use_key_equivalents": true,
     "bindings": {
       "cmd-n": "workspace::NewFile",
-      "cmd-shift-r": "task::Spawn",
-      // All task parameters are captured and unchanged between reruns by default.
-      // Use the `"reevaluate_context"` parameter to control this.
-      "cmd-alt-r": [
-        "task::Rerun",
-        {
-          "reevaluate_context": false
-        }
-      ],
-      "ctrl-alt-shift-r": [
-        "task::Spawn",
-        {
-          "reveal_target": "center"
-        }
-      ],
-      // also possible to spawn tasks by name:
-      // "foo-bar": ["task::Spawn", { "task_name": "MyTask", "reveal_target": "dock" }]
-      // or by tag:
-      // "foo-bar": ["task::Spawn", { "task_tag": "MyTag" }],
-    },
-  },
-  {
-    "context": "Workspace && debugger_running",
-    "use_key_equivalents": true,
-    "bindings": {
-      // Unbind `f5` to avoid dispatching the `debugger::Rerun` as that is what `f5` is bound to in the `Workspace`
-      // context.
-      "f5": null,
     },
   },
   // Bindings from Sublime Text
@@ -1372,7 +1343,6 @@
       "ctrl-alt-left": "pane::SplitLeft",
       "ctrl-alt-right": "pane::SplitRight",
       "cmd-d": "pane::SplitRight",
-      "cmd-alt-r": "terminal::RerunTask",
     },
   },
   {
@@ -1612,7 +1582,6 @@
     "bindings": {
       "cmd-shift-backspace": "worktree_picker::DeleteWorktree",
       "cmd-alt-shift-backspace": "worktree_picker::ForceDeleteWorktree",
-      "cmd-shift-c": "zed::OpenWorktreeSetupTasks",
     },
   },
   {

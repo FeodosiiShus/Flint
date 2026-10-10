@@ -25,7 +25,6 @@ settings = { workspace = true, features = ["test-support"] }
 [dependencies]
 anyhow.workspace = true
 collections.workspace = true
-dap.workspace = true
 parking_lot.workspace = true
 extension.workspace = true
 gpui.workspace = true
@@ -36,6 +35,5 @@ schemars.workspace = true
 serde_json.workspace = true
 settings.workspace = true
 snippet_provider.workspace = true
-task.workspace = true
 theme.workspace = true
 util.workspace = true

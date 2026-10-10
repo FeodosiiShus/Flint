@@ -21,11 +21,8 @@ workspace = true
 [dependencies]
 anyhow.workspace = true
 collections.workspace = true
-futures.workspace = true
 gpui.workspace = true
 hex.workspace = true
-log.workspace = true
-parking_lot.workspace = true
 proto.workspace = true
 schemars.workspace = true
 serde.workspace = true
@@ -38,4 +35,3 @@ zed_actions.workspace = true
 
 [dev-dependencies]
 gpui = { workspace = true, features = ["test-support"] }
-pretty_assertions.workspace = true

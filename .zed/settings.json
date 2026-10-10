@@ -34,13 +34,6 @@
       "tab_size": 2,
       "formatter": "prettier",
     },
-    "Rust": {
-      "tasks": {
-        "variables": {
-          "RUST_DEFAULT_PACKAGE_RUN": "zed",
-        },
-      },
-    },
   },
   "lsp": {
     "rust-analyzer": {

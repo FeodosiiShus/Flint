@@ -1,7 +1,6 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/activity_indicator",
     "crates/askpass",
     "crates/assets",
     "crates/bench_metrics",
@@ -106,11 +105,9 @@ members = [
     "crates/snippet_provider",
     "crates/sqlez",
     "crates/sqlez_macros",
-    "crates/status_widgets",
     "crates/sum_tree",
     "crates/syntax_theme",
     "crates/task",
-    "crates/tasks_ui",
     "crates/terminal",
     "crates/terminal_view",
     "crates/text",
@@ -150,7 +147,6 @@ edition = "2024"
 # Workspace member crates
 #
 
-activity_indicator = { path = "crates/activity_indicator" }
 askpass = { path = "crates/askpass" }
 assets = { path = "crates/assets" }
 bench_metrics = { path = "crates/bench_metrics" }
@@ -255,11 +251,9 @@ snippet = { path = "crates/snippet" }
 snippet_provider = { path = "crates/snippet_provider" }
 sqlez = { path = "crates/sqlez" }
 sqlez_macros = { path = "crates/sqlez_macros" }
-status_widgets = { path = "crates/status_widgets" }
 sum_tree = { path = "crates/sum_tree" }
 syntax_theme = { path = "crates/syntax_theme" }
 task = { path = "crates/task" }
-tasks_ui = { path = "crates/tasks_ui" }
 terminal = { path = "crates/terminal" }
 terminal_view = { path = "crates/terminal_view" }
 text = { path = "crates/text" }
@@ -747,7 +741,6 @@ wasmtime-environ = { opt-level = 3 }
 wasmtime-internal-cranelift = { opt-level = 3 }
 serde_json = { opt-level = 3 }
 # Build single-source-file crates with cg=1 as it helps make `cargo build` of a whole workspace a bit faster
-activity_indicator = { codegen-units = 1 }
 assets = { codegen-units = 1 }
 breadcrumbs = { codegen-units = 1 }
 collections = { codegen-units = 1 }

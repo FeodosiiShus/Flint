@@ -38,7 +38,6 @@ use crate::{
 const CHEVRON_BUTTON_SIZE: f32 = 20.;
 
 pub mod branch_diff;
-mod branch_indicator;
 pub mod branch_operations;
 pub mod branch_picker;
 mod branch_refs;
@@ -64,9 +63,6 @@ pub mod staged_diff;
 pub mod stash_picker;
 pub mod text_diff_view;
 pub mod unstaged_diff;
-
-pub use blame_ui::GitBlameStatus;
-pub use branch_indicator::BranchIndicator;
 
 pub fn init(cx: &mut App) {
     editor::set_blame_renderer(blame_ui::GitBlameRenderer, cx);

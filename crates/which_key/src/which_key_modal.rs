@@ -2,13 +2,11 @@
 
 use gpui::{
     App, Context, DismissEvent, EventEmitter, FocusHandle, Focusable, KeybindingKeystroke,
-    ScrollHandle, Subscription, WeakEntity, Window,
+    ScrollHandle, Subscription, Window,
 };
-use settings::Settings;
 use std::rc::Rc;
-use theme_settings::ThemeSettings;
-use ui::{DynamicSpacing, prelude::*};
-use workspace::{ModalView, Workspace};
+use ui::prelude::*;
+use workspace::ModalView;
 
 use crate::{
     bindings_for_which_key, map_pending_keystrokes,
@@ -16,7 +14,6 @@ use crate::{
 };
 
 pub struct WhichKeyModal {
-    _workspace: WeakEntity<Workspace>,
     focus_handle: FocusHandle,
     scroll_handle: ScrollHandle,
     bindings: Rc<[PendingBindingRow]>,
@@ -26,17 +23,12 @@ pub struct WhichKeyModal {
 }
 
 impl WhichKeyModal {
-    pub fn new(
-        workspace: WeakEntity<Workspace>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> Self {
+    pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         // Keep focus where it currently is
         let focus_handle = window.focused(cx).unwrap_or(cx.focus_handle());
 
         let handle = cx.weak_entity();
         let mut this = Self {
-            _workspace: workspace,
             focus_handle: focus_handle.clone(),
             scroll_handle: ScrollHandle::new(),
             bindings: Rc::from([]),
@@ -81,32 +73,11 @@ impl Render for WhichKeyModal {
         let max_panel_width = px((f32::from(viewport_size.width) * 0.5).min(480.0));
         let max_content_height = px(f32::from(viewport_size.height) * 0.4);
 
-        // Push above status bar when visible
-        let status_height = self
-            ._workspace
-            .upgrade()
-            .and_then(|workspace| {
-                workspace.read_with(cx, |workspace, cx| {
-                    if workspace.status_bar_visible(cx) {
-                        Some(
-                            DynamicSpacing::Base04.px(cx) * 2.0
-                                + ThemeSettings::get_global(cx).ui_font_size(cx),
-                        )
-                    } else {
-                        None
-                    }
-                })
-            })
-            .unwrap_or(px(0.));
-
-        let margin_bottom = px(16.);
-        let bottom_offset = margin_bottom + status_height;
-
         div()
             .id("which-key-buffer-panel-scroll")
             .occlude()
             .absolute()
-            .bottom(bottom_offset)
+            .bottom(px(16.))
             .right(px(16.))
             .min_w(px(220.))
             .max_w(max_panel_width)

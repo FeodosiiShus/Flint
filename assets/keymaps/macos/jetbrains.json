@@ -106,9 +106,6 @@
     "bindings": {
       "cmd-shift-f12": "workspace::ToggleAllDocks",
       "cmd-shift-r": ["pane::DeploySearch", { "replace_enabled": true }],
-      "ctrl-alt-r": "task::Spawn",
-      "shift-f10": "task::Spawn",
-      "cmd-f5": "task::Rerun",
       "cmd-e": "file_finder::Toggle",
       "cmd-k": "git::Commit",
       "cmd-t": "git::UpdateProject",

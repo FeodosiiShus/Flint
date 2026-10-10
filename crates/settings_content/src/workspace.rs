@@ -557,46 +557,6 @@ pub struct TabBarSettingsContent {
 
 #[with_fallible_options]
 #[derive(Clone, Default, Serialize, Deserialize, JsonSchema, MergeFrom, Debug, PartialEq, Eq)]
-pub struct StatusBarSettingsContent {
-    /// Whether to show the status bar.
-    ///
-    /// Default: true
-    #[serde(rename = "experimental.show")]
-    pub show: Option<bool>,
-    /// Whether to show the name of the active file in the status bar.
-    ///
-    /// Default: false
-    pub show_active_file: Option<bool>,
-    /// Whether to display the active language button in the status bar.
-    ///
-    /// Default: true
-    pub active_language_button: Option<bool>,
-    /// Whether to show the cursor position button in the status bar.
-    ///
-    /// Default: true
-    pub cursor_position_button: Option<bool>,
-    /// Whether to show active line endings button in the status bar.
-    ///
-    /// Default: false
-    pub line_endings_button: Option<bool>,
-    /// Whether to show the active encoding button in the status bar.
-    ///
-    /// Default: non_utf8
-    pub active_encoding_button: Option<EncodingDisplayOptions>,
-    /// Whether to show an indicator while multi-stroke input is pending.
-    /// If the input has a timeout, a countdown is shown and hovering the indicator pauses it.
-    /// Its binding preview popover is disabled when the which-key popup is enabled.
-    ///
-    /// Default: true
-    pub pending_keystrokes_indicator: Option<bool>,
-    pub indentation_button: Option<bool>,
-    pub read_only_button: Option<bool>,
-    pub height: Option<u32>,
-    pub icon_size: Option<u32>,
-}
-
-#[with_fallible_options]
-#[derive(Clone, Default, Serialize, Deserialize, JsonSchema, MergeFrom, Debug, PartialEq, Eq)]
 pub struct PanelChromeSettingsContent {
     pub height: Option<u32>,
     pub icon_size: Option<u32>,
@@ -646,40 +606,6 @@ pub enum ToolWindowIconStyle {
 pub struct ToolWindowHeadersSettingsContent {
     pub show: Option<bool>,
     pub always_show_actions: Option<bool>,
-}
-
-#[derive(
-    Copy,
-    Clone,
-    Debug,
-    Eq,
-    PartialEq,
-    Default,
-    Serialize,
-    Deserialize,
-    JsonSchema,
-    MergeFrom,
-    strum::VariantNames,
-    strum::VariantArray,
-)]
-#[serde(rename_all = "snake_case")]
-pub enum EncodingDisplayOptions {
-    Enabled,
-    Disabled,
-    #[default]
-    NonUtf8,
-}
-impl EncodingDisplayOptions {
-    pub fn should_show(&self, is_utf8: bool, has_bom: bool) -> bool {
-        match self {
-            Self::Disabled => false,
-            Self::Enabled => true,
-            Self::NonUtf8 => {
-                let is_standard_utf8 = is_utf8 && !has_bom;
-                !is_standard_utf8
-            }
-        }
-    }
 }
 
 #[derive(
@@ -871,7 +797,7 @@ pub struct ProjectPanelAutoOpenSettings {
 #[with_fallible_options]
 #[derive(Clone, PartialEq, Default, Serialize, Deserialize, JsonSchema, MergeFrom, Debug)]
 pub struct ProjectPanelSettingsContent {
-    /// Whether to show the project panel button in the status bar.
+    /// Whether to show the project panel button in the tool window bar.
     ///
     /// Default: true
     pub button: Option<bool>,

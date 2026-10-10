@@ -44,14 +44,8 @@ use markdown::{Markdown, MarkdownElement, MarkdownFont, MarkdownStyle};
 use migrate::{MigrationBanner, MigrationEvent, MigrationNotification, MigrationType};
 use migrator::migrate_keymap;
 pub use open_listener::*;
-use paths::{
-    local_debug_file_relative_path, local_settings_file_relative_path,
-    local_tasks_file_relative_path,
-};
-use project::{
-    DirectoryLister, ProjectItem,
-    project_settings::{SettingsObserver, SettingsObserverEvent},
-};
+use paths::local_settings_file_relative_path;
+use project::{DirectoryLister, ProjectItem};
 use project_panel::ProjectPanel;
 use quick_action_bar::QuickActionBar;
 use recent_projects::open_remote_project;
@@ -62,8 +56,7 @@ use search_everywhere::SearchPanel;
 use settings::{
     BaseKeymap, DEFAULT_KEYMAP_PATH, DefaultOpenBehavior, InvalidSettingsError, KeybindSource,
     KeymapFile, KeymapFileLoadResult, MigrationStatus, SPECIFIC_OVERRIDES_KEYMAP_PATH, Settings,
-    SettingsFile, SettingsStore, initial_local_debug_tasks_content,
-    initial_project_settings_content, initial_tasks_content, update_settings_file,
+    SettingsFile, SettingsStore, initial_project_settings_content, update_settings_file,
 };
 #[cfg(debug_assertions)]
 use workspace::workspace_error::{ErrorAction, ErrorSeverity, WorkspaceError};
@@ -91,9 +84,7 @@ use workspace::{
 };
 use workspace::{CloseProject, CloseWindow, with_active_or_new_workspace};
 use workspace::{Pane, notifications::DetachAndPromptErr};
-use zed_actions::{
-    About, OpenBrowser, OpenProjectTasks, OpenServerSettings, OpenSettingsFile, Quit,
-};
+use zed_actions::{About, OpenBrowser, OpenServerSettings, OpenSettingsFile, Quit};
 
 actions!(
     zed,
@@ -110,10 +101,6 @@ actions!(
         OpenDefaultSettings,
         /// Opens project-specific settings file.
         OpenProjectSettingsFile,
-        /// Opens the tasks panel.
-        OpenTasks,
-        /// Opens debug tasks configuration.
-        OpenDebugTasks,
         /// Shows the default semantic token rules (read-only).
         ShowDefaultSemanticTokenRules,
         /// Resets the application database.
@@ -213,26 +200,6 @@ pub fn init(cx: &mut App) {
             open_settings_file(
                 paths::settings_file(),
                 || settings::initial_user_settings_content().as_ref().into(),
-                window,
-                cx,
-            );
-        });
-    })
-    .on_action(|_: &OpenTasks, cx| {
-        with_active_or_new_workspace(cx, |_, window, cx| {
-            open_settings_file(
-                paths::tasks_file(),
-                || settings::initial_tasks_content().as_ref().into(),
-                window,
-                cx,
-            );
-        });
-    })
-    .on_action(|_: &OpenDebugTasks, cx| {
-        with_active_or_new_workspace(cx, |_, window, cx| {
-            open_settings_file(
-                paths::debug_scenarios_file(),
-                || settings::initial_debug_tasks_content().as_ref().into(),
                 window,
                 cx,
             );
@@ -384,7 +351,6 @@ pub fn initialize_workspace(app_state: Arc<AppState>, cx: &mut App) {
     init_cursor_hide_mode(cx);
     init_app_appearance(cx);
     init_reduce_motion(cx);
-    init_global_config_error_notifications(cx);
 
     cx.observe_new(|_multi_workspace: &mut MultiWorkspace, window, cx| {
         let Some(window) = window else {
@@ -462,38 +428,6 @@ pub fn initialize_workspace(app_state: Arc<AppState>, cx: &mut App) {
             log::info!("Using GPU: {:?}", specs);
             show_software_emulation_warning_if_needed(specs, window, cx);
         }
-
-        let active_file_name = cx.new(|_| workspace::active_file_name::ActiveFileName::new());
-        let activity_indicator = activity_indicator::ActivityIndicator::new(workspace, window, cx);
-        let active_buffer_encoding =
-            cx.new(|_| encoding_selector::ActiveBufferEncoding::new(workspace));
-        let active_buffer_language =
-            cx.new(|_| language_selector::ActiveBufferLanguage::new(workspace));
-        let pending_keystrokes_indicator =
-            cx.new(|cx| which_key::PendingKeystrokesIndicator::new(window, cx));
-
-        let cursor_position =
-            cx.new(|_| go_to_line::cursor_position::CursorPosition::new(workspace));
-        let line_ending_indicator =
-            cx.new(|_| line_ending_selector::LineEndingIndicator::default());
-        let git_blame_status = cx.new(|_| git_ui::GitBlameStatus::default());
-        let branch_indicator = cx.new(|cx| git_ui::BranchIndicator::new(workspace, cx));
-        let indentation_indicator = cx.new(status_widgets::IndentationIndicator::new);
-        let read_only_indicator = cx.new(|_| status_widgets::ReadOnlyIndicator::default());
-        workspace.status_bar().update(cx, |status_bar, cx| {
-            status_bar.add_left_item(branch_indicator, window, cx);
-            status_bar.add_left_item(active_file_name, window, cx);
-            status_bar.add_left_item(git_blame_status, window, cx);
-            status_bar.add_left_item(activity_indicator, window, cx);
-            status_bar.add_right_item(active_buffer_language, window, cx);
-            status_bar.add_right_item(read_only_indicator, window, cx);
-            status_bar.add_right_item(indentation_indicator, window, cx);
-            status_bar.add_right_item(active_buffer_encoding, window, cx);
-            status_bar.add_right_item(line_ending_indicator, window, cx);
-            status_bar.add_right_item(cursor_position, window, cx);
-            // Keep these last so they stay leftmost and can change without moving the other items.
-            status_bar.add_right_item(pending_keystrokes_indicator, window, cx);
-        });
 
         let panels_task = initialize_panels(window, cx);
         workspace.set_panels_task(panels_task);
@@ -970,9 +904,6 @@ fn register_actions(
             );
         })
         .register_action(open_project_settings_file)
-        .register_action(open_project_tasks_file)
-        .register_action(open_worktree_setup_tasks_file)
-        .register_action(open_project_debug_tasks_file)
         .register_action(
             |workspace: &mut Workspace,
              _: &zed_actions::project_panel::ToggleFocus,
@@ -1621,46 +1552,6 @@ fn notify_settings_errors(result: settings::SettingsParseResult, is_user: bool, 
     };
 }
 
-fn init_global_config_error_notifications(cx: &mut App) {
-    cx.observe_new(|_: &mut SettingsObserver, _, cx| {
-        cx.subscribe_self::<SettingsObserverEvent>(|_, event, cx| {
-            let (result, file_kind, on_click): (_, _, fn(&mut Window, &mut App)) = match event {
-                SettingsObserverEvent::GlobalTasksUpdated(result) => {
-                    (result, "tasks", |window, cx| {
-                        window.dispatch_action(OpenTasks.boxed_clone(), cx)
-                    })
-                }
-                SettingsObserverEvent::GlobalDebugScenariosUpdated(result) => {
-                    (result, "debug scenarios", |window, cx| {
-                        window.dispatch_action(OpenDebugTasks.boxed_clone(), cx)
-                    })
-                }
-                _ => return,
-            };
-            let id = NotificationId::Named(format!("invalid-global-{file_kind}-file").into());
-            match result {
-                Ok(_) => dismiss_app_notification(&id, cx),
-                Err(error) => {
-                    let message = format!("Invalid global {file_kind} file\n{error}");
-                    show_app_notification(id, cx, move |cx| {
-                        cx.new(|cx| {
-                            MessageNotification::new(message.clone(), cx)
-                                .primary_message("Open File")
-                                .primary_icon(IconName::Settings)
-                                .primary_on_click(move |window, cx| {
-                                    on_click(window, cx);
-                                    cx.emit(DismissEvent);
-                                })
-                        })
-                    });
-                }
-            }
-        })
-        .detach();
-    })
-    .detach();
-}
-
 #[derive(Copy, Clone, Debug, settings::RegisterSetting)]
 struct CursorHideModeSetting(gpui::CursorHideMode);
 
@@ -2035,89 +1926,6 @@ fn open_project_settings_file(
     }
 }
 
-fn open_project_tasks_file(
-    workspace: &mut Workspace,
-    _: &OpenProjectTasks,
-    window: &mut Window,
-    cx: &mut Context<Workspace>,
-) {
-    if let Some(task) = open_local_file(
-        workspace,
-        local_tasks_file_relative_path(),
-        initial_tasks_content(),
-        window,
-        cx,
-    ) {
-        task.detach_and_log_err(cx);
-    }
-}
-
-fn open_worktree_setup_tasks_file(
-    workspace: &mut Workspace,
-    _: &zed_actions::OpenWorktreeSetupTasks,
-    window: &mut Window,
-    cx: &mut Context<Workspace>,
-) {
-    // Kept harmless on purpose: tasks with the `create_worktree` hook run automatically
-    // when a worktree is created, so the example must be safe to save unedited.
-    const WORKTREE_SETUP_TASK_EXAMPLE: &str = r#"  {
-    // Runs automatically after Zed creates a new git worktree.
-    // $ZED_WORKTREE_ROOT is the new worktree's root directory, and
-    // $ZED_MAIN_GIT_WORKTREE is the original repository's working directory.
-    "label": "Set up new worktree",
-    "command": "echo \"Setting up $ZED_WORKTREE_ROOT — edit this command\"",
-    "cwd": "$ZED_WORKTREE_ROOT",
-    "hooks": ["create_worktree"]
-  }"#;
-
-    let Some(open_task) = open_local_file(
-        workspace,
-        local_tasks_file_relative_path(),
-        settings::initial_worktree_setup_tasks_content(),
-        window,
-        cx,
-    ) else {
-        return;
-    };
-
-    cx.spawn_in(window, async move |_, cx| {
-        let editor = open_task.await?;
-        editor.update_in(cx, |editor, window, cx| {
-            // Skip insertion if the file already mentions the hook (even in a comment,
-            // like the seeded template's example — uncommenting it beats duplicating it).
-            // `create_git_worktree` is a serde alias for the same hook.
-            let text = editor.text(cx);
-            if text.contains("create_worktree") || text.contains("create_git_worktree") {
-                return anyhow::Ok(());
-            }
-            tasks_ui::insert_task_json_into_editor(
-                editor,
-                WORKTREE_SETUP_TASK_EXAMPLE.to_string(),
-                window,
-                cx,
-            )
-        })?
-    })
-    .detach_and_log_err(cx);
-}
-
-fn open_project_debug_tasks_file(
-    workspace: &mut Workspace,
-    _: &zed_actions::OpenProjectDebugTasks,
-    window: &mut Window,
-    cx: &mut Context<Workspace>,
-) {
-    if let Some(task) = open_local_file(
-        workspace,
-        local_debug_file_relative_path(),
-        initial_local_debug_tasks_content(),
-        window,
-        cx,
-    ) {
-        task.detach_and_log_err(cx);
-    }
-}
-
 fn open_local_file(
     workspace: &mut Workspace,
     settings_relative_path: &'static RelPath,
@@ -2468,86 +2276,6 @@ mod tests {
             .unwrap();
 
         futures::future::join_all(all_tasks).await;
-    }
-
-    #[gpui::test]
-    async fn test_partial_file_index_status_bar_message(cx: &mut TestAppContext) {
-        let app_state = init_test(cx);
-        set_file_scan_depth(cx, 1);
-
-        let fs = app_state.fs.as_fake();
-        fs.insert_tree(
-            path!("/root"),
-            json!({
-                "junk": {
-                    "a": {
-                        "b": {
-                            "deep.txt": ""
-                        }
-                    }
-                },
-                "top.txt": ""
-            }),
-        )
-        .await;
-
-        let project = Project::test(app_state.fs.clone(), [path!("/root").as_ref()], cx).await;
-        let (multi_workspace, cx) =
-            cx.add_window_view(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
-        let workspace =
-            multi_workspace.read_with(cx, |multi_workspace, _| multi_workspace.workspace().clone());
-        let indicator = workspace.update_in(cx, |workspace, window, cx| {
-            activity_indicator::ActivityIndicator::new(workspace, window, cx)
-        });
-        cx.run_until_parked();
-
-        indicator.update(cx, |indicator, cx| {
-            assert_eq!(
-                indicator.message_to_render(cx),
-                Some("Partial file index".to_string())
-            );
-        });
-
-        set_file_scan_depth(cx, 0);
-        cx.run_until_parked();
-
-        indicator.update(cx, |indicator, cx| {
-            assert_eq!(indicator.message_to_render(cx), None);
-        });
-
-        set_file_scan_depth(cx, 1);
-        cx.run_until_parked();
-
-        indicator.update(cx, |indicator, cx| {
-            assert_eq!(
-                indicator.message_to_render(cx),
-                Some("Partial file index".to_string())
-            );
-        });
-
-        cx.executor().advance_clock(
-            activity_indicator::DEFERRED_SCAN_MESSAGE_TIMEOUT + Duration::from_secs(1),
-        );
-        cx.run_until_parked();
-
-        indicator.update(cx, |indicator, cx| {
-            assert_eq!(indicator.message_to_render(cx), None);
-        });
-
-        fs.insert_tree(
-            path!("/root/other"),
-            json!({
-                "x": {
-                    "y": ""
-                }
-            }),
-        )
-        .await;
-        cx.run_until_parked();
-
-        indicator.update(cx, |indicator, cx| {
-            assert_eq!(indicator.message_to_render(cx), None);
-        });
     }
 
     #[gpui::test]
@@ -5286,7 +5014,6 @@ mod tests {
 
             let expected_namespaces = vec![
                 "action",
-                "activity_indicator",
                 "app_menu",
                 "branch_picker",
                 "branches",
@@ -5329,14 +5056,11 @@ mod tests {
                 "search_panel",
                 "settings_editor",
                 "stash_picker",
-                "status_widgets",
-                "task",
                 "terminal",
                 "terminal_panel",
                 "text_finder",
                 "theme",
                 "toast",
-                "which_key",
                 "window",
                 "workspace",
                 "worktree_picker",
@@ -5509,16 +5233,6 @@ mod tests {
         });
     }
 
-    fn set_file_scan_depth(cx: &mut TestAppContext, depth: u32) {
-        cx.update(|cx| {
-            cx.update_global::<SettingsStore, _>(|store, cx| {
-                store.update_user_settings(cx, |settings| {
-                    settings.project.worktree.file_scan_depth = Some(depth);
-                });
-            });
-        });
-    }
-
     fn init_test_with_state(
         cx: &mut TestAppContext,
         mut app_state: Arc<AppState>,
@@ -5540,7 +5254,6 @@ mod tests {
             git_ui::init(cx);
             project_panel::init(cx);
             terminal_view::init(cx);
-            tasks_ui::init(cx);
             project::debugger::breakpoint_store::BreakpointStore::init(
                 &app_state.client.clone().into(),
             );
@@ -5712,71 +5425,6 @@ mod tests {
         assert!(
             new_content_str.contains("UNIQUEVALUE"),
             "BUG FOUND: Project settings were overwritten when opening via command - original custom content was lost"
-        );
-    }
-
-    #[gpui::test]
-    async fn test_invalid_global_tasks_file_shows_notification_on_startup(
-        cx: &mut gpui::TestAppContext,
-    ) {
-        let app_state = init_test(cx);
-        let tasks_file_path = paths::tasks_file().as_path();
-        app_state
-            .fs
-            .create_dir(tasks_file_path.parent().unwrap())
-            .await
-            .unwrap();
-        app_state
-            .fs
-            .save(
-                tasks_file_path,
-                &r#"[{ "label": "first" }] [{ "label": "trailing garbage" }]"#.into(),
-                Default::default(),
-            )
-            .await
-            .unwrap();
-
-        let project = Project::test(app_state.fs.clone(), [], cx).await;
-        let window = cx.add_window(|window, cx| MultiWorkspace::test_new(project, window, cx));
-        cx.run_until_parked();
-
-        let workspace = window
-            .read_with(cx, |multi_workspace, _| multi_workspace.workspace().clone())
-            .unwrap();
-        let notification_id = NotificationId::Named("invalid-global-tasks-file".into());
-        let shown_notifications = workspace.read_with(cx, |workspace, _| {
-            workspace
-                .notification_ids()
-                .into_iter()
-                .filter(|id| *id == notification_id)
-                .count()
-        });
-        assert_eq!(
-            shown_notifications, 1,
-            "invalid global tasks file at startup should show an app notification"
-        );
-
-        app_state
-            .fs
-            .save(
-                tasks_file_path,
-                &r#"[{ "label": "first", "command": "echo" }]"#.into(),
-                Default::default(),
-            )
-            .await
-            .unwrap();
-        cx.run_until_parked();
-
-        let shown_notifications = workspace.read_with(cx, |workspace, _| {
-            workspace
-                .notification_ids()
-                .into_iter()
-                .filter(|id| *id == notification_id)
-                .count()
-        });
-        assert_eq!(
-            shown_notifications, 0,
-            "fixing the global tasks file should dismiss the notification"
         );
     }
 

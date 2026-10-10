@@ -253,7 +253,6 @@ pub fn deploy_context_menu(
                     "Show Code Actions",
                     Box::new(ToggleCodeActions {
                         deployed_from: None,
-                        quick_launch: false,
                     }),
                 )
                 .separator()

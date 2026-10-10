@@ -12,8 +12,6 @@ pub mod prettier_store;
 pub mod project_search;
 pub mod project_settings;
 pub mod search;
-pub mod task_inventory;
-pub mod task_store;
 pub mod terminals;
 pub mod toolchain_store;
 pub mod trusted_worktrees;
@@ -119,7 +117,6 @@ use std::{
     time::Duration,
 };
 
-use task_store::TaskStore;
 use terminals::Terminals;
 use text::{Anchor, BufferId, Point, Rope};
 use util::{
@@ -142,10 +139,6 @@ pub use language::Location;
 pub use prettier::FORMAT_SUFFIX as TEST_PRETTIER_FORMAT_SUFFIX;
 #[cfg(any(test, feature = "test-support"))]
 pub use prettier::RANGE_FORMAT_SUFFIX as TEST_PRETTIER_RANGE_FORMAT_SUFFIX;
-pub use task_inventory::{
-    BasicContextProvider, ContextProviderWithTasks, DebugScenarioContext, GIT_COMMAND_TASK_TAG,
-    Inventory, TaskContexts, TaskSourceKind,
-};
 
 pub use buffer_store::ProjectTransaction;
 pub use lsp_command::{CallHierarchyItem, IncomingCall, OutgoingCall};
@@ -161,14 +154,12 @@ const MAX_PROJECT_SEARCH_HISTORY_SIZE: usize = 500;
 #[derive(Clone, Copy, Debug)]
 pub struct LocalProjectFlags {
     pub init_worktree_trust: bool,
-    pub watch_global_configs: bool,
 }
 
 impl Default for LocalProjectFlags {
     fn default() -> Self {
         Self {
             init_worktree_trust: true,
-            watch_global_configs: true,
         }
     }
 }
@@ -207,7 +198,6 @@ pub struct Project {
     bookmark_store: Entity<BookmarkStore>,
     breakpoint_store: Entity<BreakpointStore>,
     collab_client: Arc<client::Client>,
-    task_store: Entity<TaskStore>,
     user_store: Entity<UserStore>,
     fs: Arc<dyn Fs>,
     remote_client: Option<Entity<RemoteClient>>,
@@ -1109,7 +1099,6 @@ impl Project {
         LspStore::init(&client);
         GitStore::init(&client);
         SettingsObserver::init(&client);
-        TaskStore::init(Some(&client));
         ToolchainStore::init(&client);
         DapStore::init(&client, cx);
         BreakpointStore::init(&client);
@@ -1210,26 +1199,8 @@ impl Project {
             });
             git_store.update(cx, |git_store, _| git_store.set_project(weak_self));
 
-            let task_store = cx.new(|cx| {
-                TaskStore::local(
-                    buffer_store.downgrade(),
-                    worktree_store.clone(),
-                    toolchain_store.read(cx).as_language_toolchain_store(),
-                    environment.clone(),
-                    git_store.clone(),
-                    cx,
-                )
-            });
-
-            let settings_observer = cx.new(|cx| {
-                SettingsObserver::new_local(
-                    fs.clone(),
-                    worktree_store.clone(),
-                    task_store.clone(),
-                    flags.watch_global_configs,
-                    cx,
-                )
-            });
+            let settings_observer =
+                cx.new(|cx| SettingsObserver::new_local(fs.clone(), worktree_store.clone(), cx));
             cx.subscribe(&settings_observer, Self::on_settings_observer_event)
                 .detach();
 
@@ -1267,7 +1238,6 @@ impl Project {
                 snippets,
                 languages,
                 collab_client: client,
-                task_store,
                 user_store,
                 settings_observer,
                 fs,
@@ -1431,23 +1401,9 @@ impl Project {
             });
             git_store.update(cx, |git_store, _| git_store.set_project(weak_self));
 
-            let task_store = cx.new(|cx| {
-                TaskStore::remote(
-                    buffer_store.downgrade(),
-                    worktree_store.clone(),
-                    toolchain_store.read(cx).as_language_toolchain_store(),
-                    remote.read(cx).proto_client(),
-                    REMOTE_SERVER_PROJECT_ID,
-                    git_store.clone(),
-                    cx,
-                )
-            });
-
             let settings_observer = cx.new(|cx| {
                 SettingsObserver::new_remote(
-                    fs.clone(),
                     worktree_store.clone(),
-                    task_store.clone(),
                     Some(remote_proto.clone()),
                     false,
                     cx,
@@ -1492,7 +1448,6 @@ impl Project {
                 snippets,
                 languages,
                 collab_client: client,
-                task_store,
                 user_store,
                 settings_observer,
                 fs,
@@ -1544,7 +1499,6 @@ impl Project {
             WorktreeStore::init_remote(&remote_proto);
             LspStore::init(&remote_proto);
             SettingsObserver::init(&remote_proto);
-            TaskStore::init(Some(&remote_proto));
             ToolchainStore::init(&remote_proto);
             DapStore::init(&remote_proto, cx);
             BreakpointStore::init(&remote_proto);
@@ -1599,7 +1553,6 @@ impl Project {
                 None,
                 LocalProjectFlags {
                     init_worktree_trust: false,
-                    ..Default::default()
                 },
                 cx,
             )
@@ -1656,7 +1609,6 @@ impl Project {
                 None,
                 LocalProjectFlags {
                     init_worktree_trust,
-                    ..Default::default()
                 },
                 cx,
             )
@@ -1856,11 +1808,6 @@ impl Project {
         } else {
             ReplicaId::LOCAL
         }
-    }
-
-    #[inline]
-    pub fn task_store(&self) -> &Entity<TaskStore> {
-        &self.task_store
     }
 
     #[inline]
@@ -3036,52 +2983,20 @@ impl Project {
         event: &SettingsObserverEvent,
         cx: &mut Context<Self>,
     ) {
-        match event {
-            SettingsObserverEvent::LocalSettingsUpdated(result) => match result {
-                Err(InvalidSettingsError::LocalSettings { message, path }) => {
-                    let message = format!("Failed to set local settings in {path:?}:\n{message}");
-                    cx.emit(Event::Toast {
-                        notification_id: format!("local-settings-{path:?}").into(),
-                        link: None,
-                        message,
-                    });
-                }
-                Ok(path) => cx.emit(Event::HideToast {
+        let SettingsObserverEvent::LocalSettingsUpdated(result) = event;
+        match result {
+            Err(InvalidSettingsError::LocalSettings { message, path }) => {
+                let message = format!("Failed to set local settings in {path:?}:\n{message}");
+                cx.emit(Event::Toast {
                     notification_id: format!("local-settings-{path:?}").into(),
-                }),
-                Err(_) => {}
-            },
-            SettingsObserverEvent::LocalTasksUpdated(result) => match result {
-                Err(InvalidSettingsError::Tasks { message, path }) => {
-                    let message = format!("Failed to set local tasks in {path:?}:\n{message}");
-                    cx.emit(Event::Toast {
-                        notification_id: format!("local-tasks-{path:?}").into(),
-                        link: None,
-                        message,
-                    });
-                }
-                Ok(path) => cx.emit(Event::HideToast {
-                    notification_id: format!("local-tasks-{path:?}").into(),
-                }),
-                Err(_) => {}
-            },
-            SettingsObserverEvent::LocalDebugScenariosUpdated(result) => match result {
-                Err(InvalidSettingsError::Debug { message, path }) => {
-                    let message =
-                        format!("Failed to set local debug scenarios in {path:?}:\n{message}");
-                    cx.emit(Event::Toast {
-                        notification_id: format!("local-debug-scenarios-{path:?}").into(),
-                        link: None,
-                        message,
-                    });
-                }
-                Ok(path) => cx.emit(Event::HideToast {
-                    notification_id: format!("local-debug-scenarios-{path:?}").into(),
-                }),
-                Err(_) => {}
-            },
-            SettingsObserverEvent::GlobalTasksUpdated(_)
-            | SettingsObserverEvent::GlobalDebugScenariosUpdated(_) => {}
+                    link: None,
+                    message,
+                });
+            }
+            Ok(path) => cx.emit(Event::HideToast {
+                notification_id: format!("local-settings-{path:?}").into(),
+            }),
+            Err(_) => {}
         }
     }
 

@@ -95,10 +95,6 @@ pub struct TitleBarSettingsContent {
     ///
     /// Default: true
     pub show_worktree_name: Option<bool>,
-    /// Whether to show the project host and name in the titlebar.
-    ///
-    /// Default: true
-    pub show_project_items: Option<bool>,
     /// Whether to show the menus in the title bar.
     ///
     /// Default: false
@@ -117,9 +113,6 @@ pub struct TitleBarSettingsContent {
     pub button_layout: Option<WindowButtonLayoutContent>,
     pub height: Option<u32>,
     pub icon_size: Option<u32>,
-    pub show_project_badge: Option<bool>,
-    pub show_run_widget: Option<bool>,
     pub show_search_button: Option<bool>,
-    pub show_settings_button: Option<bool>,
     pub show_project_gradient: Option<bool>,
 }

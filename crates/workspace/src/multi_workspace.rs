@@ -70,7 +70,6 @@ pub enum SidebarEvent {
 pub trait Sidebar: Focusable + Render + EventEmitter<SidebarEvent> + Sized {
     fn width(&self, cx: &App) -> Pixels;
     fn set_width(&mut self, width: Option<Pixels>, cx: &mut Context<Self>);
-    fn has_notifications(&self, cx: &App) -> bool;
     fn side(&self, _cx: &App) -> SidebarSide;
 
     /// Makes focus reset back to the search editor upon toggling the sidebar from outside
@@ -99,7 +98,6 @@ pub trait SidebarHandle: 'static + Send + Sync {
     fn focus_handle(&self, cx: &App) -> FocusHandle;
     fn focus(&self, window: &mut Window, cx: &mut App);
     fn prepare_for_focus(&self, window: &mut Window, cx: &mut App);
-    fn has_notifications(&self, cx: &App) -> bool;
     fn to_any(&self) -> AnyView;
     fn entity_id(&self) -> EntityId;
     fn cycle_project(&self, forward: bool, window: &mut Window, cx: &mut App);
@@ -138,10 +136,6 @@ impl<T: Sidebar> SidebarHandle for Entity<T> {
 
     fn prepare_for_focus(&self, window: &mut Window, cx: &mut App) {
         self.update(cx, |this, cx| this.prepare_for_focus(window, cx));
-    }
-
-    fn has_notifications(&self, cx: &App) -> bool {
-        self.read(cx).has_notifications(cx)
     }
 
     fn to_any(&self) -> AnyView {
@@ -258,8 +252,8 @@ impl MultiWorkspace {
         Self::subscribe_to_workspace(&workspace, window, cx);
         let weak_self = cx.weak_entity();
         let active_workspace_id = Rc::new(Cell::new(workspace.entity_id()));
-        workspace.update(cx, |workspace, cx| {
-            workspace.set_multi_workspace(weak_self, active_workspace_id.clone(), cx);
+        workspace.update(cx, |workspace, _cx| {
+            workspace.set_multi_workspace(weak_self, active_workspace_id.clone());
         });
         let this = Self {
             window_id: window.window_handle().window_id(),
@@ -313,12 +307,6 @@ impl MultiWorkspace {
 
     pub fn sidebar_open(&self) -> bool {
         self.sidebar_open
-    }
-
-    pub fn sidebar_has_notifications(&self, cx: &App) -> bool {
-        self.sidebar
-            .as_ref()
-            .map_or(false, |s| s.has_notifications(cx))
     }
 
     pub fn multi_workspace_enabled(&self) -> bool {
@@ -671,8 +659,8 @@ impl MultiWorkspace {
         Self::subscribe_to_workspace(workspace, window, cx);
         let weak_self = cx.weak_entity();
         let active_workspace_id = self.active_workspace_id.clone();
-        workspace.update(cx, |workspace, cx| {
-            workspace.set_multi_workspace(weak_self, active_workspace_id, cx);
+        workspace.update(cx, |workspace, _cx| {
+            workspace.set_multi_workspace(weak_self, active_workspace_id);
         });
 
         let entity = cx.entity();
@@ -1885,10 +1873,6 @@ impl Sidebar for TestSidebar {
     }
 
     fn set_width(&mut self, _width: Option<Pixels>, _cx: &mut Context<Self>) {}
-
-    fn has_notifications(&self, _cx: &App) -> bool {
-        false
-    }
 
     fn side(&self, _cx: &App) -> SidebarSide {
         SidebarSide::Left

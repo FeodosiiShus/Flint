@@ -1845,57 +1845,6 @@ fn definition_locations_from_lsp(
     locations
 }
 
-pub async fn location_link_from_lsp(
-    link: lsp::LocationLink,
-    lsp_store: &Entity<LspStore>,
-    buffer: &Entity<Buffer>,
-    server_id: LanguageServerId,
-    cx: &mut AsyncApp,
-) -> Result<LocationLink> {
-    let (_, language_server) = language_server_for_buffer(lsp_store, buffer, server_id, cx)?;
-
-    let (origin_range, target_uri, target_range) = (
-        link.origin_selection_range,
-        link.target_uri,
-        link.target_selection_range,
-    );
-
-    let target_buffer_handle = lsp_store
-        .update(cx, |lsp_store, cx| {
-            lsp_store.open_local_buffer_via_lsp(target_uri, language_server.server_id(), cx)
-        })
-        .await?;
-
-    Ok(cx.update(|cx| {
-        let origin_location = origin_range.map(|origin_range| {
-            let origin_buffer = buffer.read(cx);
-            let origin_range = range_from_lsp(origin_range);
-            let origin_start = origin_buffer.clip_point_utf16(origin_range.start, Bias::Left);
-            let origin_end = origin_buffer.clip_point_utf16(origin_range.end, Bias::Left);
-            Location {
-                buffer: buffer.clone(),
-                range: origin_buffer.anchor_after(origin_start)
-                    ..origin_buffer.anchor_before(origin_end),
-            }
-        });
-
-        let target_buffer = target_buffer_handle.read(cx);
-        let target_range = range_from_lsp(target_range);
-        let target_start = target_buffer.clip_point_utf16(target_range.start, Bias::Left);
-        let target_end = target_buffer.clip_point_utf16(target_range.end, Bias::Left);
-        let target_location = Location {
-            buffer: target_buffer_handle,
-            range: target_buffer.anchor_after(target_start)
-                ..target_buffer.anchor_before(target_end),
-        };
-
-        LocationLink {
-            origin: origin_location,
-            target: target_location,
-        }
-    }))
-}
-
 pub fn location_links_to_proto(
     links: Vec<LocationLink>,
     lsp_store: &mut LspStore,

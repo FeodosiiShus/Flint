@@ -37,25 +37,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "activity_indicator"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "editor",
- "extension_host",
- "fs",
- "futures",
- "gpui",
- "language",
- "project",
- "proto",
- "smallvec",
- "ui",
- "util",
- "workspace",
-]
-
-[[package]]
 name = "addr2line"
 version = "0.25.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2247,7 +2228,6 @@ dependencies = [
  "smallvec",
  "snippet",
  "sum_tree",
- "task",
  "text",
  "theme",
  "theme_settings",
@@ -2329,7 +2309,6 @@ dependencies = [
  "gpui",
  "language",
  "picker",
- "project",
  "ui",
  "util",
  "workspace",
@@ -2598,7 +2577,6 @@ dependencies = [
  "semver",
  "serde",
  "serde_json",
- "serde_json_lenient",
  "settings",
  "sha2",
  "task",
@@ -3345,7 +3323,6 @@ dependencies = [
  "smallvec",
  "strum",
  "sysinfo",
- "task",
  "terminal",
  "theme",
  "theme_settings",
@@ -3390,7 +3367,6 @@ dependencies = [
  "remote_connection",
  "serde_json",
  "settings",
- "task",
  "terminal",
  "theme",
  "theme_settings",
@@ -3449,7 +3425,6 @@ dependencies = [
  "project",
  "rope",
  "serde_json",
- "settings",
  "text",
  "theme",
  "ui",
@@ -4475,7 +4450,6 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "collections",
- "dap",
  "extension",
  "fs",
  "gpui",
@@ -4487,7 +4461,6 @@ dependencies = [
  "serde_json",
  "settings",
  "snippet_provider",
- "task",
  "theme",
  "util",
 ]
@@ -4610,7 +4583,6 @@ dependencies = [
  "streaming-iterator",
  "strsim",
  "sum_tree",
- "task",
  "text",
  "theme",
  "theme_settings",
@@ -4742,7 +4714,6 @@ dependencies = [
  "anyhow",
  "async-fs",
  "async-trait",
- "chrono",
  "collections",
  "fs",
  "futures",
@@ -4750,7 +4721,6 @@ dependencies = [
  "gpui",
  "grammars",
  "http_client",
- "itertools 0.14.0",
  "json_schema_store",
  "language",
  "log",
@@ -4771,13 +4741,10 @@ dependencies = [
  "semver",
  "serde",
  "serde_json",
- "serde_json_lenient",
  "settings",
  "smallvec",
  "smol",
  "snippet",
- "task",
- "tempfile",
  "terminal",
  "theme",
  "tree-sitter",
@@ -9103,25 +9070,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
 
 [[package]]
-name = "status_widgets"
-version = "0.1.0"
-dependencies = [
- "editor",
- "fs",
- "gpui",
- "language",
- "menu",
- "paths",
- "picker",
- "project",
- "serde_json",
- "settings",
- "ui",
- "util",
- "workspace",
-]
-
-[[package]]
 name = "streaming-iterator"
 version = "0.1.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -9429,12 +9377,8 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "collections",
- "futures",
  "gpui",
  "hex",
- "log",
- "parking_lot",
- "pretty_assertions",
  "proto",
  "schemars",
  "serde",
@@ -9443,33 +9387,6 @@ dependencies = [
  "sha2",
  "shellexpand",
  "util",
- "zed_actions",
-]
-
-[[package]]
-name = "tasks_ui"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "collections",
- "editor",
- "file_icons",
- "fuzzy",
- "gpui",
- "itertools 0.14.0",
- "language",
- "menu",
- "picker",
- "project",
- "serde_json",
- "task",
- "tree-sitter",
- "tree-sitter-json",
- "tree-sitter-rust",
- "tree-sitter-typescript",
- "ui",
- "util",
- "workspace",
  "zed_actions",
 ]
 
@@ -9527,7 +9444,6 @@ dependencies = [
  "serde",
  "settings",
  "sysinfo",
- "task",
  "theme",
  "theme_settings",
  "thiserror 2.0.17",
@@ -9834,7 +9750,6 @@ checksum = "1f3ccbac311fea05f86f61904b462b55fb3df8837a366dfc601a0161d0532f20"
 name = "title_bar"
 version = "0.1.0"
 dependencies = [
- "arrayvec",
  "git_ui_core",
  "gpui",
  "platform_title_bar",
@@ -11365,11 +11280,8 @@ dependencies = [
  "command_palette",
  "gpui",
  "settings",
- "theme",
- "theme_settings",
  "ui",
  "util",
- "vim_mode_setting",
  "workspace",
  "zed_actions",
 ]
@@ -12316,7 +12228,6 @@ dependencies = [
 name = "zed"
 version = "1.24.0"
 dependencies = [
- "activity_indicator",
  "anyhow",
  "askpass",
  "assets",
@@ -12389,9 +12300,7 @@ dependencies = [
  "shellexpand",
  "smol",
  "snippet_provider",
- "status_widgets",
  "sysinfo",
- "tasks_ui",
  "terminal_view",
  "theme",
  "theme_extension",

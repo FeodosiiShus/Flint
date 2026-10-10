@@ -14,7 +14,7 @@ use project::{
 use settings::{IntoGpui, RegisterSetting, Settings};
 use ui::{IconButtonShape, Tooltip, prelude::*};
 use workspace::{
-    HideStatusItem, ItemHandle, ToggleWorktreeSecurity, Workspace,
+    HideButtonSetting, ItemHandle, ToggleWorktreeSecurity, Workspace,
     dock::{DockPosition, Panel, PanelEvent},
 };
 
@@ -593,8 +593,8 @@ impl Panel for LanguageServicesPanel {
         }
     }
 
-    fn hide_button_setting(&self, _: &App) -> Option<HideStatusItem> {
-        Some(HideStatusItem::new(|settings| {
+    fn hide_button_setting(&self, _: &App) -> Option<HideButtonSetting> {
+        Some(HideButtonSetting::new(|settings| {
             settings
                 .language_services_panel
                 .get_or_insert_default()

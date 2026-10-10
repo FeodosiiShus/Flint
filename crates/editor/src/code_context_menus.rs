@@ -13,10 +13,8 @@ use markdown::{CopyButtonVisibility, Markdown, MarkdownElement};
 use multi_buffer::Anchor;
 use ordered_float::OrderedFloat;
 use project::lsp_store::CompletionDocumentation;
-use project::{CodeAction, Completion, CompletionGroup, TaskSourceKind};
+use project::{CodeAction, Completion, CompletionGroup};
 use project::{CompletionDisplayOptions, CompletionSource};
-use task::DebugScenario;
-use task::TaskContext;
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -27,7 +25,6 @@ use std::{
     ops::Range,
     rc::Rc,
 };
-use task::ResolvedTask;
 use ui::{
     Divider, ListItem, ListSubHeader, Popover, ScrollAxes, Scrollbars, Tooltip, WithScrollbar,
     prelude::*,
@@ -37,7 +34,6 @@ use util::ResultExt;
 use crate::hover_popover::{hover_markdown_style, open_markdown_url};
 use crate::{
     CodeActionProvider, CompletionId, CompletionProvider, DisplayRow, Editor, EditorStyle,
-    ResolvedTasks,
     actions::{ConfirmCodeAction, ConfirmCompletion},
     split_words, styled_runs_for_code_label,
 };
@@ -1848,122 +1844,14 @@ pub struct AvailableCodeAction {
     pub provider: Rc<dyn CodeActionProvider>,
 }
 
-#[derive(Clone)]
-pub struct CodeActionContents {
-    tasks: Option<Rc<ResolvedTasks>>,
-    actions: Option<Rc<[AvailableCodeAction]>>,
-    debug_scenarios: Vec<DebugScenario>,
-    pub(crate) context: TaskContext,
-}
-
-impl CodeActionContents {
-    pub(crate) fn new(
-        tasks: Option<ResolvedTasks>,
-        actions: Option<Rc<[AvailableCodeAction]>>,
-        debug_scenarios: Vec<DebugScenario>,
-        context: TaskContext,
-    ) -> Self {
-        Self {
-            tasks: tasks.map(Rc::new),
-            actions,
-            debug_scenarios,
-            context,
-        }
-    }
-
-    pub fn tasks(&self) -> Option<&ResolvedTasks> {
-        self.tasks.as_deref()
-    }
-
-    fn len(&self) -> usize {
-        let tasks_len = self.tasks.as_ref().map_or(0, |tasks| tasks.templates.len());
-        let code_actions_len = self.actions.as_ref().map_or(0, |actions| actions.len());
-        tasks_len + code_actions_len + self.debug_scenarios.len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.len() == 0
-    }
-
-    fn iter(&self) -> impl Iterator<Item = CodeActionsItem> + '_ {
-        self.tasks
-            .iter()
-            .flat_map(|tasks| {
-                tasks
-                    .templates
-                    .iter()
-                    .map(|(kind, task)| CodeActionsItem::Task(kind.clone(), task.clone()))
-            })
-            .chain(self.actions.iter().flat_map(|actions| {
-                actions.iter().map(|available| CodeActionsItem::CodeAction {
-                    action: available.action.clone(),
-                    provider: available.provider.clone(),
-                })
-            }))
-            .chain(
-                self.debug_scenarios
-                    .iter()
-                    .cloned()
-                    .map(CodeActionsItem::DebugScenario),
-            )
-    }
-
-    pub fn get(&self, mut index: usize) -> Option<CodeActionsItem> {
-        if let Some(tasks) = &self.tasks {
-            if let Some((kind, task)) = tasks.templates.get(index) {
-                return Some(CodeActionsItem::Task(kind.clone(), task.clone()));
-            } else {
-                index -= tasks.templates.len();
-            }
-        }
-        if let Some(actions) = &self.actions {
-            if let Some(available) = actions.get(index) {
-                return Some(CodeActionsItem::CodeAction {
-                    action: available.action.clone(),
-                    provider: available.provider.clone(),
-                });
-            } else {
-                index -= actions.len();
-            }
-        }
-
-        self.debug_scenarios
-            .get(index)
-            .cloned()
-            .map(CodeActionsItem::DebugScenario)
-    }
-}
-
-#[derive(Clone)]
-pub enum CodeActionsItem {
-    Task(TaskSourceKind, ResolvedTask),
-    CodeAction {
-        action: CodeAction,
-        provider: Rc<dyn CodeActionProvider>,
-    },
-    DebugScenario(DebugScenario),
-}
-
-impl CodeActionsItem {
-    pub fn label(&self) -> String {
-        match self {
-            Self::CodeAction { action, .. } => action.lsp_action.title().to_owned(),
-            Self::Task(_, task) => task.resolved_label.clone(),
-            Self::DebugScenario(scenario) => scenario.label.to_string(),
-        }
-    }
-
+impl AvailableCodeAction {
     pub fn menu_label(&self) -> String {
-        match self {
-            Self::CodeAction { action, .. } => action.lsp_action.title().replace("\n", ""),
-            Self::Task(_, task) => task.resolved_label.replace("\n", ""),
-            Self::DebugScenario(scenario) => format!("debug: {}", scenario.label),
-        }
+        self.action.lsp_action.title().replace("\n", "")
     }
 }
 
 pub struct CodeActionsMenu {
-    pub actions: CodeActionContents,
+    pub actions: Rc<[AvailableCodeAction]>,
     pub buffer: Entity<Buffer>,
     pub selected_item: usize,
     pub scroll_handle: UniformListScrollHandle,
@@ -2037,9 +1925,7 @@ impl CodeActionsMenu {
 
     fn origin(&self) -> ContextMenuOrigin {
         match &self.deployed_from {
-            Some(CodeActionSource::Indicator(row)) | Some(CodeActionSource::RunMenu(row)) => {
-                ContextMenuOrigin::GutterIndicator(*row)
-            }
+            Some(CodeActionSource::Indicator(row)) => ContextMenuOrigin::GutterIndicator(*row),
             Some(CodeActionSource::QuickActionBar) => ContextMenuOrigin::QuickActionBar,
             None => ContextMenuOrigin::Cursor,
         }
@@ -2107,15 +1993,7 @@ impl CodeActionsMenu {
             self.actions
                 .iter()
                 .enumerate()
-                .max_by_key(|(_, action)| match action {
-                    CodeActionsItem::Task(_, task) => task.resolved_label.chars().count(),
-                    CodeActionsItem::CodeAction { action, .. } => {
-                        action.lsp_action.title().chars().count()
-                    }
-                    CodeActionsItem::DebugScenario(scenario) => {
-                        format!("debug: {}", scenario.label).chars().count()
-                    }
-                })
+                .max_by_key(|(_, available)| available.action.lsp_action.title().chars().count())
                 .map(|(ix, _)| ix),
         )
         .with_sizing_behavior(ListSizingBehavior::Infer);

@@ -10,7 +10,7 @@ use gpui::{
     App, AppContext, AsyncApp, BorrowAppContext, Entity, Global, SharedString, Task, UpdateGlobal,
 };
 
-use paths::{local_settings_file_relative_path, task_file_name};
+use paths::local_settings_file_relative_path;
 use schemars::{JsonSchema, json_schema};
 use serde_json::Value;
 use settings_content::{CommandAliasTarget, ParseStatus};
@@ -210,9 +210,7 @@ impl Ord for SettingsFile {
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub enum LocalSettingsKind {
     Settings,
-    Tasks,
     Editorconfig,
-    Debug,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -1060,25 +1058,6 @@ impl SettingsStore {
             .filter(|content| !content.is_empty());
         let mut zed_settings_changed = false;
         match (path.clone(), kind, content) {
-            (LocalSettingsPath::InWorktree(directory_path), LocalSettingsKind::Tasks, _) => {
-                return Err(InvalidSettingsError::Tasks {
-                    message: "Attempted to submit tasks into the settings store".to_string(),
-                    path: directory_path
-                        .join(RelPath::from_unix_str(task_file_name()).unwrap())
-                        .as_std_path()
-                        .to_path_buf(),
-                });
-            }
-            (LocalSettingsPath::InWorktree(directory_path), LocalSettingsKind::Debug, _) => {
-                return Err(InvalidSettingsError::Debug {
-                    message: "Attempted to submit debugger config into the settings store"
-                        .to_string(),
-                    path: directory_path
-                        .join(RelPath::from_unix_str(task_file_name()).unwrap())
-                        .as_std_path()
-                        .to_path_buf(),
-                });
-            }
             (LocalSettingsPath::InWorktree(directory_path), LocalSettingsKind::Settings, None) => {
                 zed_settings_changed = self
                     .local_settings
@@ -1515,14 +1494,6 @@ pub enum InvalidSettingsError {
         path: LocalSettingsPath,
         message: String,
     },
-    Tasks {
-        path: PathBuf,
-        message: String,
-    },
-    Debug {
-        path: PathBuf,
-        message: String,
-    },
 }
 
 impl std::fmt::Display for InvalidSettingsError {
@@ -1532,9 +1503,7 @@ impl std::fmt::Display for InvalidSettingsError {
             | InvalidSettingsError::UserSettings { message }
             | InvalidSettingsError::ServerSettings { message }
             | InvalidSettingsError::DefaultSettings { message }
-            | InvalidSettingsError::Tasks { message, .. }
-            | InvalidSettingsError::Editorconfig { message, .. }
-            | InvalidSettingsError::Debug { message, .. } => write!(f, "{message}"),
+            | InvalidSettingsError::Editorconfig { message, .. } => write!(f, "{message}"),
         }
     }
 }

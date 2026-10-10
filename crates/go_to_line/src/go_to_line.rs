@@ -1,8 +1,6 @@
-pub mod cursor_position;
-
-use cursor_position::UserCaretPosition;
 use editor::{
-    Anchor, Editor, RowHighlightOptions, SelectionEffects, ToPoint,
+    Anchor, Editor, MBTextSummary, MultiBufferSnapshot, RowHighlightOptions, SelectionEffects,
+    ToPoint,
     actions::Tab,
     scroll::{Autoscroll, ScrollOffset},
 };
@@ -11,7 +9,8 @@ use gpui::{
     Subscription, div, prelude::*,
 };
 use language::Buffer;
-use text::{Bias, Point};
+use std::num::NonZeroU32;
+use text::{Bias, Point, Selection};
 use theme::ActiveTheme;
 use ui::prelude::*;
 use util::paths::FILE_ROW_COLUMN_DELIMITER;
@@ -19,6 +18,43 @@ use workspace::{DismissDecision, ModalView};
 
 pub fn init(cx: &mut App) {
     cx.observe_new(GoToLine::register).detach();
+}
+
+/// A position in the editor, where user's caret is located at.
+/// Lines are never zero as there is always at least one line in the editor.
+/// Characters may start with zero as the caret may be at the beginning of a line, but all editors start counting characters from 1,
+/// where "1" will mean "before the first character".
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct UserCaretPosition {
+    pub line: NonZeroU32,
+    pub character: NonZeroU32,
+}
+
+impl UserCaretPosition {
+    fn at_selection_end(selection: &Selection<Point>, snapshot: &MultiBufferSnapshot) -> Self {
+        let selection_end = selection.head();
+        let (line, character) =
+            if let Some((buffer_snapshot, point)) = snapshot.point_to_buffer_point(selection_end) {
+                let line_start = Point::new(point.row, 0);
+
+                let chars_to_last_position = buffer_snapshot
+                    .text_summary_for_range::<text::TextSummary, _>(line_start..point)
+                    .chars as u32;
+                (line_start.row, chars_to_last_position)
+            } else {
+                let line_start = Point::new(selection_end.row, 0);
+
+                let chars_to_last_position = snapshot
+                    .text_summary_for_range::<MBTextSummary, _>(line_start..selection_end)
+                    .chars as u32;
+                (selection_end.row, chars_to_last_position)
+            };
+
+        Self {
+            line: NonZeroU32::new(line + 1).expect("added 1"),
+            character: NonZeroU32::new(character + 1).expect("added 1"),
+        }
+    }
 }
 
 pub struct GoToLine {
@@ -351,15 +387,14 @@ impl Render for GoToLine {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cursor_position::{CursorPosition, SelectionStats, UserCaretPosition};
-    use editor::actions::{MoveRight, MoveToBeginning, SelectAll};
+    use editor::actions::MoveToBeginning;
     use gpui::{TestAppContext, VisualTestContext};
     use indoc::indoc;
     use language::Capability;
     use multi_buffer::{MultiBuffer, PathKey};
     use project::{FakeFs, Project};
     use serde_json::json;
-    use std::{num::NonZeroU32, sync::Arc, time::Duration};
+    use std::sync::Arc;
     use util::{path, rel_path::rel_path};
     use workspace::{AppState, MultiWorkspace, Workspace};
 
@@ -522,170 +557,6 @@ mod tests {
     }
 
     #[gpui::test]
-    async fn test_unicode_characters_selection(cx: &mut TestAppContext) {
-        init_test(cx);
-
-        let fs = FakeFs::new(cx.executor());
-        fs.insert_tree(
-            path!("/dir"),
-            json!({
-                "a.rs": "ēlo"
-            }),
-        )
-        .await;
-
-        let project = Project::test(fs, [path!("/dir").as_ref()], cx).await;
-        let (multi_workspace, cx) =
-            cx.add_window_view(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
-        let workspace = multi_workspace.read_with(cx, |mw, _| mw.workspace().clone());
-        workspace.update_in(cx, |workspace, window, cx| {
-            let cursor_position = cx.new(|_| CursorPosition::new(workspace));
-            workspace.status_bar().update(cx, |status_bar, cx| {
-                status_bar.add_right_item(cursor_position, window, cx);
-            });
-        });
-
-        let worktree_id = workspace.update(cx, |workspace, cx| {
-            workspace.project().update(cx, |project, cx| {
-                project.worktrees(cx).next().unwrap().read(cx).id()
-            })
-        });
-        let _buffer = project
-            .update(cx, |project, cx| {
-                project.open_local_buffer(path!("/dir/a.rs"), cx)
-            })
-            .await
-            .unwrap();
-        let editor = workspace
-            .update_in(cx, |workspace, window, cx| {
-                workspace.open_path((worktree_id, rel_path("a.rs")), None, true, window, cx)
-            })
-            .await
-            .unwrap()
-            .downcast::<Editor>()
-            .unwrap();
-
-        cx.executor().advance_clock(Duration::from_millis(200));
-        workspace.update(cx, |workspace, cx| {
-            assert_eq!(
-                &SelectionStats {
-                    lines: 0,
-                    characters: 0,
-                    selections: 1,
-                },
-                workspace
-                    .status_bar()
-                    .read(cx)
-                    .item_of_type::<CursorPosition>()
-                    .expect("missing cursor position item")
-                    .read(cx)
-                    .selection_stats(),
-                "No selections should be initially"
-            );
-        });
-        editor.update_in(cx, |editor, window, cx| {
-            editor.select_all(&SelectAll, window, cx)
-        });
-        cx.executor().advance_clock(Duration::from_millis(200));
-        workspace.update(cx, |workspace, cx| {
-            assert_eq!(
-                &SelectionStats {
-                    lines: 1,
-                    characters: 3,
-                    selections: 1,
-                },
-                workspace
-                    .status_bar()
-                    .read(cx)
-                    .item_of_type::<CursorPosition>()
-                    .expect("missing cursor position item")
-                    .read(cx)
-                    .selection_stats(),
-                "After selecting a text with multibyte unicode characters, the character count should be correct"
-            );
-        });
-    }
-
-    #[gpui::test]
-    async fn test_unicode_line_numbers(cx: &mut TestAppContext) {
-        init_test(cx);
-
-        let text = "ēlo你好";
-        let fs = FakeFs::new(cx.executor());
-        fs.insert_tree(
-            path!("/dir"),
-            json!({
-                "a.rs": text
-            }),
-        )
-        .await;
-
-        let project = Project::test(fs, [path!("/dir").as_ref()], cx).await;
-        let (multi_workspace, cx) =
-            cx.add_window_view(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
-        let workspace = multi_workspace.read_with(cx, |mw, _| mw.workspace().clone());
-        workspace.update_in(cx, |workspace, window, cx| {
-            let cursor_position = cx.new(|_| CursorPosition::new(workspace));
-            workspace.status_bar().update(cx, |status_bar, cx| {
-                status_bar.add_right_item(cursor_position, window, cx);
-            });
-        });
-
-        let worktree_id = workspace.update(cx, |workspace, cx| {
-            workspace.project().update(cx, |project, cx| {
-                project.worktrees(cx).next().unwrap().read(cx).id()
-            })
-        });
-        let _buffer = project
-            .update(cx, |project, cx| {
-                project.open_local_buffer(path!("/dir/a.rs"), cx)
-            })
-            .await
-            .unwrap();
-        let editor = workspace
-            .update_in(cx, |workspace, window, cx| {
-                workspace.open_path((worktree_id, rel_path("a.rs")), None, true, window, cx)
-            })
-            .await
-            .unwrap()
-            .downcast::<Editor>()
-            .unwrap();
-
-        editor.update_in(cx, |editor, window, cx| {
-            editor.move_to_beginning(&MoveToBeginning, window, cx)
-        });
-        cx.executor().advance_clock(Duration::from_millis(200));
-        assert_eq!(
-            user_caret_position(1, 1),
-            current_position(&workspace, cx),
-            "Beginning of the line should be at first line, before any characters"
-        );
-
-        for (i, c) in text.chars().enumerate() {
-            let i = i as u32 + 1;
-            editor.update_in(cx, |editor, window, cx| {
-                editor.move_right(&MoveRight, window, cx)
-            });
-            cx.executor().advance_clock(Duration::from_millis(200));
-            assert_eq!(
-                user_caret_position(1, i + 1),
-                current_position(&workspace, cx),
-                "Wrong position for char '{c}' in string '{text}'",
-            );
-        }
-
-        editor.update_in(cx, |editor, window, cx| {
-            editor.move_right(&MoveRight, window, cx)
-        });
-        cx.executor().advance_clock(Duration::from_millis(200));
-        assert_eq!(
-            user_caret_position(1, text.chars().count() as u32 + 1),
-            current_position(&workspace, cx),
-            "After reaching the end of the text, position should not change when moving right"
-        );
-    }
-
-    #[gpui::test]
     async fn test_go_into_unicode(cx: &mut TestAppContext) {
         init_test(cx);
 
@@ -703,12 +574,6 @@ mod tests {
         let (multi_workspace, cx) =
             cx.add_window_view(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
         let workspace = multi_workspace.read_with(cx, |mw, _| mw.workspace().clone());
-        workspace.update_in(cx, |workspace, window, cx| {
-            let cursor_position = cx.new(|_| CursorPosition::new(workspace));
-            workspace.status_bar().update(cx, |status_bar, cx| {
-                status_bar.add_right_item(cursor_position, window, cx);
-            });
-        });
 
         let worktree_id = workspace.update(cx, |workspace, cx| {
             workspace.project().update(cx, |project, cx| {
@@ -733,17 +598,15 @@ mod tests {
         editor.update_in(cx, |editor, window, cx| {
             editor.move_to_beginning(&MoveToBeginning, window, cx)
         });
-        cx.executor().advance_clock(Duration::from_millis(200));
-        assert_eq!(user_caret_position(1, 1), current_position(&workspace, cx));
+        assert_eq!(user_caret_position(1, 1), current_position(&editor, cx));
 
         for (i, c) in text.chars().enumerate() {
             let i = i as u32 + 1;
             let point = user_caret_position(1, i + 1);
             go_to_point(point, user_caret_position(1, i), &workspace, cx);
-            cx.executor().advance_clock(Duration::from_millis(200));
             assert_eq!(
                 point,
-                current_position(&workspace, cx),
+                current_position(&editor, cx),
                 "When going to {point:?}, expecting the cursor to be at char '{c}' in string '{text}'",
             );
         }
@@ -754,27 +617,20 @@ mod tests {
             &workspace,
             cx,
         );
-        cx.executor().advance_clock(Duration::from_millis(200));
         assert_eq!(
             user_caret_position(1, text.chars().count() as u32 + 1),
-            current_position(&workspace, cx),
+            current_position(&editor, cx),
             "When going into too large point, should go to the end of the text"
         );
     }
 
-    fn current_position(
-        workspace: &Entity<Workspace>,
-        cx: &mut VisualTestContext,
-    ) -> UserCaretPosition {
-        workspace.update(cx, |workspace, cx| {
-            workspace
-                .status_bar()
-                .read(cx)
-                .item_of_type::<CursorPosition>()
-                .expect("missing cursor position item")
-                .read(cx)
-                .position()
-                .expect("No position found")
+    fn current_position(editor: &Entity<Editor>, cx: &mut VisualTestContext) -> UserCaretPosition {
+        editor.update(cx, |editor, cx| {
+            let display_snapshot = editor.display_snapshot(cx);
+            UserCaretPosition::at_selection_end(
+                &editor.selections.last::<Point>(&display_snapshot),
+                &editor.buffer().read(cx).snapshot(cx),
+            )
         })
     }
 

@@ -1,29 +1,18 @@
 //! Which-key support for Zed.
 
 mod pending_bindings;
-mod pending_keystrokes_indicator;
 mod which_key_modal;
 mod which_key_settings;
 
 use gpui::{
     Action, App, KeybindingKeystroke, Keystroke, PlatformKeyboardMapper, SharedString, Window,
 };
-pub use pending_keystrokes_indicator::PendingKeystrokesIndicator;
 use settings::Settings;
 use std::{sync::LazyLock, time::Duration};
 use util::ResultExt;
 use which_key_modal::WhichKeyModal;
 use which_key_settings::WhichKeySettings;
 use workspace::Workspace;
-
-gpui::actions!(
-    which_key,
-    [
-        /// Shows the bindings that can complete the pending key sequence. Must be bound to a
-        /// single keystroke.
-        ShowPendingBindings
-    ]
-);
 
 pub(crate) struct PendingBinding {
     pub(crate) remaining_keystrokes: Vec<KeybindingKeystroke>,
@@ -41,38 +30,23 @@ pub(crate) fn map_pending_keystrokes(
         .collect()
 }
 
-pub(crate) fn bindings_for_pending_input(
-    window: &Window,
-    pending_keystrokes: &[Keystroke],
-) -> Vec<PendingBinding> {
-    collect_bindings_for_pending_input(window, pending_keystrokes, |_| true)
-}
-
 pub(crate) fn bindings_for_which_key(
     window: &Window,
     pending_keystrokes: &[Keystroke],
 ) -> Vec<PendingBinding> {
-    collect_bindings_for_pending_input(window, pending_keystrokes, |binding| {
-        let binding_keystrokes = binding.keystrokes();
-        !FILTERED_KEYSTROKES.iter().any(|filtered| {
-            binding_keystrokes.len() >= filtered.len()
-                && binding_keystrokes[..filtered.len()]
-                    .iter()
-                    .map(|keystroke| keystroke.inner())
-                    .eq(filtered.iter())
-        })
-    })
-}
-
-fn collect_bindings_for_pending_input(
-    window: &Window,
-    pending_keystrokes: &[Keystroke],
-    mut include_binding: impl FnMut(&gpui::KeyBinding) -> bool,
-) -> Vec<PendingBinding> {
     window
         .possible_bindings_for_input(pending_keystrokes)
         .into_iter()
-        .filter(|binding| include_binding(binding))
+        .filter(|binding| {
+            let binding_keystrokes = binding.keystrokes();
+            !FILTERED_KEYSTROKES.iter().any(|filtered| {
+                binding_keystrokes.len() >= filtered.len()
+                    && binding_keystrokes[..filtered.len()]
+                        .iter()
+                        .map(|keystroke| keystroke.inner())
+                        .eq(filtered.iter())
+            })
+        })
         .filter_map(|binding| {
             let remaining_keystrokes = binding.keystrokes().get(pending_keystrokes.len()..)?;
             if remaining_keystrokes.is_empty() {
@@ -89,10 +63,7 @@ fn collect_bindings_for_pending_input(
 }
 
 fn binding_label(action: &dyn Action) -> SharedString {
-    match action.as_any().downcast_ref::<zed_actions::Spawn>() {
-        Some(zed_actions::Spawn::ByName { task_name, .. }) => task_name.clone().into(),
-        _ => command_palette::humanize_action_name(action.name()).into(),
-    }
+    command_palette::humanize_action_name(action.name()).into()
 }
 
 pub fn init(cx: &mut App) {
@@ -129,9 +100,7 @@ pub fn init(cx: &mut App) {
                             return;
                         };
 
-                        workspace.toggle_modal(window, cx, |window, cx| {
-                            WhichKeyModal::new(workspace_handle.clone(), window, cx)
-                        });
+                        workspace.toggle_modal(window, cx, WhichKeyModal::new);
                     })
                     .log_err();
             }));
@@ -252,15 +221,5 @@ mod tests {
             ui::text_for_keybinding_keystrokes(&mapped, cx),
             expected_display_text
         );
-    }
-
-    #[test]
-    fn test_binding_label_uses_task_name_for_spawn_by_name() {
-        let action = zed_actions::Spawn::ByName {
-            task_name: "lazygit".to_string(),
-            reveal_target: None,
-        };
-
-        assert_eq!(binding_label(&action), "lazygit");
     }
 }

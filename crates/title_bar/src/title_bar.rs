@@ -3,7 +3,6 @@ mod title_bar_settings;
 mod toolbar_widgets;
 
 use crate::application_menu::{ApplicationMenu, show_menus};
-use arrayvec::ArrayVec;
 use git_ui_core::worktree_picker::WorktreePicker;
 pub use platform_title_bar::{
     self, DraggedWindowTab, MergeAllWindows, MoveTabToNewWindow, PlatformTitleBar,
@@ -17,8 +16,8 @@ use crate::application_menu::{
 };
 
 use gpui::{
-    AnyElement, App, Context, Entity, Focusable, FontWeight, Hsla, InteractiveElement, IntoElement,
-    MouseButton, ParentElement, Render, Styled, Subscription, WeakEntity, Window, actions, div,
+    AnyElement, App, Context, Entity, Hsla, InteractiveElement, IntoElement, MouseButton,
+    ParentElement, Render, Styled, Subscription, WeakEntity, Window, actions, div,
 };
 use project::{
     Project, git_store::GitStoreEvent, project_settings::ProjectSettings,
@@ -30,9 +29,9 @@ use settings::Settings as _;
 use std::path::Path;
 use theme::ActiveTheme;
 use title_bar_settings::TitleBarSettings;
-use toolbar_widgets::{badge_text_color, project_color, project_initials, upstream_tracking_label};
+use toolbar_widgets::{project_color, upstream_tracking_label};
 use ui::{
-    ButtonLike, IconButtonShape, IconWithIndicator, Indicator, PopoverMenu, TintColor, Tooltip,
+    ButtonLike, IconWithIndicator, Indicator, KeyBinding, PopoverMenu, TintColor, Tooltip,
     prelude::*, utils::platform_title_bar_height,
 };
 use util::ResultExt;
@@ -42,12 +41,11 @@ use workspace::{
 
 use zed_actions::OpenRemote;
 
-const MAX_PROJECT_NAME_LENGTH: usize = 40;
 const MAX_BRANCH_NAME_LENGTH: usize = 40;
 const MAX_SHORT_SHA_LENGTH: usize = 8;
-const MAX_TASK_LABEL_LENGTH: usize = 30;
-const PROJECT_BADGE_SIZE: f32 = 20.;
-const PROJECT_BADGE_CORNER_RADIUS: f32 = 5.;
+const SEARCH_FIELD_WIDTH: f32 = 240.;
+const SEARCH_FIELD_DEBUG_SELECTOR: &str = "title_bar_search_field";
+const WORKTREE_AND_BRANCH_DEBUG_SELECTOR: &str = "title_bar_worktree_and_branch";
 
 fn linked_worktree_name_anchor<'a>(
     main_worktree_path: Option<&'a Path>,
@@ -64,8 +62,6 @@ fn linked_worktree_name_anchor<'a>(
 actions!(
     collab,
     [
-        /// Toggles the project menu dropdown.
-        ToggleProjectMenu,
         /// Switches to a different git branch.
         SwitchBranch,
     ]
@@ -161,8 +157,6 @@ impl Render for TitleBar {
 
         let show_menus = show_menus(cx);
 
-        let mut children = <ArrayVec<_, 5>>::new();
-
         let mut project_name = None;
         let mut repository = None;
         let mut linked_worktree_name = None;
@@ -229,55 +223,46 @@ impl Render for TitleBar {
             .filter(|_| title_bar_settings.show_project_gradient)
             .map(|name| Self::themed_project_color(name, cx));
 
-        children.push(
-            h_flex()
-                .h_full()
-                .gap_0p5()
-                .map(|title_bar| {
-                    let mut render_project_items = title_bar_settings.show_branch_name
-                        || title_bar_settings.show_project_items;
-                    title_bar
-                        .when_some(
-                            self.application_menu.clone().filter(|_| !show_menus),
-                            |title_bar, menu| {
-                                // Hide the project/branch items to make room when the
-                                // menu bar is expanded -- except in accessible mode,
-                                // where the menu bar is always expanded but those
-                                // controls must still remain reachable.
-                                render_project_items &= !menu
-                                    .update(cx, |menu, cx| menu.all_menus_shown(cx))
-                                    || cx.accessible_mode();
-                                title_bar.child(menu)
-                            },
-                        )
-                        .children(self.render_restricted_mode(cx))
-                        .when(render_project_items, |title_bar| {
-                            title_bar
-                                .when(title_bar_settings.show_project_items, |title_bar| {
-                                    title_bar
-                                        .children(self.render_project_host(cx))
-                                        .child(self.render_project_name(project_name, window, cx))
-                                })
-                                .when_some(
-                                    repository.filter(|_| is_git_enabled),
-                                    |title_bar, repository| {
-                                        title_bar.children(self.render_worktree_and_branch(
-                                            repository,
-                                            linked_worktree_name,
-                                            cx,
-                                        ))
-                                    },
-                                )
-                                .when(title_bar_settings.show_run_widget, |title_bar| {
-                                    title_bar.child(self.render_run_widget(cx))
-                                })
-                        })
-                })
-                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                .into_any_element(),
-        );
-
-        children.extend(Self::render_right_buttons(&title_bar_settings));
+        let project_items = h_flex()
+            .h_full()
+            .gap_0p5()
+            .map(|title_bar| {
+                let mut render_project_items = true;
+                title_bar
+                    .when_some(
+                        self.application_menu.clone().filter(|_| !show_menus),
+                        |title_bar, menu| {
+                            // Hide the project/branch items to make room when the
+                            // menu bar is expanded -- except in accessible mode,
+                            // where the menu bar is always expanded but those
+                            // controls must still remain reachable.
+                            render_project_items &= !menu
+                                .update(cx, |menu, cx| menu.all_menus_shown(cx))
+                                || cx.accessible_mode();
+                            title_bar.child(menu)
+                        },
+                    )
+                    .children(self.render_restricted_mode(cx))
+                    .when(render_project_items, |title_bar| {
+                        title_bar
+                            .children(self.render_project_host(cx))
+                            .when_some(
+                                repository.filter(|_| is_git_enabled),
+                                |title_bar, repository| {
+                                    title_bar.children(self.render_worktree_and_branch(
+                                        repository,
+                                        linked_worktree_name,
+                                        cx,
+                                    ))
+                                },
+                            )
+                            .when(title_bar_settings.show_search_button, |title_bar| {
+                                title_bar.child(Self::render_search_field(cx))
+                            })
+                    })
+            })
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .into_any_element();
 
         if show_menus {
             self.platform_titlebar.update(cx, |this, _| {
@@ -325,7 +310,7 @@ impl Render for TitleBar {
                                 .size_full()
                                 .justify_between()
                                 .opacity(content_opacity)
-                                .children(children),
+                                .child(project_items),
                         ),
                 )
                 .into_any_element()
@@ -333,7 +318,7 @@ impl Render for TitleBar {
             self.platform_titlebar.update(cx, |this, _| {
                 this.set_button_layout(button_layout);
                 this.set_project_gradient(project_gradient);
-                this.set_children(children);
+                this.set_children([project_items]);
             });
             self.platform_titlebar.clone().into_any_element()
         }
@@ -617,278 +602,50 @@ impl TitleBar {
         None
     }
 
-    fn render_project_name(
-        &self,
-        name: Option<SharedString>,
-        _: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement {
-        let workspace = self.workspace.clone();
-
-        let display_name = if let Some(name) = &name {
-            util::truncate_and_trailoff(name, MAX_PROJECT_NAME_LENGTH)
-        } else {
-            "Open Recent Project".to_string()
-        };
-
-        let is_sidebar_open = self
-            .multi_workspace
-            .as_ref()
-            .and_then(|mw| mw.upgrade())
-            .map(|mw| {
-                let mw = mw.read(cx);
-                mw.sidebar_open() && mw.multi_workspace_enabled()
-            })
-            .unwrap_or(false);
-
-        if is_sidebar_open {
-            return self
-                .render_recent_projects_popover(name.as_ref(), display_name, cx)
-                .into_any_element();
-        }
-
-        let focus_handle = workspace
-            .upgrade()
-            .map(|w| w.read(cx).focus_handle(cx))
-            .unwrap_or_else(|| cx.focus_handle());
-
-        let window_project_groups: Vec<_> = self
-            .multi_workspace
-            .as_ref()
-            .and_then(|mw| mw.upgrade())
-            .map(|mw| mw.read(cx).project_group_keys())
-            .unwrap_or_default();
-
-        PopoverMenu::new("recent-projects-menu")
-            .menu(move |window, cx| {
-                Some(recent_projects::RecentProjects::popover(
-                    workspace.clone(),
-                    window_project_groups.clone(),
-                    None,
-                    focus_handle.clone(),
-                    window,
-                    cx,
-                ))
-            })
-            .trigger_with_tooltip(
-                Self::render_project_trigger(name.as_ref(), display_name, cx),
-                move |_window, cx| {
-                    Tooltip::for_action("Recent Projects", &zed_actions::OpenRecent::default(), cx)
-                },
-            )
-            .anchor(gpui::Anchor::TopLeft)
-            .into_any_element()
-    }
-
-    fn render_recent_projects_popover(
-        &self,
-        name: Option<&SharedString>,
-        display_name: String,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement {
-        let workspace = self.workspace.clone();
-
-        let focus_handle = workspace
-            .upgrade()
-            .map(|w| w.read(cx).focus_handle(cx))
-            .unwrap_or_else(|| cx.focus_handle());
-
-        let window_project_groups: Vec<_> = self
-            .multi_workspace
-            .as_ref()
-            .and_then(|mw| mw.upgrade())
-            .map(|mw| mw.read(cx).project_group_keys())
-            .unwrap_or_default();
-
-        PopoverMenu::new("sidebar-title-recent-projects-menu")
-            .menu(move |window, cx| {
-                Some(recent_projects::RecentProjects::popover(
-                    workspace.clone(),
-                    window_project_groups.clone(),
-                    None,
-                    focus_handle.clone(),
-                    window,
-                    cx,
-                ))
-            })
-            .trigger_with_tooltip(
-                Self::render_project_trigger(name, display_name, cx),
-                move |_window, cx| {
-                    Tooltip::for_action("Recent Projects", &zed_actions::OpenRecent::default(), cx)
-                },
-            )
-            .anchor(gpui::Anchor::TopLeft)
-    }
-
-    fn render_project_trigger(
-        name: Option<&SharedString>,
-        display_name: String,
-        cx: &App,
-    ) -> ButtonLike {
-        let region = ui::ChromeRegion::TitleBar;
-        let is_project_selected = name.is_some();
-        let badge = name
-            .filter(|_| TitleBarSettings::get_global(cx).show_project_badge)
-            .and_then(|name| Self::render_project_badge(name, cx));
-        let chevron_size = ui::chrome_icon_size(region, IconSize::XSmall, cx);
-
-        ButtonLike::new("project_name_trigger")
-            .selected_style(ButtonStyle::Tinted(TintColor::Accent))
-            .chrome_region(region)
-            .tab_index(0isize)
-            .aria_label(display_name.clone())
-            .child(
-                h_flex()
-                    .gap_1()
-                    .children(badge)
-                    .child(
-                        Label::new(display_name)
-                            .size(LabelSize::Small)
-                            .when(!is_project_selected, |label| label.color(Color::Muted)),
-                    )
-                    .child(
-                        Icon::new(IconName::ChevronDown)
-                            .size(chevron_size)
-                            .color(Color::Muted),
-                    ),
-            )
-    }
-
     fn themed_project_color(project_name: &str, cx: &App) -> Hsla {
         let theme = cx.theme();
         project_color(project_name, &theme.accents().0, theme.colors().text_accent)
     }
 
-    fn render_project_badge(project_name: &str, cx: &App) -> Option<AnyElement> {
-        let initials = project_initials(project_name)?;
-        let background = Self::themed_project_color(project_name, cx);
-
-        Some(
-            h_flex()
-                .flex_none()
-                .justify_center()
-                .size(px(PROJECT_BADGE_SIZE))
-                .rounded(px(PROJECT_BADGE_CORNER_RADIUS))
-                .bg(background)
-                .child(
-                    Label::new(initials)
-                        .size(LabelSize::XSmall)
-                        .weight(FontWeight::SEMIBOLD)
-                        .color(Color::Custom(badge_text_color(background))),
-                )
-                .into_any_element(),
-        )
-    }
-
-    fn last_scheduled_task_label(&self, cx: &App) -> Option<SharedString> {
-        let (_, task) = self
-            .project
-            .read(cx)
-            .task_store()
-            .read(cx)
-            .task_inventory()?
-            .read(cx)
-            .last_scheduled_task(None)?;
-        Some(util::truncate_and_trailoff(task.display_label(), MAX_TASK_LABEL_LENGTH).into())
-    }
-
-    fn render_run_widget(&self, cx: &App) -> impl IntoElement {
+    fn render_search_field(cx: &App) -> impl IntoElement {
         let region = ui::ChromeRegion::TitleBar;
-        let task_label = self
-            .last_scheduled_task_label(cx)
-            .unwrap_or_else(|| "Run…".into());
+        let action = zed_actions::search_everywhere::Toggle { tab: None };
 
         h_flex()
-            .h_full()
-            .ml_2()
-            .gap_0p5()
+            .debug_selector(|| SEARCH_FIELD_DEBUG_SELECTOR.into())
             .child(
-                Button::new("run_widget_task_picker", task_label)
-                    .label_size(LabelSize::Small)
+                ButtonLike::new("title_bar_search_field")
+                    .style(ButtonStyle::Outlined)
                     .chrome_region(region)
+                    .width(px(SEARCH_FIELD_WIDTH))
                     .tab_index(0isize)
-                    .end_icon(
-                        Icon::new(IconName::ChevronDown)
-                            .size(IconSize::XSmall)
-                            .color(Color::Muted),
+                    .aria_label("Search Everywhere")
+                    .tooltip(Tooltip::for_action_title("Search Everywhere", &action))
+                    .child(
+                        h_flex()
+                            .w_full()
+                            .gap_1()
+                            .child(
+                                Icon::new(IconName::MagnifyingGlass)
+                                    .size(ui::chrome_icon_size(region, IconSize::Small, cx))
+                                    .color(Color::Muted),
+                            )
+                            .child(
+                                Label::new("Search Everywhere")
+                                    .size(LabelSize::Small)
+                                    .color(Color::Muted),
+                            )
+                            .child(
+                                h_flex()
+                                    .flex_1()
+                                    .justify_end()
+                                    .child(KeyBinding::for_action(&action, cx)),
+                            ),
                     )
-                    .tooltip(Tooltip::for_action_title(
-                        "Run Task…",
-                        &zed_actions::Spawn::modal(),
-                    ))
-                    .on_click(|_, window, cx| {
-                        window.dispatch_action(Box::new(zed_actions::Spawn::modal()), cx)
+                    .on_click(move |_, window, cx| {
+                        window.dispatch_action(Box::new(action.clone()), cx)
                     }),
             )
-            .child(
-                IconButton::new("run_widget_rerun", IconName::PlayFilled)
-                    .shape(IconButtonShape::Square)
-                    .icon_size(IconSize::Small)
-                    .icon_color(Color::Created)
-                    .chrome_region(region)
-                    .tab_index(0isize)
-                    .aria_label("Rerun Last Task")
-                    .tooltip(Tooltip::for_action_title(
-                        "Rerun Last Task",
-                        &zed_actions::Rerun::default(),
-                    ))
-                    .on_click(|_, window, cx| {
-                        window.dispatch_action(Box::new(zed_actions::Rerun::default()), cx)
-                    }),
-            )
-    }
-
-    fn render_right_buttons(settings: &TitleBarSettings) -> Option<AnyElement> {
-        if !settings.show_search_button && !settings.show_settings_button {
-            return None;
-        }
-        let region = ui::ChromeRegion::TitleBar;
-
-        Some(
-            h_flex()
-                .h_full()
-                .pr_1()
-                .gap_0p5()
-                .when(settings.show_search_button, |this| {
-                    this.child(
-                        IconButton::new("title_bar_search_everywhere", IconName::MagnifyingGlass)
-                            .shape(IconButtonShape::Square)
-                            .icon_size(IconSize::Small)
-                            .chrome_region(region)
-                            .tab_index(0isize)
-                            .aria_label("Search Everywhere")
-                            .tooltip(Tooltip::for_action_title(
-                                "Search Everywhere",
-                                &zed_actions::search_everywhere::Toggle { tab: None },
-                            ))
-                            .on_click(|_, window, cx| {
-                                window.dispatch_action(
-                                    Box::new(zed_actions::search_everywhere::Toggle { tab: None }),
-                                    cx,
-                                )
-                            }),
-                    )
-                })
-                .when(settings.show_settings_button, |this| {
-                    this.child(
-                        IconButton::new("title_bar_settings", IconName::Settings)
-                            .shape(IconButtonShape::Square)
-                            .icon_size(IconSize::Small)
-                            .chrome_region(region)
-                            .tab_index(0isize)
-                            .aria_label("Settings")
-                            .tooltip(Tooltip::for_action_title(
-                                "Settings",
-                                &zed_actions::OpenSettings,
-                            ))
-                            .on_click(|_, window, cx| {
-                                window.dispatch_action(Box::new(zed_actions::OpenSettings), cx)
-                            }),
-                    )
-                })
-                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                .into_any_element(),
-        )
     }
 
     fn render_worktree_and_branch(
@@ -1082,6 +839,7 @@ impl TitleBar {
 
         Some(
             h_flex()
+                .debug_selector(|| WORKTREE_AND_BRANCH_DEBUG_SELECTOR.into())
                 .gap_px()
                 .children(worktree_button)
                 .when(show_separator, |this| {
@@ -1101,20 +859,22 @@ impl TitleBar {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::toolbar_widgets::project_accent_index;
     use gpui::{
         Background, Modifiers, TestAppContext, UpdateGlobal as _, VisualTestContext, point,
     };
-    use settings::SettingsStore;
-    use std::{cell::Cell, rc::Rc};
+    use settings::{SettingsContent, SettingsStore};
+    use std::{cell::RefCell, rc::Rc};
     use util::paths::PathStyle;
     use workspace::AppState;
 
     const PROJECT_ROOT: &str = "/flint";
     const PROJECT_NAME: &str = "flint";
 
-    async fn open_named_project_title_bar(
+    async fn open_project_title_bar(
         cx: &mut TestAppContext,
-    ) -> (Entity<TitleBar>, &mut VisualTestContext) {
+        checked_out_branch: Option<&'static str>,
+    ) -> (Entity<Workspace>, Entity<TitleBar>, &mut VisualTestContext) {
         let app_state = cx.update(|cx| {
             let app_state = AppState::test(cx);
             PlatformTitleBar::init(cx);
@@ -1125,6 +885,18 @@ mod tests {
             .create_dir(Path::new(PROJECT_ROOT))
             .await
             .expect("project root should be created");
+        if let Some(branch) = checked_out_branch {
+            let dot_git = Path::new(PROJECT_ROOT).join(".git");
+            app_state
+                .fs
+                .create_dir(&dot_git)
+                .await
+                .expect("git directory should be created");
+            app_state
+                .fs
+                .as_fake()
+                .set_branch_name(&dot_git, Some(branch));
+        }
         let project = Project::test(app_state.fs.clone(), [Path::new(PROJECT_ROOT)], cx).await;
         let (multi_workspace, cx) =
             cx.add_window_view(|window, cx| MultiWorkspace::test_new(project, window, cx));
@@ -1137,20 +909,28 @@ mod tests {
         });
         cx.update(|window, _| window.activate_window());
         cx.run_until_parked();
-        (title_bar, cx)
+        (workspace, title_bar, cx)
+    }
+
+    fn update_user_settings(cx: &mut VisualTestContext, update: impl FnOnce(&mut SettingsContent)) {
+        cx.update(|window, cx| {
+            SettingsStore::update_global(cx, |store, cx| store.update_user_settings(cx, update));
+            window.refresh();
+        });
+        cx.run_until_parked();
     }
 
     #[gpui::test]
     async fn project_gradient_tints_the_title_bar_from_its_left_edge(cx: &mut TestAppContext) {
-        let (_title_bar, cx) = open_named_project_title_bar(cx).await;
+        let (_workspace, _title_bar, cx) = open_project_title_bar(cx, None).await;
 
         let title_bar_height = cx.update(|window, cx| platform_title_bar_height(window, cx));
         let gradient = cx
             .debug_bounds("project_gradient")
             .expect("a named project should tint the title bar with its gradient");
-        let search_button = cx
-            .debug_bounds("ICON-MagnifyingGlass")
-            .expect("search button should be rendered at the right edge of the title bar");
+        let search_field = cx
+            .debug_bounds(SEARCH_FIELD_DEBUG_SELECTOR)
+            .expect("the search field should be rendered in the title bar");
         assert_eq!(
             gradient.origin,
             point(px(0.), px(0.)),
@@ -1161,22 +941,16 @@ mod tests {
             "the gradient fills the full height of the title bar"
         );
         assert!(
-            gradient.right() >= search_button.right(),
+            gradient.right() >= search_field.right(),
             "the gradient spans the title bar behind its widgets"
         );
 
-        cx.update(|window, cx| {
-            SettingsStore::update_global(cx, |store, cx| {
-                store.update_user_settings(cx, |settings| {
-                    settings
-                        .title_bar
-                        .get_or_insert_default()
-                        .show_project_gradient = Some(false);
-                });
-            });
-            window.refresh();
+        update_user_settings(cx, |settings| {
+            settings
+                .title_bar
+                .get_or_insert_default()
+                .show_project_gradient = Some(false);
         });
-        cx.run_until_parked();
 
         assert_eq!(
             cx.debug_bounds("project_gradient"),
@@ -1186,23 +960,24 @@ mod tests {
     }
 
     #[gpui::test]
-    async fn project_gradient_uses_the_project_badge_color(cx: &mut TestAppContext) {
-        let (_title_bar, cx) = open_named_project_title_bar(cx).await;
+    async fn project_gradient_is_painted_with_the_accent_picked_for_the_project_name(
+        cx: &mut TestAppContext,
+    ) {
+        let (_workspace, _title_bar, cx) = open_project_title_bar(cx, None).await;
 
-        let project_color = cx.update(|_, cx| TitleBar::themed_project_color(PROJECT_NAME, cx));
+        let project_accent = cx.update(|_, cx| {
+            let accents = &cx.theme().accents().0;
+            let accent_index = project_accent_index(PROJECT_NAME, accents.len())
+                .expect("the test theme should define accent colors");
+            accents[accent_index]
+        });
         let painted_quads = cx.update(|window, _| window.painted_quads());
 
         assert!(
             painted_quads
                 .iter()
-                .any(|quad| quad.background == Background::from(project_color)),
-            "the project badge is painted with the project color"
-        );
-        assert!(
-            painted_quads
-                .iter()
-                .any(|quad| quad.background == ui::project_gradient_background(project_color)),
-            "the header gradient is painted with the same project color as the badge"
+                .any(|quad| quad.background == ui::project_gradient_background(project_accent)),
+            "the title bar gradient is painted with the theme accent picked for the project name"
         );
     }
 
@@ -1210,7 +985,7 @@ mod tests {
     async fn inactive_window_dims_title_bar_content_but_not_its_background(
         cx: &mut TestAppContext,
     ) {
-        let (title_bar, cx) = open_named_project_title_bar(cx).await;
+        let (_workspace, title_bar, cx) = open_project_title_bar(cx, None).await;
 
         let platform_titlebar =
             title_bar.read_with(cx, |title_bar, _| title_bar.platform_titlebar.clone());
@@ -1225,12 +1000,18 @@ mod tests {
                     .frame_content_opacity(false),
             )
         });
+        let (search_field_background, search_field_border) = cx.update(|_, cx| {
+            let colors = cx.theme().colors();
+            (
+                Background::from(colors.element_background),
+                colors.border_variant,
+            )
+        });
         assert!(
             inactive_opacity < 1.,
             "inactive windows dim their frame content by default"
         );
         let gradient = ui::project_gradient_background(project_color);
-        let badge = Background::from(project_color);
 
         assert!(cx.update(|window, _| window.is_window_active()));
         let active_quads = cx.update(|window, _| window.painted_quads());
@@ -1239,7 +1020,10 @@ mod tests {
             "an active window paints the gradient at full strength"
         );
         assert!(
-            active_quads.iter().any(|quad| quad.background == badge),
+            active_quads.iter().any(|quad| {
+                quad.background == search_field_background
+                    && quad.border_color == search_field_border
+            }),
             "an active window paints the title bar widgets at full strength"
         );
 
@@ -1261,9 +1045,10 @@ mod tests {
             "no undimmed gradient remains in an inactive window"
         );
         assert!(
-            inactive_quads
-                .iter()
-                .any(|quad| quad.background == badge.opacity(inactive_opacity)),
+            inactive_quads.iter().any(|quad| {
+                quad.background == search_field_background.opacity(inactive_opacity)
+                    && quad.border_color == search_field_border.opacity(inactive_opacity)
+            }),
             "an inactive window dims the title bar widgets"
         );
         assert!(
@@ -1275,53 +1060,81 @@ mod tests {
     }
 
     #[gpui::test]
-    async fn test_search_and_settings_buttons_dispatch_their_actions(cx: &mut TestAppContext) {
-        let app_state = cx.update(|cx| {
-            let app_state = AppState::test(cx);
-            PlatformTitleBar::init(cx);
-            app_state
-        });
-        let project = Project::test(app_state.fs.clone(), [], cx).await;
-        let (multi_workspace, cx) =
-            cx.add_window_view(|window, cx| MultiWorkspace::test_new(project, window, cx));
-        let workspace =
-            multi_workspace.read_with(cx, |multi_workspace, _| multi_workspace.workspace().clone());
+    async fn search_field_sits_right_after_the_branch_picker(cx: &mut TestAppContext) {
+        let (_workspace, _title_bar, cx) = open_project_title_bar(cx, Some("main")).await;
 
-        let search_dispatches = Rc::new(Cell::new(0));
-        let settings_dispatches = Rc::new(Cell::new(0));
-        workspace.update_in(cx, |workspace, window, cx| {
-            let title_bar = cx.new(|cx| TitleBar::new("title-bar", workspace, None, window, cx));
-            workspace.set_titlebar_item(title_bar.into(), window, cx);
+        let branch_picker = cx
+            .debug_bounds(WORKTREE_AND_BRANCH_DEBUG_SELECTOR)
+            .expect("a checked-out branch should show the branch picker");
+        let search_field = cx
+            .debug_bounds(SEARCH_FIELD_DEBUG_SELECTOR)
+            .expect("the search field should be rendered in the title bar");
+        let window_width = cx.update(|window, _| window.viewport_size().width);
 
-            let search_dispatches = search_dispatches.clone();
+        assert!(
+            search_field.left() >= branch_picker.right(),
+            "the search field follows the branch picker"
+        );
+        assert!(
+            search_field.left() - branch_picker.right() < search_field.size.height,
+            "the search field sits right next to the branch picker"
+        );
+        assert!(
+            search_field.right() <= window_width * 0.5,
+            "the search field stays in the left half of the title bar"
+        );
+    }
+
+    #[gpui::test]
+    async fn clicking_the_search_field_opens_search_everywhere_on_its_default_tab(
+        cx: &mut TestAppContext,
+    ) {
+        let (workspace, _title_bar, cx) = open_project_title_bar(cx, None).await;
+        let requested_tabs = Rc::new(RefCell::new(Vec::new()));
+        workspace.update_in(cx, |workspace, _, cx| {
+            let requested_tabs = requested_tabs.clone();
             workspace.register_action(
                 move |_, action: &zed_actions::search_everywhere::Toggle, _, _| {
-                    assert_eq!(action.tab, None, "the title bar opens the default tab");
-                    search_dispatches.set(search_dispatches.get() + 1);
+                    requested_tabs.borrow_mut().push(action.tab);
                 },
             );
-            let settings_dispatches = settings_dispatches.clone();
-            workspace.register_action(move |_, _: &zed_actions::OpenSettings, _, _| {
-                settings_dispatches.set(settings_dispatches.get() + 1);
-            });
+            cx.notify();
         });
         cx.run_until_parked();
 
-        let search_button = cx
-            .debug_bounds("ICON-MagnifyingGlass")
-            .expect("search button should be rendered at the right edge of the title bar");
-        cx.simulate_click(search_button.center(), Modifiers::none());
+        let search_field = cx
+            .debug_bounds(SEARCH_FIELD_DEBUG_SELECTOR)
+            .expect("the search field should be rendered in the title bar");
+        cx.simulate_click(search_field.center(), Modifiers::none());
         cx.run_until_parked();
-        assert_eq!(search_dispatches.get(), 1);
-        assert_eq!(settings_dispatches.get(), 0);
 
-        let settings_button = cx
-            .debug_bounds("ICON-Settings")
-            .expect("settings button should be rendered at the right edge of the title bar");
-        cx.simulate_click(settings_button.center(), Modifiers::none());
-        cx.run_until_parked();
-        assert_eq!(search_dispatches.get(), 1);
-        assert_eq!(settings_dispatches.get(), 1);
+        assert_eq!(
+            *requested_tabs.borrow(),
+            vec![None],
+            "one click opens Search Everywhere once, on its default tab"
+        );
+    }
+
+    #[gpui::test]
+    async fn show_search_button_false_removes_the_search_field(cx: &mut TestAppContext) {
+        let (_workspace, _title_bar, cx) = open_project_title_bar(cx, None).await;
+        assert!(
+            cx.debug_bounds(SEARCH_FIELD_DEBUG_SELECTOR).is_some(),
+            "the search field is shown by default"
+        );
+
+        update_user_settings(cx, |settings| {
+            settings
+                .title_bar
+                .get_or_insert_default()
+                .show_search_button = Some(false);
+        });
+
+        assert_eq!(
+            cx.debug_bounds(SEARCH_FIELD_DEBUG_SELECTOR),
+            None,
+            "turning off show_search_button removes the search field"
+        );
     }
 
     #[test]

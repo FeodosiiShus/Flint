@@ -2,7 +2,7 @@ use super::*;
 
 impl Editor {
     /// Toggles an action selection menu for the latest selection.
-    /// May show LSP code actions, code lens' command, runnables and potentially more entities applicable as actions.
+    /// May show LSP code actions, code lens' command and potentially more entities applicable as actions.
     /// Previous menu toggled with this method will be closed.
     pub fn toggle_code_actions(
         &mut self,
@@ -10,7 +10,6 @@ impl Editor {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let quick_launch = action.quick_launch;
         let mut context_menu = self.context_menu.borrow_mut();
         if let Some(CodeContextMenu::CodeActions(code_actions)) = context_menu.as_ref() {
             if code_actions.deployed_from == action.deployed_from {
@@ -27,11 +26,10 @@ impl Editor {
         drop(context_menu);
         let snapshot = self.snapshot(window, cx);
         let deployed_from = action.deployed_from.clone();
-        let action = action.clone();
         self.completion_tasks.clear();
 
-        let multibuffer_point = match &action.deployed_from {
-            Some(CodeActionSource::Indicator(row)) | Some(CodeActionSource::RunMenu(row)) => {
+        let multibuffer_point = match &deployed_from {
+            Some(CodeActionSource::Indicator(row)) => {
                 DisplayPoint::new(*row, 0).to_point(&snapshot)
             }
             _ => self
@@ -51,71 +49,16 @@ impl Editor {
         else {
             return;
         };
-        let buffer_id = buffer.read(cx).remote_id();
-        let tasks = self
-            .runnables
-            .runnables((buffer_id, buffer_row))
-            .map(|t| Arc::new(t.to_owned()));
-
-        let project = self.project.clone();
-        let runnable_task = match deployed_from {
-            Some(CodeActionSource::Indicator(_)) => Task::ready(Ok(Default::default())),
-            _ => {
-                let mut task_context_task = Task::ready(Ok(None));
-                let workspace = self.workspace().map(|w| w.downgrade());
-                if let Some(tasks) = &tasks
-                    && let Some(project) = project
-                {
-                    task_context_task =
-                        Self::build_tasks_context(&project, &buffer, buffer_row, tasks, cx);
-                }
-
-                cx.spawn_in(window, {
-                    let buffer = buffer.clone();
-                    async move |editor, cx| {
-                        let task_context = match workspace {
-                            Some(ws) => task_context_task
-                                .await
-                                .notify_workspace_async_err(ws, cx)
-                                .flatten(),
-                            None => task_context_task.await.ok().flatten(),
-                        };
-
-                        let resolved_tasks =
-                            tasks
-                                .zip(task_context.clone())
-                                .map(|(tasks, task_context)| ResolvedTasks {
-                                    templates: tasks.resolve(&task_context).collect(),
-                                    position: snapshot.buffer_snapshot().anchor_before(Point::new(
-                                        multibuffer_point.row,
-                                        tasks.column,
-                                    )),
-                                });
-                        let debug_scenarios = editor
-                            .update(cx, |editor, cx| {
-                                editor.debug_scenarios(&resolved_tasks, &buffer, cx)
-                            })?
-                            .await;
-                        anyhow::Ok((resolved_tasks, debug_scenarios, task_context))
-                    }
-                })
-            }
-        };
 
         let toggle_task = cx.spawn_in(window, async move |editor, cx| {
-            let (resolved_tasks, debug_scenarios, task_context) = runnable_task.await?;
-
-            let code_actions = if let Some(CodeActionSource::RunMenu(_)) = &deployed_from {
-                None
-            } else {
+            let code_actions =
                 editor.update(cx, |editor, _cx| match &editor.code_actions_for_selection {
                     CodeActionsForSelection::None => None,
                     CodeActionsForSelection::Fetching(task) => Some(task.clone()),
                     CodeActionsForSelection::Ready(action_fetch_ready) => {
                         Some(Task::ready(Some(action_fetch_ready.clone())).shared())
                     }
-                })?
-            };
+                })?;
             let code_actions = match code_actions {
                 Some(code_actions) => code_actions
                     .await
@@ -128,29 +71,14 @@ impl Editor {
                 None => None,
             };
 
-            editor.update_in(cx, |editor, window, cx| {
-                let spawn_straight_away = quick_launch
-                    && resolved_tasks
-                        .as_ref()
-                        .is_some_and(|tasks| tasks.templates.len() == 1)
-                    && code_actions
-                        .as_ref()
-                        .is_none_or(|actions| actions.is_empty())
-                    && debug_scenarios.is_empty();
-
+            editor.update(cx, |editor, cx| {
                 crate::hover_popover::hide_hover(editor, cx);
-                let actions = CodeActionContents::new(
-                    resolved_tasks,
-                    code_actions,
-                    debug_scenarios,
-                    task_context.unwrap_or_default(),
-                );
 
                 // Don't show the menu if there are no actions available
-                if actions.is_empty() {
+                let Some(actions) = code_actions.filter(|actions| !actions.is_empty()) else {
                     cx.notify();
-                    return Task::ready(Ok(()));
-                }
+                    return;
+                };
 
                 *editor.context_menu.borrow_mut() =
                     Some(CodeContextMenu::CodeActions(CodeActionsMenu {
@@ -161,28 +89,13 @@ impl Editor {
                         deployed_from,
                     }));
                 cx.notify();
-                if spawn_straight_away
-                    && let Some(task) = editor.confirm_code_action(
-                        &ConfirmCodeAction { item_ix: Some(0) },
-                        window,
-                        cx,
-                    )
-                {
-                    return task;
-                }
-
-                Task::ready(Ok(()))
             })
         });
-        self.runnables_for_selection_toggle = cx.background_spawn(async move {
-            match toggle_task.await {
-                Ok(code_action_spawn) => match code_action_spawn.await {
-                    Ok(()) => {}
-                    Err(e) => log::error!("failed to spawn a toggled code action: {e:#}"),
-                },
-                Err(e) => log::error!("failed to toggle code actions: {e:#}"),
+        self.code_actions_toggle_task = cx.background_spawn(async move {
+            if let Err(error) = toggle_task.await {
+                log::error!("failed to toggle code actions: {error:#}");
             }
-        })
+        });
     }
 
     pub fn confirm_code_action(
@@ -203,113 +116,21 @@ impl Editor {
             };
 
         let action_ix = action.item_ix.unwrap_or(actions_menu.selected_item);
-        let action = actions_menu.actions.get(action_ix)?;
-        let title = action.label();
-        let runnable_task_key =
-            self.runnable_task_key_for_source(&actions_menu.deployed_from, window, cx);
+        let AvailableCodeAction { action, provider } = actions_menu.actions.get(action_ix)?.clone();
+        let title = action.lsp_action.title().to_owned();
         let buffer = actions_menu.buffer;
         let workspace = self.workspace()?;
 
-        match action {
-            CodeActionsItem::Task(task_source_kind, resolved_task) => {
-                if let Some((buffer_id, buffer_row)) = runnable_task_key {
-                    self.set_runnable_task_status(
-                        buffer_id,
-                        buffer_row,
-                        RunnableTaskStatus::Running,
-                        cx,
-                    );
-                }
-                let editor = cx.weak_entity();
-                workspace.update(cx, |workspace, cx| {
-                    if let Some((buffer_id, buffer_row)) = runnable_task_key {
-                        workspace.schedule_resolved_task_with_completion(
-                            task_source_kind,
-                            resolved_task,
-                            false,
-                            move |result, cx| {
-                                editor
-                                    .update(cx, |editor, cx| {
-                                        editor.set_runnable_task_status(
-                                            buffer_id,
-                                            buffer_row,
-                                            RunnableTaskStatus::from(result),
-                                            cx,
-                                        );
-                                    })
-                                    .ok();
-                            },
-                            window,
-                            cx,
-                        );
-                    } else {
-                        workspace.schedule_resolved_task(
-                            task_source_kind,
-                            resolved_task,
-                            false,
-                            window,
-                            cx,
-                        );
-                    }
-
-                    Some(Task::ready(Ok(())))
-                })
-            }
-            CodeActionsItem::CodeAction { action, provider } => {
-                if code_lens::try_handle_client_command(&action, self, &workspace, window, cx) {
-                    return Some(Task::ready(Ok(())));
-                }
-
-                let apply_code_action =
-                    provider.apply_code_action(buffer, action, true, window, cx);
-                let workspace = workspace.downgrade();
-                Some(cx.spawn_in(window, async move |editor, cx| {
-                    let project_transaction = apply_code_action.await?;
-                    Self::open_project_transaction(
-                        &editor,
-                        workspace,
-                        project_transaction,
-                        title,
-                        cx,
-                    )
-                    .await
-                }))
-            }
-            CodeActionsItem::DebugScenario(scenario) => {
-                let context = actions_menu.actions.context.into();
-
-                workspace.update(cx, |workspace, cx| {
-                    workspace.start_debug_session(
-                        scenario,
-                        context,
-                        Some(buffer),
-                        None,
-                        window,
-                        cx,
-                    );
-                });
-                Some(Task::ready(Ok(())))
-            }
+        if code_lens::try_handle_client_command(&action, self, &workspace, window, cx) {
+            return Some(Task::ready(Ok(())));
         }
-    }
 
-    fn runnable_task_key_for_source(
-        &self,
-        source: &Option<CodeActionSource>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> Option<(BufferId, BufferRow)> {
-        let display_row = match source {
-            Some(CodeActionSource::RunMenu(row)) => *row,
-            _ => return None,
-        };
-        let snapshot = self.snapshot(window, cx);
-        let multibuffer_row =
-            MultiBufferRow(DisplayPoint::new(display_row, 0).to_point(&snapshot).row);
-        let (buffer_snapshot, range) = snapshot
-            .buffer_snapshot()
-            .buffer_line_for_row(multibuffer_row)?;
-        Some((buffer_snapshot.remote_id(), range.start.row))
+        let apply_code_action = provider.apply_code_action(buffer, action, true, window, cx);
+        let workspace = workspace.downgrade();
+        Some(cx.spawn_in(window, async move |editor, cx| {
+            let project_transaction = apply_code_action.await?;
+            Self::open_project_transaction(&editor, workspace, project_transaction, title, cx).await
+        }))
     }
 
     pub fn code_actions_enabled_for_toolbar(&self, cx: &App) -> bool {
@@ -350,7 +171,6 @@ impl Editor {
                             "Toggle Code Actions",
                             &ToggleCodeActions {
                                 deployed_from: None,
-                                quick_launch: false,
                             },
                             &focus_handle,
                             cx,
@@ -365,7 +185,6 @@ impl Editor {
                         deployed_from: Some(crate::actions::CodeActionSource::Indicator(
                             display_row,
                         )),
-                        quick_launch: false,
                     },
                     window,
                     cx,
@@ -460,47 +279,6 @@ impl Editor {
             })
             .shared(),
         );
-    }
-
-    fn debug_scenarios(
-        &mut self,
-        resolved_tasks: &Option<ResolvedTasks>,
-        buffer: &Entity<Buffer>,
-        cx: &mut App,
-    ) -> Task<Vec<task::DebugScenario>> {
-        maybe!({
-            let project = self.project()?;
-            let dap_store = project.read(cx).dap_store();
-            let mut scenarios = vec![];
-            let resolved_tasks = resolved_tasks.as_ref()?;
-            let buffer = buffer.read(cx);
-            let language = buffer.language()?;
-            let debug_adapter = LanguageSettings::for_buffer(&buffer, cx)
-                .debuggers
-                .first()
-                .map(SharedString::from)
-                .or_else(|| language.config().debuggers.first().map(SharedString::from))?;
-
-            dap_store.update(cx, |dap_store, cx| {
-                for (_, task) in &resolved_tasks.templates {
-                    let maybe_scenario = dap_store.debug_scenario_for_build_task(
-                        task.original_task().clone(),
-                        debug_adapter.clone().into(),
-                        task.display_label().to_owned().into(),
-                        cx,
-                    );
-                    scenarios.push(maybe_scenario);
-                }
-            });
-            Some(cx.background_spawn(async move {
-                futures::future::join_all(scenarios)
-                    .await
-                    .into_iter()
-                    .flatten()
-                    .collect::<Vec<_>>()
-            }))
-        })
-        .unwrap_or_else(|| Task::ready(vec![]))
     }
 }
 

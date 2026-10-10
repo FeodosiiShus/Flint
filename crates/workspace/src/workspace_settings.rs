@@ -5,9 +5,8 @@ use collections::HashMap;
 use gpui::{App, Pixels, Subscription, px};
 use serde::Deserialize;
 pub use settings::{
-    AutosaveSetting, BottomDockLayout, EncodingDisplayOptions, InactiveOpacity,
-    PaneSplitDirectionHorizontal, PaneSplitDirectionVertical, RegisterSetting,
-    RestoreOnStartupBehavior, Settings,
+    AutosaveSetting, BottomDockLayout, InactiveOpacity, PaneSplitDirectionHorizontal,
+    PaneSplitDirectionVertical, RegisterSetting, RestoreOnStartupBehavior, Settings,
 };
 use settings::{CommandAliasTarget, SettingsStore};
 
@@ -332,36 +331,6 @@ impl Settings for TabBarSettings {
             show_tab_bar_buttons: tab_bar.show_tab_bar_buttons.unwrap(),
             show_pinned_tabs_in_separate_row: tab_bar.show_pinned_tabs_in_separate_row.unwrap(),
             show_hidden_tabs_button: tab_bar.show_hidden_tabs_button.unwrap_or(true),
-        }
-    }
-}
-
-#[derive(Deserialize, RegisterSetting)]
-pub struct StatusBarSettings {
-    pub show: bool,
-    pub show_active_file: bool,
-    pub active_language_button: bool,
-    pub cursor_position_button: bool,
-    pub line_endings_button: bool,
-    pub active_encoding_button: EncodingDisplayOptions,
-    pub pending_keystrokes_indicator: bool,
-    pub indentation_button: bool,
-    pub read_only_button: bool,
-}
-
-impl Settings for StatusBarSettings {
-    fn from_settings(content: &settings::SettingsContent) -> Self {
-        let status_bar = content.status_bar.clone().unwrap();
-        StatusBarSettings {
-            show: status_bar.show.unwrap(),
-            show_active_file: status_bar.show_active_file.unwrap(),
-            active_language_button: status_bar.active_language_button.unwrap(),
-            cursor_position_button: status_bar.cursor_position_button.unwrap(),
-            line_endings_button: status_bar.line_endings_button.unwrap(),
-            active_encoding_button: status_bar.active_encoding_button.unwrap(),
-            pending_keystrokes_indicator: status_bar.pending_keystrokes_indicator.unwrap(),
-            indentation_button: status_bar.indentation_button.unwrap_or(true),
-            read_only_button: status_bar.read_only_button.unwrap_or(true),
         }
     }
 }

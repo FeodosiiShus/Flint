@@ -14,7 +14,7 @@ use settings::{IntoGpui, RegisterSetting, Settings};
 use ui::{IconName, IntoElement};
 use util::{ResultExt, paths::PathMatcher};
 use workspace::{
-    DeploySearch, HideStatusItem, Workspace,
+    DeploySearch, HideButtonSetting, Workspace,
     dock::{DockPosition, Panel, PanelEvent},
     searchable::SearchableItemHandle,
 };
@@ -402,8 +402,8 @@ impl Panel for SearchPanel {
         }
     }
 
-    fn hide_button_setting(&self, _: &App) -> Option<HideStatusItem> {
-        Some(HideStatusItem::new(|settings| {
+    fn hide_button_setting(&self, _: &App) -> Option<HideButtonSetting> {
+        Some(HideButtonSetting::new(|settings| {
             settings.search_panel.get_or_insert_default().button = Some(false);
         }))
     }

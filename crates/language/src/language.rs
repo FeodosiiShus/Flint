@@ -17,10 +17,8 @@ mod manifest;
 pub mod modeline;
 mod outline;
 pub mod proto;
-mod runnable;
 mod server_activation;
 mod syntax_map;
-mod task_context;
 mod text_diff;
 mod toolchain;
 
@@ -53,10 +51,9 @@ pub use language_core::{
     DecreaseIndentConfig, Grammar, GrammarId, HighlightsConfig, IndentConfig, InjectionConfig,
     InjectionPatternConfig, JsxTagAutoCloseConfig, LanguageConfig, LanguageConfigOverride,
     LanguageId, LanguageMatcher, OrderedListConfig, OutlineConfig, Override, OverrideConfig,
-    OverrideEntry, RedactionConfig, RunnableCapture, RunnableConfig, SoftWrap, Symbol,
-    TaskListConfig, TextObject, TextObjectConfig, WrapCharactersConfig, default_true,
-    deserialize_regex, deserialize_regex_vec, regex_json_schema, regex_vec_json_schema,
-    serialize_regex,
+    OverrideEntry, RedactionConfig, SoftWrap, Symbol, TaskListConfig, TextObject, TextObjectConfig,
+    WrapCharactersConfig, default_true, deserialize_regex, deserialize_regex_vec,
+    regex_json_schema, regex_vec_json_schema, serialize_regex,
 };
 pub use language_registry::{
     LanguageLoader, LanguageName, LanguageServerStatusUpdate, LoadedLanguage, ServerHealth,
@@ -68,7 +65,6 @@ pub use manifest::{ManifestDelegate, ManifestName, ManifestProvider, ManifestQue
 pub use modeline::{ModelineSettings, parse_modeline};
 use parking_lot::Mutex;
 use regex::Regex;
-pub use runnable::{ResolvedRunnable, RunnableMatchCapture, RunnableRange, RunnableResolver};
 use semver::Version;
 use serde_json::Value;
 use settings::WorktreeId;
@@ -83,8 +79,6 @@ use std::{
     sync::{Arc, LazyLock},
 };
 use syntax_map::{QueryCursorHandle, SyntaxSnapshot, flattened_highlight_regions};
-use task::RunnableTag;
-pub use task_context::{ContextLocation, ContextProvider};
 pub use text_diff::{
     DiffOptions, apply_diff_patch, apply_reversed_diff_patch, char_diff, line_diff, text_diff,
     text_diff_with_options, unified_diff, unified_diff_with_context, unified_diff_with_offsets,
@@ -295,8 +289,6 @@ pub fn lsp_to_symbol_kind(kind: lsp::SymbolKind) -> SymbolKind {
 pub enum ClientCommand {
     /// Open a location list (references panel / peek view).
     ShowLocations,
-    /// Schedule a task from an LSP command's arguments.
-    ScheduleTask(task::TaskTemplate),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -953,7 +945,6 @@ pub struct Language {
     pub(crate) id: LanguageId,
     pub(crate) config: LanguageConfig,
     pub(crate) grammar: Option<Arc<Grammar>>,
-    pub(crate) context_provider: Option<Arc<dyn ContextProvider>>,
     pub(crate) toolchain: Option<Arc<dyn ToolchainLister>>,
     pub(crate) manifest_name: Option<ManifestName>,
 }
@@ -976,15 +967,9 @@ impl Language {
             id,
             config,
             grammar: ts_language.map(|ts_language| Arc::new(Grammar::new(ts_language))),
-            context_provider: None,
             toolchain: None,
             manifest_name: None,
         }
-    }
-
-    pub fn with_context_provider(mut self, provider: Option<Arc<dyn ContextProvider>>) -> Self {
-        self.context_provider = provider;
-        self
     }
 
     pub fn with_toolchain_lister(mut self, provider: Option<Arc<dyn ToolchainLister>>) -> Self {
@@ -1009,10 +994,6 @@ impl Language {
 
     pub fn with_highlights_query(self, source: &str) -> Result<Self> {
         self.with_grammar_query(|grammar| grammar.with_highlights_query(source))
-    }
-
-    pub fn with_runnable_query(self, source: &str) -> Result<Self> {
-        self.with_grammar_query(|grammar| grammar.with_runnable_query(source))
     }
 
     pub fn with_outline_query(self, source: &str) -> Result<Self> {
@@ -1116,10 +1097,6 @@ impl Language {
             .kernel_language_names
             .iter()
             .any(|name| name.to_lowercase() == kernel_language_lower)
-    }
-
-    pub fn context_provider(&self) -> Option<Arc<dyn ContextProvider>> {
-        self.context_provider.clone()
     }
 
     pub fn toolchain_lister(&self) -> Option<Arc<dyn ToolchainLister>> {

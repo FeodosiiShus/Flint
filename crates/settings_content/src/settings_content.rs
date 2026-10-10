@@ -201,7 +201,6 @@ pub struct SettingsContent {
 
     pub tabs: Option<ItemSettingsContent>,
     pub tab_bar: Option<TabBarSettingsContent>,
-    pub status_bar: Option<StatusBarSettingsContent>,
     pub panel: Option<PanelChromeSettingsContent>,
 
     pub preview_tabs: Option<PreviewTabsSettingsContent>,
@@ -244,8 +243,6 @@ pub struct SettingsContent {
     ///
     /// Example: {"log": {"client": "warn"}}
     pub log: Option<HashMap<String, String>>,
-
-    pub line_indicator_format: Option<LineIndicatorFormat>,
 
     pub project_panel: Option<ProjectPanelSettingsContent>,
 
@@ -297,11 +294,11 @@ fallible_options::flattened_deserialize!(SettingsContent {
     sections: { project, theme, extension, workspace, editor, remote },
     options: {
         command_palette, file_finder, git_panel, search_panel, project_diagnostics_panel,
-        language_services_panel, tabs, tab_bar, status_bar, panel, preview_tabs,
+        language_services_panel, tabs, tab_bar, panel, preview_tabs,
         base_keymap, debugger, diagnostics,
         git,
         global_lsp_settings, markdown_preview, helix_mode, hide_mouse,
-        log, line_indicator_format, project_panel,
+        log, project_panel,
         node, proxy, reduce_motion, session, terminal,
         title_bar, vim_mode, which_key, modeline_lines, feature_flags,
     },
@@ -430,7 +427,7 @@ pub struct DebuggerSettingsContent {
     ///
     /// Default: true
     pub save_breakpoints: Option<bool>,
-    /// Whether to show the debug button in the status bar.
+    /// Whether to show the debug button in the tool window bar.
     ///
     /// Default: true
     pub button: Option<bool>,
@@ -526,7 +523,7 @@ pub struct LanguageServicesPanelSettingsContent {
 #[with_fallible_options]
 #[derive(Clone, PartialEq, Default, Serialize, Deserialize, JsonSchema, MergeFrom, Debug)]
 pub struct GitPanelSettingsContent {
-    /// Whether to show the panel button in the status bar.
+    /// Whether to show the panel button in the tool window bar.
     ///
     /// Default: true
     pub button: Option<bool>,
@@ -873,14 +870,6 @@ pub enum ShowIndentGuides {
     Never,
 }
 
-#[derive(Clone, Copy, Default, PartialEq, Debug, JsonSchema, MergeFrom, Deserialize, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum LineIndicatorFormat {
-    Short,
-    #[default]
-    Long,
-}
-
 /// The settings for the markdown preview.
 #[with_fallible_options]
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema, MergeFrom, Default, PartialEq)]
@@ -963,8 +952,6 @@ pub struct SshPortForwardOption {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema, MergeFrom)]
 pub struct WhichKeySettingsContent {
     /// Whether to show the which-key popup when holding down key combinations.
-    /// When enabled, the pending keystrokes indicator remains visible, but its binding preview
-    /// popover is disabled.
     ///
     /// Default: false
     pub enabled: Option<bool>,

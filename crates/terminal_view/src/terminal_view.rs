@@ -12,7 +12,7 @@ use gpui::{
     Action, AnyElement, App, ClipboardEntry, DismissEvent, Entity, EventEmitter, ExternalPaths,
     FocusHandle, Focusable, Font, KeyContext, KeyDownEvent, Keystroke, MouseButton, MouseDownEvent,
     Pixels, Point as GpuiPoint, Render, ScrollWheelEvent, Styled, Subscription, Task, TaskExt,
-    WeakEntity, actions, anchored, deferred, div,
+    WeakEntity, anchored, deferred, div,
 };
 use menu;
 use persistence::TerminalDb;
@@ -31,12 +31,11 @@ use std::{
     sync::Arc,
     time::Duration,
 };
-use task::TaskId;
 use terminal::{
     Clear, Copy, Event, HoveredWord, MaybeNavigationTarget, Modes, MouseInputMode, Paste,
     PasteText, Point, Range, ScrollLineDown, ScrollLineUp, ScrollPageDown, ScrollPageUp,
-    ScrollToBottom, ScrollToTop, Search, ShowCharacterPalette, TaskState, TaskStatus, Terminal,
-    TerminalBounds, ToggleViMode,
+    ScrollToBottom, ScrollToTop, Search, ShowCharacterPalette, Terminal, TerminalBounds,
+    ToggleViMode,
     terminal_settings::{CursorShape, TerminalSettings},
 };
 use terminal_element::TerminalElement;
@@ -90,14 +89,6 @@ pub struct SendText(String);
 #[derive(Clone, Debug, Default, Deserialize, JsonSchema, PartialEq, Action)]
 #[action(namespace = terminal)]
 pub struct SendKeystroke(String);
-
-actions!(
-    terminal,
-    [
-        /// Reruns the last executed task in the terminal.
-        RerunTask,
-    ]
-);
 
 /// Renames the terminal tab.
 #[derive(Clone, Debug, Default, Deserialize, JsonSchema, PartialEq, Action)]
@@ -396,10 +387,6 @@ impl TerminalView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.terminal.read(cx).task().is_some() {
-            return;
-        }
-
         let current_label = self
             .custom_title
             .clone()
@@ -556,19 +543,6 @@ impl TerminalView {
     fn select_all(&mut self, _: &SelectAll, _: &mut Window, cx: &mut Context<Self>) {
         self.terminal.update(cx, |term, _| term.select_all());
         cx.notify();
-    }
-
-    fn rerun_task(&mut self, _: &RerunTask, window: &mut Window, cx: &mut Context<Self>) {
-        if self.read_only {
-            return;
-        }
-        let task = self
-            .terminal
-            .read(cx)
-            .task()
-            .map(|task| terminal_rerun_override(&task.spawned_task.id))
-            .unwrap_or_default();
-        window.dispatch_action(Box::new(task), cx);
     }
 
     fn clear(&mut self, _: &Clear, _: &mut Window, cx: &mut Context<Self>) {
@@ -987,45 +961,6 @@ impl TerminalView {
 
         dispatch_context
     }
-
-    fn set_terminal(
-        &mut self,
-        terminal: Entity<Terminal>,
-        window: &mut Window,
-        cx: &mut Context<TerminalView>,
-    ) {
-        self._terminal_subscriptions =
-            subscribe_for_terminal_events(&terminal, self.workspace.clone(), window, cx);
-        self.terminal = terminal;
-    }
-
-    fn rerun_button(&self, task: &TaskState) -> Option<IconButton> {
-        if self.read_only || !task.spawned_task.show_rerun {
-            return None;
-        }
-
-        let task_id = task.spawned_task.id.clone();
-        Some(
-            IconButton::new("rerun-icon", IconName::Rerun)
-                .icon_size(IconSize::Small)
-                .size(ButtonSize::Compact)
-                .icon_color(Color::Default)
-                .shape(ui::IconButtonShape::Square)
-                .tooltip(move |_window, cx| Tooltip::for_action("Rerun task", &RerunTask, cx))
-                .on_click(move |_, window, cx| {
-                    window.dispatch_action(Box::new(terminal_rerun_override(&task_id)), cx);
-                }),
-        )
-    }
-}
-
-fn terminal_rerun_override(task: &TaskId) -> zed_actions::Rerun {
-    zed_actions::Rerun {
-        task_id: Some(task.0.clone()),
-        allow_concurrent_runs: Some(true),
-        use_new_terminal: Some(false),
-        reevaluate_context: false,
-    }
 }
 
 fn subscribe_for_terminal_events(
@@ -1310,7 +1245,6 @@ impl Render for TerminalView {
             .on_action(cx.listener(TerminalView::toggle_vi_mode))
             .on_action(cx.listener(TerminalView::show_character_palette))
             .on_action(cx.listener(TerminalView::select_all))
-            .on_action(cx.listener(TerminalView::rerun_task))
             .on_action(cx.listener(TerminalView::rename_terminal))
             .on_key_down(cx.listener(Self::key_down))
             .on_mouse_down(
@@ -1411,35 +1345,9 @@ impl Item for TerminalView {
             .cloned()
             .unwrap_or_else(|| terminal.title(true));
 
-        let (icon, icon_color, rerun_button) = match terminal.task() {
-            Some(terminal_task) => match &terminal_task.status {
-                TaskStatus::Running => (
-                    IconName::PlayFilled,
-                    Color::Disabled,
-                    self.rerun_button(terminal_task),
-                ),
-                TaskStatus::Unknown => (
-                    IconName::Warning,
-                    Color::Warning,
-                    self.rerun_button(terminal_task),
-                ),
-                TaskStatus::Completed { success } => {
-                    let rerun_button = self.rerun_button(terminal_task);
-
-                    if *success {
-                        (IconName::Check, Color::Success, rerun_button)
-                    } else {
-                        (IconName::XCircle, Color::Error, rerun_button)
-                    }
-                }
-            },
-            None => (IconName::Terminal, Color::Muted, None),
-        };
-
         let self_handle = self.self_handle.clone();
         h_flex()
             .gap_1()
-            .group("term-tab-icon")
             .when(!params.selected, |this| {
                 this.track_focus(&self.focus_handle)
             })
@@ -1448,25 +1356,7 @@ impl Item for TerminalView {
                     .update(cx, |this, cx| this.rename_terminal(action, window, cx))
                     .ok();
             })
-            .child(
-                h_flex()
-                    .group("term-tab-icon")
-                    .child(
-                        div()
-                            .when(rerun_button.is_some(), |this| {
-                                this.hover(|style| style.invisible().w_0())
-                            })
-                            .child(Icon::new(icon).color(icon_color)),
-                    )
-                    .when_some(rerun_button, |this, rerun_button| {
-                        this.child(
-                            div()
-                                .absolute()
-                                .visible_on_hover("term-tab-icon")
-                                .child(rerun_button),
-                        )
-                    }),
-            )
+            .child(Icon::new(IconName::Terminal).color(Color::Muted))
             .child(
                 div()
                     .relative()
@@ -1668,14 +1558,9 @@ impl Item for TerminalView {
     fn tab_extra_context_menu_actions(
         &self,
         _window: &mut Window,
-        cx: &mut Context<Self>,
+        _cx: &mut Context<Self>,
     ) -> Vec<(SharedString, Box<dyn gpui::Action>)> {
-        let terminal = self.terminal.read(cx);
-        if terminal.task().is_none() {
-            vec![("Rename".into(), Box::new(RenameTerminal))]
-        } else {
-            Vec::new()
-        }
+        vec![("Rename".into(), Box::new(RenameTerminal))]
     }
 
     fn buffer_kind(&self, _: &App) -> workspace::item::ItemBufferKind {
@@ -1718,11 +1603,8 @@ impl Item for TerminalView {
         })
     }
 
-    fn is_dirty(&self, cx: &App) -> bool {
-        match self.terminal.read(cx).task() {
-            Some(task) => task.status == TaskStatus::Running,
-            None => self.has_bell(),
-        }
+    fn is_dirty(&self, _cx: &App) -> bool {
+        self.has_bell()
     }
 
     fn has_conflict(&self, _cx: &App) -> bool {
@@ -1765,20 +1647,16 @@ impl Item for TerminalView {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.terminal().read(cx).task().is_none() {
-            if let Some((new_id, old_id)) = workspace.database_id().zip(self.workspace_id) {
-                log::debug!(
-                    "Updating workspace id for the terminal, old: {old_id:?}, new: {new_id:?}",
-                );
-                let db = TerminalDb::global(cx);
-                let entity_id = cx.entity_id().as_u64();
-                cx.background_spawn(async move {
-                    db.update_workspace_id(new_id, old_id, entity_id).await
-                })
-                .detach();
-            }
-            self.workspace_id = workspace.database_id();
+        if let Some((new_id, old_id)) = workspace.database_id().zip(self.workspace_id) {
+            log::debug!("Updating workspace id for the terminal, old: {old_id:?}, new: {new_id:?}",);
+            let db = TerminalDb::global(cx);
+            let entity_id = cx.entity_id().as_u64();
+            cx.background_spawn(
+                async move { db.update_workspace_id(new_id, old_id, entity_id).await },
+            )
+            .detach();
         }
+        self.workspace_id = workspace.database_id();
     }
 
     fn to_item_events(event: &Self::Event, f: &mut dyn FnMut(ItemEvent)) {
@@ -1809,10 +1687,6 @@ impl SerializableItem for TerminalView {
         cx: &mut Context<Self>,
     ) -> Option<Task<anyhow::Result<()>>> {
         let terminal = self.terminal().read(cx);
-        if terminal.task().is_some() {
-            return None;
-        }
-
         if !self.needs_serialize {
             return None;
         }
@@ -2240,13 +2114,6 @@ mod tests {
     async fn read_only_blocks_input_actions_and_preserves_output(cx: &mut TestAppContext) {
         let (project, _workspace, window_handle) = init_test_with_window(cx).await;
         cx.update(load_default_keymap);
-        let rerun_count = Rc::new(std::cell::Cell::new(0));
-        cx.update(|cx| {
-            cx.on_action({
-                let rerun_count = rerun_count.clone();
-                move |_: &zed_actions::Rerun, _| rerun_count.set(rerun_count.get() + 1)
-            });
-        });
         let (pane, terminal, terminal_view) =
             add_display_only_terminal(&project, window_handle, true, true, cx);
         let mut cx = VisualTestContext::from_window(window_handle.into(), cx);
@@ -2275,7 +2142,6 @@ mod tests {
                 Box::new(PasteText),
                 Box::new(Clear),
                 Box::new(ShowCharacterPalette),
-                Box::new(RerunTask),
             ];
             for action in actions {
                 cx.update(|window, cx| window.dispatch_action(action, cx));
@@ -2297,7 +2163,6 @@ mod tests {
                 });
             });
         }
-        assert_eq!(rerun_count.get(), 0);
     }
 
     #[gpui::test]

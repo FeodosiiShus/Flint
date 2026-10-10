@@ -11,7 +11,7 @@ use settings::{IntoGpui, RegisterSetting, Settings};
 use ui::prelude::*;
 use util::ResultExt;
 use workspace::{
-    HideStatusItem, Workspace,
+    HideButtonSetting, Workspace,
     dock::{DockPosition, Panel, PanelEvent, PanelHeaderAction},
     item::Item,
 };
@@ -286,8 +286,8 @@ impl Panel for ProjectDiagnosticsPanel {
         }
     }
 
-    fn hide_button_setting(&self, _: &App) -> Option<HideStatusItem> {
-        Some(HideStatusItem::new(|settings| {
+    fn hide_button_setting(&self, _: &App) -> Option<HideButtonSetting> {
+        Some(HideButtonSetting::new(|settings| {
             settings
                 .project_diagnostics_panel
                 .get_or_insert_default()

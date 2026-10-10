@@ -7,7 +7,6 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use settings_json::parse_json_with_comments;
 use settings_macros::{MergeFrom, with_fallible_options};
-use util::serde::default_true;
 
 use crate::{
     AllLanguageSettingsContent, DelayMs, ExtendingVec, ParseStatus, ProjectTerminalSettingsContent,
@@ -363,7 +362,9 @@ pub struct WorktreeSettingsContent {
 }
 
 #[with_fallible_options]
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, JsonSchema, MergeFrom, Hash)]
+#[derive(
+    Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq, JsonSchema, MergeFrom, Hash,
+)]
 #[serde(rename_all = "snake_case")]
 pub struct LspSettings {
     pub binary: Option<BinarySettings>,
@@ -379,24 +380,7 @@ pub struct LspSettings {
     ///
     /// Consult the documentation for the specific language server to see which settings are supported.
     pub settings: Option<serde_json::Value>,
-    /// If the server supports sending tasks over LSP extensions,
-    /// this setting can be used to enable or disable them in Zed.
-    /// Default: true
-    #[serde(default = "default_true")]
-    pub enable_lsp_tasks: bool,
     pub fetch: Option<FetchSettings>,
-}
-
-impl Default for LspSettings {
-    fn default() -> Self {
-        Self {
-            binary: None,
-            initialization_options: None,
-            settings: None,
-            enable_lsp_tasks: true,
-            fetch: None,
-        }
-    }
 }
 
 #[with_fallible_options]
@@ -703,28 +687,6 @@ pub enum GitGutterSetting {
     Hide,
 }
 
-#[derive(
-    Clone,
-    Copy,
-    Debug,
-    PartialEq,
-    Default,
-    Serialize,
-    Deserialize,
-    JsonSchema,
-    MergeFrom,
-    strum::VariantArray,
-    strum::VariantNames,
-)]
-#[serde(rename_all = "snake_case")]
-pub enum InlineBlameLocation {
-    /// Show git blame inline at the current line.
-    #[default]
-    Inline,
-    /// Show git blame in the status bar at the bottom of the window.
-    StatusBar,
-}
-
 #[with_fallible_options]
 #[derive(Clone, Copy, Debug, PartialEq, Default, Serialize, Deserialize, JsonSchema, MergeFrom)]
 #[serde(rename_all = "snake_case")]
@@ -739,10 +701,6 @@ pub struct InlineBlameSettings {
     ///
     /// Default: 0
     pub delay_ms: Option<DelayMs>,
-    /// Where to render the blame information when enabled.
-    ///
-    /// Default: inline
-    pub location: Option<InlineBlameLocation>,
     /// The amount of padding between the end of the source line and the start
     /// of the inline blame in units of columns.
     ///

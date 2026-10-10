@@ -17,11 +17,6 @@ const SCHEMA_URI_PREFIX: &str = "zed://schemas/";
 const TSCONFIG_SCHEMA: &str = include_str!("schemas/tsconfig.json");
 const PACKAGE_JSON_SCHEMA: &str = include_str!("schemas/package.json");
 
-static TASKS_SCHEMA: LazyLock<String> = LazyLock::new(|| {
-    serde_json::to_string(&task::TaskTemplates::generate_json_schema())
-        .expect("TaskTemplates schema should serialize")
-});
-
 static SNIPPETS_SCHEMA: LazyLock<String> = LazyLock::new(|| {
     serde_json::to_string(&snippet_provider::format::VsSnippetsFile::generate_json_schema())
         .expect("VsSnippetsFile schema should serialize")
@@ -48,8 +43,7 @@ static ACTION_SCHEMA_CACHE: LazyLock<RwLock<HashMap<String, String>>> =
 // Runtime cache for dynamic schemas that depend on runtime state:
 // - "settings": depends on installed fonts, themes, languages, LSP adapters (extensions can add these)
 // - "settings/lsp/*": depends on LSP adapter initialization options
-// - "debug_tasks": depends on DAP adapters (extensions can add these)
-// Cache is invalidated via notify_schema_changed() when extensions or DAP registry change.
+// Cache is invalidated via notify_settings_schemas_changed() when extensions change.
 static DYNAMIC_SCHEMA_CACHE: LazyLock<RwLock<HashMap<String, String>>> =
     LazyLock::new(|| RwLock::new(HashMap::default()));
 
@@ -70,7 +64,7 @@ pub fn init(cx: &mut App) {
         cx.subscribe(&extension_events, move |_, evt, cx| match evt {
             extension::Event::ExtensionsInstalledChanged => {
                 cx.update_global::<SchemaStore, _>(|schema_store, cx| {
-                    schema_store.notify_schema_changed(ChangedSchemas::Settings, cx);
+                    schema_store.notify_settings_schemas_changed(cx);
                 });
             }
             extension::Event::ExtensionUninstalled(_) | extension::Event::ExtensionInstalled(_) => {
@@ -78,13 +72,6 @@ pub fn init(cx: &mut App) {
         })
         .detach();
     }
-
-    cx.observe_global::<dap::DapRegistry>(move |cx| {
-        cx.update_global::<SchemaStore, _>(|schema_store, cx| {
-            schema_store.notify_schema_changed(ChangedSchemas::DebugTasks, cx);
-        });
-    })
-    .detach();
 }
 
 #[derive(Default)]
@@ -94,30 +81,17 @@ pub struct SchemaStore {
 
 impl gpui::Global for SchemaStore {}
 
-enum ChangedSchemas {
-    Settings,
-    DebugTasks,
-}
-
 impl SchemaStore {
-    fn notify_schema_changed(&mut self, changed_schemas: ChangedSchemas, cx: &mut App) {
-        let uris_to_invalidate = match changed_schemas {
-            ChangedSchemas::Settings => {
-                let settings_uri_prefix = &format!("{SCHEMA_URI_PREFIX}settings");
-                let project_settings_uri = &format!("{SCHEMA_URI_PREFIX}project_settings");
-                DYNAMIC_SCHEMA_CACHE
-                    .write()
-                    .extract_if(|uri, _| {
-                        uri == project_settings_uri || uri.starts_with(settings_uri_prefix)
-                    })
-                    .map(|(url, _)| url)
-                    .collect()
-            }
-            ChangedSchemas::DebugTasks => DYNAMIC_SCHEMA_CACHE
-                .write()
-                .remove_entry(&format!("{SCHEMA_URI_PREFIX}debug_tasks"))
-                .map_or_else(Vec::new, |(uri, _)| vec![uri]),
-        };
+    fn notify_settings_schemas_changed(&mut self, cx: &mut App) {
+        let settings_uri_prefix = &format!("{SCHEMA_URI_PREFIX}settings");
+        let project_settings_uri = &format!("{SCHEMA_URI_PREFIX}project_settings");
+        let uris_to_invalidate: Vec<String> = DYNAMIC_SCHEMA_CACHE
+            .write()
+            .extract_if(|uri, _| {
+                uri == project_settings_uri || uri.starts_with(settings_uri_prefix)
+            })
+            .map(|(url, _)| url)
+            .collect();
 
         if uris_to_invalidate.is_empty() {
             return;
@@ -174,7 +148,6 @@ fn resolve_static_schema(path: &str) -> Option<String> {
     match schema_name {
         "tsconfig" => Some(TSCONFIG_SCHEMA.to_string()),
         "package_json" => Some(PACKAGE_JSON_SCHEMA.to_string()),
-        "tasks" => Some(TASKS_SCHEMA.clone()),
         "snippets" => Some(SNIPPETS_SCHEMA.clone()),
         "jsonc" => Some(JSONC_SCHEMA.clone()),
         "keymap" => Some(KEYMAP_SCHEMA.clone()),
@@ -371,12 +344,6 @@ async fn resolve_dynamic_schema(
                 deprecation_messages: &HashMap::default(),
             })
         }
-        "debug_tasks" => {
-            let adapter_schemas = cx.read_global::<dap::DapRegistry, _>(|dap_registry, _| {
-                dap_registry.adapters_schema()
-            });
-            task::DebugTaskFile::generate_json_schema(&adapter_schemas)
-        }
         "keymap" => cx.update(settings::KeymapFile::generate_json_schema_for_registered_actions),
         "action" => {
             let normalized_action_name = rest.context("No Action name provided")?;
@@ -387,7 +354,6 @@ async fn resolve_dynamic_schema(
                 .flatten();
             root_schema_from_action_schema(schema, &mut generator).to_value()
         }
-        "tasks" => task::TaskTemplates::generate_json_schema(),
         _ => {
             anyhow::bail!("Unrecognized schema: {schema_name}");
         }
@@ -432,20 +398,6 @@ pub fn all_schema_file_associations(
         {
             "fileMatch": [schema_file_match(paths::keymap_file())],
             "url": format!("{SCHEMA_URI_PREFIX}keymap"),
-        },
-        {
-            "fileMatch": [
-                schema_file_match(paths::tasks_file()),
-                paths::local_tasks_file_relative_path()
-            ],
-            "url": format!("{SCHEMA_URI_PREFIX}tasks"),
-        },
-        {
-            "fileMatch": [
-                schema_file_match(paths::debug_scenarios_file()),
-                paths::local_debug_file_relative_path()
-            ],
-            "url": format!("{SCHEMA_URI_PREFIX}debug_tasks"),
         },
         {
             "fileMatch": [

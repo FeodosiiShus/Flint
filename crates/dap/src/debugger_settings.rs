@@ -11,7 +11,7 @@ pub struct DebuggerSettings {
     ///
     /// Default: true
     pub save_breakpoints: bool,
-    /// Whether to show the debug button in the status bar.
+    /// Whether to show the debug button in the tool window bar.
     ///
     /// Default: true
     pub button: bool,

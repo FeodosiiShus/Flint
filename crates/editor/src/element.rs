@@ -63,7 +63,7 @@ use multi_buffer::{
 
 use project::{
     debugger::breakpoint_store::{Breakpoint, BreakpointSessionState},
-    project_settings::{InlineBlameLocation, ProjectSettings},
+    project_settings::ProjectSettings,
 };
 use settings::{
     GitGutterSetting, GitHunkStyleSetting, IndentGuideBackgroundColoring, IndentGuideColoring,
@@ -674,7 +674,6 @@ impl EditorElement {
         register_action(editor, window, Editor::context_menu_last);
         register_action(editor, window, Editor::display_cursor_names);
         register_action(editor, window, Editor::open_active_item_in_terminal);
-        register_action(editor, window, Editor::spawn_nearest_task);
         register_action(editor, window, Editor::open_selections_in_multibuffer);
         register_action(editor, window, Editor::toggle_bookmark);
         register_action(editor, window, Editor::toggle_bookmark_with_label);
@@ -2386,71 +2385,6 @@ impl EditorElement {
                         |cx, _| {
                             editor
                                 .render_breakpoint(*text_anchor, *row, &bp, *state, cx)
-                                .into_any_element()
-                        },
-                        window,
-                        cx,
-                    )
-                })
-                .collect_vec()
-        })
-    }
-
-    fn layout_run_indicators(
-        &self,
-        gutter: &Gutter,
-        run_indicators: &HashSet<DisplayRow>,
-        breakpoints: &HashMap<DisplayRow, (Anchor, Breakpoint, Option<BreakpointSessionState>)>,
-        window: &mut Window,
-        cx: &mut App,
-    ) -> Vec<AnyElement> {
-        if self.split_side == Some(SplitSide::Left) {
-            return Vec::new();
-        }
-
-        self.editor.update(cx, |editor, cx| {
-            let active_task_indicator_row =
-                // TODO: add edit button on the right side of each row in the context menu
-                if let Some(crate::CodeContextMenu::CodeActions(CodeActionsMenu {
-                    deployed_from,
-                    actions,
-                    ..
-                })) = editor.context_menu.borrow().as_ref()
-                {
-                    actions
-                        .tasks()
-                        .map(|tasks| tasks.position.to_display_point(gutter.snapshot).row())
-                        .or_else(|| match deployed_from {
-                            Some(CodeActionSource::Indicator(row)) => Some(*row),
-                            _ => None,
-                        })
-                } else {
-                    None
-                };
-
-            run_indicators
-                .iter()
-                .filter_map(|display_row| {
-                    let task_status = gutter
-                        .row_infos
-                        .get((display_row.0.saturating_sub(gutter.range.start.0)) as usize)
-                        .and_then(|row_info| Some((row_info.buffer_id?, row_info.buffer_row?)))
-                        .and_then(|(buffer_id, buffer_row)| {
-                            editor.runnable_task_status(buffer_id, buffer_row)
-                        });
-
-                    gutter.layout_item(
-                        *display_row,
-                        |cx, _| {
-                            editor
-                                .render_run_indicator(
-                                    &self.style,
-                                    Some(*display_row) == active_task_indicator_row,
-                                    breakpoints.get(&display_row).map(|(anchor, _, _)| *anchor),
-                                    task_status,
-                                    *display_row,
-                                    cx,
-                                )
                                 .into_any_element()
                         },
                         window,
@@ -5260,10 +5194,6 @@ impl EditorElement {
 
             for breakpoint in layout.breakpoints.iter_mut() {
                 breakpoint.paint(window, cx);
-            }
-
-            for test_indicator in layout.test_indicators.iter_mut() {
-                test_indicator.paint(window, cx);
             }
         });
     }
@@ -8409,11 +8339,7 @@ impl Element for EditorElement {
                             })
                         });
 
-                        let run_indicator_rows = self.editor.update(cx, |editor, cx| {
-                            editor.active_run_indicators(start_row..end_row, window, cx)
-                        });
-
-                        let mut breakpoint_rows = self.editor.update(cx, |editor, cx| {
+                        let breakpoint_rows = self.editor.update(cx, |editor, cx| {
                             editor.active_breakpoints(start_row..end_row, window, cx)
                         });
 
@@ -8546,14 +8472,6 @@ impl Element for EditorElement {
                             .editor
                             .update(cx, |editor, cx| {
                                 if !editor.show_git_blame_inline {
-                                    return None;
-                                }
-                                // Blame is only painted inline for the Inline location, so
-                                // reserving scroll room for it in other locations would let
-                                // the editor scroll into blank space.
-                                if ProjectSettings::get_global(cx).git.inline_blame.location
-                                    != InlineBlameLocation::Inline
-                                {
                                     return None;
                                 }
                                 let blame = editor.blame.as_ref()?;
@@ -9030,24 +8948,11 @@ impl Element for EditorElement {
                             cx,
                         );
 
-                        let test_indicators = if gutter_settings.runnables {
-                            self.layout_run_indicators(
-                                &gutter,
-                                &run_indicator_rows,
-                                &breakpoint_rows,
-                                window,
-                                cx,
-                            )
-                        } else {
-                            Vec::new()
-                        };
-
                         let show_bookmarks =
                             snapshot.show_bookmarks.unwrap_or(gutter_settings.bookmarks);
 
                         let bookmark_rows = self.editor.update(cx, |editor, cx| {
                             let mut rows = editor.active_bookmarks(start_row..end_row, window, cx);
-                            rows.retain(|k| !run_indicator_rows.contains(k));
                             rows.retain(|k| !breakpoint_rows.contains_key(k));
                             rows
                         });
@@ -9062,7 +8967,6 @@ impl Element for EditorElement {
                             .show_breakpoints
                             .unwrap_or(gutter_settings.breakpoints);
 
-                        breakpoint_rows.retain(|k, _| !run_indicator_rows.contains(k));
                         let mut breakpoints = if show_breakpoints {
                             self.layout_breakpoints(&gutter, &breakpoint_rows, window, cx)
                         } else {
@@ -9079,7 +8983,6 @@ impl Element for EditorElement {
 
                         if let Some(row) = gutter_hover_button
                             && !breakpoint_rows.contains_key(&row)
-                            && !run_indicator_rows.contains(&row)
                             && !bookmark_rows.contains(&row)
                             && (show_bookmarks || show_breakpoints)
                         {
@@ -9323,7 +9226,6 @@ impl Element for EditorElement {
                             selections,
                             diff_hunk_controls,
                             mouse_context_menu,
-                            test_indicators,
                             bookmarks,
                             breakpoints,
                             crease_toggles,
@@ -9544,7 +9446,6 @@ pub struct EditorLayout {
     visible_cursors: Vec<CursorLayout>,
     navigation_overlay_paint_commands: Vec<NavigationOverlayPaintCommand>,
     selections: Vec<(PlayerColor, Vec<SelectionLayout>)>,
-    test_indicators: Vec<AnyElement>,
     bookmarks: Vec<AnyElement>,
     breakpoints: Vec<AnyElement>,
     crease_toggles: Vec<Option<AnyElement>>,
@@ -11350,196 +11251,6 @@ mod tests {
                 "Soft wrapped editor should have no horizontal scrolling!"
             );
         }
-    }
-
-    #[gpui::test]
-    async fn test_status_bar_blame_location_reserves_no_scroll_width(cx: &mut TestAppContext) {
-        struct FixedWidthBlameRenderer;
-
-        impl BlameRenderer for FixedWidthBlameRenderer {
-            fn max_author_length(&self) -> usize {
-                20
-            }
-
-            fn render_blame_entry(
-                &self,
-                _: &gpui::TextStyle,
-                _: BlameEntry,
-                _: Option<ParsedCommitMessage>,
-                _: Vec<SharedString>,
-                _: Entity<project::git_store::Repository>,
-                _: WeakEntity<Workspace>,
-                _: Entity<Editor>,
-                _: usize,
-                _: Hsla,
-                _: &mut Window,
-                _: &mut App,
-            ) -> Option<AnyElement> {
-                None
-            }
-
-            fn render_inline_blame_entry(
-                &self,
-                _: &gpui::TextStyle,
-                _: BlameEntry,
-                _: &mut App,
-            ) -> Option<AnyElement> {
-                Some(div().w(px(160.)).into_any_element())
-            }
-
-            fn render_blame_entry_popover(
-                &self,
-                _: BlameEntry,
-                _: ScrollHandle,
-                _: Option<ParsedCommitMessage>,
-                _: Vec<SharedString>,
-                _: Entity<Markdown>,
-                _: Entity<project::git_store::Repository>,
-                _: WeakEntity<Workspace>,
-                _: &mut Window,
-                _: &mut App,
-            ) -> Option<AnyElement> {
-                None
-            }
-
-            fn open_blame_commit(
-                &self,
-                _: BlameEntry,
-                _: Entity<project::git_store::Repository>,
-                _: WeakEntity<Workspace>,
-                _: &mut Window,
-                _: &mut App,
-            ) {
-            }
-        }
-
-        init_test(cx, |_| {});
-        cx.update(|cx| crate::git::set_blame_renderer(FixedWidthBlameRenderer, cx));
-
-        let fs = project::FakeFs::new(cx.executor());
-        fs.insert_tree(
-            util::path!("/my-repo"),
-            serde_json::json!({
-                ".git": {},
-                "file.txt": "a ".repeat(100),
-            }),
-        )
-        .await;
-        fs.set_blame_for_repo(
-            std::path::Path::new(util::path!("/my-repo/.git")),
-            vec![(
-                git::repository::repo_path("file.txt"),
-                git::blame::Blame {
-                    entries: vec![BlameEntry {
-                        sha: "1b1b1b".parse().unwrap(),
-                        range: 0..1,
-                        original_line_number: 0,
-                        author: None,
-                        author_mail: None,
-                        author_time: None,
-                        author_tz: None,
-                        committer_name: None,
-                        committer_email: None,
-                        committer_time: None,
-                        committer_tz: None,
-                        summary: None,
-                        previous: None,
-                        filename: String::new(),
-                        boundary: false,
-                    }],
-                    ..Default::default()
-                },
-            )],
-        );
-
-        let project = project::Project::test(fs, [util::path!("/my-repo").as_ref()], cx).await;
-        let buffer = project
-            .update(cx, |project, cx| {
-                project.open_local_buffer(util::path!("/my-repo/file.txt"), cx)
-            })
-            .await
-            .unwrap();
-        let buffer_id = buffer.read_with(cx, |buffer, _| buffer.remote_id());
-        let buffer = cx.new(|cx| MultiBuffer::singleton(buffer, cx));
-
-        let window = cx.add_window(|window, cx| {
-            // No soft wrap: a long line legitimately scrolls horizontally, so the
-            // inline blame width reservation is meaningful and observable here.
-            let mut editor = Editor::new(EditorMode::full(), buffer, Some(project), window, cx);
-            editor.set_soft_wrap_mode(language_settings::SoftWrap::None, cx);
-            editor
-        });
-        let cx = &mut VisualTestContext::from_window(*window, cx);
-        let editor = window.root(cx).unwrap();
-        cx.update(|window, cx| window.focus(&editor.read(cx).focus_handle(cx), cx));
-        editor.update(cx, |editor, cx| {
-            editor
-                .blame()
-                .expect("inline blame should be running")
-                .clone()
-                .update(cx, |blame, cx| blame.focus(cx))
-        });
-        cx.executor().run_until_parked();
-
-        // Ensure the blame entry actually loaded, so a broken setup can't let this
-        // test pass vacuously with a zero-width blame reservation on both draws.
-        editor.update(cx, |editor, cx| {
-            assert!(editor.show_git_blame_inline);
-            let blame = editor
-                .blame()
-                .expect("inline blame should be running")
-                .clone();
-            let entry = blame.update(cx, |blame, cx| {
-                blame
-                    .blame_for_rows(
-                        &[RowInfo {
-                            buffer_row: Some(0),
-                            buffer_id: Some(buffer_id),
-                            ..Default::default()
-                        }],
-                        cx,
-                    )
-                    .next()
-                    .flatten()
-            });
-            assert!(entry.is_some(), "blame entry should be available");
-        });
-
-        let style = cx.update(|_, cx| editor.update(cx, |editor, cx| editor.style(cx).clone()));
-
-        // Default `Inline` location: the long line plus the reserved inline blame
-        // width push the horizontal scroll range past the viewport.
-        let (_, state) = cx.draw(Default::default(), size(px(226.), px(500.)), |_, _| {
-            EditorElement::new(&editor, style.clone())
-        });
-        let scroll_max_with_inline_blame = state.position_map.scroll_max.x;
-        assert!(
-            scroll_max_with_inline_blame > 0.,
-            "inline blame on a long line should reserve horizontal scroll room"
-        );
-
-        // Moving blame to the status bar paints nothing inline, so the reservation
-        // must be dropped and the scroll range shrink accordingly.
-        cx.update(|_, cx| {
-            cx.update_global::<settings::SettingsStore, _>(|store, cx| {
-                store.update_user_settings(cx, |settings| {
-                    settings
-                        .git
-                        .get_or_insert_default()
-                        .inline_blame
-                        .get_or_insert_default()
-                        .location = Some(settings::InlineBlameLocation::StatusBar);
-                });
-            });
-        });
-
-        let (_, state) = cx.draw(Default::default(), size(px(226.), px(500.)), |_, _| {
-            EditorElement::new(&editor, style.clone())
-        });
-        assert!(
-            state.position_map.scroll_max.x < scroll_max_with_inline_blame,
-            "Blame in the status bar should not reserve horizontal scroll room"
-        );
     }
 
     #[gpui::test]

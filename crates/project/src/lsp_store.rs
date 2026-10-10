@@ -4832,9 +4832,6 @@ impl LspStore {
         client.add_entity_request_handler(
             Self::handle_lsp_command::<lsp_ext_command::GoToParentModule>,
         );
-        client.add_entity_request_handler(
-            Self::handle_lsp_command::<lsp_ext_command::GetLspRunnables>,
-        );
     }
 
     pub fn as_remote(&self) -> Option<&RemoteLspStore> {

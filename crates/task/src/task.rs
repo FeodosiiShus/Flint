@@ -1,35 +1,27 @@
 //! Baseline interface of Tasks in Zed: all tasks in Zed are intended to use those for implementing their own logic.
 
-mod adapter_schema;
 mod debug_format;
 mod serde_helpers;
-pub mod static_source;
 mod task_template;
-mod vscode_debug_format;
-mod vscode_format;
 
 use anyhow::Context as _;
 use collections::{HashMap, HashSet, hash_map};
-use gpui::SharedString;
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
 
-pub use adapter_schema::{AdapterSchema, AdapterSchemas};
 pub use debug_format::{
-    AttachRequest, BuildTaskDefinition, DebugRequest, DebugScenario, DebugTaskFile, LaunchRequest,
-    Request, TcpArgumentsTemplate, ZedDebugConfig,
+    AttachRequest, BuildTaskDefinition, DebugRequest, DebugScenario, LaunchRequest, Request,
+    TcpArgumentsTemplate, ZedDebugConfig,
 };
 pub use task_template::{
-    DebugArgsRequest, HideStrategy, RevealStrategy, SaveStrategy, TaskHook, TaskTemplate,
-    TaskTemplates, substitute_variables_in_map, substitute_variables_in_str,
+    DebugArgsRequest, HideStrategy, RevealStrategy, SaveStrategy, TaskTemplate,
+    substitute_variables_in_map, substitute_variables_in_str,
 };
 pub use util::shell::{Shell, ShellKind};
 pub use util::shell_builder::ShellBuilder;
-pub use vscode_debug_format::VsCodeDebugTaskFile;
-pub use vscode_format::VsCodeTaskFile;
 pub use zed_actions::RevealTarget;
 
 /// Task identifier, unique within the application.
@@ -176,8 +168,6 @@ pub enum VariableName {
     SelectedText,
     /// The language of the currently opened buffer (e.g., "Rust", "Python").
     Language,
-    /// The symbol selected by the symbol tagging system, specifically the @run capture in a runnables.scm
-    RunnableSymbol,
     /// Open a Picker to select a process ID to use in place
     /// Can only be used to debug configurations
     PickProcessId,
@@ -185,16 +175,6 @@ pub enum VariableName {
     /// For normal checkouts, this equals the worktree root. For linked worktrees,
     /// this is the original repo's working directory.
     MainGitWorktree,
-    /// Full SHA for the Git commit associated with the task context.
-    GitSha,
-    /// Short SHA for the Git commit associated with the task context.
-    GitShaShort,
-    /// Name of the Git repository associated with the task context.
-    GitRepositoryName,
-    /// Absolute path of the Git repository associated with the task context.
-    GitRepositoryPath,
-    /// Name of the Git ref (branch, remote ref, or tag) associated with the task context.
-    GitRef,
     /// Custom variable, provided by the plugin or other external source.
     /// Will be printed with `CUSTOM_` prefix to avoid potential conflicts with other variables.
     Custom(Cow<'static, str>),
@@ -225,17 +205,11 @@ impl FromStr for VariableName {
             "STEM" => Self::Stem,
             "WORKTREE_ROOT" => Self::WorktreeRoot,
             "SYMBOL" => Self::Symbol,
-            "RUNNABLE_SYMBOL" => Self::RunnableSymbol,
             "SELECTED_TEXT" => Self::SelectedText,
             "LANGUAGE" => Self::Language,
             "ROW" => Self::Row,
             "COLUMN" => Self::Column,
             "MAIN_GIT_WORKTREE" => Self::MainGitWorktree,
-            "GIT_SHA" => Self::GitSha,
-            "GIT_SHA_SHORT" => Self::GitShaShort,
-            "GIT_REPOSITORY_NAME" => Self::GitRepositoryName,
-            "GIT_REPOSITORY_PATH" => Self::GitRepositoryPath,
-            "GIT_REF" => Self::GitRef,
             _ => {
                 if let Some(custom_name) =
                     without_prefix.strip_prefix(ZED_CUSTOM_VARIABLE_NAME_PREFIX)
@@ -269,14 +243,8 @@ impl std::fmt::Display for VariableName {
             Self::Column => write!(f, "{ZED_VARIABLE_NAME_PREFIX}COLUMN"),
             Self::SelectedText => write!(f, "{ZED_VARIABLE_NAME_PREFIX}SELECTED_TEXT"),
             Self::Language => write!(f, "{ZED_VARIABLE_NAME_PREFIX}LANGUAGE"),
-            Self::RunnableSymbol => write!(f, "{ZED_VARIABLE_NAME_PREFIX}RUNNABLE_SYMBOL"),
             Self::PickProcessId => write!(f, "{ZED_VARIABLE_NAME_PREFIX}PICK_PID"),
             Self::MainGitWorktree => write!(f, "{ZED_VARIABLE_NAME_PREFIX}MAIN_GIT_WORKTREE"),
-            Self::GitSha => write!(f, "{ZED_VARIABLE_NAME_PREFIX}GIT_SHA"),
-            Self::GitShaShort => write!(f, "{ZED_VARIABLE_NAME_PREFIX}GIT_SHA_SHORT"),
-            Self::GitRepositoryName => write!(f, "{ZED_VARIABLE_NAME_PREFIX}GIT_REPOSITORY_NAME"),
-            Self::GitRepositoryPath => write!(f, "{ZED_VARIABLE_NAME_PREFIX}GIT_REPOSITORY_PATH"),
-            Self::GitRef => write!(f, "{ZED_VARIABLE_NAME_PREFIX}GIT_REF"),
             Self::Custom(s) => write!(
                 f,
                 "{ZED_VARIABLE_NAME_PREFIX}{ZED_CUSTOM_VARIABLE_NAME_PREFIX}{s}"
@@ -367,10 +335,6 @@ impl From<TaskContext> for SharedTaskContext {
     }
 }
 
-/// This is a new type representing a 'tag' on a 'runnable symbol', typically a test of main() function, found via treesitter.
-#[derive(Clone, Debug)]
-pub struct RunnableTag(pub SharedString);
-
 pub fn shell_from_proto(proto: proto::Shell) -> anyhow::Result<Shell> {
     let shell_type = proto.shell_type.context("invalid shell type")?;
     let shell = match shell_type {
@@ -397,86 +361,5 @@ pub fn shell_to_proto(shell: Shell) -> proto::Shell {
     };
     proto::Shell {
         shell_type: Some(shell_type),
-    }
-}
-
-type VsCodeEnvVariable = String;
-type VsCodeCommand = String;
-type ZedEnvVariable = String;
-
-struct EnvVariableReplacer {
-    variables: HashMap<VsCodeEnvVariable, ZedEnvVariable>,
-    commands: HashMap<VsCodeCommand, ZedEnvVariable>,
-}
-
-impl EnvVariableReplacer {
-    fn new(variables: HashMap<VsCodeEnvVariable, ZedEnvVariable>) -> Self {
-        Self {
-            variables,
-            commands: HashMap::default(),
-        }
-    }
-
-    fn with_commands(
-        mut self,
-        commands: impl IntoIterator<Item = (VsCodeCommand, ZedEnvVariable)>,
-    ) -> Self {
-        self.commands = commands.into_iter().collect();
-        self
-    }
-
-    fn replace_value(&self, input: serde_json::Value) -> serde_json::Value {
-        match input {
-            serde_json::Value::String(s) => serde_json::Value::String(self.replace(&s)),
-            serde_json::Value::Array(arr) => {
-                serde_json::Value::Array(arr.into_iter().map(|v| self.replace_value(v)).collect())
-            }
-            serde_json::Value::Object(obj) => serde_json::Value::Object(
-                obj.into_iter()
-                    .map(|(k, v)| (self.replace(&k), self.replace_value(v)))
-                    .collect(),
-            ),
-            _ => input,
-        }
-    }
-    // Replaces occurrences of VsCode-specific environment variables with Zed equivalents.
-    fn replace(&self, input: &str) -> String {
-        shellexpand::env_with_context_no_errors(&input, |var: &str| {
-            // Colons denote a default value in case the variable is not set. We want to preserve that default, as otherwise shellexpand will substitute it for us.
-            let colon_position = var.find(':').unwrap_or(var.len());
-            let (left, right) = var.split_at(colon_position);
-            if left == "env" && !right.is_empty() {
-                let variable_name = &right[1..];
-                return Some(format!("${{{variable_name}}}"));
-            } else if left == "command" && !right.is_empty() {
-                let command_name = &right[1..];
-                if let Some(replacement_command) = self.commands.get(command_name) {
-                    return Some(format!("${{{replacement_command}}}"));
-                }
-            }
-
-            let (variable_name, default) = (left, right);
-            let append_previous_default = |ret: &mut String| {
-                if !default.is_empty() {
-                    ret.push_str(default);
-                }
-            };
-            if let Some(substitution) = self.variables.get(variable_name) {
-                // Got a VSCode->Zed hit, perform a substitution
-                let mut name = format!("${{{substitution}");
-                append_previous_default(&mut name);
-                name.push('}');
-                return Some(name);
-            }
-            // This is an unknown variable.
-            // We should not error out, as they may come from user environment (e.g. $PATH). That means that the variable substitution might not be perfect.
-            // If there's a default, we need to return the string verbatim as otherwise shellexpand will apply that default for us.
-            if !default.is_empty() {
-                return Some(format!("${{{var}}}"));
-            }
-            // Else we can just return None and that variable will be left as is.
-            None
-        })
-        .into_owned()
     }
 }

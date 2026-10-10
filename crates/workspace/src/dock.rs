@@ -1,25 +1,24 @@
+use crate::Workspace;
 use crate::focus_follows_mouse::FocusFollowsMouse as _;
 use crate::persistence::model::DockData;
-use crate::status_bar::HideStatusItem;
 use crate::tool_window_header::{TOOL_WINDOW_GROUP, render_tool_window_header};
 use crate::{DraggedDock, Event, FocusFollowsMouse, ModalLayer, Pane, WorkspaceSettings};
-use crate::{Workspace, status_bar::StatusItemView};
 use anyhow::Context as _;
 use client::proto;
 use db::kvp::KeyValueStore;
 
 use gpui::{
-    Action, Anchor, AnyView, App, Axis, Context, Entity, EntityId, EventEmitter, FocusHandle,
-    Focusable, IntoElement, KeyContext, MouseButton, MouseDownEvent, MouseUpEvent, ParentElement,
-    Render, SharedString, StyleRefinement, Styled, Subscription, WeakEntity, Window, deferred, div,
-    px,
+    Action, AnyView, App, Axis, Context, Entity, EntityId, EventEmitter, FocusHandle, Focusable,
+    IntoElement, KeyContext, MouseButton, MouseDownEvent, MouseUpEvent, ParentElement, Render,
+    StyleRefinement, Styled, Subscription, WeakEntity, Window, deferred, div, px,
 };
 use serde::{Deserialize, Serialize};
-use settings::{Settings, SettingsStore, TerminalDockPosition};
+use settings::{
+    Settings, SettingsContent, SettingsStore, TerminalDockPosition, update_settings_file,
+};
 use std::sync::Arc;
 use ui::{
-    BackgroundImageArea, BackgroundImageTarget, ContextMenu, CountBadge, Divider, DividerColor,
-    IconButton, Tooltip, background_image_layer, prelude::*, right_click_menu,
+    BackgroundImageArea, BackgroundImageTarget, ContextMenu, background_image_layer, prelude::*,
 };
 use util::ResultExt as _;
 
@@ -127,10 +126,10 @@ pub trait Panel: Focusable + EventEmitter<PanelEvent> + Render + Sized {
     fn enabled(&self, _cx: &App) -> bool {
         true
     }
-    /// Returns metadata describing how to hide this panel's button from the
-    /// status bar by writing to user settings. Implementors should return
-    /// `None` if the panel button cannot be hidden through settings.
-    fn hide_button_setting(&self, _: &App) -> Option<HideStatusItem> {
+    /// Returns metadata describing how to hide this panel's button by writing
+    /// to user settings. Implementors should return `None` if the panel
+    /// button cannot be hidden through settings.
+    fn hide_button_setting(&self, _: &App) -> Option<HideButtonSetting> {
         None
     }
     fn header_actions(&self, _window: &Window, _cx: &App) -> Vec<PanelHeaderAction> {
@@ -167,7 +166,7 @@ pub trait PanelHandle: Send + Sync {
     fn to_any(&self) -> AnyView;
     fn activation_priority(&self, cx: &App) -> u32;
     fn enabled(&self, cx: &App) -> bool;
-    fn hide_button_setting(&self, cx: &App) -> Option<HideStatusItem>;
+    fn hide_button_setting(&self, cx: &App) -> Option<HideButtonSetting>;
     fn header_actions(&self, window: &Window, cx: &App) -> Vec<PanelHeaderAction>;
     fn move_to_next_position(&self, window: &mut Window, cx: &mut App) {
         let current_position = self.position(window, cx);
@@ -298,7 +297,7 @@ where
         self.read(cx).enabled(cx)
     }
 
-    fn hide_button_setting(&self, cx: &App) -> Option<HideStatusItem> {
+    fn hide_button_setting(&self, cx: &App) -> Option<HideButtonSetting> {
         self.read(cx).hide_button_setting(cx)
     }
 
@@ -428,11 +427,6 @@ struct PanelEntry {
     panel: Arc<dyn PanelHandle>,
     size_state: PanelSizeState,
     _subscriptions: [Subscription; 4],
-}
-
-pub struct PanelButtons {
-    dock: Entity<Dock>,
-    _settings_subscription: Subscription,
 }
 
 pub(crate) const PANEL_SIZE_STATE_KEY: &str = "dock_panel_size";
@@ -831,7 +825,7 @@ impl Dock {
             Ok(ix) => {
                 if cfg!(debug_assertions) {
                     panic!(
-                        "Panels `{}` and `{}` have the same activation priority. Each panel must have a unique priority so the status bar order is deterministic.",
+                        "Panels `{}` and `{}` have the same activation priority. Each panel must have a unique priority so the panel button order is deterministic.",
                         T::panel_key(),
                         self.panel_entries[ix].panel.panel_key()
                     );
@@ -1470,127 +1464,6 @@ impl Render for Dock {
     }
 }
 
-impl PanelButtons {
-    pub fn new(dock: Entity<Dock>, cx: &mut Context<Self>) -> Self {
-        cx.observe(&dock, |_, _, cx| cx.notify()).detach();
-        let settings_subscription = cx.observe_global::<SettingsStore>(|_, cx| cx.notify());
-        Self {
-            dock,
-            _settings_subscription: settings_subscription,
-        }
-    }
-}
-
-impl Render for PanelButtons {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let dock = self.dock.read(cx);
-        let active_index = dock.active_panel_index;
-        let is_open = dock.is_open;
-        let dock_position = dock.position;
-
-        let (menu_anchor, menu_attach) = match dock.position {
-            DockPosition::Left => (Anchor::BottomLeft, Anchor::TopLeft),
-            DockPosition::Bottom | DockPosition::Right => (Anchor::BottomRight, Anchor::TopRight),
-        };
-
-        let dock_entity = self.dock.clone();
-        let mut buttons: Vec<_> = dock
-            .panel_entries
-            .iter()
-            .enumerate()
-            .filter_map(|(i, entry)| {
-                let icon = entry.panel.icon(window, cx)?;
-                let icon_tooltip = entry
-                    .panel
-                    .icon_tooltip(window, cx)
-                    .ok_or_else(|| {
-                        anyhow::anyhow!("can't render a panel button without an icon tooltip")
-                    })
-                    .log_err()?;
-                let name = entry.panel.persistent_name();
-                let panel = entry.panel.clone();
-                let dock_for_menu = dock_entity.clone();
-
-                let is_active_button = Some(i) == active_index && is_open;
-                let (action, tooltip) = if is_active_button {
-                    let action = dock.toggle_action();
-
-                    let tooltip: SharedString =
-                        format!("Close {} Dock", dock.position.label()).into();
-
-                    (action, tooltip)
-                } else {
-                    let action = entry.panel.toggle_action(window, cx);
-
-                    (action, icon_tooltip.into())
-                };
-
-                let focus_handle = dock.focus_handle(cx);
-                let icon_label = entry.panel.icon_label(window, cx);
-
-                Some(
-                    right_click_menu(name)
-                        .menu(move |window, cx| {
-                            panel_context_menu(panel.clone(), dock_for_menu.clone(), window, cx)
-                        })
-                        .anchor(menu_anchor)
-                        .attach(menu_attach)
-                        .trigger(move |is_active, _window, _cx| {
-                            // Include active state in element ID to invalidate the cached
-                            // tooltip when panel state changes (e.g., via keyboard shortcut)
-                            let button = IconButton::new((name, is_active_button as u64), icon)
-                                .icon_size(IconSize::Small)
-                                .chrome_region(ui::ChromeRegion::StatusBar)
-                                .toggle_state(is_active_button)
-                                .tab_index(0isize)
-                                .aria_label(icon_tooltip)
-                                .on_click({
-                                    let action = action.boxed_clone();
-                                    move |_, window, cx| {
-                                        window.focus(&focus_handle, cx);
-                                        window.dispatch_action(action.boxed_clone(), cx)
-                                    }
-                                })
-                                .when(!is_active, |this| {
-                                    this.tooltip(move |_window, cx| {
-                                        Tooltip::for_action(tooltip.clone(), &*action, cx)
-                                    })
-                                });
-
-                            div().relative().child(button).when_some(
-                                icon_label
-                                    .clone()
-                                    .filter(|_| !is_active_button)
-                                    .and_then(|label| label.parse::<usize>().ok()),
-                                |this, count| this.child(CountBadge::new(count)),
-                            )
-                        }),
-                )
-            })
-            .collect();
-
-        if dock_position == DockPosition::Right {
-            buttons.reverse();
-        }
-
-        let has_buttons = !buttons.is_empty();
-
-        h_flex()
-            .debug_selector(move || format!("panel_buttons_{}", dock_position.label()))
-            .gap_1()
-            .when(
-                has_buttons
-                    && (dock.position == DockPosition::Bottom
-                        || dock.position == DockPosition::Right),
-                |this| this.child(Divider::vertical().color(DividerColor::Border)),
-            )
-            .children(buttons)
-            .when(has_buttons && dock.position == DockPosition::Left, |this| {
-                this.child(Divider::vertical().color(DividerColor::Border))
-            })
-    }
-}
-
 pub(crate) fn panel_context_menu(
     panel: Arc<dyn PanelHandle>,
     dock: Entity<Dock>,
@@ -1680,27 +1553,43 @@ pub(crate) fn panel_context_menu(
             );
         }
         if let Some(hide) = panel_hide {
-            menu = crate::status_bar::add_hide_button_entry(menu.separator(), hide);
+            menu = add_hide_button_entry(menu.separator(), hide);
         }
         menu
     })
 }
 
-impl StatusItemView for PanelButtons {
-    fn set_active_pane_item(
-        &mut self,
-        _active_pane_item: Option<&dyn crate::ItemHandle>,
-        _window: &mut Window,
-        _cx: &mut Context<Self>,
-    ) {
-        // Nothing to do, panel buttons don't depend on the active center item
+/// Describes how a panel button can be hidden by the user, so that its
+/// right-click menu can offer a "Hide Button" entry.
+#[derive(Clone)]
+pub struct HideButtonSetting {
+    hide: Arc<dyn Fn(&mut SettingsContent) + Send + Sync>,
+}
+
+impl HideButtonSetting {
+    pub fn new(hide: impl Fn(&mut SettingsContent) + Send + Sync + 'static) -> Self {
+        Self {
+            hide: Arc::new(hide),
+        }
     }
 
-    fn hide_setting(&self, _: &App) -> Option<HideStatusItem> {
-        // Panel buttons are hidden on a per-panel basis through each panel
-        // button's own context menu.
-        None
+    /// Persists the hide by updating the user settings file.
+    pub fn apply(&self, cx: &App) {
+        let hide = self.hide.clone();
+        let fs = <dyn fs::Fs>::global(cx);
+        update_settings_file(fs, cx, move |settings, _cx| (hide)(settings));
     }
+}
+
+/// Appends a "Hide Button" entry aligned with surrounding toggleable entries.
+fn add_hide_button_entry(menu: ContextMenu, hide: HideButtonSetting) -> ContextMenu {
+    menu.toggleable_entry(
+        "Hide Button",
+        false,
+        IconPosition::Start,
+        None,
+        move |_window, cx| hide.apply(cx),
+    )
 }
 
 #[cfg(any(test, feature = "test-support"))]

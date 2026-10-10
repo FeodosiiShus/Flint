@@ -11,8 +11,6 @@ pub struct ChromeSizes {
     pub tab_bar_icon_size: Option<Pixels>,
     pub toolbar_height: Option<Pixels>,
     pub toolbar_icon_size: Option<Pixels>,
-    pub status_bar_height: Option<Pixels>,
-    pub status_bar_icon_size: Option<Pixels>,
     pub panel_height: Option<Pixels>,
     pub panel_icon_size: Option<Pixels>,
 }
