@@ -11,7 +11,6 @@ use super::actions::{
 };
 use super::state::{DefaultButton, RowId, SelectionMove, TreeRowKind};
 use super::tree_table::ROW_HEIGHT;
-use crate::branch_operations::opaque_elevated_surface;
 
 fn page_row_count(viewport_height: f32, forwards: bool) -> usize {
     if forwards {
@@ -75,7 +74,7 @@ impl ConflictsDialog {
                 .rounded_md()
                 .border_1()
                 .border_color(colors.border)
-                .bg(opaque_elevated_surface(cx))
+                .bg(colors.elevated_surface_background)
                 .child(Label::new(query.clone()))
                 .into_any_element(),
         )

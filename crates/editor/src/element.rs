@@ -1,6 +1,11 @@
+mod gutter_geometry;
 mod header;
+mod inspection_widget;
 mod mouse;
 
+use gutter_geometry::{
+    VcsMarkerPlacement, gutter_separator_bounds, left_edge_strip_width, line_number_font_size,
+};
 #[cfg(test)]
 pub(crate) use header::StickyHeader;
 pub use header::file_status_label_color;
@@ -22,8 +27,8 @@ use crate::{
         HighlightKey, HighlightedChunk, ToDisplayPoint,
     },
     editor_settings::{
-        CurrentLineHighlight, DocumentColorsRenderMode, GitGutterWidth, ScrollBeyondLastLine,
-        ScrollbarAxes, ScrollbarDiagnostics,
+        CurrentLineHighlight, DocumentColorsRenderMode, ScrollBeyondLastLine, ScrollbarAxes,
+        ScrollbarDiagnostics,
     },
     git::blame::{BlameRenderer, GitBlame, GlobalBlameRenderer},
     hover_popover::{
@@ -1632,6 +1637,7 @@ impl EditorElement {
         &self,
         line_height: Pixels,
         gutter_hitbox: &Hitbox,
+        vcs_marker_placement: VcsMarkerPlacement,
         display_rows: Range<DisplayRow>,
         snapshot: &EditorSnapshot,
         scroll_position: gpui::Point<ScrollOffset>,
@@ -1651,9 +1657,9 @@ impl EditorElement {
                         scroll_position,
                         line_height,
                         gutter_hitbox.bounds,
+                        vcs_marker_placement,
                         hunk,
                         snapshot,
-                        cx,
                     );
                     *hitbox = Some(window.insert_hitbox(hunk_bounds, HitboxBehavior::BlockMouse));
                 }
@@ -4807,6 +4813,15 @@ impl EditorElement {
                         color,
                     ));
                 }
+
+                if layout.gutter_hitbox.size.width > Pixels::ZERO {
+                    window.paint_quad(fill(
+                        window.pixel_snap_bounds(gutter_separator_bounds(
+                            layout.gutter_hitbox.bounds,
+                        )),
+                        cx.theme().colors().editor_indent_guide,
+                    ));
+                }
             }
         })
     }
@@ -4962,6 +4977,7 @@ impl EditorElement {
         }
 
         let line_height = layout.position_map.line_height;
+        let vcs_marker_placement = layout.vcs_marker_placement;
         window.paint_layer(layout.gutter_hitbox.bounds, |window| {
             for (hunk, hitbox) in &layout.display_hunks {
                 let hunk_to_paint = match hunk {
@@ -4970,14 +4986,14 @@ impl EditorElement {
                             layout.position_map.scroll_position,
                             line_height,
                             layout.gutter_hitbox.bounds,
+                            vcs_marker_placement,
                             hunk,
                             &layout.position_map.snapshot,
-                            cx,
                         );
                         Some((
                             hunk_bounds,
                             cx.theme().colors().version_control_modified,
-                            Corners::all(px(0.)),
+                            vcs_marker_placement.marker_corner_radii(),
                             DiffHunkStatus::modified_none(),
                         ))
                     }
@@ -5002,19 +5018,17 @@ impl EditorElement {
                             },
                         };
                         match status.kind {
-                            DiffHunkStatusKind::Deleted if display_row_range.is_empty() => (
-                                Bounds::new(
-                                    point(
-                                        hunk_hitbox.origin.x - hunk_hitbox.size.width,
-                                        hunk_hitbox.origin.y,
-                                    ),
-                                    size(hunk_hitbox.size.width * 2., hunk_hitbox.size.height),
-                                ),
+                            DiffHunkStatusKind::Deleted if display_row_range.is_empty() => {
+                                let (marker_bounds, corner_radii) = vcs_marker_placement
+                                    .deleted_marker_paint_shape(hunk_hitbox.bounds, line_height);
+                                (marker_bounds, color, corner_radii, *status)
+                            }
+                            _ => (
+                                hunk_hitbox.bounds,
                                 color,
-                                Corners::all(1. * line_height),
+                                vcs_marker_placement.marker_corner_radii(),
                                 *status,
                             ),
-                            _ => (hunk_hitbox.bounds, color, Corners::all(px(0.)), *status),
                         }
                     }),
                 };
@@ -5058,56 +5072,46 @@ impl EditorElement {
         });
     }
 
-    const DEFAULT_STRIP_WIDTH_RATIO: f32 = 0.275;
-    const DELETED_MARKER_WIDTH_RATIO: f32 = 0.35 / Self::DEFAULT_STRIP_WIDTH_RATIO;
-    const MIN_DELETED_MARKER_WIDTH_RATIO: f32 = 0.2;
-
     fn gutter_strip_width(line_height: Pixels, cx: &App) -> Pixels {
-        match EditorSettings::get_global(cx).gutter.git_gutter_width {
-            GitGutterWidth::Custom(width) => px(*width),
-            GitGutterWidth::Default => (Self::DEFAULT_STRIP_WIDTH_RATIO * line_height).floor(),
-        }
+        left_edge_strip_width(
+            EditorSettings::get_global(cx).gutter.git_gutter_width,
+            line_height,
+        )
     }
 
-    fn deleted_marker_base_width(setting: GitGutterWidth, line_height: Pixels) -> Pixels {
-        match setting {
-            GitGutterWidth::Custom(width) => {
-                let scaled_width = px(*width * Self::DELETED_MARKER_WIDTH_RATIO);
-                if scaled_width > Pixels::ZERO {
-                    let default_strip_width = Self::DEFAULT_STRIP_WIDTH_RATIO * line_height;
-                    let boost_factor = (1.0 - *width / f32::from(default_strip_width)).max(0.0);
-                    scaled_width + line_height * Self::MIN_DELETED_MARKER_WIDTH_RATIO * boost_factor
-                } else {
-                    Pixels::ZERO
-                }
-            }
-            GitGutterWidth::Default => {
-                (Self::DEFAULT_STRIP_WIDTH_RATIO * line_height * Self::DELETED_MARKER_WIDTH_RATIO)
-                    .floor()
-            }
-        }
+    fn vcs_marker_placement(
+        line_height: Pixels,
+        gutter_dimensions: &GutterDimensions,
+        cx: &App,
+    ) -> VcsMarkerPlacement {
+        VcsMarkerPlacement::new(
+            EditorSettings::get_global(cx).gutter.git_gutter_width,
+            line_height,
+            gutter_dimensions.width,
+            gutter_dimensions.right_padding,
+        )
     }
 
     fn diff_hunk_bounds(
         scroll_position: gpui::Point<ScrollOffset>,
         line_height: Pixels,
         gutter_bounds: Bounds<Pixels>,
+        vcs_marker_placement: VcsMarkerPlacement,
         hunk: &DisplayDiffHunk,
         snapshot: &EditorSnapshot,
-        cx: &App,
     ) -> Bounds<Pixels> {
         let scroll_top = scroll_position.y * ScrollPixelOffset::from(line_height);
-        let gutter_strip_width = Self::gutter_strip_width(line_height, cx);
 
         match hunk {
             DisplayDiffHunk::Folded { display_row, .. } => {
-                let start_y = (display_row.as_f64() * ScrollPixelOffset::from(line_height)
-                    - scroll_top)
-                    .into();
-                let end_y = start_y + line_height;
-                let highlight_origin = gutter_bounds.origin + point(px(0.), start_y);
-                let highlight_size = size(gutter_strip_width, end_y - start_y);
-                Bounds::new(highlight_origin, highlight_size)
+                let start_y = Pixels::from(
+                    display_row.as_f64() * ScrollPixelOffset::from(line_height) - scroll_top,
+                );
+                vcs_marker_placement.row_range_bounds(
+                    gutter_bounds.origin,
+                    start_y,
+                    start_y + line_height,
+                )
             }
             DisplayDiffHunk::Unfolded {
                 display_row_range,
@@ -5115,21 +5119,15 @@ impl EditorElement {
                 ..
             } => {
                 if status.is_deleted() && display_row_range.is_empty() {
-                    let row = display_row_range.start;
-
-                    let offset = ScrollPixelOffset::from(line_height / 2.);
-                    let start_y =
-                        (row.as_f64() * ScrollPixelOffset::from(line_height) - offset - scroll_top)
-                            .into();
-                    let end_y = start_y + line_height;
-
-                    let width = Self::deleted_marker_base_width(
-                        EditorSettings::get_global(cx).gutter.git_gutter_width,
-                        line_height,
+                    let line_boundary_y = Pixels::from(
+                        display_row_range.start.as_f64() * ScrollPixelOffset::from(line_height)
+                            - scroll_top,
                     );
-                    let highlight_origin = gutter_bounds.origin + point(px(0.), start_y);
-                    let highlight_size = size(width, end_y - start_y);
-                    Bounds::new(highlight_origin, highlight_size)
+                    vcs_marker_placement.deleted_marker_bounds(
+                        gutter_bounds.origin,
+                        line_boundary_y,
+                        line_height,
+                    )
                 } else {
                     let start_row = display_row_range.start;
                     let end_row = display_row_range.end;
@@ -5153,17 +5151,15 @@ impl EditorElement {
                         })
                         .unwrap_or(end_row);
 
-                    let start_y = (start_row.as_f64() * ScrollPixelOffset::from(line_height)
-                        - scroll_top)
-                        .into();
+                    let start_y = Pixels::from(
+                        start_row.as_f64() * ScrollPixelOffset::from(line_height) - scroll_top,
+                    );
                     let end_y = Pixels::from(
                         end_row_in_current_excerpt.as_f64() * ScrollPixelOffset::from(line_height)
                             - scroll_top,
                     );
 
-                    let highlight_origin = gutter_bounds.origin + point(px(0.), start_y);
-                    let highlight_size = size(gutter_strip_width, end_y - start_y);
-                    Bounds::new(highlight_origin, highlight_size)
+                    vcs_marker_placement.row_range_bounds(gutter_bounds.origin, start_y, end_y)
                 }
             }
         }
@@ -6328,7 +6324,7 @@ impl EditorElement {
         };
         window.text_system().shape_line(
             text,
-            self.style.text.font_size.to_pixels(window.rem_size()),
+            line_number_font_size(self.style.text.font_size.to_pixels(window.rem_size())),
             &[run],
             None,
         )
@@ -6520,6 +6516,31 @@ pub fn render_breadcrumb_text(
         );
     }
 
+    let editor = active_item
+        .downcast::<Editor>()
+        .map(|editor| editor.downgrade());
+
+    let has_project_path = active_item.project_path(cx).is_some();
+
+    if !multibuffer_header
+        && active_item.breadcrumb_location(cx) == workspace::ToolbarItemLocation::Bottom
+    {
+        return render_bottom_breadcrumb_strip(
+            segments,
+            prefix,
+            editor,
+            has_project_path,
+            window,
+            cx,
+        );
+    }
+
+    if segments.is_empty() && prefix.is_none() {
+        return element.into_any_element();
+    }
+
+    let first_segment_is_file_path = EditorSettings::get_global(cx).toolbar.breadcrumbs_file_path;
+
     let highlighted_segments = segments.into_iter().enumerate().map(|(index, segment)| {
         let mut text_style = window.text_style();
         if let Some(font) = &breadcrumb_font {
@@ -6531,6 +6552,7 @@ pub fn render_breadcrumb_text(
         text_style.color = Color::Muted.color(cx);
 
         if index == 0
+            && first_segment_is_file_path
             && !workspace::TabBarSettings::get_global(cx).show
             && active_item.is_dirty(cx)
             && let Some(styled_element) = apply_dirty_filename_style(&segment, &text_style, cx)
@@ -6562,12 +6584,6 @@ pub fn render_breadcrumb_text(
         breadcrumbs_stack
     };
 
-    let editor = active_item
-        .downcast::<Editor>()
-        .map(|editor| editor.downgrade());
-
-    let has_project_path = active_item.project_path(cx).is_some();
-
     match editor {
         Some(editor) => element
             .id("breadcrumb_container")
@@ -6584,62 +6600,17 @@ pub fn render_breadcrumb_text(
                     .when(!multibuffer_header, |this| {
                         let focus_handle = editor.upgrade().unwrap().focus_handle(&cx);
 
-                        this.tooltip(Tooltip::element(move |_window, cx| {
-                            v_flex()
-                                .gap_1()
-                                .child(
-                                    h_flex()
-                                        .gap_1()
-                                        .justify_between()
-                                        .child(Label::new("Show Symbol Outline"))
-                                        .child(ui::KeyBinding::for_action_in(
-                                            &zed_actions::outline::ToggleOutline,
-                                            &focus_handle,
-                                            cx,
-                                        )),
-                                )
-                                .when(has_project_path, |this| {
-                                    this.child(
-                                        h_flex()
-                                            .gap_1()
-                                            .justify_between()
-                                            .pt_1()
-                                            .border_t_1()
-                                            .border_color(cx.theme().colors().border_variant)
-                                            .child(Label::new("Right-Click to Copy Path")),
-                                    )
-                                })
-                                .into_any_element()
-                        }))
-                        .on_click({
-                            let editor = editor.clone();
-                            move |_, window, cx| {
-                                if let Some((editor, callback)) = editor
-                                    .upgrade()
-                                    .zip(zed_actions::outline::TOGGLE_OUTLINE.get())
-                                {
-                                    callback(editor.to_any_view(), window, cx);
-                                }
-                            }
-                        })
-                        .when(has_project_path, |this| {
-                            this.on_right_click({
+                        this.tooltip(breadcrumb_outline_tooltip(focus_handle, has_project_path))
+                            .on_click({
                                 let editor = editor.clone();
-                                move |_, _, cx| {
-                                    if let Some(abs_path) = editor.upgrade().and_then(|editor| {
-                                        editor.update(cx, |editor, cx| {
-                                            editor.target_file_abs_path(cx)
-                                        })
-                                    }) {
-                                        if let Some(path_str) = abs_path.to_str() {
-                                            cx.write_to_clipboard(ClipboardItem::new_string(
-                                                path_str.to_string(),
-                                            ));
-                                        }
-                                    }
-                                }
+                                move |_, window, cx| toggle_breadcrumb_outline(&editor, window, cx)
                             })
-                        })
+                            .when(has_project_path, |this| {
+                                this.on_right_click({
+                                    let editor = editor.clone();
+                                    move |_, _, cx| copy_breadcrumb_path(&editor, cx)
+                                })
+                            })
                     }),
             )
             .into_any_element(),
@@ -6648,6 +6619,158 @@ pub fn render_breadcrumb_text(
             .pl_1()
             .child(breadcrumbs)
             .into_any_element(),
+    }
+}
+
+const BOTTOM_BREADCRUMB_HORIZONTAL_PADDING: f32 = 5.;
+const BOTTOM_BREADCRUMB_VERTICAL_PADDING: f32 = 3.;
+
+fn bottom_breadcrumb_strip_min_height(window: &Window, cx: &App) -> Pixels {
+    let mut text_style = window.text_style();
+    text_style.font_size = TextSize::default().rems(cx).into();
+    let crumb_line_height = text_style.line_height_in_pixels(window.rem_size());
+    px(BOTTOM_BREADCRUMB_VERTICAL_PADDING) * 2. + crumb_line_height
+}
+
+fn render_bottom_breadcrumb_strip(
+    segments: Vec<HighlightedText>,
+    prefix: Option<gpui::AnyElement>,
+    editor: Option<WeakEntity<Editor>>,
+    has_project_path: bool,
+    window: &mut Window,
+    cx: &App,
+) -> gpui::AnyElement {
+    let colors = cx.theme().colors();
+    let crumb_hover_background = colors.ghost_element_hover;
+    let last_crumb_index = segments.len().saturating_sub(1);
+
+    let crumbs = segments.into_iter().enumerate().map(|(index, segment)| {
+        let color = if index == last_crumb_index {
+            Color::Default
+        } else {
+            Color::Muted
+        };
+        div()
+            .flex_none()
+            .px(px(BOTTOM_BREADCRUMB_HORIZONTAL_PADDING))
+            .py(px(BOTTOM_BREADCRUMB_VERTICAL_PADDING))
+            .hover(move |style| style.bg(crumb_hover_background))
+            .child(Label::new(segment.text).color(color).single_line())
+            .into_any_element()
+    });
+
+    let crumbs = Itertools::intersperse_with(crumbs, || {
+        Icon::new(IconName::ChevronRight)
+            .size(IconSize::XSmall)
+            .color(Color::Placeholder)
+            .into_any_element()
+    });
+
+    let crumb_row = h_flex()
+        .id("breadcrumb_strip")
+        .w_full()
+        .min_h(bottom_breadcrumb_strip_min_height(window, cx))
+        .overflow_x_scroll()
+        .when_some(prefix, |this, prefix| {
+            this.child(
+                div()
+                    .flex_none()
+                    .pl(px(BOTTOM_BREADCRUMB_HORIZONTAL_PADDING))
+                    .child(prefix),
+            )
+        })
+        .children(crumbs)
+        .when_some(editor, |this, editor| {
+            let focus_handle = editor
+                .upgrade()
+                .map(|editor_entity| editor_entity.focus_handle(cx));
+            this.cursor_pointer()
+                .when_some(focus_handle, |this, focus_handle| {
+                    this.tooltip(breadcrumb_outline_tooltip(focus_handle, has_project_path))
+                })
+                .on_click({
+                    let editor = editor.clone();
+                    move |_, window, cx| toggle_breadcrumb_outline(&editor, window, cx)
+                })
+                .when(has_project_path, |this| {
+                    this.on_mouse_down(MouseButton::Right, move |_, window, cx| {
+                        window.prevent_default();
+                        cx.stop_propagation();
+                        copy_breadcrumb_path(&editor, cx);
+                    })
+                })
+        });
+
+    v_flex()
+        .id("breadcrumb_strip_container")
+        .relative()
+        .w_full()
+        .flex_none()
+        .border_t_1()
+        .border_color(colors.editor_indent_guide)
+        .bg(colors.editor_background)
+        .child(ui::background_image_layer(
+            ui::BackgroundImageTarget::EditorAndTools,
+            ui::BackgroundImageArea::Window,
+            colors.editor_background,
+            true,
+            Corners::default(),
+        ))
+        .font_ui(cx)
+        .text_ui(cx)
+        .child(crumb_row)
+        .into_any_element()
+}
+
+fn breadcrumb_outline_tooltip(
+    focus_handle: gpui::FocusHandle,
+    has_project_path: bool,
+) -> impl Fn(&mut Window, &mut App) -> gpui::AnyView + 'static {
+    Tooltip::element(move |_window, cx| {
+        v_flex()
+            .gap_1()
+            .child(
+                h_flex()
+                    .gap_1()
+                    .justify_between()
+                    .child(Label::new("Show Symbol Outline"))
+                    .child(ui::KeyBinding::for_action_in(
+                        &zed_actions::outline::ToggleOutline,
+                        &focus_handle,
+                        cx,
+                    )),
+            )
+            .when(has_project_path, |this| {
+                this.child(
+                    h_flex()
+                        .gap_1()
+                        .justify_between()
+                        .pt_1()
+                        .border_t_1()
+                        .border_color(cx.theme().colors().border_variant)
+                        .child(Label::new("Right-Click to Copy Path")),
+                )
+            })
+            .into_any_element()
+    })
+}
+
+fn toggle_breadcrumb_outline(editor: &WeakEntity<Editor>, window: &mut Window, cx: &mut App) {
+    if let Some((editor, callback)) = editor
+        .upgrade()
+        .zip(zed_actions::outline::TOGGLE_OUTLINE.get())
+    {
+        callback(editor.to_any_view(), window, cx);
+    }
+}
+
+fn copy_breadcrumb_path(editor: &WeakEntity<Editor>, cx: &mut App) {
+    if let Some(abs_path) = editor
+        .upgrade()
+        .and_then(|editor| editor.update(cx, |editor, cx| editor.target_file_abs_path(cx)))
+        && let Some(path_str) = abs_path.to_str()
+    {
+        cx.write_to_clipboard(ClipboardItem::new_string(path_str.to_string()));
     }
 }
 
@@ -8403,9 +8526,12 @@ impl Element for EditorElement {
                                 )
                             });
 
+                        let vcs_marker_placement =
+                            Self::vcs_marker_placement(line_height, &gutter_dimensions, cx);
                         let display_hunks = self.layout_gutter_diff_hunks(
                             line_height,
                             &gutter_hitbox,
+                            vcs_marker_placement,
                             start_row..end_row,
                             &snapshot,
                             scroll_position,
@@ -9155,6 +9281,16 @@ impl Element for EditorElement {
                                 )
                             };
 
+                        let inspection_widget =
+                            window.with_element_namespace("inspection_widget", |window| {
+                                self.layout_inspection_widget(
+                                    &text_hitbox,
+                                    right_margin,
+                                    window,
+                                    cx,
+                                )
+                            });
+
                         self.populate_point_diagnostics(
                             &snapshot,
                             start_row..end_row,
@@ -9203,6 +9339,7 @@ impl Element for EditorElement {
                             hitbox,
                             gutter_hitbox,
                             display_hunks,
+                            vcs_marker_placement,
                             content_origin,
                             scrollbars_layout,
                             active_rows,
@@ -9225,6 +9362,7 @@ impl Element for EditorElement {
                             navigation_overlay_paint_commands,
                             selections,
                             diff_hunk_controls,
+                            inspection_widget,
                             mouse_context_menu,
                             bookmarks,
                             breakpoints,
@@ -9346,6 +9484,7 @@ impl Element for EditorElement {
                         });
 
                         self.paint_sticky_headers(layout, window, cx);
+                        self.paint_inspection_widget(layout, window, cx);
                         self.paint_scrollbars(layout, window, cx);
                         self.paint_mouse_context_menu(layout, window, cx);
                     },
@@ -9432,6 +9571,7 @@ pub struct EditorLayout {
     line_elements: SmallVec<[AnyElement; 1]>,
     line_numbers: Arc<HashMap<MultiBufferRow, LineNumberLayout>>,
     display_hunks: Vec<(DisplayDiffHunk, Option<Hitbox>)>,
+    vcs_marker_placement: VcsMarkerPlacement,
     blamed_display_rows: Option<Vec<AnyElement>>,
     inline_diagnostics: HashMap<DisplayRow, AnyElement>,
     point_diagnostic_underline_offset: Pixels,
@@ -9451,6 +9591,7 @@ pub struct EditorLayout {
     crease_toggles: Vec<Option<AnyElement>>,
     expand_toggles: Vec<Option<(AnyElement, gpui::Point<Pixels>)>>,
     diff_hunk_controls: Vec<AnyElement>,
+    inspection_widget: Option<AnyElement>,
     crease_trailers: Vec<Option<CreaseTrailerLayout>>,
     mouse_context_menu: Option<AnyElement>,
     tab_invisible: ShapedLine,
@@ -12577,58 +12718,6 @@ mod tests {
         assert_eq!(
             calculate_wrap_width(SoftWrap::Bounded(200), px(400.0), em_width),
             Some(px(400.0)),
-        );
-    }
-
-    #[test]
-    fn test_deleted_marker_base_width() {
-        use settings::PixelSetting;
-
-        assert_eq!(
-            EditorElement::deleted_marker_base_width(GitGutterWidth::Default, px(22.0)),
-            px(7.0),
-        );
-
-        let boosted = EditorElement::deleted_marker_base_width(
-            GitGutterWidth::Custom(PixelSetting(6.0)),
-            px(22.0),
-        );
-        assert!(
-            boosted > px(6.0),
-            "boosted={boosted:?} must exceed the raw custom width so the deleted pill stays visible"
-        );
-
-        for line_height in [22.0, 40.0] {
-            let widths = [1.0, 2.0, 3.0, 6.0].map(|width| {
-                EditorElement::deleted_marker_base_width(
-                    GitGutterWidth::Custom(PixelSetting(width)),
-                    px(line_height),
-                )
-            });
-            assert!(
-                widths.windows(2).all(|pair| pair[0] < pair[1]),
-                "widths={widths:?} must grow with the custom setting"
-            );
-            assert!(
-                widths[0] > px(line_height / 8.0),
-                "widths={widths:?} must stay above the vanishing width for line_height={line_height}"
-            );
-        }
-
-        assert_eq!(
-            EditorElement::deleted_marker_base_width(
-                GitGutterWidth::Custom(PixelSetting(0.275 * 40.0)),
-                px(40.0),
-            ),
-            px(14.0),
-        );
-
-        assert_eq!(
-            EditorElement::deleted_marker_base_width(
-                GitGutterWidth::Custom(PixelSetting(0.0)),
-                px(22.0),
-            ),
-            px(0.0),
         );
     }
 

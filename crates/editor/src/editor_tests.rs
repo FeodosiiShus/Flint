@@ -1168,10 +1168,7 @@ fn test_toggle_breadcrumb_does_not_change_settings(cx: &mut TestAppContext) {
 
     _ = editor.update(cx, |editor, window, cx| {
         assert!(EditorSettings::get_global(cx).toolbar.breadcrumbs);
-        assert_eq!(
-            editor.breadcrumb_location(cx),
-            ToolbarItemLocation::PrimaryLeft
-        );
+        assert_eq!(editor.breadcrumb_location(cx), ToolbarItemLocation::Bottom);
 
         editor.toggle_breadcrumb(&ToggleBreadcrumb, window, cx);
         assert!(EditorSettings::get_global(cx).toolbar.breadcrumbs);
@@ -1190,9 +1187,171 @@ fn test_toggle_breadcrumb_does_not_change_settings(cx: &mut TestAppContext) {
 
         editor.toggle_breadcrumb(&ToggleBreadcrumb, window, cx);
         assert!(EditorSettings::get_global(cx).toolbar.breadcrumbs);
+        assert_eq!(editor.breadcrumb_location(cx), ToolbarItemLocation::Bottom);
+    });
+}
+
+fn breadcrumb_segment_texts(editor: &Editor, cx: &App) -> Option<Vec<String>> {
+    editor.breadcrumbs(cx).map(|(segments, _)| {
+        segments
+            .into_iter()
+            .map(|segment| segment.text.to_string())
+            .collect()
+    })
+}
+
+#[gpui::test]
+fn test_breadcrumb_location_follows_placement_setting(cx: &mut TestAppContext) {
+    init_test(cx, |_| {});
+    update_test_editor_settings(cx, &|settings| {
+        settings.toolbar.get_or_insert_default().breadcrumbs = Some(true);
+    });
+
+    let editor = cx.add_window(|window, cx| {
+        let buffer = MultiBuffer::build_simple("hello", cx);
+        build_editor(buffer, window, cx)
+    });
+
+    update_test_editor_settings(cx, &|settings| {
+        settings
+            .toolbar
+            .get_or_insert_default()
+            .breadcrumbs_placement = Some(settings::BreadcrumbsPlacement::Top);
+    });
+    cx.run_until_parked();
+    _ = editor.update(cx, |editor, _, cx| {
         assert_eq!(
             editor.breadcrumb_location(cx),
-            ToolbarItemLocation::PrimaryLeft
+            ToolbarItemLocation::PrimaryLeft,
+            "Top placement keeps the breadcrumbs in the toolbar above the editor"
+        );
+    });
+
+    update_test_editor_settings(cx, &|settings| {
+        settings
+            .toolbar
+            .get_or_insert_default()
+            .breadcrumbs_placement = Some(settings::BreadcrumbsPlacement::Bottom);
+    });
+    cx.run_until_parked();
+    _ = editor.update(cx, |editor, _, cx| {
+        assert_eq!(
+            editor.breadcrumb_location(cx),
+            ToolbarItemLocation::Bottom,
+            "Bottom placement renders the breadcrumbs strip below the editor, like IntelliJ"
+        );
+    });
+}
+
+#[gpui::test]
+fn test_breadcrumb_location_hidden_when_disabled_or_multibuffer(cx: &mut TestAppContext) {
+    init_test(cx, |_| {});
+    update_test_editor_settings(cx, &|settings| {
+        let toolbar = settings.toolbar.get_or_insert_default();
+        toolbar.breadcrumbs = Some(false);
+        toolbar.breadcrumbs_placement = Some(settings::BreadcrumbsPlacement::Bottom);
+    });
+
+    let singleton_editor = cx.add_window(|window, cx| {
+        let buffer = MultiBuffer::build_simple("hello", cx);
+        build_editor(buffer, window, cx)
+    });
+    _ = singleton_editor.update(cx, |editor, _, cx| {
+        assert_eq!(
+            editor.breadcrumb_location(cx),
+            ToolbarItemLocation::Hidden,
+            "Disabled breadcrumbs must not occupy the bottom strip"
+        );
+    });
+
+    update_test_editor_settings(cx, &|settings| {
+        settings.toolbar.get_or_insert_default().breadcrumbs = Some(true);
+    });
+    cx.run_until_parked();
+
+    let multibuffer_editor = cx.add_window(|window, cx| {
+        let multibuffer = cx.new(|_| MultiBuffer::new(ReadWrite));
+        build_editor(multibuffer, window, cx)
+    });
+    _ = multibuffer_editor.update(cx, |editor, _, cx| {
+        assert_eq!(
+            editor.breadcrumb_location(cx),
+            ToolbarItemLocation::Hidden,
+            "Multibuffers show breadcrumbs in their sticky file headers instead"
+        );
+        assert_eq!(breadcrumb_segment_texts(editor, cx), None);
+    });
+}
+
+#[gpui::test]
+async fn test_breadcrumb_segments_show_file_path_only_when_enabled(cx: &mut TestAppContext) {
+    init_test(cx, |_| {});
+    update_test_editor_settings(cx, &|settings| {
+        settings
+            .toolbar
+            .get_or_insert_default()
+            .breadcrumbs_file_path = Some(false);
+    });
+
+    let mut cx = EditorLspTestContext::new_rust(lsp::ServerCapabilities::default(), cx).await;
+    cx.set_state("fn maˇin() {\n    let x = 1;\n}\n");
+    cx.run_until_parked();
+
+    cx.update_editor(|editor, _window, cx| {
+        assert_eq!(
+            breadcrumb_segment_texts(editor, cx),
+            Some(vec!["fn main".to_string()]),
+            "Without the file path setting, breadcrumbs show only the code structure"
+        );
+    });
+
+    update_test_editor_settings(&mut cx.cx.cx, &|settings| {
+        settings
+            .toolbar
+            .get_or_insert_default()
+            .breadcrumbs_file_path = Some(true);
+    });
+    cx.run_until_parked();
+
+    cx.update_editor(|editor, _window, cx| {
+        assert_eq!(
+            breadcrumb_segment_texts(editor, cx),
+            Some(vec![
+                path!("dir/file.rs").to_string(),
+                "fn main".to_string()
+            ]),
+            "With the file path setting, the path leads the code structure"
+        );
+    });
+}
+
+#[gpui::test]
+fn test_breadcrumb_segments_empty_without_code_structure(cx: &mut TestAppContext) {
+    init_test(cx, |_| {});
+    update_test_editor_settings(cx, &|settings| {
+        settings
+            .toolbar
+            .get_or_insert_default()
+            .breadcrumbs_file_path = Some(false);
+    });
+
+    let editor = cx.add_window(|window, cx| {
+        let buffer = MultiBuffer::build_simple("hello", cx);
+        build_editor(buffer, window, cx)
+    });
+
+    _ = editor.update(cx, |editor, _, cx| {
+        assert_eq!(
+            breadcrumb_segment_texts(editor, cx),
+            Some(Vec::new()),
+            "A singleton without symbols keeps an empty, still visible breadcrumbs strip"
+        );
+
+        editor.set_breadcrumb_header("Last 1000 lines in the log".to_string());
+        assert_eq!(
+            breadcrumb_segment_texts(editor, cx),
+            Some(vec!["Last 1000 lines in the log".to_string()]),
+            "A custom breadcrumb header is not a file path and is never hidden"
         );
     });
 }

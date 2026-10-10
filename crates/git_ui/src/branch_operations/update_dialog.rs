@@ -3,11 +3,11 @@ use menu::{Cancel, Confirm};
 use ui::{Checkbox, ChoiceCard, TintColor, prelude::*};
 use workspace::ModalView;
 
+use super::BranchContext;
 use super::integrate::{
     UpdateMethod, reset_to_remote_branch, save_update_method, set_show_update_options,
     should_show_update_options, update_current_branch,
 };
-use super::{BranchContext, opaque_elevated_surface};
 
 pub struct ResetTarget {
     pub branch: SharedString,
@@ -93,7 +93,6 @@ impl Render for UpdateOptionsDialog {
             .on_action(cx.listener(Self::cancel))
             .on_action(cx.listener(Self::confirm))
             .elevation_3(cx)
-            .bg(opaque_elevated_surface(cx))
             .w(rems(34.))
             .child(
                 h_flex()

@@ -7,8 +7,6 @@ use menu::{Cancel, Confirm};
 use ui::{Checkbox, Modal, ModalFooter, ModalHeader, Section, prelude::*};
 use workspace::ModalView;
 
-use super::opaque_elevated_surface;
-
 const DELETE_REMOTE_DIALOG_WIDTH: f32 = 30.;
 const UNMERGED_DIALOG_WIDTH: f32 = 40.;
 const COMMIT_LIST_MAX_HEIGHT: f32 = 16.;
@@ -160,7 +158,6 @@ impl Render for DeleteRemoteBranchDialog {
             .on_action(cx.listener(Self::confirm))
             .w(rems(DELETE_REMOTE_DIALOG_WIDTH))
             .elevation_3(cx)
-            .bg(opaque_elevated_surface(cx))
             .overflow_hidden()
             .child(
                 Modal::new("delete-remote-branch-dialog", None)
@@ -260,7 +257,6 @@ impl Render for UnmergedCommitsDialog {
             .on_action(cx.listener(Self::restore))
             .w(rems(UNMERGED_DIALOG_WIDTH))
             .elevation_3(cx)
-            .bg(opaque_elevated_surface(cx))
             .overflow_hidden()
             .child(
                 Modal::new("unmerged-commits-dialog", None)

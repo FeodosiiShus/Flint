@@ -2,7 +2,7 @@ use std::borrow::Borrow;
 use std::rc::Rc;
 
 use crate::prelude::*;
-use crate::{Color, KeyBinding, Label, LabelSize, StyledExt, h_flex, v_flex};
+use crate::{Color, ElevationIndex, KeyBinding, Label, LabelSize, TOOLTIP_METRICS, h_flex, v_flex};
 use gpui::{Action, AnyElement, AnyView, AppContext, FocusHandle, IntoElement, Render};
 
 #[derive(RegisterComponent)]
@@ -197,15 +197,20 @@ impl Render for Tooltip {
             el.child(
                 h_flex()
                     .gap_4()
-                    .child(div().max_w_72().child(self.title.clone()))
+                    .child(
+                        div()
+                            .max_w(TOOLTIP_METRICS.max_text_width)
+                            .child(self.title.clone()),
+                    )
                     .when_some(self.key_binding.clone(), |this, key_binding| {
-                        this.justify_between().child(key_binding)
+                        this.justify_between()
+                            .child(key_binding.color(Color::Muted))
                     }),
             )
             .when_some(self.meta.clone(), |this, meta| {
                 this.child(
                     div()
-                        .max_w_72()
+                        .max_w(TOOLTIP_METRICS.max_text_width)
                         .child(Label::new(meta).size(LabelSize::Small).color(Color::Muted)),
                 )
             })
@@ -219,16 +224,23 @@ where
 {
     let app = (*cx).borrow();
     let ui_font = theme::theme_settings(app).ui_font(app).clone();
+    let colors = app.theme().colors();
+    let background = colors
+        .elevated_surface_background
+        .blend(colors.element_background);
 
     // padding to avoid tooltip appearing right below the mouse cursor
     div().pl_2().pt_2p5().child(
         v_flex()
-            .elevation_2(app)
+            .bg(background)
+            .rounded(TOOLTIP_METRICS.corner_radius)
+            .shadow(ElevationIndex::ElevatedSurface.shadow(app))
             .font(ui_font)
             .text_ui(app)
-            .text_color(app.theme().colors().text)
-            .py_1()
-            .px_2()
+            .text_color(colors.text)
+            .pt(TOOLTIP_METRICS.padding_top)
+            .pb(TOOLTIP_METRICS.padding_bottom)
+            .px(TOOLTIP_METRICS.padding_x)
             .map(|el| f(el, cx)),
     )
 }

@@ -9,12 +9,12 @@ use ui::{TintColor, prelude::*};
 use util::ResultExt as _;
 use workspace::ModalView;
 
+use crate::branch_operations::BranchContext;
 use crate::branch_operations::manage::settle;
 use crate::branch_operations::ref_suggestions::{
     HighlightMove, MAX_SUGGESTIONS, RefSuggestion, highlighted_suggestion, move_highlight,
     render_suggestion_list, revision_candidates, suggest, suggestion_for_tab,
 };
-use crate::branch_operations::{BranchContext, opaque_elevated_surface};
 
 const DIALOG_TITLE: &str = "Checkout";
 const PROMPT: &str = "Enter reference (branch, tag) name or commit hash:";
@@ -257,7 +257,6 @@ impl Render for CheckoutRevisionDialog {
             .on_action(cx.listener(Self::select_previous_suggestion))
             .on_action(cx.listener(Self::accept_first_suggestion))
             .elevation_3(cx)
-            .bg(opaque_elevated_surface(cx))
             .w(rems(30.))
             .child(
                 div()

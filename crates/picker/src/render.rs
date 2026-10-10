@@ -1,4 +1,4 @@
-use gpui::{App, Hsla, KeyContext, canvas, relative};
+use gpui::{KeyContext, canvas, relative};
 use settings::Settings;
 use theme_settings::ThemeSettings;
 use ui::{
@@ -76,12 +76,7 @@ impl<D: PickerDelegate> Render for Picker<D> {
         let has_preview = self.preview.is_some();
         let is_panel = self.is_panel();
         let content = div()
-            .when(self.draws_own_container(), |this| {
-                this.elevation_3(cx)
-                    .when_some(self.opaque_surface_background(cx), |this, color| {
-                        this.bg(color)
-                    })
-            })
+            .when(self.draws_own_container(), |this| this.elevation_3(cx))
             .when(has_preview, |this| this.overflow_hidden())
             .when(is_panel, |this| this.size_full())
             .child(content);
@@ -102,13 +97,6 @@ impl<D: PickerDelegate> Render for Picker<D> {
                     .child(self.render_resize(LeftCorner(layout), window, cx))
                     .child(self.render_resize(RightCorner(layout), window, cx))
             })
-    }
-}
-
-impl<D: PickerDelegate> Picker<D> {
-    pub fn opaque_surface_background(&self, cx: &App) -> Option<Hsla> {
-        self.opaque_background
-            .then(|| cx.theme().colors().elevated_surface_background.alpha(1.0))
     }
 }
 

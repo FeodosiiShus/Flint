@@ -9,7 +9,6 @@ use ui::{ProgressBar, prelude::*};
 
 use super::ConflictsDialog;
 use super::messages;
-use crate::branch_operations::opaque_elevated_surface;
 use crate::merge_tool::merge_window::{ThemedImage, dialog_button, themed_image};
 
 const OVERLAY_PANEL_WIDTH: f32 = 420.;
@@ -158,7 +157,7 @@ impl ConflictsDialog {
             .rounded_md()
             .border_1()
             .border_color(colors.border)
-            .bg(opaque_elevated_surface(cx))
+            .bg(colors.elevated_surface_background)
             .child(Label::new(confirmation.title.clone()).weight(gpui::FontWeight::BOLD))
             .child(
                 h_flex()
@@ -223,7 +222,7 @@ impl ConflictsDialog {
             .rounded_md()
             .border_1()
             .border_color(colors.border)
-            .bg(opaque_elevated_surface(cx))
+            .bg(colors.elevated_surface_background)
             .child(Label::new(progress.title.clone()).weight(gpui::FontWeight::BOLD))
             .when_some(progress.text.clone(), |this, text| {
                 this.child(Label::new(text).color(Color::Muted))

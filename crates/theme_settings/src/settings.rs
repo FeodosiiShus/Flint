@@ -753,6 +753,44 @@ mod tests {
             green
         );
     }
+
+    #[test]
+    fn translucent_elevated_surface_background_is_made_opaque_keeping_its_color() {
+        let translucent = ::theme::try_parse_color("#22272f99").unwrap();
+        assert!(translucent.a < 1.0, "the fixture color must be translucent");
+        let expected = gpui::Hsla {
+            a: 1.0,
+            ..translucent
+        };
+
+        let theme_file_theme = theme_with_colors(::settings::ThemeColorsContent {
+            elevated_surface_background: Some("#22272f99".into()),
+            ..Default::default()
+        });
+        assert_eq!(
+            theme_file_theme.styles.colors.elevated_surface_background, expected,
+            "a theme file's translucent elevated surface must become opaque"
+        );
+
+        let mut overridden_theme = theme_with_colors(Default::default());
+        ThemeSettings::modify_theme(
+            &mut overridden_theme,
+            &style_with_colors(::settings::ThemeColorsContent {
+                elevated_surface_background: Some("#22272f99".into()),
+                ..Default::default()
+            }),
+        );
+        let overridden = overridden_theme.styles.colors.elevated_surface_background;
+        assert_eq!(
+            overridden, expected,
+            "a theme override's translucent elevated surface must become opaque"
+        );
+        assert_eq!(
+            (overridden.h, overridden.s, overridden.l),
+            (translucent.h, translucent.s, translucent.l),
+            "hue, saturation and lightness must be kept"
+        );
+    }
 }
 
 #[cfg(test)]

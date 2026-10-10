@@ -1,19 +1,19 @@
 use gpui::{App, Styled, hsla};
 
-use crate::ElevationIndex;
 use crate::prelude::*;
+use crate::{ElevationIndex, POPUP_SURFACE_METRICS};
 
 fn elevated<E: Styled>(this: E, cx: &App, index: ElevationIndex) -> E {
     this.bg(cx.theme().colors().elevated_surface_background)
-        .rounded_lg()
-        .border_1()
+        .rounded(POPUP_SURFACE_METRICS.corner_radius)
+        .border(POPUP_SURFACE_METRICS.border_width)
         .border_color(cx.theme().colors().border_variant)
         .shadow(index.shadow(cx))
 }
 
 fn elevated_borderless<E: Styled>(this: E, cx: &mut App, index: ElevationIndex) -> E {
     this.bg(cx.theme().colors().elevated_surface_background)
-        .rounded_lg()
+        .rounded(POPUP_SURFACE_METRICS.corner_radius)
         .shadow(index.shadow(cx))
 }
 

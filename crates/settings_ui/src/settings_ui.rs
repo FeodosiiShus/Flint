@@ -556,6 +556,7 @@ fn init_renderers(cx: &mut App) {
         .add_basic_renderer::<settings::BackgroundImageOpacity>(render_editable_number_field)
         .add_basic_renderer::<settings::ShowScrollbar>(render_dropdown)
         .add_basic_renderer::<settings::ScrollbarDiagnostics>(render_dropdown)
+        .add_basic_renderer::<settings::BreadcrumbsPlacement>(render_dropdown)
         .add_basic_renderer::<settings::StatusStyle>(render_dropdown)
         .add_basic_renderer::<settings::GitPanelClickBehavior>(render_dropdown)
         .add_basic_renderer::<settings::GitPanelSortBy>(render_dropdown)

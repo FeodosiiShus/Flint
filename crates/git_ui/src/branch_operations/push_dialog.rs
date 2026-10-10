@@ -11,9 +11,9 @@ use ui::{Modal, ModalFooter, ModalHeader, Section, TintColor, prelude::*};
 use util::ResultExt as _;
 use workspace::ModalView;
 
+use super::BranchContext;
 use super::delete_dialogs::render_commit_list;
 use super::manage::{notify_failure, push_result_notice, settle};
-use super::{BranchContext, opaque_elevated_surface};
 use crate::branch_refs::RefTarget;
 
 const DIALOG_WIDTH: f32 = 44.;
@@ -438,7 +438,6 @@ impl Render for PushDialog {
             .on_action(cx.listener(Self::confirm))
             .w(rems(DIALOG_WIDTH))
             .elevation_3(cx)
-            .bg(opaque_elevated_surface(cx))
             .overflow_hidden()
             .child(
                 Modal::new("push-dialog", None)

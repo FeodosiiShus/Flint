@@ -123,7 +123,7 @@ impl SearchEverywhere {
         let picker = cx.new(|cx| {
             let picker = Picker::uniform_list_with_preview(delegate, preview, window, cx);
             match presentation {
-                Presentation::Modal => picker.opaque_background(),
+                Presentation::Modal => picker,
                 Presentation::Panel => picker.fill_container().reopenable(false, cx),
             }
         });

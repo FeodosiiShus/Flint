@@ -9,7 +9,6 @@ use ui::{Tooltip, WithScrollbar, prelude::*};
 use super::ConflictsDialog;
 use super::messages;
 use super::state::{BadgeView, GroupKind, RowView, RowViewKind};
-use crate::branch_operations::opaque_elevated_surface;
 
 pub(super) const ROW_HEIGHT: f32 = 28.;
 const HEADER_HEIGHT: f32 = 24.;
@@ -72,8 +71,8 @@ fn thin_spaced(text: &str) -> String {
     format!("{}{text}", messages::THIN_SPACE_SEPARATOR)
 }
 
-fn opaque_over_surface(color: Hsla, cx: &App) -> Hsla {
-    opaque_elevated_surface(cx).blend(color).alpha(1.)
+fn blended_over_surface(color: Hsla, cx: &App) -> Hsla {
+    cx.theme().colors().elevated_surface_background.blend(color)
 }
 
 fn icon_slot(icon: Icon) -> AnyElement {
@@ -191,9 +190,9 @@ impl ConflictsDialog {
             (colors.element_selected, colors.element_hover)
         };
         let background = if row.selected {
-            Some(opaque_over_surface(selected_color, cx))
+            Some(blended_over_surface(selected_color, cx))
         } else if hovered {
-            Some(opaque_over_surface(hover_color, cx))
+            Some(blended_over_surface(hover_color, cx))
         } else {
             None
         };

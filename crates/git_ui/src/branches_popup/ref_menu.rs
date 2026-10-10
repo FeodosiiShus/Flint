@@ -448,20 +448,18 @@ pub fn build_ref_menu(
 ) -> gpui::Entity<ContextMenu> {
     let runner = Rc::new(runner);
     ContextMenu::build(window, cx, move |menu, _, _| {
-        plan.into_iter()
-            .fold(menu, |menu, planned| match planned {
-                MenuItemPlan::Separator => menu.separator(),
-                MenuItemPlan::Item(menu_item) => add_item(menu, menu_item, &runner),
-                MenuItemPlan::Submenu { label, items } => {
-                    let runner = runner.clone();
-                    menu.submenu(label, move |submenu, _, _| {
-                        items.iter().cloned().fold(submenu, |submenu, menu_item| {
-                            add_item(submenu, menu_item, &runner)
-                        })
+        plan.into_iter().fold(menu, |menu, planned| match planned {
+            MenuItemPlan::Separator => menu.separator(),
+            MenuItemPlan::Item(menu_item) => add_item(menu, menu_item, &runner),
+            MenuItemPlan::Submenu { label, items } => {
+                let runner = runner.clone();
+                menu.submenu(label, move |submenu, _, _| {
+                    items.iter().cloned().fold(submenu, |submenu, menu_item| {
+                        add_item(submenu, menu_item, &runner)
                     })
-                }
-            })
-            .opaque_background()
+                })
+            }
+        })
     })
 }
 

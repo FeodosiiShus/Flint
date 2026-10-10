@@ -2,7 +2,6 @@ use collections::HashSet;
 use gpui::{AnyElement, ClickEvent};
 use ui::{HighlightedLabel, prelude::*};
 
-use super::opaque_elevated_surface;
 use crate::branches_popup::tree::match_query;
 
 pub const MAX_SUGGESTIONS: usize = 8;
@@ -140,7 +139,7 @@ pub fn render_suggestion_list<V: 'static>(
     let hover_background = colors.ghost_element_hover;
     let selected_background = colors.ghost_element_selected;
     let border_color = colors.border;
-    let surface = opaque_elevated_surface(cx);
+    let surface = colors.elevated_surface_background;
     v_flex()
         .id(id)
         .w_full()

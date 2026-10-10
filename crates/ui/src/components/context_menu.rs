@@ -1,11 +1,11 @@
 use crate::{
-    ButtonCommon, ButtonStyle, IconButtonShape, KeyBinding, List, ListItem, ListItemSpacing,
-    ListSeparator, ListSubHeader, Tooltip, prelude::*, utils::WithRemSize,
+    ButtonCommon, ButtonStyle, IconButtonShape, KeyBinding, ListItem, ListItemSpacing,
+    POPUP_MENU_METRICS, PopupRowMetrics, PopupRowStyle, Tooltip, prelude::*, utils::WithRemSize,
 };
 use gpui::{
     Action, Anchor, AnyElement, App, Bounds, DismissEvent, Entity, EventEmitter, FocusHandle,
-    Focusable, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, Role,
-    Size, Subscription, TaskExt, anchored, canvas, prelude::*, px, relative,
+    Focusable, FontWeight, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels,
+    Point, Role, Size, Subscription, TaskExt, anchored, canvas, prelude::*, px, relative,
 };
 use menu::{SelectChild, SelectFirst, SelectLast, SelectNext, SelectParent, SelectPrevious};
 use std::{
@@ -242,7 +242,6 @@ pub struct ContextMenu {
     /// re-selects the first item before the next on_hover(true) clears it.
     /// Always true when accessibility support is disabled.
     suppress_focus_selection: bool,
-    opaque_background: bool,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq)]
@@ -369,7 +368,6 @@ impl ContextMenu {
                     submenu_trigger_mouse_down: false,
                     ignore_blur_until: None,
                     suppress_focus_selection: !window.is_a11y_enabled(),
-                    opaque_background: false,
                 },
                 window,
                 cx,
@@ -441,7 +439,6 @@ impl ContextMenu {
                 submenu_trigger_mouse_down: false,
                 ignore_blur_until: None,
                 suppress_focus_selection: !window.is_a11y_enabled(),
-                opaque_background: self.opaque_background,
             },
             window,
             cx,
@@ -875,11 +872,6 @@ impl ContextMenu {
         self
     }
 
-    pub fn opaque_background(mut self) -> Self {
-        self.opaque_background = true;
-        self
-    }
-
     pub fn spacing(mut self, spacing: ListItemSpacing) -> Self {
         self.spacing = spacing;
         self
@@ -1233,11 +1225,10 @@ impl ContextMenu {
     fn create_submenu(
         builder: Rc<dyn Fn(ContextMenu, &mut Window, &mut Context<ContextMenu>) -> ContextMenu>,
         parent_entity: Entity<ContextMenu>,
-        opaque_background: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> (Entity<ContextMenu>, Subscription) {
-        let submenu = Self::build_submenu(builder, parent_entity, opaque_background, window, cx);
+        let submenu = Self::build_submenu(builder, parent_entity, window, cx);
 
         let dismiss_subscription = cx.subscribe(&submenu, |this, submenu, _: &DismissEvent, cx| {
             let should_dismiss_parent = submenu.read(cx).clicked;
@@ -1255,7 +1246,6 @@ impl ContextMenu {
     fn build_submenu(
         builder: Rc<dyn Fn(ContextMenu, &mut Window, &mut Context<ContextMenu>) -> ContextMenu>,
         parent_entity: Entity<ContextMenu>,
-        opaque_background: bool,
         window: &mut Window,
         cx: &mut App,
     ) -> Entity<ContextMenu> {
@@ -1293,7 +1283,6 @@ impl ContextMenu {
                 submenu_trigger_mouse_down: false,
                 ignore_blur_until: None,
                 suppress_focus_selection: !window.is_a11y_enabled(),
-                opaque_background,
             };
 
             menu = (builder)(menu, window, cx);
@@ -1332,7 +1321,7 @@ impl ContextMenu {
         }
 
         let (submenu, dismiss_subscription) =
-            Self::create_submenu(builder, cx.entity(), self.opaque_background, window, cx);
+            Self::create_submenu(builder, cx.entity(), window, cx);
 
         let flip_left = self
             .main_menu_observed_bounds
@@ -1420,6 +1409,7 @@ impl ContextMenu {
         &self,
         ix: usize,
         item: &ContextMenuItem,
+        reserve_icon_column: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
@@ -1429,16 +1419,16 @@ impl ContextMenu {
         // focus, so we mark the selected item unconditionally here.
         let is_active_descendant = |selectable: bool| selectable && Some(ix) == self.selected_index;
         match item {
-            ContextMenuItem::Separator => ListSeparator.into_any_element(),
-            ContextMenuItem::Header(header) => ListSubHeader::new(header.clone())
-                .inset(true)
-                .into_any_element(),
+            ContextMenuItem::Separator => menu_separator(cx),
+            ContextMenuItem::Header(header) => {
+                menu_header(header.clone(), None, reserve_icon_column)
+            }
             ContextMenuItem::HeaderWithLink(header, label, url) => {
                 let url = url.clone();
                 let link_id = ElementId::Name(format!("link-{}", url).into());
-                ListSubHeader::new(header.clone())
-                    .inset(true)
-                    .end_slot(
+                menu_header(
+                    header.clone(),
+                    Some(
                         Button::new(link_id, label.clone())
                             .color(Color::Muted)
                             .label_size(LabelSize::Small)
@@ -1449,17 +1439,26 @@ impl ContextMenu {
                                 cx.open_url(&url);
                             })
                             .into_any_element(),
-                    )
-                    .into_any_element()
+                    ),
+                    reserve_icon_column,
+                )
             }
             ContextMenuItem::Label(label) => ListItem::new(ix)
                 .inset(true)
+                .popup_row_style(PopupRowStyle::Menu)
                 .spacing(self.spacing)
                 .disabled(true)
-                .child(Label::new(label.clone()))
+                .child(menu_row_content(reserve_icon_column, None).child(Label::new(label.clone())))
                 .into_any_element(),
             ContextMenuItem::Entry(entry) => self
-                .render_menu_entry(ix, entry, is_active_descendant(true), window, cx)
+                .render_menu_entry(
+                    ix,
+                    entry,
+                    reserve_icon_column,
+                    is_active_descendant(true),
+                    window,
+                    cx,
+                )
                 .into_any_element(),
             ContextMenuItem::CustomEntry {
                 entry_render,
@@ -1507,6 +1506,7 @@ impl ContextMenu {
                     .child(
                         ListItem::new(ix)
                             .inset(true)
+                            .popup_row_style(PopupRowStyle::Menu)
                             .spacing(self.spacing)
                             .when(selectable, |item| item.aria_role(Role::MenuItem))
                             .when(is_active_descendant(selectable), |item| {
@@ -1548,6 +1548,7 @@ impl ContextMenu {
                     label.clone(),
                     *icon,
                     *icon_color,
+                    reserve_icon_column,
                     is_active_descendant(true),
                     cx,
                 )
@@ -1561,6 +1562,7 @@ impl ContextMenu {
         label: SharedString,
         icon: Option<IconName>,
         icon_color: Option<Color>,
+        reserve_icon_column: bool,
         is_active_descendant: bool,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
@@ -1572,6 +1574,7 @@ impl ContextMenu {
 
         div()
             .id(("context-menu-submenu-trigger", ix))
+            .debug_selector(|| format!("MENU_ITEM-{}", label))
             .capture_any_mouse_down(cx.listener(move |this, event: &MouseDownEvent, _, _| {
                 // This prevents on_hover(false) from closing the submenu during a click.
                 if event.button == MouseButton::Left {
@@ -1595,6 +1598,7 @@ impl ContextMenu {
             .child(
                 ListItem::new(ix)
                     .inset(true)
+                    .popup_row_style(PopupRowStyle::Menu)
                     .spacing(self.spacing)
                     .aria_role(Role::MenuItem)
                     .when(is_active_descendant, |item| item.aria_active_descendant())
@@ -1685,27 +1689,27 @@ impl ContextMenu {
                         }
                     }))
                     .child(
-                        h_flex()
-                            .w_full()
-                            .gap_2()
-                            .justify_between()
-                            .child(
-                                h_flex()
-                                    .gap_1p5()
-                                    .when_some(icon, |this, icon_name| {
-                                        this.child(
-                                            Icon::new(icon_name)
-                                                .size(IconSize::Small)
-                                                .color(icon_color.unwrap_or(Color::Muted)),
-                                        )
-                                    })
-                                    .child(Label::new(label).color(Color::Default)),
-                            )
-                            .child(
-                                Icon::new(IconName::ChevronRight)
+                        menu_row_content(
+                            reserve_icon_column,
+                            icon.map(|icon_name| {
+                                Icon::new(icon_name)
                                     .size(IconSize::Small)
-                                    .color(Color::Muted),
-                            ),
+                                    .color(icon_color.unwrap_or(Color::Muted))
+                                    .into_any_element()
+                            }),
+                        )
+                        .child(
+                            h_flex()
+                                .flex_1()
+                                .gap_2()
+                                .justify_between()
+                                .child(Label::new(label).color(Color::Default))
+                                .child(
+                                    Icon::new(IconName::ChevronRight)
+                                        .size(IconSize::Small)
+                                        .color(Color::Muted),
+                                ),
+                        ),
                     ),
             )
     }
@@ -1779,6 +1783,7 @@ impl ContextMenu {
         &self,
         ix: usize,
         entry: &ContextMenuEntry,
+        reserve_icon_column: bool,
         is_active_descendant: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -1821,7 +1826,7 @@ impl ContextMenu {
         let icon_color = if *disabled {
             Color::Muted
         } else if toggle.is_some() {
-            icon_color.unwrap_or(Color::Accent)
+            icon_color.unwrap_or(Color::Muted)
         } else {
             icon_color.unwrap_or(Color::Default)
         };
@@ -1832,67 +1837,49 @@ impl ContextMenu {
             Color::Default
         };
 
-        let label_element = if let Some(custom_path) = custom_icon_path {
-            h_flex()
-                .gap_1p5()
-                .when(
-                    *icon_position == IconPosition::Start && toggle.is_none(),
-                    |flex| {
-                        flex.child(
-                            Icon::from_path(custom_path.clone())
-                                .size(*icon_size)
-                                .color(icon_color),
-                        )
-                    },
-                )
-                .child(Label::new(label.clone()).color(label_color).truncate())
-                .when(*icon_position == IconPosition::End, |flex| {
-                    flex.child(
-                        Icon::from_path(custom_path.clone())
-                            .size(*icon_size)
-                            .color(icon_color),
+        let decoration_icon = || {
+            let decoration = if let Some(custom_path) = custom_icon_path {
+                Some(Icon::from_path(custom_path.clone()))
+            } else if let Some(custom_icon_svg) = custom_icon_svg {
+                Some(Icon::from_external_svg(custom_icon_svg.clone()))
+            } else {
+                icon.map(Icon::new)
+            };
+            decoration.map(|decoration| decoration.size(*icon_size).color(icon_color))
+        };
+
+        let start_column_icon = match *toggle {
+            Some((IconPosition::Start, toggled)) => Some(
+                div()
+                    .flex_none()
+                    .child(
+                        Icon::new(icon.unwrap_or(IconName::Check))
+                            .color(icon_color)
+                            .size(*icon_size),
                     )
-                })
-                .into_any_element()
-        } else if let Some(custom_icon_svg) = custom_icon_svg {
-            h_flex()
-                .gap_1p5()
-                .when(
-                    *icon_position == IconPosition::Start && toggle.is_none(),
-                    |flex| {
-                        flex.child(
-                            Icon::from_external_svg(custom_icon_svg.clone())
-                                .size(*icon_size)
-                                .color(icon_color),
-                        )
-                    },
-                )
-                .child(Label::new(label.clone()).color(label_color).truncate())
-                .when(*icon_position == IconPosition::End, |flex| {
-                    flex.child(
-                        Icon::from_external_svg(custom_icon_svg.clone())
-                            .size(*icon_size)
-                            .color(icon_color),
-                    )
-                })
-                .into_any_element()
-        } else if let Some(icon_name) = icon {
-            h_flex()
-                .gap_1p5()
-                .when(
-                    *icon_position == IconPosition::Start && toggle.is_none(),
-                    |flex| flex.child(Icon::new(*icon_name).size(*icon_size).color(icon_color)),
-                )
-                .child(Label::new(label.clone()).color(label_color).truncate())
-                .when(*icon_position == IconPosition::End, |flex| {
-                    flex.child(Icon::new(*icon_name).size(*icon_size).color(icon_color))
-                })
-                .into_any_element()
+                    .when(!toggled, |contents| contents.invisible())
+                    .into_any_element(),
+            ),
+            Some((IconPosition::End, _)) => None,
+            None if *icon_position == IconPosition::Start => {
+                decoration_icon().map(IntoElement::into_any_element)
+            }
+            None => None,
+        };
+        let end_icon = if *icon_position == IconPosition::End {
+            decoration_icon()
         } else {
-            Label::new(label.clone())
-                .color(label_color)
-                .truncate()
-                .into_any_element()
+            None
+        };
+
+        let label_text = Label::new(label.clone()).color(label_color).truncate();
+        let label_element = match end_icon {
+            Some(end_icon) => h_flex()
+                .gap_1p5()
+                .child(label_text)
+                .child(end_icon)
+                .into_any_element(),
+            None => label_text.into_any_element(),
         };
 
         let aside_trigger_bounds = self.aside_trigger_bounds.clone();
@@ -1931,6 +1918,7 @@ impl ContextMenu {
                 ListItem::new(ix)
                     .group_name("label_container")
                     .inset(true)
+                    .popup_row_style(PopupRowStyle::Menu)
                     .spacing(self.spacing)
                     .disabled(*disabled)
                     .aria_role(if toggle.is_some() {
@@ -2021,48 +2009,53 @@ impl ContextMenu {
                             },
                         ))
                     })
-                    .when_some(*toggle, |list_item, (position, toggled)| {
-                        let contents = div()
-                            .flex_none()
-                            .child(
-                                Icon::new(icon.unwrap_or(IconName::Check))
-                                    .color(icon_color)
-                                    .size(*icon_size),
-                            )
-                            .when(!toggled, |contents| contents.invisible());
-
-                        match position {
-                            IconPosition::Start => list_item.start_slot(contents),
-                            IconPosition::End => list_item.end_slot(contents),
-                        }
+                    .when_some(*toggle, |list_item, (position, toggled)| match position {
+                        IconPosition::Start => list_item,
+                        IconPosition::End => list_item.end_slot(
+                            div()
+                                .flex_none()
+                                .child(
+                                    Icon::new(icon.unwrap_or(IconName::Check))
+                                        .color(icon_color)
+                                        .size(*icon_size),
+                                )
+                                .when(!toggled, |contents| contents.invisible()),
+                        ),
                     })
                     .child(
-                        h_flex()
-                            .w_full()
-                            .justify_between()
-                            .child(label_element)
-                            .debug_selector(|| format!("MENU_ITEM-{}", label))
-                            .children(action.as_ref().map(|action| {
-                                let binding = self
-                                    .action_context
-                                    .as_ref()
-                                    .map(|focus| KeyBinding::for_action_in(&**action, focus, cx))
-                                    .unwrap_or_else(|| KeyBinding::for_action(&**action, cx));
+                        menu_row_content(reserve_icon_column, start_column_icon).child(
+                            h_flex()
+                                .flex_1()
+                                .justify_between()
+                                .child(label_element)
+                                .debug_selector(|| format!("MENU_ITEM-{}", label))
+                                .children(action.as_ref().map(|action| {
+                                    let binding = self
+                                        .action_context
+                                        .as_ref()
+                                        .map(|focus| {
+                                            KeyBinding::for_action_in(&**action, focus, cx)
+                                        })
+                                        .unwrap_or_else(|| KeyBinding::for_action(&**action, cx));
 
-                                div()
-                                    .ml_4()
-                                    .child(binding.disabled(*disabled))
-                                    .when(*disabled && documentation_aside.is_some(), |parent| {
-                                        parent.invisible()
-                                    })
-                            }))
-                            .when(*disabled && documentation_aside.is_some(), |parent| {
-                                parent.child(
-                                    Icon::new(IconName::Info)
-                                        .size(IconSize::XSmall)
-                                        .color(Color::Muted),
-                                )
-                            }),
+                                    div()
+                                        .ml_4()
+                                        .child(
+                                            binding.color(Color::Placeholder).disabled(*disabled),
+                                        )
+                                        .when(
+                                            *disabled && documentation_aside.is_some(),
+                                            |parent| parent.invisible(),
+                                        )
+                                }))
+                                .when(*disabled && documentation_aside.is_some(), |parent| {
+                                    parent.child(
+                                        Icon::new(IconName::Info)
+                                            .size(IconSize::XSmall)
+                                            .color(Color::Muted),
+                                    )
+                                }),
+                        ),
                     )
                     .when_some(
                         end_slot_icon
@@ -2208,7 +2201,20 @@ impl ContextMenu {
             submenu_trigger_mouse_down: false,
             ignore_blur_until: None,
             suppress_focus_selection: !window.is_a11y_enabled(),
-            opaque_background: false,
+        }
+    }
+}
+
+impl ContextMenuEntry {
+    fn has_start_icon(&self) -> bool {
+        match self.toggle {
+            Some((position, _)) => position == IconPosition::Start,
+            None => {
+                self.icon_position == IconPosition::Start
+                    && (self.icon.is_some()
+                        || self.custom_icon_path.is_some()
+                        || self.custom_icon_svg.is_some())
+            }
         }
     }
 }
@@ -2225,6 +2231,85 @@ impl ContextMenuItem {
             ContextMenuItem::Submenu { .. } => true,
         }
     }
+
+    fn has_start_icon(&self) -> bool {
+        match self {
+            ContextMenuItem::Entry(entry) => entry.has_start_icon(),
+            ContextMenuItem::Submenu { icon, .. } => icon.is_some(),
+            ContextMenuItem::Separator
+            | ContextMenuItem::Header(_)
+            | ContextMenuItem::HeaderWithLink(_, _, _)
+            | ContextMenuItem::Label(_)
+            | ContextMenuItem::CustomEntry { .. } => false,
+        }
+    }
+}
+
+fn reserves_icon_column(items: &[ContextMenuItem]) -> bool {
+    items.iter().any(ContextMenuItem::has_start_icon)
+}
+
+fn menu_icon_column(icon: Option<AnyElement>) -> Div {
+    h_flex()
+        .flex_none()
+        .w(POPUP_MENU_METRICS.icon_column_width)
+        .justify_center()
+        .children(icon)
+}
+
+fn menu_row_content(reserve_icon_column: bool, icon: Option<AnyElement>) -> Div {
+    h_flex()
+        .w_full()
+        .gap(POPUP_MENU_METRICS.icon_column_gap)
+        .when(reserve_icon_column, |this| {
+            this.child(menu_icon_column(icon))
+        })
+}
+
+fn menu_separator(cx: &App) -> AnyElement {
+    div()
+        .w_full()
+        .flex_none()
+        .h(POPUP_MENU_METRICS.separator_height)
+        .pt(POPUP_MENU_METRICS.separator_line_offset)
+        .px(POPUP_MENU_METRICS.separator_inset)
+        .child(
+            div()
+                .w_full()
+                .h(POPUP_MENU_METRICS.separator_line_thickness)
+                .bg(cx.theme().colors().border_variant),
+        )
+        .into_any_element()
+}
+
+fn menu_header(
+    header: SharedString,
+    end_slot: Option<AnyElement>,
+    reserve_icon_column: bool,
+) -> AnyElement {
+    let row = PopupRowMetrics::for_style(PopupRowStyle::Menu);
+    let row_content_inset = row.pill_inset_x + row.content_padding_x;
+    let icon_column_offset = if reserve_icon_column {
+        POPUP_MENU_METRICS.icon_column_width + POPUP_MENU_METRICS.icon_column_gap
+    } else {
+        px(0.)
+    };
+    h_flex()
+        .w_full()
+        .flex_none()
+        .min_h(row.row_height())
+        .pl(row_content_inset + icon_column_offset)
+        .pr(row_content_inset)
+        .gap_1()
+        .justify_between()
+        .child(
+            Label::new(header)
+                .size(LabelSize::Small)
+                .weight(FontWeight::SEMIBOLD)
+                .color(Color::Muted),
+        )
+        .children(end_slot)
+        .into_any_element()
 }
 
 impl Render for ContextMenu {
@@ -2282,16 +2367,12 @@ impl Render for ContextMenu {
         };
 
         let aside = self.documentation_aside.clone();
-        let aside_is_opaque = self.opaque_background;
         let render_aside = |aside: DocumentationAside, cx: &mut Context<Self>| {
-            let opaque_aside_background =
-                aside_is_opaque.then(|| cx.theme().colors().elevated_surface_background.alpha(1.0));
             WithRemSize::new(ui_font_size)
                 .occlude()
                 .font_family(ui_font_family.clone())
                 .line_height(line_height)
                 .elevation_2(cx)
-                .when_some(opaque_aside_background, |this, color| this.bg(color))
                 .w_full()
                 .p_2()
                 .overflow_hidden()
@@ -2302,9 +2383,6 @@ impl Render for ContextMenu {
 
         let render_menu = |cx: &mut Context<Self>, window: &mut Window| {
             let bounds_cell = self.main_menu_observed_bounds.clone();
-            let opaque_background = self
-                .opaque_background
-                .then(|| cx.theme().colors().elevated_surface_background.alpha(1.0));
             let menu_bounds_measure = canvas(
                 {
                     move |bounds, _window, _cx| {
@@ -2323,7 +2401,6 @@ impl Render for ContextMenu {
                 .font_family(ui_font_family.clone())
                 .line_height(line_height)
                 .elevation_2(cx)
-                .when_some(opaque_background, |this, color| this.bg(color))
                 .flex()
                 .flex_row()
                 .flex_shrink_0()
@@ -2405,14 +2482,22 @@ impl Render for ContextMenu {
                             }
                             el
                         })
-                        .child(
-                            List::new().children(
-                                self.items
-                                    .iter()
-                                    .enumerate()
-                                    .map(|(ix, item)| self.render_menu_item(ix, item, window, cx)),
-                            ),
-                        ),
+                        .child({
+                            let reserve_icon_column = reserves_icon_column(&self.items);
+                            v_flex()
+                                .w_full()
+                                .py(POPUP_MENU_METRICS.vertical_padding)
+                                .children(self.items.iter().enumerate().map(|(ix, item)| {
+                                    self.render_menu_item(ix, item, reserve_icon_column, window, cx)
+                                }))
+                                .when(self.items.is_empty(), |this| {
+                                    this.child(
+                                        div()
+                                            .px_2()
+                                            .child(Label::new("No items").color(Color::Muted)),
+                                    )
+                                })
+                        }),
                 )
         };
 
@@ -2738,5 +2823,62 @@ mod tests {
                 "Should wrap around to first selectable entry"
             );
         });
+    }
+
+    #[test]
+    fn icon_column_is_reserved_only_when_an_entry_or_submenu_has_a_start_icon() {
+        let plain = || ContextMenuItem::Entry(ContextMenuEntry::new("Plain"));
+        let submenu = |icon: Option<IconName>| ContextMenuItem::Submenu {
+            label: "Submenu".into(),
+            icon,
+            icon_color: None,
+            builder: Rc::new(
+                |menu: ContextMenu, _: &mut Window, _: &mut Context<ContextMenu>| menu,
+            ),
+        };
+
+        assert!(
+            !reserves_icon_column(&[
+                plain(),
+                ContextMenuItem::Separator,
+                ContextMenuItem::Header("Header".into()),
+                ContextMenuItem::Label("Label".into()),
+                submenu(None),
+            ]),
+            "a menu without icons must not reserve an empty icon column"
+        );
+        assert!(
+            !reserves_icon_column(&[
+                plain(),
+                ContextMenuEntry::new("Trailing toggle")
+                    .toggleable(IconPosition::End, true)
+                    .into(),
+                ContextMenuEntry::new("Trailing icon")
+                    .icon(IconName::Check)
+                    .icon_position(IconPosition::End)
+                    .into(),
+            ]),
+            "trailing icons and toggles do not occupy the leading column"
+        );
+        assert!(
+            reserves_icon_column(&[
+                plain(),
+                ContextMenuEntry::new("Unchecked")
+                    .toggleable(IconPosition::Start, false)
+                    .into(),
+            ]),
+            "an unchecked leading toggle still reserves the column so labels stay aligned"
+        );
+        assert!(
+            reserves_icon_column(&[
+                plain(),
+                ContextMenuEntry::new("Icon").icon(IconName::Check).into()
+            ]),
+            "a leading entry icon reserves the column"
+        );
+        assert!(
+            reserves_icon_column(&[plain(), submenu(Some(IconName::Check))]),
+            "a submenu icon reserves the column"
+        );
     }
 }

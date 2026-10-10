@@ -272,7 +272,7 @@ fn build_settings_menu(
     let weak_viewer = viewer.downgrade();
     ContextMenu::build(window, cx, move |menu, _, _| {
         let sync_viewer = weak_viewer.clone();
-        let mut menu = menu.opaque_background().toggleable_entry(
+        let mut menu = menu.toggleable_entry(
             "Synchronize Scrolling",
             sync_scroll,
             IconPosition::Start,
@@ -320,7 +320,6 @@ fn build_settings_menu(
         let appearance_viewer = weak_viewer;
         menu.separator()
             .submenu("Appearance", move |submenu, _, _| {
-                let submenu = submenu.opaque_background();
                 let submenu = appearance_entry(
                     submenu,
                     "Show Whitespaces",

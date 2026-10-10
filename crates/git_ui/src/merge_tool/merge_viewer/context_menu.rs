@@ -117,7 +117,7 @@ fn build_pane_menu(
     let weak_viewer = viewer.downgrade();
     let has_apply_entries = !entries.is_empty();
     ContextMenu::build(window, cx, move |menu, _, _| {
-        let mut menu = menu.context(focus_handle).opaque_background();
+        let mut menu = menu.context(focus_handle);
         for action in entries {
             let text = action.text(side);
             let weak_viewer = weak_viewer.clone();

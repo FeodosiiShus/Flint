@@ -4,7 +4,7 @@ use component::{Component, ComponentScope, example_group_with_title, single_exam
 use gpui::{AnyElement, AnyView, ClickEvent, MouseButton, MouseDownEvent, Pixels, Role, px};
 use smallvec::SmallVec;
 
-use crate::{Disclosure, prelude::*};
+use crate::{Disclosure, PopupRowMetrics, PopupRowStyle, prelude::*};
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Clone, Copy, Default)]
 pub enum ListItemSpacing {
@@ -45,6 +45,7 @@ pub struct ListItem {
     end_slot_visibility: EndSlotVisibility,
     toggle: Option<bool>,
     inset: bool,
+    popup_row_style: PopupRowStyle,
     on_click: Option<Box<dyn Fn(&ClickEvent, &mut Window, &mut App) + 'static>>,
     on_hover: Option<Box<dyn Fn(&bool, &mut Window, &mut App) + 'static>>,
     on_toggle: Option<Arc<dyn Fn(&ClickEvent, &mut Window, &mut App) + 'static>>,
@@ -81,6 +82,7 @@ impl ListItem {
             end_slot_visibility: EndSlotVisibility::default(),
             toggle: None,
             inset: false,
+            popup_row_style: PopupRowStyle::default(),
             on_click: None,
             on_secondary_mouse_down: None,
             on_toggle: None,
@@ -200,6 +202,11 @@ impl ListItem {
         self
     }
 
+    pub fn popup_row_style(mut self, popup_row_style: PopupRowStyle) -> Self {
+        self.popup_row_style = popup_row_style;
+        self
+    }
+
     pub fn indent_level(mut self, indent_level: usize) -> Self {
         self.indent_level = indent_level;
         self
@@ -297,6 +304,15 @@ impl ParentElement for ListItem {
 
 impl RenderOnce for ListItem {
     fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let popup_row = PopupRowMetrics::for_style(self.popup_row_style);
+        let popup_row_hover_background = match self.popup_row_style {
+            PopupRowStyle::List => cx.theme().colors().ghost_element_hover,
+            PopupRowStyle::Menu => cx.theme().colors().ghost_element_selected,
+        };
+        let popup_row_active_background = match self.popup_row_style {
+            PopupRowStyle::List => cx.theme().colors().ghost_element_active,
+            PopupRowStyle::Menu => cx.theme().colors().ghost_element_selected,
+        };
         h_flex()
             .id(self.id)
             .when_some(self.group_name, |this, group| this.group(group))
@@ -306,7 +322,8 @@ impl RenderOnce for ListItem {
             // When an item is inset draw the indent spacing outside of the item
             .when(self.inset, |this| {
                 this.ml(self.indent_level as f32 * self.indent_step_size)
-                    .px(DynamicSpacing::Base04.rems(cx))
+                    .px(popup_row.pill_inset_x)
+                    .py(popup_row.pill_inset_y)
             })
             .when(!self.inset, |this| {
                 this.when_some(self.focused, |this, focused| {
@@ -361,7 +378,14 @@ impl RenderOnce for ListItem {
                     .w_full()
                     .relative()
                     .gap_1()
-                    .px(DynamicSpacing::Base06.rems(cx))
+                    .map(|this| {
+                        if self.inset {
+                            this.min_h(popup_row.pill_height)
+                                .px(popup_row.content_padding_x)
+                        } else {
+                            this.px(DynamicSpacing::Base06.rems(cx))
+                        }
+                    })
                     .map(|this| match self.spacing {
                         ListItemSpacing::Dense => this,
                         ListItemSpacing::ExtraDense => this.py_neg_px(),
@@ -377,8 +401,8 @@ impl RenderOnce for ListItem {
                             }
                         })
                         .when(self.selectable && !self.disabled, |this| {
-                            this.hover(|style| style.bg(cx.theme().colors().ghost_element_hover))
-                                .active(|style| style.bg(cx.theme().colors().ghost_element_active))
+                            this.hover(|style| style.bg(popup_row_hover_background))
+                                .active(|style| style.bg(popup_row_active_background))
                                 .when(self.selected, |this| {
                                     this.bg(cx.theme().colors().ghost_element_selected)
                                 })
@@ -402,7 +426,7 @@ impl RenderOnce for ListItem {
                     .when_some(self.tooltip, |this, tooltip| this.tooltip(tooltip))
                     .map(|this| {
                         if self.inset {
-                            this.rounded_sm()
+                            this.rounded(popup_row.pill_radius)
                         } else {
                             // When an item is not inset draw the indent spacing inside of the item
                             this.ml(self.indent_level as f32 * self.indent_step_size)

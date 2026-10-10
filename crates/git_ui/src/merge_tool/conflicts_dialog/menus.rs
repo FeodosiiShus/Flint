@@ -43,7 +43,6 @@ impl ConflictsDialog {
                                     .log_err();
                             }),
                     )
-                    .opaque_background()
                 }))
             })
             .anchor(Anchor::TopRight)
@@ -115,7 +114,6 @@ impl ConflictsDialog {
                             .log_err();
                     }),
             )
-            .opaque_background()
         });
         let menu_focus_handle = menu.focus_handle(cx);
         window.defer(cx, move |window, cx| {

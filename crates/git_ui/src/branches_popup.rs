@@ -146,12 +146,10 @@ impl Focusable for BranchesPopup {
 
 impl Render for BranchesPopup {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let opaque_background = cx.theme().colors().elevated_surface_background.alpha(1.0);
         v_flex()
             .occlude()
             .w(rems(POPUP_WIDTH_REMS))
             .elevation_3(cx)
-            .bg(opaque_background)
             .overflow_hidden()
             .key_context(KEY_CONTEXT)
             .when(self.style == BranchesPopupStyle::Popover, |this| {

@@ -417,9 +417,8 @@ mod tests {
 
     fn breadcrumb_texts(editor: &Editor, cx: &App) -> Vec<String> {
         editor
-            .breadcrumbs(cx)
+            .breadcrumbs_inner(cx)
             .expect("Should have breadcrumbs")
-            .0
             .into_iter()
             .map(|segment| segment.text.to_string())
             .collect()

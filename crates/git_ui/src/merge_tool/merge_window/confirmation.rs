@@ -5,7 +5,6 @@ use super::{
     chrome::{ThemedImage, dialog_button, themed_image},
     finish::{ConfirmationIcon, ConfirmationText},
 };
-use crate::branch_operations::opaque_elevated_surface;
 
 pub(crate) const CONFIRMATION_KEY_CONTEXT: &str = "MergeConfirmation";
 const CARD_WIDTH: f32 = 440.0;
@@ -63,7 +62,7 @@ pub(crate) fn render_confirmation(
         .rounded_lg()
         .border_1()
         .border_color(cx.theme().colors().border)
-        .bg(opaque_elevated_surface(cx))
+        .bg(cx.theme().colors().elevated_surface_background)
         .shadow_lg()
         .child(Label::new(text.title.clone()).weight(FontWeight::BOLD))
         .child(message)

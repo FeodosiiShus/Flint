@@ -1,16 +1,17 @@
 use crate::{
-    Copy, CopyAndTrim, CopyPermalinkToLine, Cut, DisplayPoint, DisplaySnapshot, Editor,
-    EvaluateSelectedText, FindAllReferences, GoToDeclaration, GoToDefinition, GoToImplementation,
-    GoToTypeDefinition, Paste, Rename, RevealInFileManager, RunToCursor, SelectMode,
-    SelectionEffects, SelectionExt, ToDisplayPoint, ToggleCodeActions,
-    actions::{Format, FormatSelections},
+    Copy, CopyAndTrim, CopyPermalinkToLine, Cut, DiffClipboardWithSelection, DisplayPoint,
+    DisplaySnapshot, Editor, FindAllReferences, FoldAll, FoldRecursive, GoToDefinition,
+    GoToImplementation, GoToTypeDefinition, OpenPermalinkToLine, Paste, Rename,
+    RevealInFileManager, SelectMode, SelectionEffects, SelectionExt, ToDisplayPoint,
+    ToggleCodeActions, UnfoldAll, UnfoldLines, UnfoldRecursive, actions::Fold,
     selections_collection::SelectionsCollection,
 };
 use gpui::prelude::FluentBuilder;
-use gpui::{Context, DismissEvent, Entity, Focusable as _, Pixels, Point, Subscription, Window};
+use gpui::{
+    Context, DismissEvent, Entity, FocusHandle, Focusable as _, Pixels, Point, Subscription, Window,
+};
 use std::ops::Range;
-use text::PointUtf16;
-use workspace::OpenInTerminal;
+use workspace::{DeploySearch, OpenInTerminal};
 
 #[derive(Debug)]
 pub enum MenuPosition {
@@ -138,6 +139,16 @@ impl MouseContextMenu {
     }
 }
 
+fn submenu_with_context(
+    focus: Option<FocusHandle>,
+    build: impl Fn(ui::ContextMenu) -> ui::ContextMenu + 'static,
+) -> impl Fn(ui::ContextMenu, &mut Window, &mut Context<ui::ContextMenu>) -> ui::ContextMenu + 'static
+{
+    move |menu: ui::ContextMenu, _window: &mut Window, _cx: &mut Context<ui::ContextMenu>| {
+        build(menu.when_some(focus.clone(), |menu, focus| menu.context(focus)))
+    }
+}
+
 fn display_ranges<'a>(
     display_map: &'a DisplaySnapshot,
     selections: &'a SelectionsCollection,
@@ -195,11 +206,6 @@ pub fn deploy_context_menu(
 
         let focus = window.focused(cx);
         let has_reveal_target = editor.target_file(cx).is_some();
-        let has_selections = editor
-            .selections
-            .all::<PointUtf16>(&display_map)
-            .into_iter()
-            .any(|s| !s.is_empty());
         let has_git_repo =
             buffer
                 .anchor_to_buffer_anchor(anchor)
@@ -212,45 +218,11 @@ pub fn deploy_context_menu(
                         .is_some()
                 });
 
-        let evaluate_selection = window.is_action_available(&EvaluateSelectedText, cx);
-        let run_to_cursor = window.is_action_available(&RunToCursor, cx);
-        let format_selections = window.is_action_available(&FormatSelections, cx);
-
         ui::ContextMenu::build(window, cx, |menu, _window, _cx| {
             let builder = menu
                 .on_blur_subscription(Subscription::new(|| {}))
-                .when(run_to_cursor, |builder| {
-                    builder.action("Run to Cursor", Box::new(RunToCursor))
-                })
-                .when(evaluate_selection && has_selections, |builder| {
-                    builder.action("Evaluate Selection", Box::new(EvaluateSelectedText))
-                })
-                .when(
-                    run_to_cursor || (evaluate_selection && has_selections),
-                    |builder| builder.separator(),
-                )
-                .action("Go to Definition", Box::new(GoToDefinition::default()))
-                .action("Go to Declaration", Box::new(GoToDeclaration::default()))
                 .action(
-                    "Go to Type Definition",
-                    Box::new(GoToTypeDefinition::default()),
-                )
-                .action(
-                    "Go to Implementation",
-                    Box::new(GoToImplementation::default()),
-                )
-                .action(
-                    "Find All References",
-                    Box::new(FindAllReferences::default()),
-                )
-                .separator()
-                .action("Rename Symbol", Box::new(Rename))
-                .action("Format Buffer", Box::new(Format))
-                .when(format_selections, |cx| {
-                    cx.action("Format Selections", Box::new(FormatSelections))
-                })
-                .action(
-                    "Show Code Actions",
+                    "Show Context Actions",
                     Box::new(ToggleCodeActions {
                         deployed_from: None,
                     }),
@@ -258,28 +230,73 @@ pub fn deploy_context_menu(
                 .separator()
                 .action("Cut", Box::new(Cut))
                 .action("Copy", Box::new(Copy))
-                .action("Copy and Trim", Box::new(CopyAndTrim))
                 .action("Paste", Box::new(Paste))
+                .submenu(
+                    "Copy / Paste Special",
+                    submenu_with_context(focus.clone(), move |menu| {
+                        menu.action("Copy and Trim", Box::new(CopyAndTrim)).when(
+                            has_git_repo,
+                            |menu| {
+                                menu.action("Copy Permalink to Line", Box::new(CopyPermalinkToLine))
+                            },
+                        )
+                    }),
+                )
                 .separator()
-                .action_disabled_when(
-                    !has_reveal_target,
-                    ui::utils::reveal_in_file_manager_label(false),
-                    Box::new(RevealInFileManager),
+                .action("Find in Files", Box::new(DeploySearch::default()))
+                .action("Find Usages", Box::new(FindAllReferences::default()))
+                .submenu(
+                    "Go To",
+                    submenu_with_context(focus.clone(), |menu| {
+                        menu.action("Declaration or Usages", Box::new(GoToDefinition::default()))
+                            .action("Implementation(s)", Box::new(GoToImplementation::default()))
+                            .action("Type Declaration", Box::new(GoToTypeDefinition::default()))
+                    }),
                 )
-                .action_disabled_when(
-                    !has_reveal_target,
-                    "Open in Terminal",
-                    Box::new(OpenInTerminal),
+                .separator()
+                .submenu(
+                    "Folding",
+                    submenu_with_context(focus.clone(), |menu| {
+                        menu.action("Expand", Box::new(UnfoldLines))
+                            .action("Expand Recursively", Box::new(UnfoldRecursive))
+                            .action("Expand All", Box::new(UnfoldAll))
+                            .separator()
+                            .action("Collapse", Box::new(Fold))
+                            .action("Collapse Recursively", Box::new(FoldRecursive))
+                            .action("Collapse All", Box::new(FoldAll))
+                    }),
                 )
-                .action_disabled_when(
-                    !has_git_repo,
-                    "Copy Permalink to Line",
-                    Box::new(CopyPermalinkToLine),
-                )
-                .action_disabled_when(
-                    !has_git_repo,
-                    "View File History",
-                    Box::new(git::FileHistory),
+                .separator()
+                .action("Rename…", Box::new(Rename))
+                .separator()
+                .when(has_reveal_target, |builder| {
+                    builder
+                        .submenu(
+                            "Open In",
+                            submenu_with_context(focus.clone(), |menu| {
+                                menu.action("Finder", Box::new(RevealInFileManager))
+                                    .action("Terminal", Box::new(OpenInTerminal))
+                            }),
+                        )
+                        .separator()
+                })
+                .when(has_git_repo, |builder| {
+                    builder
+                        .submenu(
+                            "Git",
+                            submenu_with_context(focus.clone(), |menu| {
+                                menu.action("Annotate with Git Blame", Box::new(git::Blame))
+                                    .action("Show History", Box::new(git::FileHistory))
+                                    .separator()
+                                    .action("Open Permalink to Line", Box::new(OpenPermalinkToLine))
+                                    .action("Copy Permalink to Line", Box::new(CopyPermalinkToLine))
+                            }),
+                        )
+                        .separator()
+                })
+                .action(
+                    "Compare with Clipboard",
+                    Box::new(DiffClipboardWithSelection),
                 );
             match focus {
                 Some(focus) => builder.context(focus),
@@ -319,12 +336,17 @@ pub fn deploy_context_menu(
 mod tests {
     use super::*;
     use crate::{
+        MultiBuffer,
+        display_map::DisplayRow,
         editor_tests::init_test,
         test::{
-            editor_lsp_test_context::EditorLspTestContext, editor_test_context::EditorTestContext,
+            build_editor_with_project, editor_lsp_test_context::EditorLspTestContext,
+            editor_test_context::EditorTestContext,
         },
     };
+    use gpui::px;
     use indoc::indoc;
+    use project::{FakeFs, Project};
 
     #[gpui::test]
     async fn test_mouse_context_menu(cx: &mut gpui::TestAppContext) {
@@ -414,5 +436,142 @@ mod tests {
         cx.run_until_parked();
 
         assert!(cx.debug_bounds("MENU_ITEM-Copy").is_some());
+    }
+
+    #[gpui::test]
+    async fn test_mouse_context_menu_follows_intellij_editor_popup_order(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        init_test(cx, |_| {});
+
+        let mut cx = EditorLspTestContext::new_rust(lsp::ServerCapabilities::default(), cx).await;
+        cx.set_state(indoc! {"
+            fn teˇst() {}
+        "});
+        let point = cx.display_point(indoc! {"
+            fn teˇst() {}
+        "});
+
+        cx.update_editor(|editor, window, cx| {
+            deploy_context_menu(editor, None, point, window, cx);
+            assert!(editor.mouse_context_menu.is_some());
+        });
+        cx.run_until_parked();
+
+        let top_level_items = [
+            "MENU_ITEM-Show Context Actions",
+            "MENU_ITEM-Cut",
+            "MENU_ITEM-Copy",
+            "MENU_ITEM-Paste",
+            "MENU_ITEM-Copy / Paste Special",
+            "MENU_ITEM-Find in Files",
+            "MENU_ITEM-Find Usages",
+            "MENU_ITEM-Go To",
+            "MENU_ITEM-Folding",
+            "MENU_ITEM-Rename…",
+            "MENU_ITEM-Open In",
+            "MENU_ITEM-Git",
+            "MENU_ITEM-Compare with Clipboard",
+        ];
+        let vertical_positions = top_level_items
+            .into_iter()
+            .map(|selector| {
+                cx.debug_bounds(selector)
+                    .unwrap_or_else(|| panic!("{selector} should be rendered in the editor menu"))
+                    .origin
+                    .y
+            })
+            .collect::<Vec<_>>();
+        for (index, pair) in vertical_positions.windows(2).enumerate() {
+            assert!(
+                pair[0] < pair[1],
+                "{} should be rendered above {}",
+                top_level_items[index],
+                top_level_items[index + 1]
+            );
+        }
+
+        for removed_item in [
+            "MENU_ITEM-Go to Declaration",
+            "MENU_ITEM-Format Buffer",
+            "MENU_ITEM-Run to Cursor",
+            "MENU_ITEM-Copy and Trim",
+            "MENU_ITEM-View File History",
+        ] {
+            assert_eq!(
+                cx.debug_bounds(removed_item),
+                None,
+                "{removed_item} is not a top-level item of the IntelliJ editor menu"
+            );
+        }
+    }
+
+    #[gpui::test]
+    async fn test_mouse_context_menu_hides_open_in_and_git_for_unsaved_buffer(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        init_test(cx, |_| {});
+
+        let fs = FakeFs::new(cx.executor());
+        let project = Project::test(fs, [], cx).await;
+        let buffer = project.update(cx, |project, cx| {
+            project.create_local_buffer("let value = 1;\n", None, false, cx)
+        });
+        let window = cx.add_window(|window, cx| {
+            let editor = build_editor_with_project(
+                project,
+                MultiBuffer::build_from_buffer(buffer, cx),
+                window,
+                cx,
+            );
+            window.focus(&editor.focus_handle, cx);
+            editor
+        });
+        let mut cx = EditorTestContext::for_editor(window, cx).await;
+        cx.run_until_parked();
+
+        cx.update_editor(|editor, window, cx| {
+            deploy_context_menu(
+                editor,
+                None,
+                DisplayPoint::new(DisplayRow(0), 4),
+                window,
+                cx,
+            );
+            assert!(editor.mouse_context_menu.is_some());
+        });
+        cx.run_until_parked();
+
+        assert_eq!(
+            cx.debug_bounds("MENU_ITEM-Open In"),
+            None,
+            "a buffer without a file has nothing to open in Finder or a terminal"
+        );
+        assert_eq!(
+            cx.debug_bounds("MENU_ITEM-Git"),
+            None,
+            "a buffer outside a git repository has no git actions"
+        );
+
+        let show_context_actions = cx
+            .debug_bounds("MENU_ITEM-Show Context Actions")
+            .expect("Show Context Actions should be rendered");
+        let cut = cx
+            .debug_bounds("MENU_ITEM-Cut")
+            .expect("Cut should be rendered");
+        let rename = cx
+            .debug_bounds("MENU_ITEM-Rename…")
+            .expect("Rename should be rendered");
+        let compare_with_clipboard = cx
+            .debug_bounds("MENU_ITEM-Compare with Clipboard")
+            .expect("Compare with Clipboard should be rendered");
+
+        let single_separator_gap = cut.origin.y - show_context_actions.origin.y;
+        let rename_to_compare_gap = compare_with_clipboard.origin.y - rename.origin.y;
+        assert!(
+            (rename_to_compare_gap - single_separator_gap).abs() < px(0.5),
+            "hidden Open In and Git sections must leave exactly one separator between Rename and Compare with Clipboard, \
+             gap was {rename_to_compare_gap:?}, expected {single_separator_gap:?}"
+        );
     }
 }

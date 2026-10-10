@@ -7,9 +7,9 @@ use menu::{Cancel, Confirm};
 use ui::{Checkbox, Modal, ModalFooter, ModalHeader, Section, prelude::*};
 use workspace::ModalView;
 
+use super::BranchContext;
 use super::manage::perform_rename;
 use super::new_branch_dialog::{clean_up_branch_name_on_apply, clean_up_branch_name_on_typing};
-use super::{BranchContext, opaque_elevated_surface};
 
 const DIALOG_WIDTH: f32 = 34.;
 
@@ -182,7 +182,6 @@ impl Render for RenameBranchDialog {
             .on_action(cx.listener(Self::confirm))
             .w(rems(DIALOG_WIDTH))
             .elevation_3(cx)
-            .bg(opaque_elevated_surface(cx))
             .overflow_hidden()
             .child(
                 Modal::new("rename-branch-dialog", None)

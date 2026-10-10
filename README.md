@@ -213,18 +213,75 @@ Flint uses WebStorm's [Islands](https://plugins.jetbrains.com/docs/intellij/supp
 - Filled buttons that sit on the modal layer (the Restricted Mode and disconnected-project dialogs) have the same colour as the dialog, because IntelliJ's popup colour `#26282c` equals the frame colour; only their label and their pressed state are visible.
 - Hover highlights use IntelliJ's translucent white, so they are fainter than Eva's solid blue; the sticky excerpt header keeps an opaque fill while hovered.
 
+## Popups and menus
+
+Every popup surface is opaque: context menus, drop-downs, pickers (command palette, file finder, Search Everywhere), completion and hover cards, tooltips, modals and the Git dialogs. A translucent `elevated_surface.background`, from a theme file or from `theme_overrides` in your `settings.json`, is drawn with full opacity in the same colour. Without your own `elevated_surface.background` override, popups use IntelliJ's popup colour `#26282c`.
+
+Popups use the metrics of IntelliJ's New UI on macOS (see [docs/webstorm-ui-research.md](docs/webstorm-ui-research.md), Exception 4):
+
+| Element | Flint | IntelliJ key |
+|---|---|---|
+| Popup corners and border | 8 px radius, 1 px `border.variant` (`#33353b`) | `PopupMenu.borderCornerRadius`, `Popup.borderColor` |
+| Context menu padding | 6 px above the first row and below the last | `PopupMenu.borderInsets` |
+| Context menu row | 26 px; hover and keyboard selection are one 4 px-radius pill inset 7 px from the sides and 1 px from the row edges, with the text 6 px inside it | `List.rowHeight`, `PopupMenu.Selection.outerInsets`, `innerInsets`, `arc` |
+| Selection colour | `ghost_element.selected` (`#2a4371`) for both hover and keyboard selection | `selection-bg-active` |
+| Shortcuts | right-aligned, `text.placeholder` (`#73767c`) | `MenuItem.acceleratorForeground` |
+| Icon column | 18 px plus a 4 px gap, reserved on every row as soon as one row has an icon or a check mark | `MenuItem.maxGutterIconWidth` |
+| Separator | 9 px high, a 1 px `border.variant` line inset 10 px from both sides | `PopupMenuSeparator.height`, `stripeIndent`, `withToEdge` |
+| List popup rows (pickers, completions) | at least 24 px; the selection pill is inset 8 px with a 4 px radius and the text 8 px inside it; 8 px above and below the list | `Popup.Selection.leftRightInset`, `innerInsets`, `Popup.Body` insets |
+| Tooltips | `element.background` over the popup colour (`#33353b`), no border, 4 px radius, padding 8 px top, 12 px sides, 9 px bottom, text at most 250 px wide | `ToolTip.background`, `ToolTip.borderCornerRadius`, `HelpTooltip.maxWidth` |
+
+Not implemented: the lighter shortcut colour of the selected row (`#bbbbbb`, no theme key), the larger insets of multi-line tooltips, the native macOS shadow of IntelliJ's popup windows (Flint keeps its own shadow) and IntelliJ's group header insets in pickers.
+
 ## Editor tabs, project panel and scrollbar
 
 - Hidden tabs: when the editor tabs do not fit, a ˅ button at the right end of the tab bar lists the tabs outside the visible area, like WebStorm's "Show Hidden Tabs" drop-down. Picking one activates it and scrolls it into view. `"tab_bar": { "show_hidden_tabs_button": true }`.
+- Tab bar buttons: after the ˅ button, a ⋮ button ("Recent Files, Tab Actions, and More", WebStorm's editor tab entry point) is shown whenever the pane has a tab, focused or not. Its menu has Recent Files, Go to File…, Close All Tabs, Reopen Closed Tab, Unsplit and Unsplit All (only while the editor is split, Unsplit All only with more than two groups) and Configure Editor Tabs…. The New…, Split Pane and Zoom buttons are gone: splitting is in the tab menu and Zoom keeps its key binding. `"tab_bar": { "show_tab_bar_buttons": false }` hides ⋮.
+- Tab menu: right-clicking a tab opens WebStorm's editor tab menu, acting on the clicked tab: Close; Close Other Tabs (disabled with one tab); Close All Tabs; Close All but Pinned (only with pinned and unpinned tabs); Close Tabs to the Left and Close Tabs to the Right (only when there are unpinned tabs on that side); Copy Path/Reference… (Absolute Path, File Name, Path from Content Root, Path from Repository Root); Split Right, Split and Move Right, Split Down, Split and Move Down (the move entries need two tabs); Unsplit and Unsplit All; Pin Tab or Unpin Tab; Keep Tab Open (preview tabs); Configure Editor Tabs…; Reopen Closed Tab; Open In (Finder, Terminal); Git (Open File Permalink, Copy File Permalink). With the editor split, "Close All Tabs" and "Close All but Pinned" end with "In Group". Zed's Close Clean, Close Multibuffers, Make Tab Read-Only and Reveal In Project Panel entries were removed; the Project panel header's Select Opened File button replaces the last one.
 - Project panel selection: the hovered and selected rows are rounded pills inset from the panel edges, like WebStorm's tree selection. The selection is the theme's selection color while the panel has focus and a neutral gray otherwise; the keyboard cursor is a border on the pill. `"project_panel": { "rounded_selection": true }`; `false` restores full-width square rows.
 - Project panel header buttons: like WebStorm's Project tool window, the header has Select Opened File (⌖), Expand All and Collapse All before ⋮ and —. Select Opened File reveals and selects the file of the active editor tab in the tree, expanding its folders, and moves focus to the tree; with no file behind the tab (an unsaved buffer or a file outside the project) it only focuses the panel. Opening a file does not select it in the tree by itself; `"project_panel": { "auto_reveal_entries": true }` brings that back. Expand All and Collapse All are the `project panel: expand all entries` and `project panel: collapse all entries` actions. The buttons follow `tool_window_headers.always_show_actions`; the `project panel: select opened file` action is available from the command palette.
 - Editor scrollbar: the thumb is a narrower rounded pill inside the track, like the macOS scrollbar in JetBrains IDEs. Dragging still works on the whole track width. `"scrollbar": { "rounded_thumb": true }`.
 - UI font: the default `ui_font_family` is `Inter`, the font JetBrains IDEs use; Inter 4.1 (OFL) is bundled in `assets/fonts/inter`. `".SystemUIFont"` gives San Francisco and `".ZedSans"` gives IBM Plex Sans.
 - Project tree and editor: folders show a disclosure chevron followed by the folder icon (`"project_panel": { "folder_indicator": "both" }`), and the editor line height is `comfortable` (`"buffer_line_height": "comfortable"`, 1.618), like WebStorm.
-- The path no longer appears above the editor: `toolbar.breadcrumbs` and `toolbar.quick_actions` default to `false`. Set them to `true` to bring the editor toolbar row back.
+- Breadcrumbs: like WebStorm, they are shown below the editor and list only the code structure at the caret, not the file path; see [Breadcrumbs](#breadcrumbs). `toolbar.quick_actions` stays `false`, so no toolbar row is shown above the editor.
 - Settings window: Window & Layout → Tab Bar, Panels → Project Panel, Editor → Scrollbar, Appearance → UI Font.
 
 The WebStorm reference used for these changes, with quotes from JetBrains documentation and the full gap list, is in [docs/webstorm-ui-research.md](docs/webstorm-ui-research.md).
+
+## Editor
+
+### Context menu
+
+Right-clicking the editor opens WebStorm's editor menu, with the Flint actions that exist: Show Context Actions; Cut, Copy, Paste; Copy / Paste Special (Copy and Trim, Copy Permalink to Line); Find in Files; Find Usages; Go To (Declaration or Usages, Implementation(s), Type Declaration); Folding (Expand, Expand Recursively, Expand All, Collapse, Collapse Recursively, Collapse All); Rename…; Open In (Finder, Terminal); Git (Annotate with Git Blame, Show History, Open Permalink to Line, Copy Permalink to Line); Compare with Clipboard. Open In needs a file on disk and Git a git repository. Zed's Go to Declaration, Format Buffer and Format Selections entries were removed from the menu; their actions and key bindings stay.
+
+Not implemented, because Flint has no such action: Column Selection Mode, Copy Reference, Paste as Plain Text, Paste from History, Super Method, Related Symbol, Test, Expand to Level, Refactor, Generate…, run configurations, Open in Right Split, Local History, External Tools.
+
+### Gutter
+
+- Git change markers are 4 px capsules after the folding chevrons, right before the code, like IntelliJ's New UI. Deleted lines are an 8 px capsule on the boundary between two lines. A custom `gutter.git_gutter_width` sets the capsule width. When the gutter has no room on the right (line numbers and folds turned off), the markers stay at the left edge.
+- A 1 px line in `editor.indent_guide` separates the gutter from the code.
+- Line numbers are 1 px smaller than the code font (IntelliJ's line number font delta −1).
+
+### Breadcrumbs
+
+Breadcrumbs are on by default and sit below the editor, like WebStorm: a strip with a 1 px top border in `editor.indent_guide`, the crumbs of the code structure at the caret in the UI font, separated by chevrons, the last one in the normal text colour. Clicking the strip opens the symbol outline and right-clicking it copies the file path, as before.
+
+```json
+"toolbar": { "breadcrumbs": true, "breadcrumbs_placement": "bottom", "breadcrumbs_file_path": false }
+```
+
+- `breadcrumbs_placement`: `"bottom"` (default) or `"top"`, which puts them back into the toolbar above the editor with Zed's look.
+- `breadcrumbs_file_path`: `true` starts the crumbs with the file path again.
+- Settings window: Editor → Toolbar.
+- Not implemented: clicking a crumb to jump to that symbol, and IntelliJ's arrow-shaped hover background.
+
+### Inspection widget
+
+The top-right corner of the editor shows the error and warning counts of the file, like WebStorm's inspection widget, or a green check mark when the language servers report no problems. With problems, ˄ and ˅ buttons go to the previous and next problem (`editor: go to previous diagnostic` and `editor: go to diagnostic`). It is shown for files of the project. `"show_inspection_widget": false` hides it (Settings window: Editor → Scrollbar).
+
+### Inlay hints
+
+Inlay hints are drawn on the theme's `hint.background` by default, like IntelliJ's hint pills (`"inlay_hints": { "show_background": true }`). The default look keeps Eva's hint colours, and the background is square, not rounded.
 
 ## Main toolbar
 
@@ -328,7 +385,7 @@ Every branch and tag row opens a submenu (`>`). Its items depend on the kind of 
 
 ## Search Everywhere
 
-Search Everywhere is a WebStorm-style popup that searches files, classes, symbols, actions and text at once. With the macOS JetBrains base keymap it opens on a double `Shift`; with any keymap it is available as `search everywhere: toggle` in the command palette. Like WebStorm, it has a row of tabs above the query and a preview of the selected item. The popup surface is always opaque, even when your theme overrides make `elevated_surface.background` translucent, like the Git Branches popup.
+Search Everywhere is a WebStorm-style popup that searches files, classes, symbols, actions and text at once. With the macOS JetBrains base keymap it opens on a double `Shift`; with any keymap it is available as `search everywhere: toggle` in the command palette. Like WebStorm, it has a row of tabs above the query and a preview of the selected item. Like every popup, its surface is opaque (see [Popups and menus](#popups-and-menus)).
 
 | Tab | What it searches |
 | --- | --- |

@@ -2520,7 +2520,7 @@ fn editor_page() -> SettingsPage {
         ]
     }
 
-    fn scrollbar_section() -> [SettingsPageItem; 11] {
+    fn scrollbar_section() -> [SettingsPageItem; 12] {
         [
             SettingsPageItem::SectionHeader("Scrollbar"),
             SettingsPageItem::SettingItem(SettingItem {
@@ -2761,10 +2761,25 @@ fn editor_page() -> SettingsPage {
                 metadata: None,
                 files: USER,
             }),
+            SettingsPageItem::SettingItem(SettingItem {
+                title: "Inspection Widget",
+                description: "Show the error and warning counts of the file with previous and next problem buttons at the top-right corner of the editor, like WebStorm's inspection widget.",
+                field: Box::new(SettingField {
+                    json_path: Some("show_inspection_widget"),
+                    pick: |settings_content| {
+                        settings_content.editor.show_inspection_widget.as_ref()
+                    },
+                    write: |settings_content, value, _| {
+                        settings_content.editor.show_inspection_widget = value;
+                    },
+                }),
+                metadata: None,
+                files: USER,
+            }),
         ]
     }
 
-    fn toolbar_section() -> [SettingsPageItem; 7] {
+    fn toolbar_section() -> [SettingsPageItem; 9] {
         [
             SettingsPageItem::SectionHeader("Toolbar"),
             SettingsPageItem::SettingItem(SettingItem {
@@ -2786,6 +2801,54 @@ fn editor_page() -> SettingsPage {
                             .toolbar
                             .get_or_insert_default()
                             .breadcrumbs = value;
+                    },
+                }),
+                metadata: None,
+                files: USER,
+            }),
+            SettingsPageItem::SettingItem(SettingItem {
+                title: "Breadcrumbs Placement",
+                description: "Show the breadcrumbs above the editor, in the toolbar, or below it, like WebStorm.",
+                field: Box::new(SettingField {
+                    json_path: Some("toolbar.breadcrumbs_placement"),
+                    pick: |settings_content| {
+                        settings_content
+                            .editor
+                            .toolbar
+                            .as_ref()?
+                            .breadcrumbs_placement
+                            .as_ref()
+                    },
+                    write: |settings_content, value, _| {
+                        settings_content
+                            .editor
+                            .toolbar
+                            .get_or_insert_default()
+                            .breadcrumbs_placement = value;
+                    },
+                }),
+                metadata: None,
+                files: USER,
+            }),
+            SettingsPageItem::SettingItem(SettingItem {
+                title: "Breadcrumbs File Path",
+                description: "Start the breadcrumbs with the path of the file. Off shows only the code structure, like WebStorm.",
+                field: Box::new(SettingField {
+                    json_path: Some("toolbar.breadcrumbs_file_path"),
+                    pick: |settings_content| {
+                        settings_content
+                            .editor
+                            .toolbar
+                            .as_ref()?
+                            .breadcrumbs_file_path
+                            .as_ref()
+                    },
+                    write: |settings_content, value, _| {
+                        settings_content
+                            .editor
+                            .toolbar
+                            .get_or_insert_default()
+                            .breadcrumbs_file_path = value;
                     },
                 }),
                 metadata: None,
@@ -4023,7 +4086,7 @@ fn window_and_layout_page() -> SettingsPage {
             }),
             SettingsPageItem::SettingItem(SettingItem {
                 title: "Show Tab Bar Buttons",
-                description: "Show the tab bar buttons (New, Split Pane, Zoom).",
+                description: "Show the ⋮ button at the end of the tab bar (Recent Files, Tab Actions, and More).",
                 field: Box::new(SettingField {
                     json_path: Some("tab_bar.show_tab_bar_buttons"),
                     pick: |settings_content| {

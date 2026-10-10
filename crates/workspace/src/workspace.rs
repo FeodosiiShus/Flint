@@ -18,6 +18,7 @@ pub mod path_link;
 mod persistence;
 pub mod searchable;
 pub mod security_modal;
+mod tab_context_menu;
 mod theme_preview;
 mod toast_layer;
 mod tool_window_bar;

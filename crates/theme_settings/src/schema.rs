@@ -334,7 +334,8 @@ pub fn theme_colors_refinement(
         elevated_surface_background: this
             .elevated_surface_background
             .as_ref()
-            .and_then(|color| try_parse_color(color).ok()),
+            .and_then(|color| try_parse_color(color).ok())
+            .map(ensure_opaque),
         surface_background: this
             .surface_background
             .as_ref()

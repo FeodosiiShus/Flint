@@ -2,16 +2,13 @@ use std::{cell::RefCell, rc::Rc, sync::Arc, time::Duration};
 
 use editor::Editor;
 use futures::StreamExt;
-use gpui::{
-    App, Entity, Focusable, TestAppContext, UpdateGlobal as _, VisualContext, VisualTestContext,
-};
+use gpui::{App, Entity, Focusable, TestAppContext, VisualContext, VisualTestContext};
 use language::{FakeLspAdapter, Language, LanguageConfig, LanguageMatcher};
 use lsp::OneOf;
 use picker::{Direction, Picker, PickerDelegate};
 use project::{FakeFs, Project, ProjectEntryId, ProjectPath};
 use serde_json::json;
-use settings::{KeymapFile, SettingsStore, ThemeColorsContent, ThemeStyleContent};
-use theme::ActiveTheme as _;
+use settings::KeymapFile;
 use util::{path, rel_path::rel_path};
 use workspace::{AppState, MultiWorkspace, Workspace};
 use zed_actions::search_everywhere::{Tab, Toggle};
@@ -796,40 +793,6 @@ async fn test_all_tab_aggregates_files_classes_symbols_actions_and_text(cx: &mut
         ["# Classes", "# Files", "# Symbols", "# Actions", "# Text"],
         "every provider contributes a section to the All tab"
     );
-}
-
-#[gpui::test]
-async fn test_search_everywhere_surface_is_opaque_with_translucent_theme(cx: &mut TestAppContext) {
-    let app_state = init_test(cx);
-    cx.update(|cx| {
-        SettingsStore::update_global(cx, |store, cx| {
-            store.update_user_settings(cx, |settings| {
-                settings.theme.experimental_theme_overrides = Some(ThemeStyleContent {
-                    colors: ThemeColorsContent {
-                        elevated_surface_background: Some("#22272f99".into()),
-                        ..Default::default()
-                    },
-                    ..Default::default()
-                });
-            });
-        });
-    });
-    let project = Project::test(app_state.fs.clone(), [], cx).await;
-    let (workspace, cx) = build_workspace(project, cx);
-    cx.run_until_parked();
-    let theme_surface = cx.update(|_, cx| cx.theme().colors().elevated_surface_background);
-    assert!(
-        theme_surface.a < 1.0,
-        "the theme override makes the elevated surface translucent"
-    );
-
-    let picker = open_search_everywhere(None, &workspace, cx);
-    let surface = picker.read_with(cx, |picker, cx| picker.opaque_surface_background(cx));
-    let surface = surface.expect("the search everywhere picker paints an opaque surface");
-    assert_eq!(surface.a, 1.0);
-    assert_eq!(surface.h, theme_surface.h);
-    assert_eq!(surface.s, theme_surface.s);
-    assert_eq!(surface.l, theme_surface.l);
 }
 
 #[gpui::test]

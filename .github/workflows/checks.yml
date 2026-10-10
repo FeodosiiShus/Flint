@@ -114,6 +114,14 @@ jobs:
       - name: Run islands chrome pixel tests
         run: cargo test --locked --package ui --test islands_chrome_pixels
 
+      - name: Run popup opacity and IntelliJ popup metrics tests
+        run: |
+          cargo test --locked --package ui --test popup_pixels
+          cargo test --locked --package ui --lib icon_column
+
+      - name: Run editor tab menu, tab bar menu and bottom toolbar tests
+        run: cargo test --locked --package workspace --lib -- tab_context_menu tab_bar_more_menu bottom_toolbar
+
       - name: Run icon asset tests
         run: cargo test --locked --package icons
 
@@ -125,6 +133,9 @@ jobs:
 
       - name: Run editor rounded scrollbar thumb tests
         run: cargo test --locked --package editor --lib rounded_thumb
+
+      - name: Run editor context menu, gutter, inspection widget and breadcrumb tests
+        run: cargo test --locked --package editor --lib -- mouse_context_menu intellij_gutter inspection_widget breadcrumb
 
       - name: Run language server DOTNET_ROOT tests
         run: cargo test --locked --package project --features project/test-support --lib dotnet_root

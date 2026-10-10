@@ -153,7 +153,6 @@ pub struct Picker<D: PickerDelegate> {
     /// picker open while that menu has focus.
     actions_menu_handle: PopoverMenuHandle<ContextMenu>,
     reopenable: bool,
-    opaque_background: bool,
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq)]
@@ -648,7 +647,6 @@ impl<D: PickerDelegate> Picker<D> {
             size_bounds,
             actions_menu_handle: PopoverMenuHandle::default(),
             reopenable: true,
-            opaque_background: false,
         };
         // give delegate the initial preview layout
         this.delegate
@@ -772,11 +770,6 @@ impl<D: PickerDelegate> Picker<D> {
             preview.layout = preview::Layout::Hidden;
         }
         self.delegate.preview_layout_changed(false);
-        self
-    }
-
-    pub fn opaque_background(mut self) -> Self {
-        self.opaque_background = true;
         self
     }
 
@@ -1546,6 +1539,9 @@ impl<D: PickerDelegate> Picker<D> {
         } else {
             ListSizingBehavior::Infer
         };
+        let popup_vertical_padding = self
+            .draws_own_container()
+            .then_some(ui::POPUP_LIST_METRICS.vertical_padding);
 
         match &self.element_container {
             ElementContainer::UniformList(scroll_handle) => uniform_list(
@@ -1559,7 +1555,10 @@ impl<D: PickerDelegate> Picker<D> {
             )
             .with_sizing_behavior(sizing_behavior)
             .flex_grow_1()
-            .py_1()
+            .map(|this| match popup_vertical_padding {
+                Some(padding) => this.py(padding),
+                None => this.py_1(),
+            })
             .track_scroll(&scroll_handle)
             .into_any_element(),
             ElementContainer::List(state) => list(
@@ -1570,7 +1569,10 @@ impl<D: PickerDelegate> Picker<D> {
             )
             .with_sizing_behavior(sizing_behavior)
             .flex_grow_1()
-            .py(DynamicSpacing::Base04.rems(cx))
+            .map(|this| match popup_vertical_padding {
+                Some(padding) => this.py(padding),
+                None => this.py(DynamicSpacing::Base04.rems(cx)),
+            })
             .into_any_element(),
         }
     }

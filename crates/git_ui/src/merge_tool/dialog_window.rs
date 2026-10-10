@@ -21,7 +21,6 @@ use self::bounds::{
     FrameRect, FrameSize, OwnerPlacement, PlannedBounds, ScreenSet, TrackedBounds,
     load_saved_bounds, plan_bounds,
 };
-use crate::branch_operations::opaque_elevated_surface;
 
 pub(crate) const DIALOG_WINDOW_KEY_CONTEXT: &str = "DialogWindow";
 
@@ -496,7 +495,7 @@ impl Render for DialogWindowShell {
             }))
             .font(ui_font)
             .text_color(cx.theme().colors().text)
-            .bg(opaque_elevated_surface(cx))
+            .bg(cx.theme().colors().elevated_surface_background)
             .child(self.content.clone())
             .when(self.blocking_children > 0, |this| {
                 this.child(div().absolute().top_0().left_0().size_full().occlude())

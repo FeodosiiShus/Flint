@@ -1238,7 +1238,6 @@ fn build_gear_menu(
             PopupToggle::ShowTags,
             &picker,
         )
-        .opaque_background()
     })
 }
 

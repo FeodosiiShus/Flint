@@ -17,9 +17,7 @@ use ui::{TintColor, prelude::*};
 use util::ResultExt as _;
 use workspace::ModalView;
 
-use crate::branch_operations::{
-    BranchContext, BranchNotice, NoticeAction, opaque_elevated_surface,
-};
+use crate::branch_operations::{BranchContext, BranchNotice, NoticeAction};
 use crate::merge_tool::conflict_resolution::{ConflictParams, ResolveMode, ResolverBehavior};
 
 const VIEW_SAVED_CHANGES_LABEL: &str = "View saved changes…";
@@ -354,7 +352,6 @@ impl Render for SmartOperationDialog {
             .track_focus(&self.focus_handle)
             .on_action(cx.listener(Self::cancel))
             .elevation_3(cx)
-            .bg(opaque_elevated_surface(cx))
             .w(rems(36.))
             .child(
                 div()

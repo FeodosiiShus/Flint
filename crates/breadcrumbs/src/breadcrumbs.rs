@@ -1,6 +1,7 @@
 use gpui::{
     AnyElement, App, Context, EventEmitter, Font, Global, IntoElement, Render, Subscription, Window,
 };
+use settings::SettingsStore;
 use ui::prelude::*;
 use workspace::{
     ToolbarItemEvent, ToolbarItemLocation, ToolbarItemView,
@@ -25,6 +26,7 @@ pub struct Breadcrumbs {
     pane_focused: bool,
     active_item: Option<Box<dyn ItemHandle>>,
     subscription: Option<Subscription>,
+    settings_subscription: Option<Subscription>,
 }
 
 impl Default for Breadcrumbs {
@@ -39,6 +41,7 @@ impl Breadcrumbs {
             pane_focused: false,
             active_item: Default::default(),
             subscription: Default::default(),
+            settings_subscription: Default::default(),
         }
     }
 }
@@ -94,6 +97,17 @@ impl ToolbarItemView for Breadcrumbs {
         let Some(item) = active_pane_item else {
             return ToolbarItemLocation::Hidden;
         };
+
+        if self.settings_subscription.is_none() {
+            self.settings_subscription = Some(cx.observe_global::<SettingsStore>(|this, cx| {
+                cx.notify();
+                if let Some(active_item) = this.active_item.as_ref() {
+                    cx.emit(ToolbarItemEvent::ChangeLocation(
+                        active_item.breadcrumb_location(cx),
+                    ))
+                }
+            }));
+        }
 
         let this = cx.entity().downgrade();
         self.subscription = Some(item.subscribe_to_item_events(

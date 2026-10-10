@@ -177,6 +177,7 @@ pub struct EditorSettingsContent {
     ///
     /// Default: false
     pub show_signature_help_after_edits: Option<bool>,
+    pub show_inspection_widget: Option<bool>,
     /// The minimum APCA perceptual contrast to maintain when
     /// rendering text over highlight backgrounds in the editor.
     ///
@@ -388,8 +389,31 @@ pub struct ToolbarContent {
     ///
     /// Default: false
     pub code_actions: Option<bool>,
+    pub breadcrumbs_placement: Option<BreadcrumbsPlacement>,
+    pub breadcrumbs_file_path: Option<bool>,
     pub height: Option<u32>,
     pub icon_size: Option<u32>,
+}
+
+#[derive(
+    Copy,
+    Clone,
+    Debug,
+    Default,
+    Serialize,
+    Deserialize,
+    JsonSchema,
+    MergeFrom,
+    PartialEq,
+    Eq,
+    strum::VariantArray,
+    strum::VariantNames,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum BreadcrumbsPlacement {
+    Top,
+    #[default]
+    Bottom,
 }
 
 /// Scrollbar related settings

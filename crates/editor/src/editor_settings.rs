@@ -2,10 +2,11 @@ use gpui::App;
 use language::CursorShape;
 use project::project_settings::DiagnosticSeverity;
 pub use settings::{
-    CodeLens, CompletionDetailAlignment, CompletionMenuItemKind, CurrentLineHighlight, DelayMs,
-    DiffViewStyle, DocumentColorsRenderMode, DoubleClickInMultibuffer, GitGutterWidth,
-    GoToDefinitionFallback, GoToDefinitionScrollStrategy, MultiCursorModifier, OpenResultsIn,
-    ScrollBeyondLastLine, ScrollbarDiagnostics, SeedQuerySetting, SnippetSortOrder,
+    BreadcrumbsPlacement, CodeLens, CompletionDetailAlignment, CompletionMenuItemKind,
+    CurrentLineHighlight, DelayMs, DiffViewStyle, DocumentColorsRenderMode,
+    DoubleClickInMultibuffer, GitGutterWidth, GoToDefinitionFallback, GoToDefinitionScrollStrategy,
+    MultiCursorModifier, OpenResultsIn, ScrollBeyondLastLine, ScrollbarDiagnostics,
+    SeedQuerySetting, SnippetSortOrder,
 };
 use settings::{RegisterSetting, RelativeLineNumbers, Settings};
 use ui::scrollbars::ShowScrollbar;
@@ -50,6 +51,7 @@ pub struct EditorSettings {
     pub auto_signature_help: bool,
     pub language_detection: bool,
     pub show_signature_help_after_edits: bool,
+    pub show_inspection_widget: bool,
     pub go_to_definition_fallback: GoToDefinitionFallback,
     pub go_to_definition_scroll_strategy: GoToDefinitionScrollStrategy,
     pub lsp_results_location: OpenResultsIn,
@@ -93,6 +95,8 @@ pub struct Toolbar {
     pub quick_actions: bool,
     pub selections_menu: bool,
     pub code_actions: bool,
+    pub breadcrumbs_placement: BreadcrumbsPlacement,
+    pub breadcrumbs_file_path: bool,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -194,6 +198,8 @@ impl Settings for EditorSettings {
                 quick_actions: toolbar.quick_actions.unwrap(),
                 selections_menu: toolbar.selections_menu.unwrap(),
                 code_actions: toolbar.code_actions.unwrap(),
+                breadcrumbs_placement: toolbar.breadcrumbs_placement.unwrap_or_default(),
+                breadcrumbs_file_path: toolbar.breadcrumbs_file_path.unwrap_or(false),
             },
             scrollbar: Scrollbar {
                 show: scrollbar.show.map(ui_scrollbar_settings_from_raw).unwrap(),
@@ -255,6 +261,7 @@ impl Settings for EditorSettings {
             auto_signature_help: editor.auto_signature_help.unwrap(),
             language_detection: editor.language_detection.unwrap(),
             show_signature_help_after_edits: editor.show_signature_help_after_edits.unwrap(),
+            show_inspection_widget: editor.show_inspection_widget.unwrap_or(true),
             go_to_definition_fallback: editor.go_to_definition_fallback.unwrap(),
             go_to_definition_scroll_strategy: editor.go_to_definition_scroll_strategy.unwrap(),
             lsp_results_location: editor.lsp_results_location.unwrap(),

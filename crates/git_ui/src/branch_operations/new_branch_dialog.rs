@@ -9,11 +9,11 @@ use menu::{Cancel, Confirm, SelectNext, SelectPrevious};
 use ui::{Checkbox, TintColor, prelude::*};
 use workspace::ModalView;
 
+use crate::branch_operations::BranchContext;
 use crate::branch_operations::ref_suggestions::{
     HighlightMove, MAX_SUGGESTIONS, RefSuggestion, branch_name_candidates, highlighted_suggestion,
     move_highlight, render_suggestion_list, suggest, suggestion_for_tab,
 };
-use crate::branch_operations::{BranchContext, opaque_elevated_surface};
 use crate::branch_refs::RefTarget;
 
 const HEAD_KEYWORD: &str = "HEAD";
@@ -438,7 +438,6 @@ impl Render for NewBranchDialog {
             .on_action(cx.listener(Self::select_previous_suggestion))
             .on_action(cx.listener(Self::accept_first_suggestion))
             .elevation_3(cx)
-            .bg(opaque_elevated_surface(cx))
             .w(rems(30.))
             .child(
                 div()

@@ -3,7 +3,7 @@ use crate::{
     EditorSettings, ExcerptRange, FormatTarget, MultiBuffer, MultiBufferSnapshot, NavigationData,
     SelectionEffects, ToPoint as _,
     display_map::HighlightKey,
-    editor_settings::SeedQuerySetting,
+    editor_settings::{BreadcrumbsPlacement, SeedQuerySetting},
     persistence::{EditorDb, SerializedEditor},
     scroll::{ScrollAnchor, ScrollOffset},
 };
@@ -1071,23 +1071,33 @@ impl Item for Editor {
     }
 
     fn breadcrumb_location(&self, cx: &App) -> ToolbarItemLocation {
-        if self.breadcrumbs_visible() && self.buffer().read(cx).is_singleton() {
-            ToolbarItemLocation::PrimaryLeft
-        } else {
-            ToolbarItemLocation::Hidden
+        if !self.breadcrumbs_visible() || !self.buffer().read(cx).is_singleton() {
+            return ToolbarItemLocation::Hidden;
+        }
+        match EditorSettings::get_global(cx).toolbar.breadcrumbs_placement {
+            BreadcrumbsPlacement::Top => ToolbarItemLocation::PrimaryLeft,
+            BreadcrumbsPlacement::Bottom => ToolbarItemLocation::Bottom,
         }
     }
 
     // In a non-singleton case, the breadcrumbs are actually shown on sticky file headers of the multibuffer.
     fn breadcrumbs(&self, cx: &App) -> Option<(Vec<HighlightedText>, Option<Font>)> {
-        if self.buffer.read(cx).is_singleton() {
-            let font = theme_settings::ThemeSettings::get_global(cx)
-                .buffer_font
-                .clone();
-            Some((self.breadcrumbs_inner(cx)?, Some(font)))
-        } else {
-            None
+        if !self.buffer.read(cx).is_singleton() {
+            return None;
         }
+        let font = theme_settings::ThemeSettings::get_global(cx)
+            .buffer_font
+            .clone();
+        let hide_file_path = self.breadcrumb_header.is_none()
+            && !EditorSettings::get_global(cx).toolbar.breadcrumbs_file_path;
+        let leading_segments_to_skip = usize::from(hide_file_path);
+        let segments: Vec<HighlightedText> = self
+            .breadcrumbs_inner(cx)
+            .unwrap_or_default()
+            .into_iter()
+            .skip(leading_segments_to_skip)
+            .collect();
+        Some((segments, Some(font)))
     }
 
     fn breadcrumb_prefix(

@@ -23,7 +23,6 @@ use git::repository::{Branch, GitFailure, REMOTE_CANCELLED_BY_USER};
 use git_ui_core::askpass_modal::AskPassModal;
 use gpui::{App, AppContext as _, Context, Entity, SharedString, Task, WeakEntity, Window};
 use project::git_store::{Repository, RepositorySnapshot};
-use theme::ActiveTheme as _;
 use util::ResultExt as _;
 use workspace::{ModalView, Workspace, notifications::NotificationId};
 
@@ -37,10 +36,6 @@ use crate::merge_tool::conflict_resolution::{
 
 const MAX_QUOTED_REF_NAME_CHARS: usize = 40;
 const ELLIPSIS: char = '\u{2026}';
-
-pub fn opaque_elevated_surface(cx: &App) -> gpui::Hsla {
-    cx.theme().colors().elevated_surface_background.alpha(1.0)
-}
 
 #[derive(Clone)]
 pub struct BranchContext {

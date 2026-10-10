@@ -15,6 +15,7 @@ test = false
 
 [dependencies]
 gpui.workspace = true
+settings.workspace = true
 ui.workspace = true
 workspace.workspace = true
 

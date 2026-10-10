@@ -59,6 +59,16 @@ pub enum ToolbarItemLocation {
     PrimaryLeft,
     PrimaryRight,
     Secondary,
+    Bottom,
+}
+
+impl ToolbarItemLocation {
+    fn is_in_top_toolbar(self) -> bool {
+        match self {
+            Self::PrimaryLeft | Self::PrimaryRight | Self::Secondary => true,
+            Self::Hidden | Self::Bottom => false,
+        }
+    }
 }
 
 pub struct Toolbar {
@@ -69,10 +79,10 @@ pub struct Toolbar {
 }
 
 impl Toolbar {
-    fn has_any_visible_items(&self) -> bool {
+    fn has_any_top_items(&self) -> bool {
         self.items
             .iter()
-            .any(|(_item, location)| *location != ToolbarItemLocation::Hidden)
+            .any(|(_item, location)| location.is_in_top_toolbar())
     }
 
     fn left_items(&self) -> impl Iterator<Item = &dyn ToolbarItemViewHandle> {
@@ -104,11 +114,19 @@ impl Toolbar {
             }
         })
     }
+
+    pub fn bottom_item_views(&self) -> Vec<AnyView> {
+        self.items
+            .iter()
+            .filter(|(_item, location)| *location == ToolbarItemLocation::Bottom)
+            .map(|(item, _location)| item.to_any())
+            .collect()
+    }
 }
 
 impl Render for Toolbar {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        if !self.has_any_visible_items() {
+        if !self.has_any_top_items() {
             return div();
         }
 
@@ -125,6 +143,7 @@ impl Render for Toolbar {
         let button_height = ui::chrome_button_height(region, ButtonSize::Default, cx);
 
         v_flex()
+            .debug_selector(|| "pane_toolbar".into())
             .group("toolbar")
             .relative()
             .when_some(toolbar_height, |this, height| {
