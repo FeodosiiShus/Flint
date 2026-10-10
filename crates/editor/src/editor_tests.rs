@@ -48,6 +48,7 @@ use project::{
     project_settings::LspSettings,
     trusted_worktrees::{PathTrust, TrustedWorktrees},
 };
+use rpc::proto::PeerId;
 use serde_json::{self, json};
 use settings::{
     AllLanguageSettingsContent, DelayMs, EditorSettingsContent, GlobalLspSettingsContent,

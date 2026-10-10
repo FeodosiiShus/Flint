@@ -97,6 +97,7 @@ message Envelope {
     GetUsers get_users = 92;
     FuzzySearchUsers fuzzy_search_users = 93;
     UsersResponse users_response = 94;
+    UpdateDiffBases update_diff_bases = 104;
 
     OnTypeFormatting on_type_formatting = 105;
     OnTypeFormattingResponse on_type_formatting_response = 106;

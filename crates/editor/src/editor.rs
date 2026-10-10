@@ -209,6 +209,7 @@ use project::{
 use rand::seq::SliceRandom;
 use regex::Regex;
 use rpc::{ErrorCode, ErrorExt};
+use scroll::{Autoscroll, ScrollAnchor, ScrollManager, SharedScrollAnchor};
 use selections_collection::{MutableSelectionsCollection, SelectionsCollection};
 use serde::{Deserialize, Serialize};
 use settings::{

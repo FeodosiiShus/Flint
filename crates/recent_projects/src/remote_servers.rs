@@ -1609,6 +1609,86 @@ impl RemoteServerProjects {
             )
     }
 
+    fn render_view_options(
+        &mut self,
+        options: ViewServerOptionsState,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let last_entry = options.entries().last().unwrap();
+
+        let mut view = Navigable::new(
+            div()
+                .track_focus(&self.focus_handle(cx))
+                .size_full()
+                .child(match &options {
+                    ViewServerOptionsState::Ssh { connection, .. } => SshConnectionHeader {
+                        connection_string: connection.host.to_string().into(),
+                        paths: Default::default(),
+                        nickname: connection.nickname.clone().map(|s| s.into()),
+                        is_wsl: false,
+                        is_devcontainer: false,
+                    }
+                    .render(window, cx)
+                    .into_any_element(),
+                })
+                .child(
+                    v_flex()
+                        .pb_1()
+                        .child(ListSeparator)
+                        .map(|this| match &options {
+                            ViewServerOptionsState::Ssh {
+                                connection,
+                                entries,
+                                server_index,
+                            } => this.child(self.render_edit_ssh(
+                                connection,
+                                *server_index,
+                                entries,
+                                window,
+                                cx,
+                            )),
+                        })
+                        .child(ListSeparator)
+                        .child({
+                            div()
+                                .id("ssh-options-copy-server-address")
+                                .track_focus(&last_entry.focus_handle)
+                                .on_action(cx.listener(|this, _: &menu::Confirm, window, cx| {
+                                    this.mode = Mode::default_mode(&this.ssh_config_servers, cx);
+                                    cx.focus_self(window);
+                                    cx.notify();
+                                }))
+                                .child(
+                                    ListItem::new("go-back")
+                                        .toggle_state(
+                                            last_entry.focus_handle.contains_focused(window, cx),
+                                        )
+                                        .inset(true)
+                                        .spacing(ui::ListItemSpacing::Sparse)
+                                        .start_slot(
+                                            Icon::new(IconName::ArrowLeft).color(Color::Muted),
+                                        )
+                                        .child(Label::new("Go Back"))
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            this.mode =
+                                                Mode::default_mode(&this.ssh_config_servers, cx);
+                                            cx.focus_self(window);
+                                            cx.notify()
+                                        })),
+                                )
+                        }),
+                )
+                .into_any_element(),
+        );
+
+        for entry in options.entries() {
+            view = view.entry(entry.clone());
+        }
+
+        view.render(window, cx).into_any_element()
+    }
+
     fn render_edit_ssh(
         &self,
         connection: &SshConnectionOptions,

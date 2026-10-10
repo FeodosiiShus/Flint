@@ -6,6 +6,7 @@ use crate::RemoteConnectionOptions;
 /// This mirrors workspace persistence identity semantics rather than full
 /// `RemoteConnectionOptions` equality, so runtime-only fields like SSH
 /// nicknames do not affect matching.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum RemoteConnectionIdentity {
     Ssh {
         host: String,

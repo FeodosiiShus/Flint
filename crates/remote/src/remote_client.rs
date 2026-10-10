@@ -1467,6 +1467,13 @@ impl From<SshConnectionOptions> for RemoteConnectionOptions {
     }
 }
 
+#[cfg(any(test, feature = "test-support"))]
+impl From<crate::transport::mock::MockConnectionOptions> for RemoteConnectionOptions {
+    fn from(opts: crate::transport::mock::MockConnectionOptions) -> Self {
+        RemoteConnectionOptions::Mock(opts)
+    }
+}
+
 #[async_trait(?Send)]
 pub trait RemoteConnection: Send + Sync {
     fn start_proxy(

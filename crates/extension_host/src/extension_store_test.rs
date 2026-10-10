@@ -19,13 +19,14 @@ use extension::{
 };
 use fs::{FakeFs, Fs, RemoveOptions};
 use futures::StreamExt;
-use gpui::{AppContext as _, Entity, EntityId, TaskExt, TestAppContext};
+use gpui::{AppContext as _, BackgroundExecutor, Entity, EntityId, TaskExt, TestAppContext};
 use http_client::FakeHttpClient;
 use language::{LanguageConfig, LanguageMatcher, LanguageName, LanguageRegistry, QueryFiles};
 use language_extension::LspAccess;
 use lsp::LanguageServerName;
 use node_runtime::NodeRuntime;
 use project::Project;
+use remote::{ConnectionState, RemoteClient, RemoteClientEvent, RemoteConnectionOptions};
 use serde_json::json;
 use settings::SettingsStore;
 use std::{

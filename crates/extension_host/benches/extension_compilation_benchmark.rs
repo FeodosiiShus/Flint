@@ -29,6 +29,7 @@ fn extension_benchmarks(c: &mut Criterion) {
         eprintln!("skipping extension load benchmark: extensions/test-extension cannot build");
         return;
     };
+    let manifest = Arc::new(manifest);
     let extensions_dir = TempTree::new(json!({
         "installed": {},
         "work": {}

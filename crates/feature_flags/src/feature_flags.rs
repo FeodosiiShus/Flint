@@ -4,6 +4,8 @@ extern crate self as feature_flags;
 
 mod store;
 
+pub use store::*;
+
 use std::cell::RefCell;
 use std::rc::Rc;
 

@@ -283,7 +283,7 @@ pub struct SettingsContent {
     /// Default: 5
     pub modeline_lines: Option<usize>,
 
-    #[serde(default, skip_serializing)]
+    #[serde(skip_serializing)]
     pub feature_flags: Option<serde_json::Value>,
 }
 
