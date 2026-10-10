@@ -1,5 +1,4 @@
 use anyhow::Context as _;
-use anyhow::Result;
 use async_trait::async_trait;
 use collections::HashMap;
 use futures::AsyncBufReadExt;

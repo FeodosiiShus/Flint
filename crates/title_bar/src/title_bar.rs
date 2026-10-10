@@ -871,10 +871,14 @@ mod tests {
     const PROJECT_ROOT: &str = "/flint";
     const PROJECT_NAME: &str = "flint";
 
-    async fn open_project_title_bar(
-        cx: &mut TestAppContext,
+    async fn open_project_title_bar<'a>(
+        cx: &'a mut TestAppContext,
         checked_out_branch: Option<&'static str>,
-    ) -> (Entity<Workspace>, Entity<TitleBar>, &mut VisualTestContext) {
+    ) -> (
+        Entity<Workspace>,
+        Entity<TitleBar>,
+        &'a mut VisualTestContext,
+    ) {
         let app_state = cx.update(|cx| {
             let app_state = AppState::test(cx);
             PlatformTitleBar::init(cx);
