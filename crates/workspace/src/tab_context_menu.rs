@@ -753,7 +753,7 @@ impl TabMenuTarget {
         update: impl FnOnce(&mut Pane, usize, &mut Window, &mut Context<Pane>),
     ) {
         self.update_clicked_item(window, cx, |pane, item_id, window, cx| {
-            if let Some(index) = pane.items().position(|item| item.item_id() == item_id) {
+            if let Some(index) = pane.index_for_item_id(item_id) {
                 update(pane, index, window, cx);
             }
         });
