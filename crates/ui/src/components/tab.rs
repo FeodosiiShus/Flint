@@ -1,6 +1,6 @@
 use std::cmp::Ordering;
 
-use gpui::{AnyElement, Hsla, IntoElement, Rgba, Stateful};
+use gpui::{AnyElement, Hsla, IntoElement, Rgba, Stateful, transparent_black};
 use smallvec::SmallVec;
 use theme::{ThemeColors, UiDensity};
 
@@ -16,6 +16,8 @@ const ISLAND_TAB_CLOSE_SLOT_SIZE: Pixels = px(16.);
 const ISLAND_TAB_SLOT_GAP: Pixels = px(2.);
 const ISLAND_TAB_CONTENT_START_PADDING: Pixels = px(8.);
 const ISLAND_TAB_MINIMUM_CONTENT_WIDTH: Pixels = px(50.);
+const ISLAND_TAB_FILE_COLOR_ALPHA: f32 = 0.4;
+const ISLAND_TAB_FILE_COLOR_ARC_SHRINK: Pixels = px(2.);
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct IslandTabMetrics {
@@ -29,6 +31,8 @@ pub struct IslandTabMetrics {
     pub content_end_padding: Pixels,
     pub slot_gap: Pixels,
     pub minimum_content_width: Pixels,
+    pub label_font_size_offset: Pixels,
+    pub file_color_inset: Pixels,
 }
 
 impl IslandTabMetrics {
@@ -47,6 +51,8 @@ impl IslandTabMetrics {
             content_end_padding: pick(4., 2.),
             slot_gap: ISLAND_TAB_SLOT_GAP,
             minimum_content_width: ISLAND_TAB_MINIMUM_CONTENT_WIDTH,
+            label_font_size_offset: pick(0., -1.),
+            file_color_inset: pick(3., 2.),
         }
     }
 
@@ -56,6 +62,25 @@ impl IslandTabMetrics {
 
     pub fn first_pill_offset(&self) -> Pixels {
         self.first_tab_offset + self.pill_inset
+    }
+
+    pub fn file_color_inner_radius(&self) -> Pixels {
+        (self.pill_radius * 2. - self.file_color_inset - ISLAND_TAB_FILE_COLOR_ARC_SHRINK)
+            .max(Pixels::ZERO)
+            * 0.5
+    }
+}
+
+pub fn island_tab_label_size(
+    density: UiDensity,
+    default_size: Rems,
+    rem_size: Pixels,
+) -> LabelSize {
+    let offset = IslandTabMetrics::for_density(density).label_font_size_offset;
+    if offset == Pixels::ZERO {
+        LabelSize::Default
+    } else {
+        LabelSize::Custom(rems(default_size.0 + offset / rem_size))
     }
 }
 
@@ -85,6 +110,71 @@ pub fn island_tab_hover_background(
     colors: &ThemeColors,
 ) -> Option<Hsla> {
     (!selected || !pane_focused).then_some(colors.ghost_element_hover)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct IslandTabFills {
+    pub pill: Option<Hsla>,
+    pub hover: Option<Hsla>,
+    pub file_color_inner: Option<Hsla>,
+}
+
+pub fn island_tab_fills(
+    selected: bool,
+    pane_focused: bool,
+    file_color: Option<Hsla>,
+    colors: &ThemeColors,
+) -> IslandTabFills {
+    let hover = island_tab_hover_background(selected, pane_focused, colors);
+    match (selected, file_color) {
+        (true, Some(file_color)) => IslandTabFills {
+            pill: Some(colors.editor_background),
+            hover: None,
+            file_color_inner: Some(if pane_focused {
+                file_color
+            } else {
+                file_color.alpha(ISLAND_TAB_FILE_COLOR_ALPHA)
+            }),
+        },
+        (true, None) => IslandTabFills {
+            pill: Some(island_tab_pill_colors(pane_focused, colors).background),
+            hover,
+            file_color_inner: None,
+        },
+        (false, Some(file_color)) => {
+            let fill = file_color.alpha(ISLAND_TAB_FILE_COLOR_ALPHA);
+            IslandTabFills {
+                pill: Some(fill),
+                hover: hover.map(|hover| alpha_blending(hover, fill)),
+                file_color_inner: None,
+            }
+        }
+        (false, None) => IslandTabFills {
+            pill: None,
+            hover,
+            file_color_inner: None,
+        },
+    }
+}
+
+fn alpha_blending(foreground: Hsla, background: Hsla) -> Hsla {
+    let foreground = Rgba::from(foreground);
+    let background = Rgba::from(background);
+    let alpha = foreground.a + background.a * (1. - foreground.a);
+    if alpha <= 0. {
+        return transparent_black();
+    }
+    let blend_channel = |foreground_channel: f32, background_channel: f32| {
+        (foreground_channel * foreground.a
+            + background_channel * background.a * (1. - foreground.a))
+            / alpha
+    };
+    Hsla::from(Rgba {
+        r: blend_channel(foreground.r, background.r),
+        g: blend_channel(foreground.g, background.g),
+        b: blend_channel(foreground.b, background.b),
+        a: alpha,
+    })
 }
 
 pub fn island_tab_label_color(selected: bool, hovered: bool, colors: &ThemeColors) -> Hsla {
@@ -154,6 +244,7 @@ pub struct Tab {
     selected: bool,
     focused: bool,
     islands: bool,
+    file_color: Option<Hsla>,
     position: TabPosition,
     close_side: TabCloseSide,
     start_slot: Option<AnyElement>,
@@ -171,6 +262,7 @@ impl Tab {
             selected: false,
             focused: false,
             islands: false,
+            file_color: None,
             position: TabPosition::First,
             close_side: TabCloseSide::End,
             start_slot: None,
@@ -181,6 +273,11 @@ impl Tab {
 
     pub fn focused(mut self, focused: bool) -> Self {
         self.focused = focused;
+        self
+    }
+
+    pub fn file_color(mut self, file_color: Option<Hsla>) -> Self {
+        self.file_color = file_color;
         self
     }
 
@@ -272,8 +369,25 @@ impl RenderOnce for Tab {
             let colors = cx.theme().colors();
             let metrics = IslandTabMetrics::for_density(current_ui_density(cx));
             let pill = island_tab_pill_colors(self.focused, colors);
-            let hover_background = island_tab_hover_background(self.selected, self.focused, colors);
+            let fills = island_tab_fills(self.selected, self.focused, self.file_color, colors);
             let transparent_border = colors.border_transparent;
+            let border = if self.selected {
+                pill.border
+            } else {
+                transparent_border
+            };
+            let file_color_offset = metrics.file_color_inset - TAB_BORDER_WIDTH;
+            let file_color_inner = fills.file_color_inner.map(|file_color| {
+                div()
+                    .debug_selector(|| "TAB_FILE_COLOR".into())
+                    .absolute()
+                    .top(file_color_offset)
+                    .left(file_color_offset)
+                    .right(file_color_offset)
+                    .bottom(file_color_offset)
+                    .rounded(metrics.file_color_inner_radius())
+                    .bg(file_color)
+            });
             let container_height = Tab::container_height(cx);
             let pill_height = metrics.pill_height.min(container_height);
             let first_tab_offset = if self.position == TabPosition::First {
@@ -311,25 +425,15 @@ impl RenderOnce for Tab {
                 .text_color(text_color)
                 .rounded(metrics.pill_radius)
                 .border_1()
+                .border_color(border)
+                .children(file_color_inner)
                 .children(self.start_slot)
                 .children(leading_slot)
                 .children(self.children)
                 .children(trailing_slot)
-                .map(|this| {
-                    if self.selected {
-                        this.border_color(pill.border)
-                            .bg(pill.background)
-                            .when_some(hover_background, |this, hover_background| {
-                                this.hover(move |style| style.bg(hover_background))
-                            })
-                    } else {
-                        this.border_color(transparent_border).when_some(
-                            hover_background,
-                            |this, hover_background| {
-                                this.hover(move |style| style.bg(hover_background))
-                            },
-                        )
-                    }
+                .when_some(fills.pill, |this, pill_background| this.bg(pill_background))
+                .when_some(fills.hover, |this, hover_background| {
+                    this.hover(move |style| style.bg(hover_background))
                 });
 
             return self
@@ -682,5 +786,166 @@ mod tests {
                 "tab {name} must not paint a divider"
             );
         }
+    }
+
+    struct IslandFileColorTab {
+        selected: bool,
+    }
+
+    impl Render for IslandFileColorTab {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            h_flex().child(
+                Tab::new("file_color")
+                    .islands(true)
+                    .focused(true)
+                    .toggle_state(self.selected)
+                    .file_color(Some(gpui::green()))
+                    .position(TabPosition::Middle(Ordering::Equal))
+                    .child(div().w(px(LABEL_WIDTH))),
+            )
+        }
+    }
+
+    fn init_island_tab_test(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            let settings_store = settings::SettingsStore::test(cx);
+            cx.set_global(settings_store);
+            theme_settings::init(theme::LoadThemes::JustBase, cx);
+        });
+    }
+
+    #[test]
+    fn island_tab_label_is_one_pixel_smaller_only_when_compact() {
+        let default_size = rems_from_px(14_f32);
+        let rem_size = px(15.);
+        assert_eq!(
+            island_tab_label_size(UiDensity::Default, default_size, rem_size),
+            LabelSize::Default
+        );
+        assert_eq!(
+            island_tab_label_size(UiDensity::Comfortable, default_size, rem_size),
+            LabelSize::Default
+        );
+        let LabelSize::Custom(compact) =
+            island_tab_label_size(UiDensity::Compact, default_size, rem_size)
+        else {
+            panic!("compact density must shrink the label");
+        };
+        let shrink =
+            f32::from(default_size.to_pixels(rem_size)) - f32::from(compact.to_pixels(rem_size));
+        assert!(
+            (shrink - 1.).abs() < 0.001,
+            "compact label must be exactly 1 px smaller, got {shrink}"
+        );
+    }
+
+    #[test]
+    fn island_tab_file_color_inset_and_inner_radius_follow_density() {
+        let default = IslandTabMetrics::for_density(UiDensity::Default);
+        let compact = IslandTabMetrics::for_density(UiDensity::Compact);
+        assert_eq!(default.file_color_inset, px(3.));
+        assert_eq!(compact.file_color_inset, px(2.));
+        assert_eq!(default.file_color_inner_radius(), px(3.5));
+        assert_eq!(compact.file_color_inner_radius(), px(2.));
+    }
+
+    #[test]
+    fn island_tab_selected_file_colored_tab_fills_the_inner_pill_with_the_file_color() {
+        let colors = ThemeColors::dark();
+        let file_color = Hsla::from(rgb(0x1C261C));
+        let focused = island_tab_fills(true, true, Some(file_color), &colors);
+        assert_eq!(focused.pill, Some(colors.editor_background));
+        assert_eq!(focused.file_color_inner, Some(file_color));
+        assert_eq!(focused.hover, None);
+        let unfocused = island_tab_fills(true, false, Some(file_color), &colors);
+        assert_eq!(unfocused.pill, Some(colors.editor_background));
+        assert_eq!(unfocused.file_color_inner, Some(file_color.alpha(0.4)));
+        assert_eq!(unfocused.hover, None);
+    }
+
+    #[test]
+    fn island_tab_unselected_file_colored_tab_is_tinted_at_forty_percent() {
+        let colors = ThemeColors::dark();
+        let file_color = Hsla::from(rgb(0x1C261C));
+        let tinted = file_color.alpha(0.4);
+        let fills = island_tab_fills(false, true, Some(file_color), &colors);
+        assert_eq!(fills.pill, Some(tinted));
+        assert_eq!(fills.file_color_inner, None);
+        let hover = fills.hover.expect("an unselected tab has a hover fill");
+        assert_eq!(hover, alpha_blending(colors.ghost_element_hover, tinted));
+        assert!(
+            hover.a >= tinted.a,
+            "the hover fill is composed over the tint, not instead of it"
+        );
+    }
+
+    #[test]
+    fn island_tab_without_file_color_keeps_the_plain_fills() {
+        for colors in [ThemeColors::dark(), ThemeColors::light()] {
+            for pane_focused in [true, false] {
+                let selected = island_tab_fills(true, pane_focused, None, &colors);
+                assert_eq!(
+                    selected.pill,
+                    Some(island_tab_pill_colors(pane_focused, &colors).background)
+                );
+                assert_eq!(
+                    selected.hover,
+                    island_tab_hover_background(true, pane_focused, &colors)
+                );
+                assert_eq!(selected.file_color_inner, None);
+                let unselected = island_tab_fills(false, pane_focused, None, &colors);
+                assert_eq!(unselected.pill, None);
+                assert_eq!(unselected.hover, Some(colors.ghost_element_hover));
+                assert_eq!(unselected.file_color_inner, None);
+            }
+        }
+    }
+
+    #[test]
+    fn island_tab_alpha_blending_matches_intellij_color_util() {
+        let white = Hsla::from(rgb(0xFFFFFF));
+        let black = Hsla::from(rgb(0x000000));
+        let blended = alpha_blending(white.alpha(0.5), black);
+        assert_eq!(blended.a, 1.);
+        for channel in eight_bit(blended) {
+            assert!(
+                channel.abs_diff(0x80) <= EIGHT_BIT_TOLERANCE,
+                "half white over black must be mid grey, got {channel}"
+            );
+        }
+        let translucent = alpha_blending(white.alpha(0.5), black.alpha(0.5));
+        assert!((translucent.a - 0.75).abs() < 0.001);
+        let opaque = alpha_blending(white, black.alpha(0.5));
+        assert_eq!(opaque.a, 1.);
+        assert_eq!(eight_bit(opaque), [0xFF, 0xFF, 0xFF]);
+    }
+
+    #[gpui::test]
+    fn island_tab_selected_file_color_is_inset_inside_the_pill(cx: &mut TestAppContext) {
+        init_island_tab_test(cx);
+        let (_, cx) = cx.add_window_view(|_, _| IslandFileColorTab { selected: true });
+        let tab = cx.debug_bounds("TAB-file_color").expect("tab is painted");
+        let inner = cx
+            .debug_bounds("TAB_FILE_COLOR")
+            .expect("the selected file-colored tab paints an inner fill");
+        let metrics = IslandTabMetrics::for_density(UiDensity::Default);
+        let pill_width = tab.size.width - (metrics.pill_inset * 2. - TAB_BORDER_WIDTH);
+        assert_eq!(
+            inner.origin.x - tab.origin.x,
+            metrics.pill_inset + metrics.file_color_inset
+        );
+        assert_eq!(inner.size.width, pill_width - metrics.file_color_inset * 2.);
+        assert_eq!(
+            inner.size.height,
+            metrics.pill_height - metrics.file_color_inset * 2.
+        );
+    }
+
+    #[gpui::test]
+    fn island_tab_unselected_file_color_paints_no_inner_fill(cx: &mut TestAppContext) {
+        init_island_tab_test(cx);
+        let (_, cx) = cx.add_window_view(|_, _| IslandFileColorTab { selected: false });
+        assert!(cx.debug_bounds("TAB-file_color").is_some());
+        assert!(cx.debug_bounds("TAB_FILE_COLOR").is_none());
     }
 }

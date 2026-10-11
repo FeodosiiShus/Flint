@@ -1835,7 +1835,7 @@ mod tests {
                 path: rel_path("root1/something"),
             })),
             &DefaultLanguageSettings {
-                preferred_line_length: 80,
+                preferred_line_length: 120,
                 tab_size: 5.try_into().unwrap(),
             }
         );
@@ -1855,7 +1855,7 @@ mod tests {
                 path: rel_path("root2/something"),
             })),
             &DefaultLanguageSettings {
-                preferred_line_length: 80,
+                preferred_line_length: 120,
                 tab_size: 9.try_into().unwrap(),
             }
         );

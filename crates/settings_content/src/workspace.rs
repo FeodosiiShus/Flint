@@ -188,6 +188,7 @@ pub struct ItemSettingsContent {
     ///
     /// Default: false
     pub file_icons: Option<bool>,
+    pub file_colors: Option<bool>,
     /// What to do after closing the current tab.
     ///
     /// Default: history

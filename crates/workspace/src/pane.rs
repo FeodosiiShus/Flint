@@ -22,9 +22,9 @@ use futures::{StreamExt, stream::FuturesUnordered};
 use gpui::{
     Action, Anchor, AnyElement, App, AsyncWindowContext, Bounds, ClickEvent, Context, Div,
     DragMoveEvent, Entity, EntityId, EventEmitter, ExternalPaths, FocusHandle, FocusOutEvent,
-    Focusable, KeyContext, MouseButton, NavigationDirection, Pixels, Point, PromptLevel, Render,
-    ScrollHandle, Subscription, Task, TaskExt, WeakEntity, WeakFocusHandle, Window, actions,
-    anchored, deferred, prelude::*,
+    Focusable, Hsla, KeyContext, MouseButton, NavigationDirection, Pixels, Point, PromptLevel,
+    Render, ScrollHandle, Subscription, Task, TaskExt, WeakEntity, WeakFocusHandle, Window,
+    actions, anchored, deferred, prelude::*,
 };
 use itertools::Itertools;
 use language::{Capability, DiagnosticSeverity};
@@ -54,7 +54,7 @@ use ui::{
 };
 use util::{
     ResultExt, debug_panic, markdown::MarkdownInlineCode, maybe, paths::PathStyle,
-    serde::default_true, truncate_and_remove_front,
+    rel_path::RelPath, serde::default_true, truncate_and_remove_front,
 };
 
 /// A selected entry in e.g. project panel.
@@ -2849,6 +2849,8 @@ impl Pane {
                 Color::Custom(ui::island_tab_label_color(is_active, true, colors)),
             )
         };
+        let label_size = islands.then(|| island_tab_label_size(window, cx));
+        let file_color = island_tab_file_color(item, cx);
 
         let tab_icon_size =
             if islands && ui::chrome_icon_scale(ui::ChromeRegion::TabBar, cx).is_none() {
@@ -2915,6 +2917,7 @@ impl Pane {
                     } else {
                         unhovered_label_color
                     }),
+                    label_size,
                 },
                 window,
                 cx,
@@ -3113,6 +3116,7 @@ impl Pane {
             .toggle_state(is_active)
             .focused(pane_focused)
             .islands(islands)
+            .file_color(file_color)
             .on_click(cx.listener({
                 let item_handle = item.boxed_clone();
                 move |pane: &mut Self, event: &ClickEvent, window, cx| {
@@ -4904,6 +4908,40 @@ pub fn render_item_indicator(item: Box<dyn ItemHandle>, cx: &App) -> Option<Indi
     item_indicator_color(item.as_ref(), cx).map(|color| Indicator::dot().color(color))
 }
 
+const TEST_FILE_NAME_MARKERS: [&str; 2] = ["spec", "test"];
+const TEST_DIRECTORY_NAME: &str = "__tests__";
+
+fn is_test_file_path(path: &RelPath) -> bool {
+    let mut components = path.components();
+    let Some(file_name) = components.next_back() else {
+        return false;
+    };
+    let marked_file_name = file_name.rsplit_once('.').is_some_and(|(stem, _)| {
+        stem.split('.')
+            .skip(1)
+            .any(|segment| TEST_FILE_NAME_MARKERS.contains(&segment))
+    });
+    marked_file_name || components.any(|directory| directory == TEST_DIRECTORY_NAME)
+}
+
+fn island_tab_file_color(item: &dyn ItemHandle, cx: &App) -> Option<Hsla> {
+    if !ItemSettings::get_global(cx).file_colors
+        || item.buffer_kind(cx) == ItemBufferKind::Multibuffer
+    {
+        return None;
+    }
+    let project_path = item.project_path(cx)?;
+    is_test_file_path(&project_path.path).then(|| cx.theme().colors().tab_test_file_background)
+}
+
+fn island_tab_label_size(window: &Window, cx: &App) -> LabelSize {
+    ui::island_tab_label_size(
+        ThemeSettings::get_global(cx).ui_density,
+        TextSize::Default.rems(cx),
+        window.rem_size(),
+    )
+}
+
 impl Render for DraggedTab {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let ui_font = ThemeSettings::get_global(cx).ui_font.clone();
@@ -4924,6 +4962,7 @@ impl Render for DraggedTab {
                 max_title_len: None,
                 truncate_title_middle: false,
                 label_color,
+                label_size: islands.then(|| island_tab_label_size(window, cx)),
             },
             window,
             cx,
@@ -4940,6 +4979,7 @@ impl Render for DraggedTab {
             .toggle_state(self.is_active)
             .focused(true)
             .islands(islands)
+            .file_color(island_tab_file_color(self.item.as_ref(), cx))
             .child(
                 h_flex()
                     .gap(ISLAND_TAB_ICON_LABEL_GAP)
@@ -4968,6 +5008,86 @@ mod tests {
     use settings::SettingsStore;
     use theme::LoadThemes;
     use util::TryFutureExt;
+
+    #[test]
+    fn island_tab_test_file_rule_matches_spec_and_test_before_the_last_extension() {
+        for path in [
+            "a.spec.ts",
+            "a.e2e.test.tsx",
+            "e2e/get-jwt.spec.ts",
+            "src/a.test.js",
+            "a.spec.snap.ts",
+        ] {
+            assert!(
+                is_test_file_path(util::rel_path::rel_path(path)),
+                "{path} must count as a test file"
+            );
+        }
+    }
+
+    #[test]
+    fn island_tab_test_file_rule_rejects_names_without_the_marker_before_the_last_extension() {
+        for path in [
+            "vitest.config.ts",
+            "test.ts",
+            "spec.ts",
+            "a.spec",
+            "a.test",
+            "latest.ts",
+            "a.specs.ts",
+            "a-test.ts",
+            "tests/a.ts",
+            "src/__tests__x/a.ts",
+        ] {
+            assert!(
+                !is_test_file_path(util::rel_path::rel_path(path)),
+                "{path} must not count as a test file"
+            );
+        }
+    }
+
+    #[test]
+    fn island_tab_test_file_rule_matches_any_file_under_a_tests_directory() {
+        for path in ["__tests__/a.ts", "src/__tests__/deep/b.tsx"] {
+            assert!(
+                is_test_file_path(util::rel_path::rel_path(path)),
+                "{path} must count as a test file"
+            );
+        }
+    }
+
+    #[gpui::test]
+    fn island_tab_file_color_follows_the_setting_and_the_project_path(cx: &mut TestAppContext) {
+        init_test(cx);
+        let spec_item = cx.new(|cx| {
+            TestItem::new(cx).with_project_items(&[TestProjectItem::new(
+                1,
+                "e2e/get-jwt.spec.ts",
+                cx,
+            )])
+        });
+        let plain_item = cx.new(|cx| {
+            TestItem::new(cx).with_project_items(&[TestProjectItem::new(2, "src/get-jwt.ts", cx)])
+        });
+        let pathless_item = cx.new(TestItem::new);
+        cx.update(|cx| {
+            let test_file_background = cx.theme().colors().tab_test_file_background;
+            assert_eq!(
+                island_tab_file_color(&spec_item, cx),
+                Some(test_file_background)
+            );
+            assert_eq!(island_tab_file_color(&plain_item, cx), None);
+            assert_eq!(island_tab_file_color(&pathless_item, cx), None);
+        });
+        cx.update_global(|store: &mut SettingsStore, cx| {
+            store.update_user_settings(cx, |settings| {
+                settings.tabs.get_or_insert_default().file_colors = Some(false);
+            });
+        });
+        cx.update(|cx| {
+            assert_eq!(island_tab_file_color(&spec_item, cx), None);
+        });
+    }
 
     // drop_call_count is a Cell here because `handle_drop` takes &self, not &mut self.
     struct CustomDropHandlingItem {

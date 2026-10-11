@@ -884,11 +884,8 @@ mod default_look_tests {
             editor_invisible,
             editor_wrap_guide,
             editor_active_wrap_guide,
-            editor_indent_guide,
-            editor_indent_guide_active,
             editor_document_highlight_read_background,
             editor_document_highlight_write_background,
-            editor_document_highlight_bracket_background,
             editor_diff_hunk_added_background,
             editor_diff_hunk_added_hollow_background,
             editor_diff_hunk_added_hollow_border,
@@ -1021,17 +1018,15 @@ mod default_look_tests {
             "editor_code_lens_foreground"
         );
 
+        let mut expected_status = plain.status().clone();
+        expected_status.hint_background = effective.status().hint_background;
         assert!(
-            effective.status() == plain.status(),
-            "status colours must come from Eva"
+            effective.status() == &expected_status,
+            "status colours other than hint.background must come from Eva"
         );
         assert!(
             effective.players() == plain.players(),
             "player colours must come from Eva"
-        );
-        assert!(
-            effective.syntax() == plain.syntax(),
-            "syntax theme must come from Eva"
         );
         for capture_name in ["keyword", "string", "function", "comment"] {
             let effective_style = effective.syntax().style_for_name(capture_name);

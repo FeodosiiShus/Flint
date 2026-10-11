@@ -1,10 +1,12 @@
-mod gutter_geometry;
+pub(crate) mod gutter_geometry;
 mod header;
+pub(crate) mod inlay_hint_pill;
 mod inspection_widget;
 mod mouse;
 
 use gutter_geometry::{
-    VcsMarkerPlacement, gutter_separator_bounds, left_edge_strip_width, line_number_font_size,
+    VcsMarkerPlacement, crease_toggle_x, gutter_button_x, gutter_separator_bounds,
+    left_edge_strip_width, line_number_font_size,
 };
 #[cfg(test)]
 pub(crate) use header::StickyHeader;
@@ -1559,13 +1561,11 @@ impl EditorElement {
 
                 let display_row = DisplayRow(start_row.0 + ix as u32);
                 let position = point(
-                    gutter_dimensions.width - gutter_dimensions.right_padding,
+                    crease_toggle_x(gutter_dimensions.fold_area_x, crease_toggle_size.width),
                     line_height * (display_row.as_f64() - scroll_position.y) as f32,
                 );
-                let centering_offset = point(
-                    (gutter_dimensions.fold_area_width() - crease_toggle_size.width) / 2.,
-                    (line_height - crease_toggle_size.height) / 2.,
-                );
+                let centering_offset =
+                    point(Pixels::ZERO, (line_height - crease_toggle_size.height) / 2.);
                 let origin = gutter_hitbox.origin + position + centering_offset;
                 crease_toggle.prepaint_as_root(origin, available_space, window, cx);
             }
@@ -2456,7 +2456,7 @@ impl EditorElement {
                     && row_info
                         .buffer_row
                         .is_some_and(|row| (row + 1).ilog10() + 1 == max_line_number_length)
-                    || gutter_dimensions.right_padding == px(0.);
+                    || gutter_dimensions.line_numbers_width() <= Pixels::ZERO;
 
                 let width = if is_wide {
                     available_width - px(5.)
@@ -5087,8 +5087,7 @@ impl EditorElement {
         VcsMarkerPlacement::new(
             EditorSettings::get_global(cx).gutter.git_gutter_width,
             line_height,
-            gutter_dimensions.width,
-            gutter_dimensions.right_padding,
+            gutter_dimensions.vcs_marker_x,
         )
     }
 
@@ -6467,10 +6466,7 @@ impl Gutter<'_> {
             AvailableSpace::Definite(self.line_height),
         );
         let indicator_size = button.layout_as_root(available_space, window, cx);
-        let git_gutter_width = EditorElement::gutter_strip_width(self.line_height, cx)
-            + self.dimensions.git_blame_entries_width.unwrap_or_default();
-
-        let x = git_gutter_width + px(2.);
+        let x = gutter_button_x(self.dimensions.icon_area_x, indicator_size.width);
 
         let mut y = Pixels::from(
             (row.as_f64() - self.scroll_position.y) * ScrollPixelOffset::from(self.line_height),
@@ -6922,6 +6918,109 @@ enum LineFragment {
         size: Size<Pixels>,
         len: usize,
     },
+    InlayHint(InlayHintFragment),
+}
+
+struct InlayHintFragment {
+    text: ShapedLine,
+    pill: inlay_hint_pill::InlayHintPill,
+    background: Option<Hsla>,
+    text_offset_y: Pixels,
+    corner_radius: Pixels,
+}
+
+struct InlayHintTextStyle {
+    font: Font,
+    font_size: Pixels,
+    editor_ascent: Pixels,
+    editor_descent: Pixels,
+    corner_radius: Pixels,
+    background: Option<Hsla>,
+}
+
+impl InlayHintTextStyle {
+    fn new(
+        editor_style: &EditorStyle,
+        buffer_font_size: Pixels,
+        window: &Window,
+        cx: &App,
+    ) -> Self {
+        let font_size = inlay_hint_pill::inlay_hint_font_size(buffer_font_size);
+        let text_system = window.text_system();
+        let editor_font_id = text_system.resolve_font(&editor_style.text.font());
+        Self {
+            font: theme_settings::ThemeSettings::get_global(cx)
+                .ui_font
+                .clone(),
+            font_size,
+            editor_ascent: text_system.ascent(editor_font_id, buffer_font_size),
+            editor_descent: text_system.descent(editor_font_id, buffer_font_size).abs(),
+            corner_radius: inlay_hint_pill::inlay_hint_corner_radius(font_size),
+            background: editor_style.inlay_hints_style.background_color,
+        }
+    }
+}
+
+#[derive(Default)]
+struct PendingInlayHint {
+    piece: inlay_hint_pill::InlayHintPiece,
+    style: Option<InlayHintTextStyle>,
+}
+
+impl PendingInlayHint {
+    fn flush(
+        &mut self,
+        fragments: &mut SmallVec<[LineFragment; 1]>,
+        width: &mut Pixels,
+        len: &mut usize,
+        bg_segments: &[(Range<DisplayPoint>, Hsla)],
+        min_contrast: f32,
+        window: &mut Window,
+    ) {
+        let Some(style) = &self.style else {
+            return;
+        };
+        let start_index = *len;
+        let Some((pill, shaped_text)) =
+            self.piece
+                .finish(|content_text, content_runs, content_start| {
+                    let text_runs: &[TextRun] = if bg_segments.is_empty() {
+                        content_runs
+                    } else {
+                        &LineWithInvisibles::split_runs_by_bg_segments(
+                            content_runs,
+                            bg_segments,
+                            min_contrast,
+                            start_index + content_start,
+                        )
+                    };
+                    let shaped_text = window.text_system().shape_line(
+                        SharedString::from(content_text.to_owned()),
+                        style.font_size,
+                        text_runs,
+                        None,
+                    );
+                    let content_width = shaped_text.width;
+                    (shaped_text, content_width)
+                })
+        else {
+            return;
+        };
+        *width += pill.width();
+        *len += pill.len();
+        fragments.push(LineFragment::InlayHint(InlayHintFragment {
+            text_offset_y: inlay_hint_pill::inlay_hint_text_offset_y(
+                style.editor_ascent,
+                style.editor_descent,
+                shaped_text.ascent,
+                shaped_text.descent,
+            ),
+            text: shaped_text,
+            pill,
+            background: style.background,
+            corner_radius: style.corner_radius,
+        }));
+    }
 }
 
 impl fmt::Debug for LineFragment {
@@ -6932,6 +7031,11 @@ impl fmt::Debug for LineFragment {
                 .debug_struct("Element")
                 .field("size", size)
                 .field("len", len)
+                .finish(),
+            LineFragment::InlayHint(hint) => f
+                .debug_struct("InlayHint")
+                .field("width", &hint.pill.width())
+                .field("len", &hint.pill.len())
                 .finish(),
         }
     }
@@ -6963,6 +7067,7 @@ impl LineWithInvisibles {
         let mut width = Pixels::ZERO;
         let mut len = 0;
         let mut styles = Vec::new();
+        let mut pending_inlay_hint = PendingInlayHint::default();
         let mut non_whitespace_added = false;
         let mut row = 0;
         let mut line_exceeded_max_len = false;
@@ -6977,8 +7082,37 @@ impl LineWithInvisibles {
             diagnostic_underline_severity: None,
             is_tab: false,
             is_inlay: false,
+            inlay_id: None,
             replacement: None,
         }]) {
+            let inlay_hint_id = highlighted_chunk
+                .inlay_id
+                .filter(|id| matches!(id, project::InlayId::Hint(_)))
+                .filter(|_| highlighted_chunk.replacement.is_none());
+            if pending_inlay_hint.piece.id() != inlay_hint_id {
+                let segments = bg_segments_per_row.get(row).map(|v| &v[..]).unwrap_or(&[]);
+                pending_inlay_hint.flush(
+                    &mut fragments,
+                    &mut width,
+                    &mut len,
+                    segments,
+                    min_contrast,
+                    window,
+                );
+                if inlay_hint_id.is_some() && !line.is_empty() {
+                    Self::push_text_fragment(
+                        &mut fragments,
+                        &mut width,
+                        &mut len,
+                        &mut line,
+                        &mut styles,
+                        segments,
+                        min_contrast,
+                        font_size,
+                        window,
+                    );
+                }
+            }
             if let Some(replacement) = highlighted_chunk.replacement {
                 if line_exceeded_max_len {
                     continue;
@@ -6990,24 +7124,17 @@ impl LineWithInvisibles {
                 }
 
                 if !line.is_empty() {
-                    let segments = bg_segments_per_row.get(row).map(|v| &v[..]).unwrap_or(&[]);
-                    let text_runs: &[TextRun] = if segments.is_empty() {
-                        &styles
-                    } else {
-                        &Self::split_runs_by_bg_segments(&styles, segments, min_contrast, len)
-                    };
-                    let shaped_line = window.text_system().shape_line(
-                        line.as_str().into(),
+                    Self::push_text_fragment(
+                        &mut fragments,
+                        &mut width,
+                        &mut len,
+                        &mut line,
+                        &mut styles,
+                        bg_segments_per_row.get(row).map(|v| &v[..]).unwrap_or(&[]),
+                        min_contrast,
                         font_size,
-                        text_runs,
-                        None,
+                        window,
                     );
-                    width += shaped_line.width;
-                    len += shaped_line.len;
-
-                    fragments.push(LineFragment::Text(shaped_line));
-                    line.clear();
-                    styles.clear();
                 }
 
                 match replacement {
@@ -7088,6 +7215,14 @@ impl LineWithInvisibles {
                 for (ix, mut line_chunk) in highlighted_chunk.text.split('\n').enumerate() {
                     if ix > 0 {
                         let segments = bg_segments_per_row.get(row).map(|v| &v[..]).unwrap_or(&[]);
+                        pending_inlay_hint.flush(
+                            &mut fragments,
+                            &mut width,
+                            &mut len,
+                            segments,
+                            min_contrast,
+                            window,
+                        );
                         let text_runs = if segments.is_empty() {
                             &styles
                         } else {
@@ -7133,7 +7268,7 @@ impl LineWithInvisibles {
                             Cow::Borrowed(text_style)
                         };
 
-                        let current_line_len = len + line.len();
+                        let current_line_len = len + line.len() + pending_inlay_hint.piece.len();
                         if current_line_len + line_chunk.len() > max_line_len {
                             let mut chunk_len = max_line_len - current_line_len;
                             while !line_chunk.is_char_boundary(chunk_len) {
@@ -7147,14 +7282,29 @@ impl LineWithInvisibles {
                             continue;
                         }
 
-                        styles.push(TextRun {
-                            len: line_chunk.len(),
-                            font: text_style.font(),
-                            color: text_style.color,
-                            background_color: text_style.background_color,
-                            underline: text_style.underline,
-                            strikethrough: text_style.strikethrough,
-                        });
+                        if let Some(inlay_hint_id) = inlay_hint_id {
+                            let hint_style = pending_inlay_hint.style.get_or_insert_with(|| {
+                                InlayHintTextStyle::new(editor_style, font_size, window, cx)
+                            });
+                            let run = inlay_hint_pill::inlay_hint_text_run(
+                                &hint_style.font,
+                                line_chunk.len(),
+                                highlighted_chunk.style,
+                                &text_style,
+                            );
+                            pending_inlay_hint
+                                .piece
+                                .push(inlay_hint_id, line_chunk, run);
+                        } else {
+                            styles.push(TextRun {
+                                len: line_chunk.len(),
+                                font: text_style.font(),
+                                color: text_style.color,
+                                background_color: text_style.background_color,
+                                underline: text_style.underline,
+                                strikethrough: text_style.strikethrough,
+                            });
+                        }
 
                         if let Some(severity) = highlighted_chunk.diagnostic_underline_severity {
                             diagnostic_underline_severity_ranges.push((
@@ -7196,7 +7346,9 @@ impl LineWithInvisibles {
                             }
                         }
 
-                        line.push_str(line_chunk);
+                        if inlay_hint_id.is_none() {
+                            line.push_str(line_chunk);
+                        }
                         line_byte_offset += line_chunk.len();
                     }
                 }
@@ -7204,6 +7356,33 @@ impl LineWithInvisibles {
         }
 
         layouts
+    }
+
+    fn push_text_fragment(
+        fragments: &mut SmallVec<[LineFragment; 1]>,
+        width: &mut Pixels,
+        len: &mut usize,
+        line: &mut String,
+        styles: &mut Vec<TextRun>,
+        bg_segments: &[(Range<DisplayPoint>, Hsla)],
+        min_contrast: f32,
+        font_size: Pixels,
+        window: &mut Window,
+    ) {
+        let text_runs: &[TextRun] = if bg_segments.is_empty() {
+            styles.as_slice()
+        } else {
+            &Self::split_runs_by_bg_segments(styles, bg_segments, min_contrast, *len)
+        };
+        let shaped_line =
+            window
+                .text_system()
+                .shape_line(line.as_str().into(), font_size, text_runs, None);
+        *width += shaped_line.width;
+        *len += shaped_line.len;
+        fragments.push(LineFragment::Text(shaped_line));
+        line.clear();
+        styles.clear();
     }
 
     fn add_point_diagnostic(&mut self, point_diagnostic: PointDiagnostic) {
@@ -7358,6 +7537,9 @@ impl LineWithInvisibles {
                     line_elements.push(element);
 
                     fragment_origin.x += size.width;
+                }
+                LineFragment::InlayHint(hint) => {
+                    fragment_origin.x += hint.pill.width();
                 }
             }
         }
@@ -7525,6 +7707,21 @@ impl LineWithInvisibles {
                     (line.len(), line.width, Some(line))
                 }
                 LineFragment::Element { size, len, .. } => (*len, size.width, None),
+                LineFragment::InlayHint(hint) => {
+                    if hint.pill.has_content() {
+                        hint.text
+                            .paint(
+                                fragment_origin + point(hint.pill.text_x(), hint.text_offset_y),
+                                line_height,
+                                TextAlign::Left,
+                                None,
+                                window,
+                                cx,
+                            )
+                            .log_err();
+                    }
+                    (hint.pill.len(), hint.pill.width(), None)
+                }
             };
             let fragment_end = fragment_start + fragment_len;
             if has_points {
@@ -7631,6 +7828,20 @@ impl LineWithInvisibles {
                 }
                 LineFragment::Element { size, .. } => {
                     fragment_origin.x += size.width;
+                }
+                LineFragment::InlayHint(hint) => {
+                    if let Some(background) = hint.background
+                        && hint.pill.has_content()
+                    {
+                        window.paint_quad(
+                            fill(
+                                hint.pill.pill_bounds(fragment_origin, line_height),
+                                background,
+                            )
+                            .corner_radii(hint.corner_radius),
+                        );
+                    }
+                    fragment_origin.x += hint.pill.width();
                 }
             }
         }
@@ -7782,6 +7993,19 @@ impl LineWithInvisibles {
                     fragment_start_x += size.width;
                     fragment_start_index = fragment_end_index;
                 }
+                LineFragment::InlayHint(hint) => {
+                    let fragment_end_index = fragment_start_index + hint.pill.len();
+                    if index < fragment_end_index {
+                        return fragment_start_x
+                            + hint
+                                .pill
+                                .x_for_index(index - fragment_start_index, |content_index| {
+                                    hint.text.x_for_index(content_index)
+                                });
+                    }
+                    fragment_start_x += hint.pill.width();
+                    fragment_start_index = fragment_end_index;
+                }
             }
         }
 
@@ -7812,6 +8036,19 @@ impl LineWithInvisibles {
                     fragment_start_index += len;
                     fragment_start_x = fragment_end_x;
                 }
+                LineFragment::InlayHint(hint) => {
+                    let fragment_end_x = fragment_start_x + hint.pill.width();
+                    if x < fragment_end_x {
+                        return Some(
+                            fragment_start_index
+                                + hint.pill.index_for_x(x - fragment_start_x, |content_x| {
+                                    hint.text.index_for_x(content_x)
+                                }),
+                        );
+                    }
+                    fragment_start_index += hint.pill.len();
+                    fragment_start_x = fragment_end_x;
+                }
             }
         }
 
@@ -7834,6 +8071,16 @@ impl LineWithInvisibles {
                     let fragment_end_index = fragment_start_index + len;
                     if index < fragment_end_index {
                         return None;
+                    }
+                    fragment_start_index = fragment_end_index;
+                }
+                LineFragment::InlayHint(hint) => {
+                    let fragment_end_index = fragment_start_index + hint.pill.len();
+                    if index < fragment_end_index {
+                        return hint
+                            .pill
+                            .content_index(index - fragment_start_index)
+                            .and_then(|content_index| hint.text.font_id_for_index(content_index));
                     }
                     fragment_start_index = fragment_end_index;
                 }
@@ -8089,7 +8336,7 @@ impl Element for EditorElement {
                         let glyph_grid_cell = size(em_advance, line_height);
 
                         let gutter_dimensions =
-                            snapshot.gutter_dimensions(font_id, font_size, style, window, cx);
+                            snapshot.gutter_dimensions(font_id, font_size, window, cx);
                         let text_width = bounds.size.width - gutter_dimensions.width;
 
                         let settings = EditorSettings::get_global(cx);
@@ -10606,7 +10853,7 @@ fn compute_auto_height_layout(
     let em_width = window.text_system().em_width(font_id, font_size).unwrap();
 
     let mut snapshot = editor.snapshot(window, cx);
-    let gutter_dimensions = snapshot.gutter_dimensions(font_id, font_size, style, window, cx);
+    let gutter_dimensions = snapshot.gutter_dimensions(font_id, font_size, window, cx);
 
     editor.gutter_dimensions = gutter_dimensions;
     let text_width = width - gutter_dimensions.width;
@@ -10724,6 +10971,9 @@ mod tests {
             width: px(30.0),
             margin: Pixels::ZERO,
             git_blame_entries_width: None,
+            icon_area_x: Pixels::ZERO,
+            fold_area_x: Pixels::ZERO,
+            vcs_marker_x: None,
         };
         const EMPTY_ROW_INFO: RowInfo = RowInfo {
             buffer_id: None,
@@ -12118,6 +12368,7 @@ mod tests {
                     diagnostic_underline_severity: None,
                     is_tab: false,
                     is_inlay: false,
+                    inlay_id: None,
                     replacement: Some(ChunkReplacement::Str("\u{2007}".into())),
                 })
                 .chain(std::iter::once(HighlightedChunk {
@@ -12126,6 +12377,7 @@ mod tests {
                     diagnostic_underline_severity: None,
                     is_tab: false,
                     is_inlay: false,
+                    inlay_id: None,
                     replacement: None,
                 }))
                 .chain(
@@ -12135,6 +12387,7 @@ mod tests {
                         diagnostic_underline_severity: None,
                         is_tab: false,
                         is_inlay: false,
+                        inlay_id: None,
                         replacement: Some(ChunkReplacement::Str("\u{2007}".into())),
                     })
                     .take(8),

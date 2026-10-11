@@ -47,13 +47,16 @@ impl Editor {
     pub fn set_style(&mut self, style: EditorStyle, window: &mut Window, cx: &mut Context<Self>) {
         let font = style.text.font();
         let font_size = style.text.font_size.to_pixels(window.rem_size());
+        let inlay_hint_font = ThemeSettings::get_global(cx).ui_font.clone();
         let display_map = self
             .placeholder_display_map
             .as_ref()
             .filter(|_| self.is_empty(cx))
             .unwrap_or(&self.display_map);
 
-        display_map.update(cx, |map, cx| map.set_font(font, font_size, cx));
+        display_map.update(cx, |map, cx| {
+            map.set_font(font, font_size, inlay_hint_font, cx)
+        });
         self.style = Some(style);
     }
 
@@ -226,7 +229,11 @@ impl Editor {
                 SoftWrap::Bounded(soft_wrap) => {
                     wrap_guides.push((soft_wrap as usize, true));
                 }
-                SoftWrap::GitDiff | SoftWrap::None | SoftWrap::EditorWidth => {}
+                SoftWrap::GitDiff | SoftWrap::None | SoftWrap::EditorWidth => {
+                    if settings.preferred_line_length > 0 {
+                        wrap_guides.push((settings.preferred_line_length as usize, false));
+                    }
+                }
             }
             wrap_guides.extend(settings.wrap_guides.iter().map(|guide| (*guide, false)))
         }

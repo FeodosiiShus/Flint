@@ -821,6 +821,7 @@ impl Item for Editor {
                 })
                 .single_line()
                 .color(label_color)
+                .size(params.label_size.unwrap_or_default())
                 .when(params.truncate_title_middle, |this| {
                     this.truncate_middle().flex_1()
                 })

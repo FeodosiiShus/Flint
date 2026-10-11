@@ -690,10 +690,10 @@ impl EditorElement {
         cx: &mut Context<Editor>,
     ) {
         if position_map.gutter_hitbox.is_hovered(window) {
-            let gutter_right_padding = editor.gutter_dimensions.right_padding;
+            let fold_area_x = editor.gutter_dimensions.fold_area_x;
             let hitbox = &position_map.gutter_hitbox;
 
-            if event.position.x <= hitbox.bounds.right() - gutter_right_padding
+            if event.position.x <= hitbox.bounds.left() + fold_area_x
                 // Don't show the gutter_context_menu in collab notes
                 && editor.project.is_some()
             {

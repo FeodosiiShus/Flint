@@ -187,7 +187,7 @@ impl LspAdapter for TsgoLspAdapter {
         let config = json!({
             "inlayHints": {
                 "parameterNames": {
-                    "enabled": "all",
+                    "enabled": "literals",
                     "suppressWhenArgumentMatchesName": false
                 },
                 "parameterTypes": {

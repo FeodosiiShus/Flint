@@ -23,7 +23,32 @@ Then start Actions → Build macOS → Run workflow and pick the `vX.Y.Z` tag in
 
 ## First launch
 
-The app is ad-hoc signed and not notarized, so macOS Gatekeeper blocks it after download. After copying it to `/Applications`, remove the quarantine attribute:
+The app is ad-hoc signed and not notarized, so macOS Gatekeeper blocks a copy that carries the `com.apple.quarantine` attribute. Install it with [`script/install.sh`](script/install.sh). It mounts the DMG, copies `Flint.app` into `/Applications` (replacing an existing copy), removes the quarantine attribute from the whole bundle, checks that no file still carries it, and detaches the image. It refuses to run while Flint is open.
+
+Latest release:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/FeodosiiShus/Flint/main/script/install.sh | sh
+```
+
+A specific release, by its tag:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/FeodosiiShus/Flint/main/script/install.sh | FLINT_VERSION=vX.Y.Z sh
+```
+
+A build from an Actions run (the `flint-macos-aarch64` artifact zip, or the `Flint-aarch64.dmg` inside it):
+
+```sh
+sh script/install.sh ~/Downloads/flint-macos-aarch64.zip
+curl -fsSL https://raw.githubusercontent.com/FeodosiiShus/Flint/main/script/install.sh | sh -s -- ~/Downloads/flint-macos-aarch64.zip
+```
+
+The download uses GitHub's [`/releases/latest/download/<asset>`](https://docs.github.com/en/repositories/releasing-projects-on-github/linking-to-releases) link, which points at the newest published release; drafts and prereleases [cannot be latest](https://docs.github.com/en/rest/releases/releases), so the one-line install works once a `v*` release exists. `FLINT_INSTALL_DIR` installs somewhere other than `/Applications`.
+
+The DMG cannot do this by itself: dragging the app out of it is a plain copy that runs no code, and [Gatekeeper checks downloaded apps the first time they are opened](https://support.apple.com/guide/security/gatekeeper-and-runtime-protection-sec5599b66df/web). The only way to avoid the check without a script is [notarization](https://developer.apple.com/documentation/security/notarizing-macos-software-before-distribution), which needs a Developer ID certificate.
+
+Manual alternative:
 
 ```sh
 xattr -dr com.apple.quarantine "/Applications/Flint.app"
@@ -177,7 +202,8 @@ Flint uses WebStorm's [Islands](https://plugins.jetbrains.com/docs/intellij/supp
 
 - The default look is the chrome of JetBrains' Islands Dark theme (`ManyIslandsDark.theme.json`, intellij-community commit `0ad391f70a62eabbec6db656f473e1284e1110a9`) on top of the Eva Dark theme, like IntelliJ's Islands Dark UI theme with the Eva editor colour scheme. The theme is still named "Eva Dark".
 - Chrome copied from Islands Dark: the frame, tool window islands, title bar, tool window bars, popups and menus, hover, pressed and selected states, borders, text and icon colours, the scrollbar thumb and the drop target.
-- Stays Eva: editor colours and gutter, syntax, terminal palette, players, git and diagnostic status colours and search highlight. `assets/themes/eva/eva.json` is unchanged.
+- Stays Eva: syntax, terminal palette, players, git and diagnostic status colours, search highlight and the other editor and gutter colours. `assets/themes/eva/eva.json` is unchanged.
+- Editor colours taken from the JetBrains Eva Dark editor scheme (`Eva_Dark.xml` of the Eva-Theme plugin, the scheme WebStorm uses with Eva): indent guides and the gutter separator `#454963` (`INDENT_GUIDE`; the active guide has the same colour, because IntelliJ highlights a guide only while the caret sits on its column), inlay hint text `#747ba4` (`syntax.hint`) on `#383c45` at IntelliJ's 55% hint opacity (`hint.background` `#383c458c`, `INLINE_PARAMETER_HINT`), and matched braces `#7b524b` (`editor.document_highlight.bracket_background`, `MATCHED_BRACE_ATTRIBUTES`). The test-file tab colour `tab.test_file_background` is Islands Dark's `FileColor.Green` `#1c261c`.
 - Where it lives: the `theme_overrides."Eva Dark"` block of the bundled default settings. A `theme_overrides."Eva Dark"` in your own `settings.json` merges key by key over it, so override the key to change any colour. The exception is the `accents` list: a `theme_overrides."Eva Dark"` block in your `settings.json` replaces it with an empty list unless you repeat `accents` in that block.
 - `background.appearance` is now `opaque`, because Islands Dark is opaque.
 - To restore the previous Eva look, override the keys in `settings.json`.
@@ -205,9 +231,11 @@ Flint uses WebStorm's [Islands](https://plugins.jetbrains.com/docs/intellij/supp
 
 - The editor island uses Eva's editor background, not `#191a1c`.
 - The tab bar default height is 41 px (31 px compact) like IntelliJ, but `tab_bar.height` and `tab_bar.icon_size` still override it, and Zed's other bars keep their unchanged defaults. The IntelliJ values for those can be set with existing settings: `"title_bar": { "height": 40, "icon_size": 20 }` (main toolbar header 40, button icon 20) and `"panel": { "height": 41 }` (tool window header 41).
-- Tabs: the label font stays the UI font size (13.1 px at the default `ui_font_size` of 15) where IntelliJ uses Inter 13 px; non-editor tabs (terminal, diagnostics) take the new colours but not the label size; `close_position: left` mirrors the right-hand paddings, which are IntelliJ's numbers; compact mode uses a 2 px right padding derived from IntelliJ's compact insets.
+- Tabs: the label font is the UI font size (13.1 px at the default `ui_font_size` of 15, 1 px less in compact density) where IntelliJ uses Inter 13 px; tabs that draw their own label (terminal, diagnostics, image viewer) take the new colours but not the label size; `close_position: left` mirrors the right-hand paddings, which are IntelliJ's numbers; compact mode uses a 2 px right padding derived from IntelliJ's compact insets.
+- File colours: only the Tests scope is coloured, and test files are found by name and `__tests__` folders, not by test source roots. Non-project and custom scope colours are not implemented.
 - Tabs: the modified dot is always shown (IntelliJ only with "Mark modified"), it is not clickable and its colour is the theme accent, not IntelliJ's `#548AF7`; with `close_button: hidden` a modified tab still shows the dot, so its width can change; the drag ghost shows only icon and label.
 - The unselected label blend is computed in Flint as the square root of 0.7·text² + 0.3·editor background² per channel, over the editor background, not IntelliJ's strip background `#191a1c`.
+- The right margin uses `editor.wrap_guide` (`#454963`); IntelliJ draws the right margin in the scheme's `RIGHT_MARGIN_COLOR` (`#21252b` in Eva Dark) and code-style visual guides in `#454963`.
 - IntelliJ's `Island.borderWidth` is 6; the Flint gap default of 4 is left as is.
 - Split dividers between editor panes use `border` (`#40434a`), not IntelliJ's `#26282c`, which is invisible on Eva's editor background.
 - Filled buttons that sit on the modal layer (the Restricted Mode and disconnected-project dialogs) have the same colour as the dialog, because IntelliJ's popup colour `#26282c` equals the frame colour; only their label and their pressed state are visible.
@@ -236,13 +264,15 @@ Not implemented: the lighter shortcut colour of the selected row (`#bbbbbb`, no 
 ## Editor tabs, project panel and scrollbar
 
 - Hidden tabs: when the editor tabs do not fit, a ˅ button at the right end of the tab bar lists the tabs outside the visible area, like WebStorm's "Show Hidden Tabs" drop-down. Picking one activates it and scrolls it into view. `"tab_bar": { "show_hidden_tabs_button": true }`.
+- Test-file colours: test files get WebStorm's Tests file colour, a file whose name has `.spec.` or `.test.` before the last extension (`a.spec.ts`, `a.e2e.test.tsx`) or that sits under a `__tests__` folder. The selected test tab keeps the strip-coloured pill with an inner green fill inset 3 px (2 px compact); the fill is solid in the focused pane and at 40% in an unfocused one, like IntelliJ's `IslandsTabPainter`. Unselected test tabs are tinted with the colour at 40%. The colour is the theme's `tab.test_file_background`. `"tabs": { "file_colors": false }` turns it off (Settings window: Window & Layout → Tab Bar).
+- Compact tabs: with `"unstable.ui_density": "compact"` the tab label is 1 px smaller, like IntelliJ's `EditorTabs.fontSizeOffset.compact`.
 - Tab bar buttons: after the ˅ button, a ⋮ button ("Recent Files, Tab Actions, and More", WebStorm's editor tab entry point) is shown whenever the pane has a tab, focused or not. Its menu has Recent Files, Go to File…, Close All Tabs, Reopen Closed Tab, Unsplit and Unsplit All (only while the editor is split, Unsplit All only with more than two groups) and Configure Editor Tabs…. The New…, Split Pane and Zoom buttons are gone: splitting is in the tab menu and Zoom keeps its key binding. `"tab_bar": { "show_tab_bar_buttons": false }` hides ⋮.
 - Tab menu: right-clicking a tab opens WebStorm's editor tab menu, acting on the clicked tab: Close; Close Other Tabs (disabled with one tab); Close All Tabs; Close All but Pinned (only with pinned and unpinned tabs); Close Tabs to the Left and Close Tabs to the Right (only when there are unpinned tabs on that side); Copy Path/Reference… (Absolute Path, File Name, Path from Content Root, Path from Repository Root); Split Right, Split and Move Right, Split Down, Split and Move Down (the move entries need two tabs); Unsplit and Unsplit All; Pin Tab or Unpin Tab; Keep Tab Open (preview tabs); Configure Editor Tabs…; Reopen Closed Tab; Open In (Finder, Terminal); Git (Open File Permalink, Copy File Permalink). With the editor split, "Close All Tabs" and "Close All but Pinned" end with "In Group". Zed's Close Clean, Close Multibuffers, Make Tab Read-Only and Reveal In Project Panel entries were removed; the Project panel header's Select Opened File button replaces the last one.
 - Project panel selection: the hovered and selected rows are rounded pills inset from the panel edges, like WebStorm's tree selection. The selection is the theme's selection color while the panel has focus and a neutral gray otherwise; the keyboard cursor is a border on the pill. `"project_panel": { "rounded_selection": true }`; `false` restores full-width square rows.
 - Project panel header buttons: like WebStorm's Project tool window, the header has Select Opened File (⌖), Expand All and Collapse All before ⋮ and —. Select Opened File reveals and selects the file of the active editor tab in the tree, expanding its folders, and moves focus to the tree; with no file behind the tab (an unsaved buffer or a file outside the project) it only focuses the panel. Opening a file does not select it in the tree by itself; `"project_panel": { "auto_reveal_entries": true }` brings that back. Expand All and Collapse All are the `project panel: expand all entries` and `project panel: collapse all entries` actions. The buttons follow `tool_window_headers.always_show_actions`; the `project panel: select opened file` action is available from the command palette.
 - Editor scrollbar: the thumb is a narrower rounded pill inside the track, like the macOS scrollbar in JetBrains IDEs. Dragging still works on the whole track width. `"scrollbar": { "rounded_thumb": true }`.
 - UI font: the default `ui_font_family` is `Inter`, the font JetBrains IDEs use; Inter 4.1 (OFL) is bundled in `assets/fonts/inter`. `".SystemUIFont"` gives San Francisco and `".ZedSans"` gives IBM Plex Sans.
-- Project tree and editor: folders show a disclosure chevron followed by the folder icon (`"project_panel": { "folder_indicator": "both" }`), and the editor line height is `comfortable` (`"buffer_line_height": "comfortable"`, 1.618), like WebStorm.
+- Project tree and editor: folders show a disclosure chevron followed by the folder icon (`"project_panel": { "folder_indicator": "both" }`). The editor line height is 22 px at the default 13 px font (`"buffer_line_height": { "custom": 1.6923077 }`), WebStorm's line height for JetBrains Mono 13: IntelliJ uses `ceil(font metrics height × 1.2)`, with 1.2 the default line spacing.
 - Breadcrumbs: like WebStorm, they are shown below the editor and list only the code structure at the caret, not the file path; see [Breadcrumbs](#breadcrumbs). `toolbar.quick_actions` stays `false`, so no toolbar row is shown above the editor.
 - Settings window: Window & Layout → Tab Bar, Panels → Project Panel, Editor → Scrollbar, Appearance → UI Font.
 
@@ -258,9 +288,19 @@ Not implemented, because Flint has no such action: Column Selection Mode, Copy R
 
 ### Gutter
 
-- Git change markers are 4 px capsules after the folding chevrons, right before the code, like IntelliJ's New UI. Deleted lines are an 8 px capsule on the boundary between two lines. A custom `gutter.git_gutter_width` sets the capsule width. When the gutter has no room on the right (line numbers and folds turned off), the markers stay at the left edge.
-- A 1 px line in `editor.indent_guide` separates the gutter from the code.
-- Line numbers are 1 px smaller than the code font (IntelliJ's line number font delta −1).
+- The gutter is laid out like IntelliJ's New UI, left to right: line numbers (1 px smaller than the code, right-aligned), the bookmark and breakpoint column, the folding chevrons, the Git change markers, then a 1 px separator in `editor.indent_guide`. The code starts 3 px after the separator.
+- Spacing follows `unstable.ui_density`, like IntelliJ's compact mode: in `compact` the numbers start 2 px from the editor edge with 2 px gaps around the bookmark column; otherwise the gaps are 4 px with 4 px before the numbers. At 13 px JetBrains Mono in compact density, the numbers of a 100–999-line file end 24 px from the editor edge, the separator is at 61 px and the code starts at 64 px.
+- The line-number column is as wide as the largest line number, and at least 14 px. `gutter.min_line_number_digits` (default 0) reserves room for more digits.
+- The bookmark and breakpoint column is only reserved when `gutter.bookmarks` or `gutter.breakpoints` is on and the editor shows a project file or a multibuffer. Buttons are centred in a 14 px slot. Right-clicking anywhere left of the folding chevrons opens the gutter menu.
+- Git change markers are 4 px capsules after the folding chevrons, 3 px into an 8 px column, and they cover the separator. Deleted lines are an 8 px capsule on the boundary between two lines. A custom `gutter.git_gutter_width` sets the capsule width (5 px and wider sit 1 px into the column). With the Git gutter off, no column is reserved and the separator follows the chevrons.
+
+### Code font, right margin and braces
+
+- Ligatures are off (`"buffer_font_features": { "calt": false }`), like IntelliJ's default, so `=>` stays two characters.
+- Right margin: a guide is always drawn at `preferred_line_length`, like IntelliJ's right margin ("Hard wrap at"). The default is 120, IntelliJ's default, and an `.editorconfig` `max_line_length` moves it, as in IntelliJ. When `soft_wrap` wraps at the preferred line length the guide is drawn in `editor.active_wrap_guide` as before. `wrap_guides` adds more guides and `show_wrap_guides: false` hides all of them.
+- Rainbow brackets are off by default (`"colorize_brackets": false`); WebStorm has none.
+- Matching braces are highlighted only when the caret touches a brace, or is separated from one only by spaces and tabs on the same line, like IntelliJ's `BraceHighlightingHandler`. Before, the innermost pair enclosing the caret was always highlighted.
+- TypeScript and JavaScript parameter name hints are shown only for literal arguments, like WebStorm: the built-in `tsgo` configuration sends `"inlayHints": { "parameterNames": { "enabled": "literals" } }`. `"all"` in `lsp.tsgo.settings.typescript.inlayHints.parameterNames.enabled` restores the old behaviour.
 
 ### Breadcrumbs
 
@@ -281,7 +321,16 @@ The top-right corner of the editor shows the error and warning counts of the fil
 
 ### Inlay hints
 
-Inlay hints are drawn on the theme's `hint.background` by default, like IntelliJ's hint pills (`"inlay_hints": { "show_background": true }`). The default look keeps Eva's hint colours, and the background is square, not rounded.
+Language server inlay hints are drawn like WebStorm's: a rounded pill with the hint text in the UI font (`ui_font_family`, Inter by default) at the buffer font size minus 1 px.
+
+- Colours: the pill is the theme's `hint.background` (`#383c458c` in the default look, Eva's `#383c45` at IntelliJ's 55% hint opacity), the text the syntax `hint` colour.
+- Geometry, from IntelliJ's inlay hint renderer: 6 px padding on each side of the text, a 2 px margin on each side of the hint (WebStorm draws both after the pill), the pill 1 px below the top and 1 px above the bottom of the line, a corner radius of 3.5 px at a 12 px hint font, and the text baseline 1 px above the code baseline.
+- The `paddingLeft`/`paddingRight` spaces a language server asks for are not drawn; the pill's padding and margins separate the hint from the code, like in WebStorm.
+- Hovering a hint shows its tooltip; Cmd-hover underlines and Cmd-click follows the label part under the pointer. The pill padding belongs to the nearest character of the hint.
+- `"inlay_hints": { "show_background": false }` keeps the font and spacing and draws no pill.
+- Debugger values and colour swatches keep their previous look.
+- Cursor movement, column selection, IME positions and soft wrap measure hints with the same pill geometry. A hint is never split by soft wrap: it moves to the next row as a whole.
+- Not implemented: WebStorm's "Use editor font in inlays" option and the shortening of long type hints. Hints in the sticky scroll header have no pill.
 
 ## Main toolbar
 

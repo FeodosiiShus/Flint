@@ -1,7 +1,8 @@
 use crate::{Editor, HighlightKey, RangeToAnchorExt, display_map::DisplaySnapshot};
 use gpui::{AppContext, Context, HighlightStyle};
 use language::CursorShape;
-use multi_buffer::MultiBufferOffset;
+use multi_buffer::{MultiBufferOffset, MultiBufferSnapshot};
+use std::ops::Range;
 use theme::ActiveTheme;
 
 impl Editor {
@@ -35,7 +36,7 @@ impl Editor {
         }
         let task = cx.background_spawn({
             let buffer_snapshot = buffer_snapshot.clone();
-            async move { buffer_snapshot.innermost_enclosing_bracket_ranges(head..tail, None) }
+            async move { bracket_ranges_at_caret(&buffer_snapshot, head, tail) }
         });
         self.refresh_matching_bracket_highlights_task = cx.spawn({
             let buffer_snapshot = buffer_snapshot.clone();
@@ -82,6 +83,64 @@ impl Editor {
             }
         });
     }
+}
+
+fn bracket_ranges_at_caret(
+    buffer_snapshot: &MultiBufferSnapshot,
+    head: MultiBufferOffset,
+    tail: MultiBufferOffset,
+) -> Option<(Range<MultiBufferOffset>, Range<MultiBufferOffset>)> {
+    if let Some(bracket_ranges) = bracket_ranges_touching(buffer_snapshot, head, head..tail) {
+        return Some(bracket_ranges);
+    }
+
+    let blanks_before_head: usize = buffer_snapshot
+        .reversed_chars_at(head)
+        .take_while(|character| is_blank(*character))
+        .map(char::len_utf8)
+        .sum();
+    if blanks_before_head > 0 {
+        let offset = head - blanks_before_head;
+        if let Some(bracket_ranges) =
+            bracket_ranges_touching(buffer_snapshot, offset, offset..offset)
+        {
+            return Some(bracket_ranges);
+        }
+    }
+
+    let blanks_after_head: usize = buffer_snapshot
+        .chars_at(head)
+        .take_while(|character| is_blank(*character))
+        .map(char::len_utf8)
+        .sum();
+    if blanks_after_head > 0 {
+        let offset = head + blanks_after_head;
+        return bracket_ranges_touching(buffer_snapshot, offset, offset..offset);
+    }
+
+    None
+}
+
+fn bracket_ranges_touching(
+    buffer_snapshot: &MultiBufferSnapshot,
+    offset: MultiBufferOffset,
+    range: Range<MultiBufferOffset>,
+) -> Option<(Range<MultiBufferOffset>, Range<MultiBufferOffset>)> {
+    buffer_snapshot
+        .innermost_enclosing_bracket_ranges(range, None)
+        .filter(|(opening_range, closing_range)| {
+            [
+                opening_range.start,
+                opening_range.end,
+                closing_range.start,
+                closing_range.end,
+            ]
+            .contains(&offset)
+        })
+}
+
+fn is_blank(character: char) -> bool {
+    character == ' ' || character == '\t'
 }
 
 #[cfg(test)]
@@ -139,7 +198,7 @@ mod tests {
 
         // positioning cursor inside bracket highlights both
         cx.set_state(indoc! {r#"
-            pub fn test("Test ˇargument") {
+            pub fn test(ˇ"Test argument") {
                 another_test(1, 2, 3);
             }
         "#});
@@ -155,7 +214,7 @@ mod tests {
 
         cx.set_state(indoc! {r#"
             pub fn test("Test argument") {
-                another_test(1, ˇ2, 3);
+                another_test(1, 2, 3)ˇ;
             }
         "#});
         cx.run_until_parked();
@@ -170,7 +229,22 @@ mod tests {
 
         cx.set_state(indoc! {r#"
             pub fn test("Test argument") {
-                anotherˇ_test(1, 2, 3);
+                another_test( ˇ1, 2, 3);
+            }
+        "#});
+        cx.run_until_parked();
+        cx.assert_editor_text_highlights(
+            HighlightKey::MatchingBracket,
+            indoc! {r#"
+            pub fn test("Test argument") {
+                another_test«(» 1, 2, 3«)»;
+            }
+        "#},
+        );
+
+        cx.set_state(indoc! {r#"
+            pub fn test("Test argument") ˇ{
+                another_test(1, 2, 3);
             }
         "#});
         cx.run_until_parked();
@@ -180,6 +254,36 @@ mod tests {
             pub fn test("Test argument") «{»
                 another_test(1, 2, 3);
             «}»
+        "#},
+        );
+
+        cx.set_state(indoc! {r#"
+            pub fn test("Test argument") {
+                another_test(1, ˇ2, 3);
+            }
+        "#});
+        cx.run_until_parked();
+        cx.assert_editor_text_highlights(
+            HighlightKey::MatchingBracket,
+            indoc! {r#"
+            pub fn test("Test argument") {
+                another_test(1, 2, 3);
+            }
+        "#},
+        );
+
+        cx.set_state(indoc! {r#"
+            pub fn test("Test argument") {
+                anotherˇ_test(1, 2, 3);
+            }
+        "#});
+        cx.run_until_parked();
+        cx.assert_editor_text_highlights(
+            HighlightKey::MatchingBracket,
+            indoc! {r#"
+            pub fn test("Test argument") {
+                another_test(1, 2, 3);
+            }
         "#},
         );
 

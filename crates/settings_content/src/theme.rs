@@ -751,6 +751,9 @@ pub struct ThemeColorsContent {
     #[serde(rename = "tab.active_background")]
     pub tab_active_background: Option<ThemeColor>,
 
+    #[serde(rename = "tab.test_file_background")]
+    pub tab_test_file_background: Option<ThemeColor>,
+
     #[serde(rename = "search.match_background")]
     pub search_match_background: Option<ThemeColor>,
 

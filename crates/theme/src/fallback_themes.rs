@@ -155,6 +155,7 @@ pub(crate) fn zed_default_dark() -> Theme {
                 tab_bar_background: bg,
                 tab_inactive_background: bg,
                 tab_active_background: editor,
+                tab_test_file_background: gpui::rgb(0x1C261C).into(),
                 search_match_background: bg,
                 search_active_match_background: bg,
 

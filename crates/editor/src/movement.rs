@@ -6,7 +6,7 @@ use crate::{
     DisplayRow, EditorStyle, ToOffset, ToPoint,
     scroll::{ScrollOffset, SharedScrollAnchor},
 };
-use gpui::{Pixels, WindowTextSystem};
+use gpui::{Font, Pixels, WindowTextSystem};
 use language::{CharClassifier, Point};
 use multi_buffer::{MultiBufferOffset, MultiBufferRow, MultiBufferSnapshot};
 use serde::Deserialize;
@@ -29,6 +29,7 @@ pub struct TextLayoutDetails {
     pub(crate) text_system: Arc<WindowTextSystem>,
     pub(crate) editor_style: EditorStyle,
     pub(crate) rem_size: Pixels,
+    pub(crate) inlay_hint_font: Font,
     pub scroll_anchor: SharedScrollAnchor,
     pub visible_rows: Option<f64>,
     pub vertical_scroll_margin: ScrollOffset,

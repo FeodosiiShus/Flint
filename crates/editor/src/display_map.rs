@@ -95,8 +95,8 @@ pub use wrap_map::{WrapPoint, WrapRow, WrapSnapshot};
 
 use collections::{HashMap, HashSet, IndexSet};
 use gpui::{
-    App, Context, Entity, EntityId, Font, HighlightStyle, Hsla, LineLayout, Pixels, UnderlineStyle,
-    WeakEntity,
+    App, Context, Entity, EntityId, Font, HighlightStyle, Hsla, LineLayout, Pixels, TextRun,
+    UnderlineStyle, WeakEntity, WindowTextSystem,
 };
 use language::{
     LanguageAwareStyling, Point, Subscription as BufferSubscription,
@@ -132,7 +132,13 @@ use std::{
 };
 
 use crate::{
-    EditorStyle, RowExt, hover_links::InlayHighlight, inlays::Inlay, movement::TextLayoutDetails,
+    EditorStyle, RowExt,
+    element::inlay_hint_pill::{
+        InlayHintPiece, InlayHintPill, inlay_hint_font_size, inlay_hint_text_run,
+    },
+    hover_links::InlayHighlight,
+    inlays::Inlay,
+    movement::TextLayoutDetails,
 };
 use block_map::{BlockPointCursor, BlockRow, BlockSnapshot};
 use fold_map::{FoldPointCursor, FoldSnapshot};
@@ -1238,9 +1244,16 @@ impl DisplayMap {
         cleared
     }
 
-    pub fn set_font(&self, font: Font, font_size: Pixels, cx: &mut Context<Self>) -> bool {
-        self.wrap_map
-            .update(cx, |map, cx| map.set_font_with_size(font, font_size, cx))
+    pub fn set_font(
+        &self,
+        font: Font,
+        font_size: Pixels,
+        inlay_hint_font: Font,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        self.wrap_map.update(cx, |map, cx| {
+            map.set_font_with_size(font, font_size, inlay_hint_font, cx)
+        })
     }
 
     pub fn set_wrap_width(&self, width: Option<Pixels>, cx: &mut Context<Self>) -> bool {
@@ -1410,6 +1423,7 @@ pub struct HighlightedChunk<'a> {
     pub(crate) diagnostic_underline_severity: Option<lsp::DiagnosticSeverity>,
     pub is_tab: bool,
     pub is_inlay: bool,
+    pub inlay_id: Option<InlayId>,
     pub replacement: Option<ChunkReplacement>,
 }
 
@@ -1425,6 +1439,7 @@ impl<'a> HighlightedChunk<'a> {
         let is_tab = self.is_tab;
         let renderer = self.replacement;
         let is_inlay = self.is_inlay;
+        let inlay_id = self.inlay_id;
         iter::from_fn(move || {
             if text.is_empty() {
                 return None;
@@ -1446,6 +1461,7 @@ impl<'a> HighlightedChunk<'a> {
                         diagnostic_underline_severity,
                         is_tab,
                         is_inlay,
+                        inlay_id,
                         replacement: renderer.clone(),
                     });
                 }
@@ -1471,6 +1487,7 @@ impl<'a> HighlightedChunk<'a> {
                     diagnostic_underline_severity: None,
                     is_tab: false,
                     is_inlay,
+                    inlay_id,
                     replacement: match replacement(ch) {
                         Some(replacement) => {
                             Some(ChunkReplacement::Str(SharedString::from(replacement)))
@@ -1487,9 +1504,141 @@ impl<'a> HighlightedChunk<'a> {
                 diagnostic_underline_severity,
                 is_tab,
                 is_inlay,
+                inlay_id,
                 replacement: renderer.clone(),
             })
         })
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct DisplayRowLayout {
+    pub width: Pixels,
+    pub len: usize,
+    segments: SmallVec<[DisplayRowSegment; 1]>,
+}
+
+#[derive(Debug)]
+enum DisplayRowSegment {
+    Text(Arc<LineLayout>),
+    InlayHint {
+        pill: InlayHintPill,
+        content_layout: Arc<LineLayout>,
+    },
+}
+
+impl DisplayRowLayout {
+    pub fn x_for_index(&self, index: usize) -> Pixels {
+        let mut segment_start_x = Pixels::ZERO;
+        let mut segment_start_index = 0;
+        for segment in &self.segments {
+            let segment_end_index = segment_start_index + segment.len();
+            if index < segment_end_index {
+                return segment_start_x + segment.x_for_index(index - segment_start_index);
+            }
+            segment_start_x += segment.width();
+            segment_start_index = segment_end_index;
+        }
+        segment_start_x
+    }
+
+    pub fn closest_index_for_x(&self, x: Pixels) -> usize {
+        let mut segment_start_x = Pixels::ZERO;
+        let mut segment_start_index = 0;
+        for segment in &self.segments {
+            let segment_end_x = segment_start_x + segment.width();
+            if x < segment_end_x {
+                return segment_start_index + segment.closest_index_for_x(x - segment_start_x);
+            }
+            segment_start_x = segment_end_x;
+            segment_start_index += segment.len();
+        }
+        self.len
+    }
+
+    fn push_text(
+        &mut self,
+        text: &mut String,
+        runs: &mut Vec<TextRun>,
+        font_size: Pixels,
+        text_system: &WindowTextSystem,
+    ) {
+        if text.is_empty() {
+            return;
+        }
+        let layout = text_system.layout_line(text.as_str(), font_size, runs.as_slice(), None);
+        self.width += layout.width;
+        self.len += layout.len;
+        self.segments.push(DisplayRowSegment::Text(layout));
+        text.clear();
+        runs.clear();
+    }
+
+    fn push_inlay_hint(
+        &mut self,
+        inlay_hint: &mut InlayHintPiece,
+        font_size: Pixels,
+        text_system: &WindowTextSystem,
+    ) {
+        let Some((pill, content_layout)) = inlay_hint.finish(|content_text, content_runs, _| {
+            let content_layout =
+                text_system.layout_line(content_text, font_size, content_runs, None);
+            let content_width = content_layout.width;
+            (content_layout, content_width)
+        }) else {
+            return;
+        };
+        self.width += pill.width();
+        self.len += pill.len();
+        self.segments.push(DisplayRowSegment::InlayHint {
+            pill,
+            content_layout,
+        });
+    }
+}
+
+impl DisplayRowSegment {
+    fn len(&self) -> usize {
+        match self {
+            Self::Text(layout) => layout.len,
+            Self::InlayHint { pill, .. } => pill.len(),
+        }
+    }
+
+    fn width(&self) -> Pixels {
+        match self {
+            Self::Text(layout) => layout.width,
+            Self::InlayHint { pill, .. } => pill.width(),
+        }
+    }
+
+    fn x_for_index(&self, index: usize) -> Pixels {
+        match self {
+            Self::Text(layout) => layout.x_for_index(index),
+            Self::InlayHint {
+                pill,
+                content_layout,
+            } => pill.x_for_index(index, |content_index| {
+                content_layout.x_for_index(content_index)
+            }),
+        }
+    }
+
+    fn closest_index_for_x(&self, x: Pixels) -> usize {
+        match self {
+            Self::Text(layout) => layout.closest_index_for_x(x),
+            Self::InlayHint {
+                pill,
+                content_layout,
+            } => pill.closest_index_for_x(
+                x,
+                content_layout
+                    .runs
+                    .iter()
+                    .flat_map(|run| run.glyphs.iter())
+                    .map(|glyph| (glyph.index, glyph.position.x)),
+            ),
+        }
     }
 }
 
@@ -1929,6 +2078,7 @@ impl DisplaySnapshot {
                     diagnostic_underline_severity: diagnostic_severity,
                     is_tab: chunk.is_tab,
                     is_inlay: chunk.is_inlay,
+                    inlay_id: chunk.inlay_id,
                     replacement: chunk.renderer.map(ChunkReplacement::Renderer),
                 }
                 .highlight_invisibles(editor_style)
@@ -1993,13 +2143,18 @@ impl DisplaySnapshot {
             text_system,
             editor_style,
             rem_size,
+            inlay_hint_font,
             scroll_anchor: _,
             visible_rows: _,
             vertical_scroll_margin: _,
         }: &TextLayoutDetails,
-    ) -> Arc<LineLayout> {
+    ) -> DisplayRowLayout {
+        let font_size = editor_style.text.font_size.to_pixels(*rem_size);
+        let hint_font_size = inlay_hint_font_size(font_size);
+        let mut row_layout = DisplayRowLayout::default();
         let mut runs = Vec::new();
         let mut line = String::new();
+        let mut inlay_hint = InlayHintPiece::default();
 
         let range = display_row..display_row.next_row();
         for chunk in self.highlighted_chunks(
@@ -2010,29 +2165,44 @@ impl DisplaySnapshot {
             },
             editor_style,
         ) {
-            line.push_str(chunk.text);
-
-            let text_style = if let Some(style) = chunk.style {
-                Cow::Owned(editor_style.text.clone().highlight(style))
-            } else {
-                Cow::Borrowed(&editor_style.text)
-            };
-
-            runs.push(text_style.to_run(chunk.text.len()))
-        }
-
-        if line.ends_with('\n') {
-            line.pop();
-            if let Some(last_run) = runs.last_mut() {
-                last_run.len -= 1;
-                if last_run.len == 0 {
-                    runs.pop();
+            let inlay_hint_id = chunk
+                .inlay_id
+                .filter(|id| matches!(id, InlayId::Hint(_)))
+                .filter(|_| chunk.replacement.is_none());
+            if inlay_hint.id() != inlay_hint_id {
+                row_layout.push_inlay_hint(&mut inlay_hint, hint_font_size, text_system);
+                if inlay_hint_id.is_some() {
+                    row_layout.push_text(&mut line, &mut runs, font_size, text_system);
                 }
+            }
+
+            let (text, ends_row) = match chunk.text.split_once('\n') {
+                Some((text_before_newline, _)) => (text_before_newline, true),
+                None => (chunk.text, false),
+            };
+            if !text.is_empty() {
+                let text_style = if let Some(style) = chunk.style {
+                    Cow::Owned(editor_style.text.clone().highlight(style))
+                } else {
+                    Cow::Borrowed(&editor_style.text)
+                };
+                if let Some(inlay_hint_id) = inlay_hint_id {
+                    let run =
+                        inlay_hint_text_run(inlay_hint_font, text.len(), chunk.style, &text_style);
+                    inlay_hint.push(inlay_hint_id, text, run);
+                } else {
+                    line.push_str(text);
+                    runs.push(text_style.to_run(text.len()));
+                }
+            }
+            if ends_row {
+                break;
             }
         }
 
-        let font_size = editor_style.text.font_size.to_pixels(*rem_size);
-        text_system.layout_line(&line, font_size, &runs, None)
+        row_layout.push_inlay_hint(&mut inlay_hint, hint_font_size, text_system);
+        row_layout.push_text(&mut line, &mut runs, font_size, text_system);
+        row_layout
     }
 
     pub fn x_for_display_point(
@@ -3119,7 +3289,12 @@ pub mod tests {
 
             // Re-wrap on font size changes
             map.update(cx, |map, cx| {
-                map.set_font(font("Helvetica"), font_size + Pixels::from(3.), cx)
+                map.set_font(
+                    font("Helvetica"),
+                    font_size + Pixels::from(3.),
+                    font("Helvetica"),
+                    cx,
+                )
             });
 
             let snapshot = map.update(cx, |map, cx| map.snapshot(cx));
@@ -3128,6 +3303,81 @@ pub mod tests {
                 "three \nfour five\nsix and \nseven \neight"
             )
         });
+    }
+
+    fn monospace_line_layout(len: usize) -> Arc<LineLayout> {
+        let advance = px(4.);
+        Arc::new(LineLayout {
+            width: advance * len,
+            len,
+            runs: vec![gpui::ShapedRun {
+                font_id: gpui::FontId(0),
+                glyphs: (0..len)
+                    .map(|index| gpui::ShapedGlyph {
+                        id: gpui::GlyphId(0),
+                        position: gpui::point(advance * index, Pixels::ZERO),
+                        index,
+                        is_emoji: false,
+                    })
+                    .collect(),
+            }],
+            ..LineLayout::default()
+        })
+    }
+
+    #[test]
+    fn inlay_hint_pill_row_layout_measures_hints_like_the_painted_pills() {
+        let pill = InlayHintPill::new("title: ", px(24.));
+        let row = DisplayRowLayout {
+            width: px(16.) + pill.width() + px(12.),
+            len: 4 + pill.len() + 3,
+            segments: [
+                DisplayRowSegment::Text(monospace_line_layout(4)),
+                DisplayRowSegment::InlayHint {
+                    pill,
+                    content_layout: monospace_line_layout(6),
+                },
+                DisplayRowSegment::Text(monospace_line_layout(3)),
+            ]
+            .into_iter()
+            .collect(),
+        };
+
+        assert_eq!(
+            row.x_for_index(4),
+            px(16.),
+            "the hint starts where the text before it ends"
+        );
+        assert_eq!(
+            row.x_for_index(5),
+            px(26.),
+            "hint characters sit after the 6 px padding"
+        );
+        assert_eq!(
+            row.x_for_index(10),
+            px(46.),
+            "the LSP padding space has no width"
+        );
+        assert_eq!(
+            row.x_for_index(11),
+            px(56.),
+            "the text after the hint starts after the pill and both margins"
+        );
+        assert_eq!(row.x_for_index(14), row.width);
+        assert_eq!(row.closest_index_for_x(px(17.)), 4);
+        assert_eq!(
+            row.closest_index_for_x(px(54.)),
+            11,
+            "the margins after the pill belong to the end of the hint"
+        );
+        assert_eq!(row.closest_index_for_x(px(100.)), row.len);
+        for index in 0..=row.len {
+            assert_eq!(
+                row.closest_index_for_x(row.x_for_index(index)),
+                index,
+                "vertical movement must land on the column whose x it aimed at"
+            );
+        }
     }
 
     #[gpui::test]
@@ -4492,6 +4742,7 @@ pub mod tests {
             diagnostic_underline_severity: None,
             is_tab: false,
             is_inlay: false,
+            inlay_id: None,
             replacement: None,
         };
 

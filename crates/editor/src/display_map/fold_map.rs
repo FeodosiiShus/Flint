@@ -1502,6 +1502,7 @@ pub struct Chunk<'a> {
     pub is_inlay: bool,
     /// An optional recipe for how the chunk should be presented.
     pub renderer: Option<ChunkRenderer>,
+    pub inlay_id: Option<InlayId>,
     /// Bitmap of tab character locations in chunk
     pub tabs: u128,
     /// Bitmap of character locations in chunk
@@ -1695,6 +1696,7 @@ impl<'a> Iterator for FoldChunks<'a> {
                 is_inlay: chunk.is_inlay,
                 underline: chunk.underline,
                 renderer: inlay_chunk.renderer,
+                inlay_id: inlay_chunk.inlay_id,
             });
         }
 

@@ -5,6 +5,7 @@ use super::{
     invisibles::{is_invisible, is_standalone_grapheme, replacement},
     tab_map::{self, TabEdit, TabPoint, TabSnapshot},
 };
+use crate::element::inlay_hint_pill::{InlayHintPill, inlay_hint_font_size};
 
 use collections::HashMap;
 use futures_lite::future::yield_now;
@@ -14,6 +15,8 @@ use gpui::{
 };
 use language::{LanguageAwareStyling, Point, language_settings::SoftWrapIndent};
 use multi_buffer::RowInfo;
+use project::InlayId;
+use settings::Settings as _;
 use std::{
     cmp,
     collections::VecDeque,
@@ -25,6 +28,7 @@ use std::{
 };
 use sum_tree::{Bias, Cursor, Dimensions, SumTree};
 use text::Patch;
+use theme_settings::ThemeSettings;
 
 pub use super::tab_map::TextSummary;
 pub type WrapEdit = text::Edit<WrapRow>;
@@ -51,6 +55,7 @@ pub struct WrapMap {
     soft_wrap_indent: SoftWrapIndent,
     background_task: Option<Task<()>>,
     font_with_size: (Font, Pixels),
+    inlay_hint_font: Font,
 }
 
 #[derive(Clone)]
@@ -94,16 +99,32 @@ struct LineFragmentBuilder {
     font_id: FontId,
     font_size: Pixels,
     cached_replacement_widths: HashMap<char, Pixels>,
+    inlay_hint_font_id: FontId,
+    inlay_hint_font_size: Pixels,
+    cached_inlay_hint_char_widths: HashMap<char, Pixels>,
+    inlay_hint_id: Option<InlayId>,
+    inlay_hint_text: String,
 }
 
 impl LineFragmentBuilder {
-    fn new(text_system: Arc<TextSystem>, font: &Font, font_size: Pixels) -> Self {
+    fn new(
+        text_system: Arc<TextSystem>,
+        font: &Font,
+        font_size: Pixels,
+        inlay_hint_font: &Font,
+    ) -> Self {
         let font_id = text_system.resolve_font(font);
+        let inlay_hint_font_id = text_system.resolve_font(inlay_hint_font);
         Self {
             text_system,
             font_id,
             font_size,
             cached_replacement_widths: HashMap::default(),
+            inlay_hint_font_id,
+            inlay_hint_font_size: inlay_hint_font_size(font_size),
+            cached_inlay_hint_char_widths: HashMap::default(),
+            inlay_hint_id: None,
+            inlay_hint_text: String::new(),
         }
     }
 
@@ -141,6 +162,76 @@ impl LineFragmentBuilder {
                     .layout_width(self.font_id, self.font_size, replacement_char)
             });
         Some(width)
+    }
+
+    fn push_inlay_hint_fragments(
+        &mut self,
+        fragments: &mut Vec<gpui::LineFragment<'_>>,
+        inlay_hint_id: InlayId,
+        text: &str,
+    ) {
+        if self
+            .inlay_hint_id
+            .is_some_and(|pending_inlay_hint_id| pending_inlay_hint_id != inlay_hint_id)
+        {
+            self.finish_inlay_hint(fragments);
+        }
+        let mut piece_start = 0;
+        for (offset, character) in text.char_indices() {
+            if !is_invisible(character) {
+                continue;
+            }
+            let character_end = offset + character.len_utf8();
+            if !is_standalone_grapheme(text, offset, character_end) {
+                continue;
+            }
+            let Some(width) = self.replacement_width(character) else {
+                continue;
+            };
+            self.push_inlay_hint_text(
+                inlay_hint_id,
+                text.get(piece_start..offset).unwrap_or_default(),
+            );
+            self.finish_inlay_hint(fragments);
+            fragments.push(gpui::LineFragment::element(width, character_end - offset));
+            piece_start = character_end;
+        }
+        self.push_inlay_hint_text(inlay_hint_id, text.get(piece_start..).unwrap_or_default());
+    }
+
+    fn push_inlay_hint_text(&mut self, inlay_hint_id: InlayId, text: &str) {
+        if !text.is_empty() {
+            self.inlay_hint_id = Some(inlay_hint_id);
+            self.inlay_hint_text.push_str(text);
+        }
+    }
+
+    fn finish_inlay_hint(&mut self, fragments: &mut Vec<gpui::LineFragment<'_>>) {
+        if self.inlay_hint_id.take().is_none() {
+            return;
+        }
+        let content = InlayHintPill::content_range(&self.inlay_hint_text);
+        let content_width = self
+            .inlay_hint_text
+            .get(content)
+            .unwrap_or_default()
+            .chars()
+            .map(|character| {
+                *self
+                    .cached_inlay_hint_char_widths
+                    .entry(character)
+                    .or_insert_with(|| {
+                        self.text_system.layout_width(
+                            self.inlay_hint_font_id,
+                            self.inlay_hint_font_size,
+                            character,
+                        )
+                    })
+            })
+            .sum::<Pixels>();
+        let pill = InlayHintPill::new(&self.inlay_hint_text, content_width);
+        fragments.push(gpui::LineFragment::element(pill.width(), pill.len()));
+        self.inlay_hint_text.clear();
     }
 }
 
@@ -189,8 +280,11 @@ impl WrapMap {
         cx: &mut App,
     ) -> (Entity<Self>, WrapSnapshot) {
         let handle = cx.new(|cx| {
+            let inlay_hint_font = ThemeSettings::try_get(cx)
+                .map_or_else(|| font.clone(), |settings| settings.ui_font.clone());
             let mut this = Self {
                 font_with_size: (font, font_size),
+                inlay_hint_font,
                 wrap_width: None,
                 soft_wrap_indent: SoftWrapIndent::default(),
                 pending_edits: Default::default(),
@@ -243,14 +337,16 @@ impl WrapMap {
         &mut self,
         font: Font,
         font_size: Pixels,
+        inlay_hint_font: Font,
         cx: &mut Context<Self>,
     ) -> bool {
         let font_with_size = (font, font_size);
 
-        if font_with_size == self.font_with_size {
+        if font_with_size == self.font_with_size && inlay_hint_font == self.inlay_hint_font {
             false
         } else {
             self.font_with_size = font_with_size;
+            self.inlay_hint_font = inlay_hint_font;
             self.rewrap(cx);
             true
         }
@@ -293,8 +389,12 @@ impl WrapMap {
 
             let text_system = cx.text_system();
             let (font, font_size) = self.font_with_size.clone();
-            let mut fragment_builder =
-                LineFragmentBuilder::new(text_system.clone(), &font, font_size);
+            let mut fragment_builder = LineFragmentBuilder::new(
+                text_system.clone(),
+                &font,
+                font_size,
+                &self.inlay_hint_font,
+            );
             let mut line_wrapper = text_system.line_wrapper(font, font_size);
             let tab_snapshot = new_snapshot.tab_snapshot.clone();
             let total_rows = tab_snapshot.max_point().row() as usize + 1;
@@ -400,8 +500,12 @@ impl WrapMap {
             let mut snapshot = self.snapshot.clone();
             let text_system = cx.text_system().clone();
             let (font, font_size) = self.font_with_size.clone();
-            let mut fragment_builder =
-                LineFragmentBuilder::new(text_system.clone(), &font, font_size);
+            let mut fragment_builder = LineFragmentBuilder::new(
+                text_system.clone(),
+                &font,
+                font_size,
+                &self.inlay_hint_font,
+            );
             let mut line_wrapper = text_system.line_wrapper(font, font_size);
 
             let update_passes = pending_edits.len();
@@ -654,9 +758,25 @@ impl WrapSnapshot {
                 let mut edit_transforms = Vec::<Transform>::new();
                 for (i, _) in (edit.new_rows.start..edit.new_rows.end).enumerate() {
                     while let Some(chunk) = remaining.take().or_else(|| chunks.next()) {
+                        let inlay_hint_id = chunk
+                            .inlay_id
+                            .filter(|inlay_id| matches!(inlay_id, InlayId::Hint(_)));
+                        if inlay_hint_id.is_none() {
+                            fragment_builder.finish_inlay_hint(&mut line_fragments);
+                        }
                         if let Some(ix) = chunk.text.find('\n') {
                             let (prefix, suffix) = chunk.text.split_at(ix + 1);
-                            fragment_builder.push_fragments(&mut line_fragments, prefix);
+                            if let Some(inlay_hint_id) = inlay_hint_id {
+                                fragment_builder.push_inlay_hint_fragments(
+                                    &mut line_fragments,
+                                    inlay_hint_id,
+                                    prefix.strip_suffix('\n').unwrap_or(prefix),
+                                );
+                                fragment_builder.finish_inlay_hint(&mut line_fragments);
+                                fragment_builder.push_fragments(&mut line_fragments, "\n");
+                            } else {
+                                fragment_builder.push_fragments(&mut line_fragments, prefix);
+                            }
                             line.push_str(prefix);
                             remaining = Some(Chunk {
                                 text: suffix,
@@ -669,12 +789,19 @@ impl WrapSnapshot {
                             {
                                 line_fragments
                                     .push(gpui::LineFragment::element(width, chunk.text.len()));
+                            } else if let Some(inlay_hint_id) = inlay_hint_id {
+                                fragment_builder.push_inlay_hint_fragments(
+                                    &mut line_fragments,
+                                    inlay_hint_id,
+                                    chunk.text,
+                                );
                             } else {
                                 fragment_builder.push_fragments(&mut line_fragments, chunk.text);
                             }
                             line.push_str(chunk.text);
                         }
                     }
+                    fragment_builder.finish_inlay_hint(&mut line_fragments);
 
                     if line.is_empty() {
                         break;
@@ -1684,7 +1811,7 @@ mod tests {
         let text_system = cx.read(|cx| cx.text_system().clone());
         let font = test_font();
         let font_size = px(14.0);
-        let mut fragment_builder = LineFragmentBuilder::new(text_system, &font, font_size);
+        let mut fragment_builder = LineFragmentBuilder::new(text_system, &font, font_size, &font);
 
         let mut fragments = Vec::new();
         fragment_builder.push_fragments(&mut fragments, "ab\u{7f}cd\u{80}\u{81}e");
@@ -1739,6 +1866,46 @@ mod tests {
             1,
             "combining-class invisibles like ZWJ have no replacement and must stay \
              inside their text fragment"
+        );
+    }
+
+    #[gpui::test]
+    async fn test_inlay_hint_pill_wrap_measures_a_hint_as_one_pill(cx: &mut gpui::TestAppContext) {
+        init_test(cx);
+
+        let text_system = cx.read(|cx| cx.text_system().clone());
+        let font = test_font();
+        let font_size = px(14.0);
+        let mut fragment_builder =
+            LineFragmentBuilder::new(text_system.clone(), &font, font_size, &font);
+        let hint_font_id = text_system.resolve_font(&font);
+        let hint_font_size = inlay_hint_font_size(font_size);
+        let hint_width = |label: &str| {
+            let content_width = label
+                .chars()
+                .map(|character| text_system.layout_width(hint_font_id, hint_font_size, character))
+                .sum::<Pixels>();
+            InlayHintPill::new(label, content_width).width()
+        };
+
+        let mut fragments = Vec::new();
+        fragment_builder.push_inlay_hint_fragments(&mut fragments, InlayId::Hint(0), "val");
+        fragment_builder.push_inlay_hint_fragments(&mut fragments, InlayId::Hint(0), "ue: ");
+        fragment_builder.push_inlay_hint_fragments(&mut fragments, InlayId::Hint(1), "x");
+        fragment_builder.finish_inlay_hint(&mut fragments);
+
+        let elements = fragments
+            .iter()
+            .map(|fragment| match fragment {
+                LineFragment::Element { width, len_utf8 } => Some((*width, *len_utf8)),
+                LineFragment::Text { .. } => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            elements,
+            vec![Some((hint_width("value:"), 7)), Some((hint_width("x"), 1))],
+            "each hint wraps as one unbreakable pill of its label in the hint font plus the pill \
+             padding and margins, and its LSP padding space adds no width"
         );
     }
 
@@ -1834,16 +2001,35 @@ mod tests {
 
         let mut line_wrapper = text_system.line_wrapper(font.clone(), font_size);
         let mut indent_adjustment = IndentAdjustment::default();
+
+        let (wrap_map, _) =
+            cx.update(|cx| WrapMap::new(tabs_snapshot.clone(), font, font_size, wrap_width, cx));
+        let mut notifications = observe(&wrap_map, cx);
+
+        let inlay_hint_font_id =
+            text_system.resolve_font(&wrap_map.read_with(cx, |map, _| map.inlay_hint_font.clone()));
+        let inlay_hint_width = |text: &str| {
+            let content_width = text
+                .get(InlayHintPill::content_range(text))
+                .unwrap_or_default()
+                .chars()
+                .map(|character| {
+                    text_system.layout_width(
+                        inlay_hint_font_id,
+                        inlay_hint_font_size(font_size),
+                        character,
+                    )
+                })
+                .sum::<Pixels>();
+            InlayHintPill::new(text, content_width).width()
+        };
         let expected_text = wrap_text(
             &tabs_snapshot,
             wrap_width,
             indent_adjustment,
             &mut line_wrapper,
+            &inlay_hint_width,
         );
-
-        let (wrap_map, _) =
-            cx.update(|cx| WrapMap::new(tabs_snapshot.clone(), font, font_size, wrap_width, cx));
-        let mut notifications = observe(&wrap_map, cx);
 
         if wrap_map.read_with(cx, |map, _| map.is_rewrapping()) {
             notifications.next().await.unwrap();
@@ -1941,6 +2127,7 @@ mod tests {
                 wrap_width,
                 indent_adjustment,
                 &mut line_wrapper,
+                &inlay_hint_width,
             );
             let (mut snapshot, wrap_edits) =
                 wrap_map.update(cx, |map, cx| map.sync(tabs_snapshot.clone(), tab_edits, cx));
@@ -2060,32 +2247,70 @@ mod tests {
         wrap_width: Option<Pixels>,
         indent_adjustment: IndentAdjustment,
         line_wrapper: &mut LineWrapper,
+        inlay_hint_width: &impl Fn(&str) -> Pixels,
     ) -> String {
-        if let Some(wrap_width) = wrap_width {
-            let mut wrapped_text = String::new();
-            for (row, line) in tab_snapshot.text().split('\n').enumerate() {
-                if row > 0 {
-                    wrapped_text.push('\n');
-                }
+        let Some(wrap_width) = wrap_width else {
+            return tab_snapshot.text();
+        };
 
-                let mut prev_ix = 0;
-                for boundary in line_wrapper.wrap_line(
-                    &[LineFragment::text(line)],
-                    wrap_width,
-                    indent_adjustment,
-                ) {
-                    wrapped_text.push_str(&line[prev_ix..boundary.ix]);
-                    wrapped_text.push('\n');
-                    wrapped_text.push_str(&" ".repeat(boundary.next_indent as usize));
-                    prev_ix = boundary.ix;
+        let mut rows = vec![Vec::<(Option<InlayId>, String)>::new()];
+        for chunk in tab_snapshot.chunks(
+            TabPoint::zero()..tab_snapshot.max_point(),
+            LanguageAwareStyling {
+                tree_sitter: false,
+                diagnostics: false,
+            },
+            Highlights::default(),
+        ) {
+            let inlay_hint_id = chunk
+                .inlay_id
+                .filter(|inlay_id| matches!(inlay_id, InlayId::Hint(_)));
+            for (part_index, part) in chunk.text.split('\n').enumerate() {
+                if part_index > 0 {
+                    rows.push(Vec::new());
                 }
-                wrapped_text.push_str(&line[prev_ix..]);
+                let Some(row) = rows.last_mut() else {
+                    continue;
+                };
+                if let Some((segment_inlay_hint_id, segment_text)) = row.last_mut()
+                    && *segment_inlay_hint_id == inlay_hint_id
+                {
+                    segment_text.push_str(part);
+                } else if !part.is_empty() {
+                    row.push((inlay_hint_id, part.to_string()));
+                }
+            }
+        }
+
+        let mut wrapped_text = String::new();
+        for (row_index, segments) in rows.iter().enumerate() {
+            if row_index > 0 {
+                wrapped_text.push('\n');
             }
 
-            wrapped_text
-        } else {
-            tab_snapshot.text()
+            let line = segments
+                .iter()
+                .map(|(_, segment_text)| segment_text.as_str())
+                .collect::<String>();
+            let fragments = segments
+                .iter()
+                .map(|(inlay_hint_id, segment_text)| match inlay_hint_id {
+                    Some(_) => {
+                        LineFragment::element(inlay_hint_width(segment_text), segment_text.len())
+                    }
+                    None => LineFragment::text(segment_text),
+                })
+                .collect::<Vec<_>>();
+            let mut prev_ix = 0;
+            for boundary in line_wrapper.wrap_line(&fragments, wrap_width, indent_adjustment) {
+                wrapped_text.push_str(line.get(prev_ix..boundary.ix).unwrap_or_default());
+                wrapped_text.push('\n');
+                wrapped_text.push_str(&" ".repeat(boundary.next_indent as usize));
+                prev_ix = boundary.ix;
+            }
+            wrapped_text.push_str(line.get(prev_ix..).unwrap_or_default());
         }
+        wrapped_text
     }
 
     impl WrapSnapshot {

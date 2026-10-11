@@ -134,8 +134,8 @@ jobs:
       - name: Run editor rounded scrollbar thumb tests
         run: cargo test --locked --package editor --lib rounded_thumb
 
-      - name: Run editor context menu, gutter, inspection widget and breadcrumb tests
-        run: cargo test --locked --package editor --lib -- mouse_context_menu intellij_gutter inspection_widget breadcrumb
+      - name: Run editor context menu, gutter, inspection widget, breadcrumb, matching bracket and inlay hint pill tests
+        run: cargo test --locked --package editor --lib -- mouse_context_menu intellij_gutter inspection_widget breadcrumb test_matching_bracket_highlights inlay_hint_pill
 
       - name: Run language server DOTNET_ROOT tests
         run: cargo test --locked --package project --features project/test-support --lib dotnet_root

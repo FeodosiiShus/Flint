@@ -57,6 +57,11 @@
       "scrollbar.thumb.hover_background": "#8080808c",
       "scrollbar.thumb.active_background": "#808080c0",
       "terminal.background": "#282c3400",
+      "tab.test_file_background": "#1c261c",
+      "editor.indent_guide": "#454963",
+      "editor.indent_guide_active": "#454963",
+      "editor.document_highlight.bracket_background": "#7b524b",
+      "hint.background": "#383c458c",
       "accents": [
         "#e08855",
         "#b08b14",
@@ -68,6 +73,11 @@
         "#24a394",
         "#5fad65",
       ],
+      "syntax": {
+        "hint": {
+          "color": "#747ba4",
+        },
+      },
     },
   },
   // The name of a base set of key bindings to use.
@@ -93,7 +103,7 @@
   // The OpenType features to enable for text in the editor.
   "buffer_font_features": {
     // Disable ligatures:
-    // "calt": false
+    "calt": false,
   },
   // The default font size for text in the editor
   "buffer_font_size": 13,
@@ -109,7 +119,9 @@
   //         "buffer_line_height": {
   //           "custom": 2
   //         },
-  "buffer_line_height": "comfortable",
+  "buffer_line_height": {
+    "custom": 1.6923077,
+  },
   // The name of a font to use for rendering text in the UI
   // You can set this to ".SystemUIFont" to use the system font
   // ".ZedSans" currently aliases to "IBM Plex Sans", but this may
@@ -451,7 +463,7 @@
   //
   // The colors that are used for different indentation levels are defined in the theme (theme key: `accents`).
   // They can be customized by using theme overrides.
-  "colorize_brackets": true,
+  "colorize_brackets": false,
   // When to show the scrollbar in the completion menu.
   // This setting can take four values:
   //
@@ -739,7 +751,7 @@
     // Whether to show fold buttons in the gutter.
     "folds": true,
     // Minimum number of characters to reserve space for in the gutter.
-    "min_line_number_digits": 4,
+    "min_line_number_digits": 0,
     // The width of the git diff hunk indicators in the gutter.
     // Use "default" to scale with font size, or {"custom": <pixels>} for a fixed width.
     "git_gutter_width": "default",
@@ -1151,6 +1163,7 @@
     "close_position": "right",
     // Whether to show the file icon for a tab.
     "file_icons": true,
+    "file_colors": true,
     // Controls the appearance behavior of the tab's close button.
     //
     // 1. Show it just upon hovering the tab. (default)
@@ -1330,7 +1343,7 @@
   "soft_wrap_indent": "same",
   // The column at which to soft-wrap lines, for buffers where soft-wrap
   // is enabled.
-  "preferred_line_length": 80,
+  "preferred_line_length": 120,
   // Whether to indent lines using tab characters, as opposed to multiple
   // spaces.
   "hard_tabs": false,

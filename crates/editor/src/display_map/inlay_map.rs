@@ -242,6 +242,7 @@ pub struct InlayChunk<'a> {
     pub chunk: Chunk<'a>,
     /// Whether the inlay should be customly rendered.
     pub renderer: Option<ChunkRenderer>,
+    pub inlay_id: Option<InlayId>,
 }
 
 impl InlayChunks<'_> {
@@ -319,6 +320,7 @@ impl<'a> Iterator for InlayChunks<'a> {
                         ..chunk.clone()
                     },
                     renderer: None,
+                    inlay_id: None,
                 }
             }
             Transform::Inlay(inlay) => {
@@ -446,6 +448,7 @@ impl<'a> Iterator for InlayChunks<'a> {
                         ..Chunk::default()
                     },
                     renderer,
+                    inlay_id: Some(inlay.id),
                 }
             }
         };

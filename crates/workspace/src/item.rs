@@ -28,7 +28,7 @@ use std::{
     sync::Arc,
     time::Duration,
 };
-use ui::{Color, Icon, IntoElement, Label, LabelCommon};
+use ui::{Color, Icon, IntoElement, Label, LabelCommon, LabelSize};
 use util::ResultExt;
 
 #[derive(Clone, Copy, Debug)]
@@ -54,6 +54,7 @@ pub struct ItemSettings {
     pub close_position: ClosePosition,
     pub activate_on_close: ActivateOnClose,
     pub file_icons: bool,
+    pub file_colors: bool,
     pub show_diagnostics: ShowDiagnostics,
     pub show_close_button: ShowCloseButton,
 }
@@ -84,6 +85,7 @@ impl Settings for ItemSettings {
             close_position: tabs.close_position.unwrap(),
             activate_on_close: tabs.activate_on_close.unwrap(),
             file_icons: tabs.file_icons.unwrap(),
+            file_colors: tabs.file_colors.unwrap(),
             show_diagnostics: tabs.show_diagnostics.unwrap(),
             show_close_button: tabs.show_close_button.unwrap(),
         }
@@ -132,6 +134,7 @@ pub struct TabContentParams {
     pub max_title_len: Option<usize>,
     pub truncate_title_middle: bool,
     pub label_color: Option<Color>,
+    pub label_size: Option<LabelSize>,
 }
 
 impl TabContentParams {
@@ -179,6 +182,7 @@ pub trait Item: Focusable + EventEmitter<Self::Event> + Render + Sized {
         Label::new(text)
             .single_line()
             .color(params.text_color())
+            .size(params.label_size.unwrap_or_default())
             .into_any_element()
     }
 

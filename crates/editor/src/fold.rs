@@ -1,14 +1,5 @@
 use super::*;
 
-impl GutterDimensions {
-    /// The width of the space reserved for the fold indicators,
-    /// use alongside 'justify_end' and `gutter_width` to
-    /// right align content with the line numbers
-    pub fn fold_area_width(&self) -> Pixels {
-        self.margin + self.right_padding
-    }
-}
-
 impl EditorSnapshot {
     pub fn render_crease_toggle(
         &self,

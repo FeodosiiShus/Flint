@@ -730,7 +730,7 @@ impl CommitView {
                 let font_id = window.text_system().resolve_font(&style.text.font());
                 let font_size = style.text.font_size.to_pixels(window.rem_size());
                 snapshot
-                    .gutter_dimensions(font_id, font_size, style, window, cx)
+                    .gutter_dimensions(font_id, font_size, window, cx)
                     .full_width()
             })
         });

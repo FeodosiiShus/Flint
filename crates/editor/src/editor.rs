@@ -1144,6 +1144,9 @@ pub struct GutterDimensions {
     pub width: Pixels,
     pub margin: Pixels,
     pub git_blame_entries_width: Option<Pixels>,
+    pub icon_area_x: Pixels,
+    pub fold_area_x: Pixels,
+    pub vcs_marker_x: Option<Pixels>,
 }
 
 impl GutterDimensions {
@@ -1160,6 +1163,10 @@ impl GutterDimensions {
     /// The full width of the space taken up by the gutter.
     pub fn full_width(&self) -> Pixels {
         self.margin + self.width
+    }
+
+    pub fn line_numbers_width(&self) -> Pixels {
+        self.width - self.left_padding - self.right_padding
     }
 }
 
@@ -11636,16 +11643,10 @@ impl EditorSnapshot {
         self.scroll_anchor.scroll_position(&self.display_snapshot)
     }
 
-    pub fn max_line_number_width(&self, style: &EditorStyle, window: &mut Window) -> Pixels {
-        let digit_count = self.widest_line_number().ilog10() + 1;
-        column_pixels(style, digit_count as usize, window)
-    }
-
     pub fn gutter_dimensions(
         &self,
         font_id: FontId,
         font_size: Pixels,
-        style: &EditorStyle,
         window: &mut Window,
         cx: &App,
     ) -> GutterDimensions {
@@ -11653,6 +11654,11 @@ impl EditorSnapshot {
             && let Some(ch_width) = cx.text_system().ch_width(font_id, font_size).log_err()
             && let Some(ch_advance) = cx.text_system().ch_advance(font_id, font_size).log_err()
         {
+            use crate::element::gutter_geometry::{
+                GutterContent, GutterGaps, annotations_area_width, line_number_font_size,
+                line_numbers_area_width,
+            };
+
             let show_git_gutter = self.show_git_diff_gutter.unwrap_or_else(|| {
                 matches!(
                     ProjectSettings::get_global(cx).git.git_gutter,
@@ -11663,17 +11669,23 @@ impl EditorSnapshot {
             let show_line_numbers = self
                 .show_line_numbers
                 .unwrap_or(gutter_settings.line_numbers);
-            let line_gutter_width = if show_line_numbers {
+            let line_numbers_width = if show_line_numbers {
                 // Avoid flicker-like gutter resizes when the line number gains another digit by
                 // only resizing the gutter on files with > 10**min_line_number_digits lines.
                 let min_digits = gutter_settings
                     .min_line_number_digits
                     .max(self.sticky_line_number_digits);
-                let min_width_for_number_on_gutter = ch_advance * min_digits as f32;
-                self.max_line_number_width(style, window)
-                    .max(min_width_for_number_on_gutter)
+                let digits = (self.widest_line_number().max(1).ilog10() + 1) as usize;
+                let digit_advance = cx
+                    .text_system()
+                    .ch_advance(font_id, line_number_font_size(font_size))
+                    .log_err()
+                    .unwrap_or(ch_advance);
+                Some(line_numbers_area_width(
+                    digit_advance * digits.max(min_digits),
+                ))
             } else {
-                0.0.into()
+                None
             };
 
             let show_breakpoints = self.show_breakpoints.unwrap_or(gutter_settings.breakpoints);
@@ -11694,38 +11706,44 @@ impl EditorSnapshot {
                     });
 
             let is_singleton = self.buffer_snapshot().is_singleton();
-
-            let left_padding = git_blame_entries_width.unwrap_or(Pixels::ZERO)
-                + if !is_singleton {
-                    ch_width * 4.0
-                } else if show_breakpoints || show_bookmarks {
-                    ch_width * 3.0
-                } else if show_git_gutter && show_line_numbers {
-                    ch_width * 2.0
-                } else if show_git_gutter || show_line_numbers {
-                    ch_width
-                } else {
-                    px(0.)
-                };
-
-            let shows_folds = is_singleton && gutter_settings.folds;
-
-            let right_padding = if shows_folds && show_line_numbers {
-                ch_width * 4.0
-            } else if shows_folds || (!is_singleton && show_line_numbers) {
-                ch_width * 3.0
-            } else if show_line_numbers {
-                ch_width
+            let leading_area_width = if is_singleton {
+                git_blame_entries_width
+                    .map(|blame_width| annotations_area_width(ch_width + blame_width))
             } else {
-                px(0.)
+                Some(git_blame_entries_width.unwrap_or(Pixels::ZERO) + ch_width * 4.0)
             };
+            let icons = (show_breakpoints || show_bookmarks)
+                && (!is_singleton
+                    || self
+                        .buffer_snapshot()
+                        .as_singleton()
+                        .is_some_and(|buffer| project::File::from_dyn(buffer.file()).is_some()));
+            let folds = is_singleton
+                && gutter_settings.folds
+                && self.mode.is_full()
+                && self.display_snapshot.companion_snapshot().is_none();
+
+            let areas = GutterContent {
+                gaps: GutterGaps::for_density(ThemeSettings::get_global(cx).ui_density),
+                leading_area_width,
+                line_numbers_width,
+                icons,
+                folds,
+                vcs_markers: show_git_gutter.then_some(gutter_settings.git_gutter_width),
+            }
+            .layout();
 
             GutterDimensions {
-                left_padding,
-                right_padding,
-                width: line_gutter_width + left_padding + right_padding,
-                margin: GutterDimensions::default_gutter_margin(font_id, font_size, cx),
+                left_padding: areas.line_numbers_x,
+                right_padding: areas.width - areas.line_numbers_end,
+                width: areas.width,
+                margin: areas.text_margin.unwrap_or_else(|| {
+                    GutterDimensions::default_gutter_margin(font_id, font_size, cx)
+                }),
                 git_blame_entries_width,
+                icon_area_x: areas.icon_area_x,
+                fold_area_x: areas.fold_area_x,
+                vcs_marker_x: areas.vcs_marker_x,
             }
         } else if self.offset_content {
             GutterDimensions::default_with_margin(font_id, font_size, cx)

@@ -3987,7 +3987,7 @@ fn window_and_layout_page() -> SettingsPage {
         ]
     }
 
-    fn tab_bar_section() -> [SettingsPageItem; 12] {
+    fn tab_bar_section() -> [SettingsPageItem; 13] {
         [
             SettingsPageItem::SectionHeader("Tab Bar"),
             SettingsPageItem::SettingItem(SettingItem {
@@ -4024,6 +4024,19 @@ fn window_and_layout_page() -> SettingsPage {
                     pick: |settings_content| settings_content.tabs.as_ref()?.file_icons.as_ref(),
                     write: |settings_content, value, _| {
                         settings_content.tabs.get_or_insert_default().file_icons = value;
+                    },
+                }),
+                metadata: None,
+                files: USER,
+            }),
+            SettingsPageItem::SettingItem(SettingItem {
+                title: "Color Test Files In Tabs",
+                description: "Tint the tabs of test files like WebStorm's Tests file color.",
+                field: Box::new(SettingField {
+                    json_path: Some("tabs.file_colors"),
+                    pick: |settings_content| settings_content.tabs.as_ref()?.file_colors.as_ref(),
+                    write: |settings_content, value, _| {
+                        settings_content.tabs.get_or_insert_default().file_colors = value;
                     },
                 }),
                 metadata: None,
