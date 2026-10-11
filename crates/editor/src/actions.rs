@@ -927,6 +927,11 @@ actions!(
     ]
 );
 
+actions!(
+    editor,
+    [LayoutEditorOnly, LayoutEditorAndPreview, LayoutPreviewOnly]
+);
+
 /// Goes to the definition of the symbol at cursor.
 #[derive(PartialEq, Clone, Default, Deserialize, JsonSchema, Action)]
 #[action(namespace = editor)]

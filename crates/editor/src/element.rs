@@ -1455,6 +1455,7 @@ impl EditorElement {
         scroll_position: gpui::Point<ScrollOffset>,
         non_visible_cursors: bool,
         right_margin: Pixels,
+        vertical_scrollbar_top_inset: Pixels,
         editor_width: Pixels,
         window: &mut Window,
         cx: &mut App,
@@ -1531,6 +1532,7 @@ impl EditorElement {
             scroll_position,
             self.style.scrollbar_width,
             right_margin,
+            vertical_scrollbar_top_inset,
             editor_width,
             show_scrollbars,
             self.editor.read(cx).scroll_manager.active_scrollbar_state(),
@@ -9274,6 +9276,12 @@ impl Element for EditorElement {
                         let effective_editor_width = frozen_scroll_state
                             .map_or(editor_width, |settled| settled.editor_width);
 
+                        let inspection_widget_layout =
+                            self.layout_inspection_widget(&text_hitbox, window, cx);
+                        let vertical_scrollbar_top_inset = inspection_widget_layout
+                            .as_ref()
+                            .map_or(Pixels::ZERO, |layout| layout.size.height);
+
                         let scrollbars_layout = self.layout_scrollbars(
                             &snapshot,
                             &effective_scrollbar_layout_information,
@@ -9281,6 +9289,7 @@ impl Element for EditorElement {
                             scroll_position,
                             non_visible_cursors,
                             right_margin,
+                            vertical_scrollbar_top_inset,
                             effective_editor_width,
                             window,
                             cx,
@@ -9528,15 +9537,9 @@ impl Element for EditorElement {
                                 )
                             };
 
-                        let inspection_widget =
-                            window.with_element_namespace("inspection_widget", |window| {
-                                self.layout_inspection_widget(
-                                    &text_hitbox,
-                                    right_margin,
-                                    window,
-                                    cx,
-                                )
-                            });
+                        let inspection_widget = inspection_widget_layout.map(|layout| {
+                            self.prepaint_inspection_widget(layout, &text_hitbox, window, cx)
+                        });
 
                         self.populate_point_diagnostics(
                             &snapshot,
@@ -9912,6 +9915,7 @@ impl EditorScrollbars {
         scroll_position: gpui::Point<f64>,
         scrollbar_width: Pixels,
         right_margin: Pixels,
+        vertical_scrollbar_top_inset: Pixels,
         editor_width: Pixels,
         show_scrollbars: bool,
         scrollbar_state: Option<&ActiveScrollbarState>,
@@ -9938,8 +9942,11 @@ impl EditorScrollbars {
             ),
             ScrollbarAxis::Vertical => Bounds::from_anchor_and_size(
                 gpui::Anchor::TopRight,
-                editor_bounds.top_right(),
-                size(scrollbar_width, viewport_size.height),
+                editor_bounds.top_right() + point(Pixels::ZERO, vertical_scrollbar_top_inset),
+                size(
+                    scrollbar_width,
+                    (viewport_size.height - vertical_scrollbar_top_inset).max(Pixels::ZERO),
+                ),
             ),
         };
 

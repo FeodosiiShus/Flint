@@ -407,6 +407,12 @@ pub mod search_panel {
     actions!(search_panel, [ToggleFocus]);
 }
 
+pub mod diagnostics {
+    use gpui::actions;
+
+    actions!(diagnostics, [ToggleFileProblems]);
+}
+
 pub mod project_panel {
     use gpui::actions;
 

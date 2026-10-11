@@ -45,6 +45,7 @@ mod selections_collection;
 pub mod semantic_tokens;
 mod split;
 pub mod split_editor_view;
+mod text_editor_with_preview;
 
 mod bookmarks;
 #[cfg(test)]
@@ -78,8 +79,12 @@ pub use completions::CompletionProvider;
 #[cfg(test)]
 pub(crate) use completions::snippet_candidate_suffixes;
 pub(crate) use completions::split_words;
-use diagnostics::{ActiveDiagnostic, GlobalDiagnosticRenderer, InlineDiagnostic};
-pub use diagnostics::{DiagnosticRenderer, set_diagnostic_renderer};
+use diagnostics::{
+    ActiveDiagnostic, DiagnosticCountsCache, GlobalDiagnosticRenderer, InlineDiagnostic,
+};
+pub use diagnostics::{
+    DiagnosticCounts, DiagnosticRenderer, HighlightLevel, set_diagnostic_renderer,
+};
 pub use display_map::{
     ChunkRenderer, ChunkRendererContext, DisplayPoint, FoldPlaceholder, HighlightKey,
     NavigationOverlayKey, SemanticTokenHighlight,
@@ -115,6 +120,7 @@ pub use multi_buffer::{
 pub use split::{DiffStyleControls, SplittableEditor, ToggleSplitDiff};
 pub use split_editor_view::SplitEditorView;
 pub use text::Bias;
+pub use text_editor_with_preview::{EditorPreview, PreviewLayout};
 pub use workspace::searchable::Direction;
 
 use ::git::{Blame, status::FileStatus};
@@ -831,6 +837,7 @@ struct SettledScrollRange {
 pub struct Editor {
     focus_handle: FocusHandle,
     last_focused_descendant: Option<WeakFocusHandle>,
+    preview_host: Option<text_editor_with_preview::PreviewHost>,
     /// The text buffer being edited
     buffer: Entity<MultiBuffer>,
     /// Map of how text in the buffer should be displayed.
@@ -864,6 +871,8 @@ pub struct Editor {
     inline_diagnostics_update: Task<()>,
     inline_diagnostics_enabled: bool,
     diagnostics_enabled: bool,
+    highlight_level: HighlightLevel,
+    diagnostic_counts_cache: DiagnosticCountsCache,
     word_completions_enabled: bool,
     inline_diagnostics: Vec<(Anchor, InlineDiagnostic)>,
     soft_wrap_mode_override: Option<language_settings::SoftWrap>,
@@ -2161,6 +2170,7 @@ impl Editor {
             focus_handle,
             show_cursor_when_unfocused: false,
             last_focused_descendant: None,
+            preview_host: None,
             buffer: multi_buffer.clone(),
             display_map: display_map.clone(),
             placeholder_display_map: None,
@@ -2275,6 +2285,8 @@ impl Editor {
             hovered_link_state: None,
             inline_diagnostics_enabled: full_mode,
             diagnostics_enabled: full_mode,
+            highlight_level: HighlightLevel::AllProblems,
+            diagnostic_counts_cache: DiagnosticCountsCache::default(),
             word_completions_enabled: full_mode,
             inline_value_cache: InlineValueCache::new(inlay_hint_settings.show_value_hints),
             gutter_hovered: false,
@@ -9796,9 +9808,7 @@ impl Editor {
         self.accent_data = new_accents;
 
         if self.diagnostics_enabled() {
-            let new_severity = EditorSettings::get_global(cx)
-                .diagnostics_max_severity
-                .unwrap_or(DiagnosticSeverity::Hint);
+            let new_severity = self.highlight_level_max_severity(cx);
             self.set_max_diagnostics_severity(new_severity, cx);
         }
         self.refresh_inline_values(cx);
@@ -10325,6 +10335,9 @@ impl Editor {
     }
 
     fn handle_focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.forward_focus_to_preview(window, cx) {
+            return;
+        }
         self.cursor_animations.clear();
         cx.emit(EditorEvent::Focused);
 
@@ -11932,6 +11945,7 @@ pub enum EditorEvent {
         anchor: Anchor,
         is_deactivate: bool,
     },
+    PreviewLayoutChanged,
 }
 
 impl EventEmitter<EditorEvent> for Editor {}
@@ -11944,7 +11958,7 @@ impl Focusable for Editor {
 
 impl Render for Editor {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        EditorElement::new(&cx.entity(), self.create_style(cx))
+        self.render_with_preview(cx)
     }
 }
 

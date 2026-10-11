@@ -1,4 +1,5 @@
 use super::*;
+use std::cell::Cell;
 
 pub trait DiagnosticRenderer {
     fn render_group(
@@ -66,6 +67,79 @@ pub(super) enum ActiveDiagnostic {
     All,
     Group(ActiveDiagnosticGroup),
 }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HighlightLevel {
+    None,
+    Syntax,
+    AllProblems,
+}
+
+impl HighlightLevel {
+    pub const ALL: [Self; 3] = [Self::None, Self::Syntax, Self::AllProblems];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::None => "None",
+            Self::Syntax => "Syntax",
+            Self::AllProblems => "All Problems",
+        }
+    }
+
+    pub fn description(self) -> &'static str {
+        match self {
+            Self::None => "No highlighting",
+            Self::Syntax => "Syntax errors only, no inspections",
+            Self::AllProblems => {
+                "All Problems including annotators, inspections, external linters etc."
+            }
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct DiagnosticCounts {
+    pub errors: usize,
+    pub warnings: usize,
+    pub weak_warnings: usize,
+}
+
+impl DiagnosticCounts {
+    pub fn is_empty(&self) -> bool {
+        self.errors == 0 && self.warnings == 0 && self.weak_warnings == 0
+    }
+
+    fn count(snapshot: &language::BufferSnapshot, max_severity: DiagnosticSeverity) -> Self {
+        let mut counts = Self::default();
+        let Some(max_severity) = max_severity.into_lsp() else {
+            return counts;
+        };
+        for entry in snapshot
+            .diagnostic_entries_in_range(0..snapshot.len(), false)
+            .filter(|entry| entry.diagnostic.is_primary)
+            .filter(|entry| entry.diagnostic.severity <= max_severity)
+        {
+            match entry.diagnostic.severity {
+                lsp::DiagnosticSeverity::ERROR => counts.errors += 1,
+                lsp::DiagnosticSeverity::WARNING => counts.warnings += 1,
+                lsp::DiagnosticSeverity::INFORMATION => counts.weak_warnings += 1,
+                _ => {}
+            }
+        }
+        counts
+    }
+}
+
+#[derive(Clone, Copy)]
+struct CachedDiagnosticCounts {
+    buffer_id: BufferId,
+    non_text_state_update_count: usize,
+    max_severity: DiagnosticSeverity,
+    counts: DiagnosticCounts,
+}
+
+#[derive(Default)]
+pub(super) struct DiagnosticCountsCache(Cell<Option<CachedDiagnosticCounts>>);
 
 impl Editor {
     pub fn go_to_diagnostic(
@@ -309,27 +383,84 @@ impl Editor {
         window: &mut Window,
         cx: &mut Context<Editor>,
     ) {
-        let diagnostics_enabled =
-            self.diagnostics_enabled() && self.diagnostics_max_severity != DiagnosticSeverity::Off;
-        self.diagnostics_enabled = !diagnostics_enabled;
+        let new_level = if self.highlight_level() == HighlightLevel::None {
+            HighlightLevel::AllProblems
+        } else {
+            HighlightLevel::None
+        };
+        self.set_highlight_level(new_level, window, cx);
+    }
 
-        let new_severity = if self.diagnostics_enabled {
-            EditorSettings::get_global(cx)
+    pub fn highlight_level(&self) -> HighlightLevel {
+        if self.diagnostics_enabled() && self.diagnostics_max_severity != DiagnosticSeverity::Off {
+            self.highlight_level
+        } else {
+            HighlightLevel::None
+        }
+    }
+
+    pub fn set_highlight_level(
+        &mut self,
+        level: HighlightLevel,
+        window: &mut Window,
+        cx: &mut Context<Editor>,
+    ) {
+        self.highlight_level = level;
+        self.diagnostics_enabled = level != HighlightLevel::None;
+        let new_severity = match level {
+            HighlightLevel::None => DiagnosticSeverity::Off,
+            HighlightLevel::Syntax => DiagnosticSeverity::Error,
+            HighlightLevel::AllProblems => EditorSettings::get_global(cx)
                 .diagnostics_max_severity
                 .filter(|severity| severity != &DiagnosticSeverity::Off)
-                .unwrap_or(DiagnosticSeverity::Hint)
-        } else {
-            DiagnosticSeverity::Off
+                .unwrap_or(DiagnosticSeverity::Hint),
         };
         self.set_max_diagnostics_severity(new_severity, cx);
         if self.diagnostics_enabled {
+            self.dismiss_diagnostics(cx);
             self.active_diagnostics = ActiveDiagnostic::None;
             self.refresh_inline_diagnostics(false, window, cx);
         } else {
             self.inline_diagnostics_update = Task::ready(());
             self.inline_diagnostics.clear();
-            cx.notify();
         }
+        cx.notify();
+    }
+
+    pub(super) fn highlight_level_max_severity(&self, cx: &App) -> DiagnosticSeverity {
+        match self.highlight_level {
+            HighlightLevel::Syntax => DiagnosticSeverity::Error,
+            HighlightLevel::None | HighlightLevel::AllProblems => EditorSettings::get_global(cx)
+                .diagnostics_max_severity
+                .unwrap_or(DiagnosticSeverity::Hint),
+        }
+    }
+
+    pub fn diagnostic_counts(&self, cx: &App) -> DiagnosticCounts {
+        let Some(buffer) = self.buffer.read(cx).as_singleton() else {
+            return DiagnosticCounts::default();
+        };
+        let buffer = buffer.read(cx);
+        let buffer_id = buffer.remote_id();
+        let non_text_state_update_count = buffer.non_text_state_update_count();
+        let max_severity = self.diagnostics_max_severity;
+        if let Some(cached) = self.diagnostic_counts_cache.0.get()
+            && cached.buffer_id == buffer_id
+            && cached.non_text_state_update_count == non_text_state_update_count
+            && cached.max_severity == max_severity
+        {
+            return cached.counts;
+        }
+        let counts = DiagnosticCounts::count(&buffer.snapshot(), max_severity);
+        self.diagnostic_counts_cache
+            .0
+            .set(Some(CachedDiagnosticCounts {
+                buffer_id,
+                non_text_state_update_count,
+                max_severity,
+                counts,
+            }));
+        counts
     }
 
     pub(super) fn all_diagnostics_active(&self) -> bool {

@@ -364,15 +364,42 @@ impl MarkdownStyle {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AutoscrollAlignment {
+    Reveal,
+    Top,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct AutoscrollRequest {
+    source_index: usize,
+    alignment: AutoscrollAlignment,
+}
+
+impl AutoscrollRequest {
+    fn reveal(source_index: usize) -> Self {
+        Self {
+            source_index,
+            alignment: AutoscrollAlignment::Reveal,
+        }
+    }
+
+    fn top(source_index: usize) -> Self {
+        Self {
+            source_index,
+            alignment: AutoscrollAlignment::Top,
+        }
+    }
+}
+
 pub struct Markdown {
     source: SharedString,
     selection: Selection,
     pressed_link: Option<RenderedLink>,
     pressed_footnote_ref: Option<RenderedFootnoteRef>,
-    autoscroll_request: Option<usize>,
+    autoscroll_request: Option<AutoscrollRequest>,
     pending_heading_scroll: Option<SharedString>,
-    pending_autoscroll: Option<usize>,
-    active_root_block: Option<usize>,
+    pending_autoscroll: Option<AutoscrollRequest>,
     parsed_markdown: ParsedMarkdown,
     images_by_source_offset: HashMap<usize, Arc<Image>>,
     should_reparse: bool,
@@ -554,7 +581,6 @@ impl Markdown {
             autoscroll_request: None,
             pending_heading_scroll: None,
             pending_autoscroll: None,
-            active_root_block: None,
             should_reparse: false,
             images_by_source_offset: Default::default(),
             parsed_markdown: ParsedMarkdown::default(),
@@ -657,7 +683,7 @@ impl Markdown {
 
     pub fn scroll_to_heading(&mut self, slug: &str, cx: &mut Context<Self>) -> Option<usize> {
         if let Some(source_index) = self.parsed_markdown.heading_slugs.get(slug).copied() {
-            self.autoscroll_request = Some(source_index);
+            self.autoscroll_request = Some(AutoscrollRequest::reveal(source_index));
             cx.notify();
             Some(source_index)
         } else {
@@ -697,17 +723,18 @@ impl Markdown {
         self.parse(cx);
     }
 
-    pub fn request_autoscroll_to_source_index(
+    pub fn request_scroll_to_source_index_at_top(
         &mut self,
         source_index: usize,
         cx: &mut Context<Self>,
     ) {
+        let request = AutoscrollRequest::top(source_index);
         if self.pending_parse.is_some() {
-            self.pending_autoscroll = Some(source_index);
+            self.pending_autoscroll = Some(request);
         } else {
-            self.autoscroll_request = Some(source_index);
+            self.autoscroll_request = Some(request);
         }
-        cx.refresh_windows();
+        cx.notify();
     }
 
     fn footnote_definition_content_start(&self, label: &SharedString) -> Option<usize> {
@@ -717,29 +744,14 @@ impl Markdown {
             .copied()
     }
 
-    pub fn set_active_root_for_source_index(
-        &mut self,
-        source_index: Option<usize>,
-        cx: &mut Context<Self>,
-    ) {
-        let active_root_block =
-            source_index.and_then(|index| self.parsed_markdown.root_block_for_source_index(index));
-        if self.active_root_block == active_root_block {
-            return;
-        }
-
-        self.active_root_block = active_root_block;
-        cx.notify();
-    }
-
     pub fn reset(&mut self, source: SharedString, cx: &mut Context<Self>) {
         if &source == self.source() {
             if self.pending_parse.is_none() {
                 if let Some(slug) = self.pending_heading_scroll.take() {
                     self.pending_autoscroll = None;
                     self.scroll_to_heading(&slug, cx);
-                } else if let Some(source_index) = self.pending_autoscroll.take() {
-                    self.autoscroll_request = Some(source_index);
+                } else if let Some(request) = self.pending_autoscroll.take() {
+                    self.autoscroll_request = Some(request);
                     cx.refresh_windows();
                 }
             }
@@ -909,7 +921,6 @@ impl Markdown {
                 source: self.source.clone(),
                 ..Default::default()
             };
-            self.active_root_block = None;
             self.images_by_source_offset.clear();
             cx.notify();
             cx.refresh_windows();
@@ -1051,11 +1062,6 @@ impl Markdown {
             this.update(cx, |this, cx| {
                 this.parsed_markdown = parsed;
                 this.images_by_source_offset = images_by_source_offset;
-                if this.active_root_block.is_some_and(|block_index| {
-                    block_index >= this.parsed_markdown.root_block_starts.len()
-                }) {
-                    this.active_root_block = None;
-                }
                 this.pending_parse.take();
                 if this.should_reparse {
                     this.parse(cx);
@@ -1064,9 +1070,9 @@ impl Markdown {
                         this.parsed_markdown.heading_slugs.get(&slug).copied()
                 {
                     this.pending_autoscroll = None;
-                    this.autoscroll_request = Some(source_index);
-                } else if let Some(source_index) = this.pending_autoscroll.take() {
-                    this.autoscroll_request = Some(source_index);
+                    this.autoscroll_request = Some(AutoscrollRequest::reveal(source_index));
+                } else if let Some(request) = this.pending_autoscroll.take() {
+                    this.autoscroll_request = Some(request);
                 }
                 cx.notify();
                 cx.refresh_windows();
@@ -1255,18 +1261,6 @@ impl ParsedMarkdown {
         ranges
     }
 
-    pub fn root_block_for_source_index(&self, source_index: usize) -> Option<usize> {
-        if self.root_block_starts.is_empty() {
-            return None;
-        }
-
-        let partition = self
-            .root_block_starts
-            .partition_point(|block_start| *block_start <= source_index);
-
-        Some(partition.saturating_sub(1))
-    }
-
     /// Extracts the markdown source for a selection, rebalancing inline
     /// delimiters (`**`, backticks, link syntax, etc.) so partial selections of
     /// styled spans stay well-formed.
@@ -1401,7 +1395,6 @@ pub struct MarkdownElement {
     on_source_click: Option<SourceClickCallback>,
     on_checkbox_toggle: Option<CheckboxToggleCallback>,
     image_resolver: Option<Box<dyn Fn(&str, &App) -> Option<ImageSource>>>,
-    show_root_block_markers: bool,
     autoscroll: AutoscrollBehavior,
 }
 
@@ -1422,7 +1415,6 @@ impl MarkdownElement {
             on_source_click: None,
             on_checkbox_toggle: None,
             image_resolver: None,
-            show_root_block_markers: false,
             autoscroll: AutoscrollBehavior::Propagate,
         }
     }
@@ -1503,11 +1495,6 @@ impl MarkdownElement {
         resolver: impl Fn(&str, &App) -> Option<ImageSource> + 'static,
     ) -> Self {
         self.image_resolver = Some(Box::new(resolver));
-        self
-    }
-
-    pub fn show_root_block_markers(mut self) -> Self {
-        self.show_root_block_markers = true;
         self
     }
 
@@ -2071,7 +2058,7 @@ impl MarkdownElement {
                     };
                     markdown.selection.set_head(source_index, &rendered_text);
                     markdown.autoscroll_code_block(source_index, event.position);
-                    markdown.autoscroll_request = Some(source_index);
+                    markdown.autoscroll_request = Some(AutoscrollRequest::reveal(source_index));
                     cx.notify();
                 } else {
                     let is_hitbox_hovered = hitbox.is_hovered(window);
@@ -2117,7 +2104,8 @@ impl MarkdownElement {
                         if let Some(source_index) =
                             markdown.footnote_definition_content_start(&pressed_footnote_ref.label)
                         {
-                            markdown.autoscroll_request = Some(source_index);
+                            markdown.autoscroll_request =
+                                Some(AutoscrollRequest::reveal(source_index));
                             cx.notify();
                         }
                     } else if let Some(pressed_link) = markdown.pressed_link.take()
@@ -2150,25 +2138,31 @@ impl MarkdownElement {
         window: &mut Window,
         cx: &mut App,
     ) -> Option<()> {
-        let autoscroll_index = self
+        let request = self
             .markdown
             .update(cx, |markdown, _| markdown.autoscroll_request.take())?;
-        let (position, line_height) = rendered_text.position_for_source_index(autoscroll_index)?;
+        let (position, line_height) =
+            rendered_text.position_for_source_index(request.source_index)?;
 
         match &self.autoscroll {
             AutoscrollBehavior::Controlled(scroll_handle) => {
                 let viewport = scroll_handle.bounds();
-                let margin = line_height * 3.;
-                let top_goal = viewport.top() + margin;
-                let bottom_goal = viewport.bottom() - margin;
                 let current_offset = scroll_handle.offset();
 
-                let new_offset_y = if position.y < top_goal {
-                    current_offset.y + (top_goal - position.y)
-                } else if position.y + line_height > bottom_goal {
-                    current_offset.y + (bottom_goal - (position.y + line_height))
-                } else {
-                    current_offset.y
+                let new_offset_y = match request.alignment {
+                    AutoscrollAlignment::Top => current_offset.y + (viewport.top() - position.y),
+                    AutoscrollAlignment::Reveal => {
+                        let margin = line_height * 3.;
+                        let top_goal = viewport.top() + margin;
+                        let bottom_goal = viewport.bottom() - margin;
+                        if position.y < top_goal {
+                            current_offset.y + (top_goal - position.y)
+                        } else if position.y + line_height > bottom_goal {
+                            current_offset.y + (bottom_goal - (position.y + line_height))
+                        } else {
+                            current_offset.y
+                        }
+                    }
                 };
 
                 scroll_handle.set_offset(point(
@@ -2252,12 +2246,11 @@ impl Element for MarkdownElement {
             }
         };
 
-        let (parsed_markdown, images, active_root_block) = {
+        let (parsed_markdown, images) = {
             let markdown = self.markdown.read(cx);
             (
                 markdown.parsed_markdown.clone(),
                 markdown.images_by_source_offset.clone(),
-                markdown.active_root_block,
             )
         };
         let mut builder = MarkdownElementBuilder::new(
@@ -2301,20 +2294,7 @@ impl Element for MarkdownElement {
             }
 
             match event {
-                MarkdownEvent::RootStart => {
-                    if self.show_root_block_markers {
-                        builder.push_root_block(range, markdown_end);
-                    }
-                }
-                MarkdownEvent::RootEnd(root_block_index) => {
-                    if self.show_root_block_markers {
-                        builder.pop_root_block(
-                            active_root_block == Some(*root_block_index),
-                            cx.theme().colors().border,
-                            cx.theme().colors().border_variant,
-                        );
-                    }
-                }
+                MarkdownEvent::RootStart | MarkdownEvent::RootEnd(_) => {}
                 MarkdownEvent::Start(tag) => {
                     match tag {
                         MarkdownTag::Image { dest_url, .. } => {
@@ -3514,15 +3494,6 @@ impl MarkdownElementBuilder {
         self.div_stack.push(DivStackEntry::new(div));
     }
 
-    fn push_root_block(&mut self, range: &Range<usize>, markdown_end: usize) {
-        self.push_div(
-            div().group("markdown-root-block").relative(),
-            range,
-            markdown_end,
-        );
-        self.push_div(div().pl_4(), range, markdown_end);
-    }
-
     fn push_image_child(&mut self, child: impl IntoElement) {
         let table_cell_alignment = self
             .table
@@ -3582,35 +3553,6 @@ impl MarkdownElementBuilder {
             entry.div = f(entry.div);
             self.div_stack.push(entry);
         }
-    }
-
-    fn pop_root_block(
-        &mut self,
-        is_active: bool,
-        active_gutter_color: Hsla,
-        hovered_gutter_color: Hsla,
-    ) {
-        self.pop_div();
-        self.modify_current_div(|el| {
-            el.child(
-                div()
-                    .h_full()
-                    .w(px(4.0))
-                    .when(is_active, |this| this.bg(active_gutter_color))
-                    .group_hover("markdown-root-block", |this| {
-                        if is_active {
-                            this
-                        } else {
-                            this.bg(hovered_gutter_color)
-                        }
-                    })
-                    .rounded_xs()
-                    .absolute()
-                    .left_0()
-                    .top_0(),
-            )
-        });
-        self.pop_div();
     }
 
     fn pop_div(&mut self) {
@@ -7417,6 +7359,81 @@ mod tests {
         assert_eq!(
             right_cell_after_scroll.top(),
             right_cell_before_scroll.top()
+        );
+    }
+
+    #[gpui::test]
+    fn test_top_aligned_autoscroll_places_source_index_at_viewport_top(cx: &mut TestAppContext) {
+        struct ScrollingMarkdownView {
+            markdown: Entity<Markdown>,
+            scroll_handle: ScrollHandle,
+            rendered_text: Rc<RefCell<Option<RenderedText>>>,
+        }
+
+        impl Render for ScrollingMarkdownView {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                div()
+                    .id("markdown-scroll-container")
+                    .size_full()
+                    .overflow_y_scroll()
+                    .track_scroll(&self.scroll_handle)
+                    .child(CapturingMarkdownElement {
+                        markdown_element: MarkdownElement::new(
+                            self.markdown.clone(),
+                            MarkdownStyle::default(),
+                        )
+                        .scroll_handle(self.scroll_handle.clone()),
+                        rendered_text: self.rendered_text.clone(),
+                    })
+            }
+        }
+
+        ensure_theme_initialized(cx);
+        let source = (0..100)
+            .map(|index| format!("Paragraph {index}"))
+            .collect::<Vec<_>>()
+            .join("\n\n");
+        let target_index = source
+            .find("Paragraph 50")
+            .expect("target paragraph should be present");
+        let markdown = cx.new(|cx| Markdown::new(source.into(), None, None, cx));
+        let scroll_handle = ScrollHandle::new();
+        let rendered_text = Rc::new(RefCell::new(None));
+        let (_, cx) = cx.add_window_view({
+            let markdown = markdown.clone();
+            let scroll_handle = scroll_handle.clone();
+            let rendered_text = rendered_text.clone();
+            move |_, _| ScrollingMarkdownView {
+                markdown,
+                scroll_handle,
+                rendered_text,
+            }
+        });
+        cx.simulate_resize(size(px(400.), px(200.)));
+        cx.run_until_parked();
+
+        markdown.update(cx, |markdown, cx| {
+            markdown.request_scroll_to_source_index_at_top(target_index, cx);
+        });
+        cx.run_until_parked();
+        cx.update(|window, _| window.refresh());
+        cx.run_until_parked();
+
+        let (target_position, _) = rendered_text
+            .borrow()
+            .as_ref()
+            .expect("markdown should be rendered after scrolling")
+            .position_for_source_index(target_index)
+            .expect("target paragraph should be laid out");
+        assert!(
+            scroll_handle.offset().y < px(0.),
+            "the preview should scroll down to the target paragraph"
+        );
+        assert!(
+            f32::from(target_position.y - scroll_handle.bounds().top()).abs() < 0.5,
+            "the target paragraph should sit at the viewport top, got {:?} for viewport {:?}",
+            target_position,
+            scroll_handle.bounds()
         );
     }
 

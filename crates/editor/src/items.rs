@@ -1116,6 +1116,14 @@ impl Item for Editor {
             .map(|icon_path| Icon::from_path(icon_path).size(size).into_any_element())
     }
 
+    fn tab_bar_actions(
+        &self,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<gpui::AnyElement> {
+        self.render_preview_tab_bar_actions(cx)
+    }
+
     fn added_to_workspace(
         &mut self,
         workspace: &mut Workspace,
@@ -1189,7 +1197,9 @@ impl Item for Editor {
                 f(ItemEvent::UpdateBreadcrumbs);
             }
 
-            EditorEvent::DirtyChanged | EditorEvent::CapabilityChanged => {
+            EditorEvent::DirtyChanged
+            | EditorEvent::CapabilityChanged
+            | EditorEvent::PreviewLayoutChanged => {
                 f(ItemEvent::UpdateTab);
             }
 

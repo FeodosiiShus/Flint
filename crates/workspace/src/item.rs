@@ -403,6 +403,14 @@ pub trait Item: Focusable + EventEmitter<Self::Event> + Render + Sized {
     ) -> Vec<(SharedString, Box<dyn Action>)> {
         Vec::new()
     }
+
+    fn tab_bar_actions(
+        &self,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) -> Option<gpui::AnyElement> {
+        None
+    }
 }
 
 pub trait SerializableItem: Item {
@@ -581,6 +589,7 @@ pub trait ItemHandle: 'static + Send {
         window: &mut Window,
         cx: &mut App,
     ) -> Vec<(SharedString, Box<dyn Action>)>;
+    fn tab_bar_actions(&self, window: &mut Window, cx: &mut App) -> Option<gpui::AnyElement>;
     fn can_autosave(&self, cx: &App) -> bool {
         let is_deleted = self.project_entry_ids(cx).is_empty();
         self.is_dirty(cx) && !self.has_conflict(cx) && self.can_save(cx) && !is_deleted
@@ -1109,6 +1118,10 @@ impl<T: Item> ItemHandle for Entity<T> {
         self.update(cx, |this, cx| {
             this.tab_extra_context_menu_actions(window, cx)
         })
+    }
+
+    fn tab_bar_actions(&self, window: &mut Window, cx: &mut App) -> Option<gpui::AnyElement> {
+        self.update(cx, |item, cx| item.tab_bar_actions(window, cx))
     }
 }
 

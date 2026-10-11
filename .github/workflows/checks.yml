@@ -137,6 +137,12 @@ jobs:
       - name: Run editor context menu, gutter, inspection widget, breadcrumb, matching bracket and inlay hint pill tests
         run: cargo test --locked --package editor --lib -- mouse_context_menu intellij_gutter inspection_widget breadcrumb test_matching_bracket_highlights inlay_hint_pill
 
+      - name: Run editor with preview and Markdown preview tests
+        run: |
+          cargo test --locked --package editor --lib -- text_editor_with_preview
+          cargo test --locked --package markdown --lib -- top_aligned_autoscroll
+          cargo test --locked --package markdown_preview
+
       - name: Run language server DOTNET_ROOT tests
         run: cargo test --locked --package project --features project/test-support --lib dotnet_root
 
@@ -156,4 +162,4 @@ jobs:
         run: cargo test --locked --package zed --bin zed -- test_action_namespaces test_base_keymap test_open_paths test_bundled_languages
 
       - name: Check tests of crates changed by Flint compile
-        run: cargo check --locked --tests --package editor --package workspace --package client --package settings_ui --package settings_content --package terminal_view --package language_tools --package diagnostics --package extension_host
+        run: cargo check --locked --tests --package editor --package workspace --package client --package settings_ui --package settings_content --package terminal_view --package language_tools --package diagnostics --package extension_host --package markdown --package markdown_preview

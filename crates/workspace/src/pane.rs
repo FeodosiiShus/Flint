@@ -47,9 +47,9 @@ use std::{
 };
 use theme_settings::ThemeSettings;
 use ui::{
-    BackgroundImageArea, BackgroundImageTarget, ContextMenu, DecoratedIcon, IconButtonShape,
-    IconDecoration, IconDecorationKind, Indicator, PopoverMenu, PopoverMenuHandle, Tab, TabBar,
-    TabPosition, Tooltip, background_image_layer, has_background_image, prelude::*,
+    BackgroundImageArea, BackgroundImageTarget, ContextMenu, DecoratedIcon, Divider, DividerColor,
+    IconButtonShape, IconDecoration, IconDecorationKind, Indicator, PopoverMenu, PopoverMenuHandle,
+    Tab, TabBar, TabPosition, Tooltip, background_image_layer, has_background_image, prelude::*,
     right_click_menu,
 };
 use util::{
@@ -3349,15 +3349,22 @@ impl Pane {
                 tab_bar.end_child(self.render_hidden_tabs_button(cx))
             })
             .map(|tab_bar| {
-                if self.show_tab_bar_buttons {
+                let item_actions = self
+                    .active_item()
+                    .and_then(|item| item.tab_bar_actions(window, cx));
+                let (left_children, right_children) = if self.show_tab_bar_buttons {
                     let render_tab_buttons = self.render_tab_bar_buttons.clone();
-                    let (left_children, right_children) = render_tab_buttons(self, window, cx);
-                    tab_bar
-                        .start_children(left_children)
-                        .end_children(right_children)
+                    render_tab_buttons(self, window, cx)
                 } else {
-                    tab_bar
-                }
+                    (None, None)
+                };
+                let separator = (item_actions.is_some() && right_children.is_some())
+                    .then(|| Divider::vertical().color(DividerColor::Border));
+                tab_bar
+                    .start_children(left_children)
+                    .end_children(item_actions)
+                    .end_children(separator)
+                    .end_children(right_children)
             })
     }
 

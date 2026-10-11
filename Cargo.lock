@@ -5213,6 +5213,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "markdown_preview"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "buffer_diff",
+ "db",
+ "editor",
+ "fs",
+ "gpui",
+ "language",
+ "markdown",
+ "project",
+ "serde_json",
+ "settings",
+ "theme_settings",
+ "ui",
+ "urlencoding",
+ "util",
+ "workspace",
+ "zed_actions",
+]
+
+[[package]]
 name = "markup5ever"
 version = "0.39.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -12272,6 +12295,7 @@ dependencies = [
  "log",
  "lsp_locations",
  "markdown",
+ "markdown_preview",
  "menu",
  "migrator",
  "mimalloc",
