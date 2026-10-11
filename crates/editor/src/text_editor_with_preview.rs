@@ -760,6 +760,12 @@ mod tests {
         })
     }
 
+    fn draw(cx: &mut VisualTestContext) {
+        cx.update(|window, cx| {
+            window.draw(cx).clear(cx);
+        });
+    }
+
     #[gpui::test]
     async fn text_editor_with_preview_routes_focus_to_and_from_preview_only(
         cx: &mut TestAppContext,
@@ -789,7 +795,7 @@ mod tests {
         editor.update_in(cx, |editor, window, cx| {
             window.focus(&editor.focus_handle, cx);
         });
-        cx.run_until_parked();
+        draw(cx);
         cx.update(|window, _| {
             assert!(
                 preview_focus.is_focused(window),
@@ -823,6 +829,7 @@ mod tests {
 
         cx.update(|window, cx| window.focus(&preview_focus, cx));
         cx.run_until_parked();
+        draw(cx);
         editor.update_in(cx, |editor, window, _| {
             assert!(
                 editor.focus_handle.is_focused(window),
