@@ -1,5 +1,5 @@
 use db::kvp::KeyValueStore;
-use gpui::{App, Task};
+use gpui::{App, AppContext as _, Task};
 use serde::{Deserialize, Serialize};
 use util::ResultExt as _;
 use workspace::Workspace;
