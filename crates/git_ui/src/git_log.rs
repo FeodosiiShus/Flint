@@ -1,0 +1,11 @@
+pub(crate) mod branches_pane;
+pub(crate) mod changes_browser;
+pub(crate) mod commit_details;
+pub(crate) mod commit_table;
+pub(crate) mod filter_toolbar;
+pub(crate) mod graph;
+pub(crate) mod log_colors;
+pub(crate) mod log_dates;
+pub(crate) mod log_tab;
+pub(crate) mod properties;
+pub(crate) mod ref_labels;

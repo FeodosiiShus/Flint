@@ -260,6 +260,8 @@ async fn test_file_history_action_uses_focused_project_panel_selection(
         sha: Oid::from_bytes(&[1; 20]).unwrap(),
         parents: smallvec![],
         ref_names: vec!["HEAD".into(), "refs/heads/main".into()],
+        committer_timestamp: 0,
+        dotted_parents: Default::default(),
     })];
     fs.set_graph_commits(Path::new("/project/.git"), commits);
 
@@ -384,6 +386,8 @@ async fn test_file_history_action_does_not_fall_back_to_editor_when_focused_proj
             sha: Oid::from_bytes(&[1; 20]).unwrap(),
             parents: smallvec![],
             ref_names: vec!["HEAD".into(), "refs/heads/main".into()],
+            committer_timestamp: 0,
+            dotted_parents: Default::default(),
         })],
     );
 

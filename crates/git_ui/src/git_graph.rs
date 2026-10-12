@@ -1,6 +1,6 @@
 pub use crate::commit_context_menu::{CopyCommitSha, CopyCommitTag, OpenCommitView};
 use crate::{
-    commit_context_menu::{CommitContextMenuData, CommitContextMenuSource, commit_context_menu},
+    commit_context_menu::{CommitContextMenuData, commit_context_menu},
     commit_tooltip::CommitAvatar,
     commit_view::CommitView,
     git_status_icon,
@@ -1051,9 +1051,9 @@ pub fn init(cx: &mut App) {
     workspace::register_serializable_item::<GitGraph>(cx);
 
     cx.observe_new(|workspace: &mut workspace::Workspace, _, _| {
-        workspace.register_action_renderer(|div, workspace, window, cx| {
+        workspace.register_action_renderer(|div, workspace, _window, cx| {
             div.when_some(
-                resolve_file_history_target(workspace, window, cx),
+                resolve_file_history_target(workspace, cx),
                 |div, (repo_id, log_source)| {
                     let git_store = workspace.project().read(cx).git_store().clone();
                     let workspace = workspace.weak_handle();
@@ -1160,16 +1160,8 @@ pub fn resolve_file_history_target_from_project_path(
 
 fn resolve_file_history_target(
     workspace: &Workspace,
-    window: &Window,
     cx: &App,
 ) -> Option<(RepositoryId, LogSource)> {
-    if let Some(panel) = workspace.panel::<crate::git_panel::GitPanel>(cx)
-        && panel.read(cx).focus_handle(cx).contains_focused(window, cx)
-        && let Some((repository, repo_path)) = panel.read(cx).selected_file_history_target()
-    {
-        return Some((repository.read(cx).id, LogSource::Path(repo_path)));
-    }
-
     let editor = workspace.active_item_as::<Editor>(cx)?;
 
     let file = editor
@@ -2440,7 +2432,6 @@ impl GitGraph {
                     .map(|tag_name| SharedString::from(tag_name.to_string()))
                     .collect(),
             },
-            CommitContextMenuSource::GitGraph,
             ref_name,
             self.focus_handle.clone(),
             repository,
@@ -4527,7 +4518,7 @@ mod persistence {
 
     pub fn serialize_log_source_type(log_source: &LogSource) -> i32 {
         match log_source {
-            LogSource::All => LOG_SOURCE_ALL,
+            LogSource::All | LogSource::Filtered(_) => LOG_SOURCE_ALL,
             LogSource::Branch(_) => LOG_SOURCE_BRANCH,
             LogSource::Sha(_) => LOG_SOURCE_SHA,
             LogSource::Path(_) => LOG_SOURCE_PATH,
@@ -4536,7 +4527,7 @@ mod persistence {
 
     pub fn serialize_log_source_value(log_source: &LogSource) -> Option<String> {
         match log_source {
-            LogSource::All => None,
+            LogSource::All | LogSource::Filtered(_) => None,
             LogSource::Branch(branch) => Some(branch.to_string()),
             LogSource::Sha(oid) => Some(oid.to_string()),
             LogSource::Path(path) => Some(path.as_unix_str().to_string()),
@@ -4744,6 +4735,8 @@ pub fn generate_random_commit_dag(
             sha,
             parents,
             ref_names,
+            committer_timestamp: 0,
+            dotted_parents: Default::default(),
         }));
     }
 
@@ -5273,21 +5266,29 @@ mod tests {
                 sha: oid1,
                 parents: smallvec![oid2, oid3],
                 ref_names: vec!["HEAD".into()],
+                committer_timestamp: 0,
+                dotted_parents: Default::default(),
             }),
             Arc::new(InitialGraphCommitData {
                 sha: oid2,
                 parents: smallvec![oid4],
                 ref_names: vec![],
+                committer_timestamp: 0,
+                dotted_parents: Default::default(),
             }),
             Arc::new(InitialGraphCommitData {
                 sha: oid3,
                 parents: smallvec![oid4],
                 ref_names: vec![],
+                committer_timestamp: 0,
+                dotted_parents: Default::default(),
             }),
             Arc::new(InitialGraphCommitData {
                 sha: oid4,
                 parents: smallvec![],
                 ref_names: vec![],
+                committer_timestamp: 0,
+                dotted_parents: Default::default(),
             }),
         ];
 
@@ -5312,16 +5313,22 @@ mod tests {
                 sha: oid1,
                 parents: smallvec![oid2],
                 ref_names: vec!["HEAD".into()],
+                committer_timestamp: 0,
+                dotted_parents: Default::default(),
             }),
             Arc::new(InitialGraphCommitData {
                 sha: oid2,
                 parents: smallvec![oid3],
                 ref_names: vec![],
+                committer_timestamp: 0,
+                dotted_parents: Default::default(),
             }),
             Arc::new(InitialGraphCommitData {
                 sha: oid3,
                 parents: smallvec![],
                 ref_names: vec![],
+                committer_timestamp: 0,
+                dotted_parents: Default::default(),
             }),
         ];
 
@@ -5723,7 +5730,7 @@ mod tests {
     }
 
     #[gpui::test]
-    async fn test_file_history_action_uses_git_panel_and_editor_sources(cx: &mut TestAppContext) {
+    async fn test_file_history_action_uses_editor_selection_file(cx: &mut TestAppContext) {
         init_test(cx);
 
         let fs = FakeFs::new(cx.executor());
@@ -5748,6 +5755,8 @@ mod tests {
             sha: Oid::from_bytes(&[1; 20]).unwrap(),
             parents: smallvec![],
             ref_names: vec!["HEAD".into(), "refs/heads/main".into()],
+            committer_timestamp: 0,
+            dotted_parents: Default::default(),
         })];
         fs.set_graph_commits(Path::new(util::path!("/project/.git")), commits);
 
@@ -5778,87 +5787,6 @@ mod tests {
         let workspace = workspace_window
             .read_with(cx, |multi, _| multi.workspace().clone())
             .expect("workspace should exist");
-
-        let (weak_workspace, async_window_cx) = workspace_window
-            .update(cx, |multi, window, cx| {
-                (multi.workspace().downgrade(), window.to_async(cx))
-            })
-            .expect("window should be available");
-        cx.background_executor.allow_parking();
-        let git_panel = cx
-            .foreground_executor()
-            .clone()
-            .block_test(crate::git_panel::GitPanel::load(
-                weak_workspace,
-                async_window_cx,
-            ))
-            .expect("git panel should load");
-        cx.background_executor.forbid_parking();
-
-        workspace_window
-            .update(cx, |multi, window, cx| {
-                let workspace = multi.workspace();
-                workspace.update(cx, |workspace, cx| {
-                    workspace.add_panel(git_panel.clone(), window, cx);
-                });
-            })
-            .expect("workspace window should be available");
-        cx.executor().advance_clock(Duration::from_millis(100));
-        cx.run_until_parked();
-
-        workspace_window
-            .update(cx, |_, window, cx| {
-                git_panel.update(cx, |panel, cx| {
-                    panel.select_entry_by_path(tracked1.clone(), window, cx);
-                });
-                git_panel.update(cx, |panel, cx| {
-                    panel.focus_handle(cx).focus(window, cx);
-                });
-            })
-            .expect("workspace window should be available");
-        cx.run_until_parked();
-        workspace_window
-            .update(cx, |_, window, cx| {
-                window.dispatch_action(Box::new(git::FileHistory), cx);
-            })
-            .expect("workspace window should be available");
-        cx.run_until_parked();
-
-        workspace.read_with(cx, |workspace, cx| {
-            let graphs = workspace.items_of_type::<GitGraph>(cx).collect::<Vec<_>>();
-            assert_eq!(graphs.len(), 1);
-            assert_eq!(
-                graphs[0].read(cx).log_source,
-                LogSource::Path(tracked1_repo_path.clone())
-            );
-        });
-
-        workspace_window
-            .update(cx, |_, window, cx| {
-                git_panel.update(cx, |panel, cx| {
-                    panel.select_entry_by_path(tracked1.clone(), window, cx);
-                });
-                git_panel.update(cx, |panel, cx| {
-                    panel.focus_handle(cx).focus(window, cx);
-                });
-            })
-            .expect("workspace window should be available");
-        cx.run_until_parked();
-        workspace_window
-            .update(cx, |_, window, cx| {
-                window.dispatch_action(Box::new(git::FileHistory), cx);
-            })
-            .expect("workspace window should be available");
-        cx.run_until_parked();
-
-        workspace.read_with(cx, |workspace, cx| {
-            let graphs = workspace.items_of_type::<GitGraph>(cx).collect::<Vec<_>>();
-            assert_eq!(graphs.len(), 1);
-            assert_eq!(
-                graphs[0].read(cx).log_source,
-                LogSource::Path(tracked1_repo_path.clone())
-            );
-        });
 
         let tracked1_buffer = project
             .update(cx, |project, cx| project.open_buffer(tracked1.clone(), cx))
@@ -5929,13 +5857,9 @@ mod tests {
 
         workspace.read_with(cx, |workspace, cx| {
             let graphs = workspace.items_of_type::<GitGraph>(cx).collect::<Vec<_>>();
-            assert_eq!(graphs.len(), 2);
-            let latest = graphs
-                .into_iter()
-                .max_by_key(|graph| graph.entity_id())
-                .expect("expected a git graph");
+            assert_eq!(graphs.len(), 1);
             assert_eq!(
-                latest.read(cx).log_source,
+                graphs[0].read(cx).log_source,
                 LogSource::Path(tracked2_repo_path)
             );
         });
@@ -6292,16 +6216,22 @@ mod tests {
                 sha: first_sha,
                 parents: smallvec![target_sha],
                 ref_names: vec!["HEAD".into(), "refs/heads/main".into()],
+                committer_timestamp: 0,
+                dotted_parents: Default::default(),
             }),
             Arc::new(InitialGraphCommitData {
                 sha: target_sha,
                 parents: smallvec![third_sha],
                 ref_names: vec![],
+                committer_timestamp: 0,
+                dotted_parents: Default::default(),
             }),
             Arc::new(InitialGraphCommitData {
                 sha: third_sha,
                 parents: smallvec![],
                 ref_names: vec![],
+                committer_timestamp: 0,
+                dotted_parents: Default::default(),
             }),
         ];
         fs.set_graph_commits(Path::new("/project/.git"), commits);
@@ -6317,6 +6247,10 @@ mod tests {
                         commit_timestamp: 1,
                         subject: "Add feature".into(),
                         message: "Add feature".into(),
+                        author_timestamp: 0,
+                        committer_name: Default::default(),
+                        committer_email: Default::default(),
+                        committer_timestamp: 0,
                     },
                     false,
                 ),
@@ -6329,6 +6263,10 @@ mod tests {
                         commit_timestamp: 2,
                         subject: "Fix branch loading".into(),
                         message: "Fix branch loading".into(),
+                        author_timestamp: 0,
+                        committer_name: Default::default(),
+                        committer_email: Default::default(),
+                        committer_timestamp: 0,
                     },
                     false,
                 ),
@@ -6341,6 +6279,10 @@ mod tests {
                         commit_timestamp: 3,
                         subject: "Update docs".into(),
                         message: "Update docs".into(),
+                        author_timestamp: 0,
+                        committer_name: Default::default(),
+                        committer_email: Default::default(),
+                        committer_timestamp: 0,
                     },
                     false,
                 ),
@@ -6422,11 +6364,15 @@ mod tests {
                     sha: initial_head,
                     parents: smallvec![initial_stash],
                     ref_names: vec!["HEAD".into(), "refs/heads/main".into()],
+                    committer_timestamp: 0,
+                    dotted_parents: Default::default(),
                 }),
                 Arc::new(InitialGraphCommitData {
                     sha: initial_stash,
                     parents: smallvec![],
                     ref_names: vec!["refs/stash".into()],
+                    committer_timestamp: 0,
+                    dotted_parents: Default::default(),
                 }),
             ],
         );
@@ -6487,11 +6433,15 @@ mod tests {
                     sha: updated_head,
                     parents: smallvec![updated_stash],
                     ref_names: vec!["HEAD".into(), "refs/heads/main".into()],
+                    committer_timestamp: 0,
+                    dotted_parents: Default::default(),
                 }),
                 Arc::new(InitialGraphCommitData {
                     sha: updated_stash,
                     parents: smallvec![],
                     ref_names: vec!["refs/stash".into()],
+                    committer_timestamp: 0,
+                    dotted_parents: Default::default(),
                 }),
             ],
         );
@@ -6778,6 +6728,8 @@ mod tests {
                 SharedString::from("origin/main"),
                 SharedString::from("tag: v1.0.0"),
             ],
+            committer_timestamp: 0,
+            dotted_parents: Default::default(),
         })];
         fs.set_graph_commits(Path::new("/project/.git"), commits);
 
@@ -6846,6 +6798,8 @@ mod tests {
                 SharedString::from("tag: v1.0.0"),
                 SharedString::from("tag: v1.1.0"),
             ],
+            committer_timestamp: 0,
+            dotted_parents: Default::default(),
         })];
         fs.set_graph_commits(Path::new("/project/.git"), commits);
 
@@ -6931,11 +6885,15 @@ mod tests {
                     sha: second_sha,
                     parents: smallvec![first_sha],
                     ref_names: vec!["HEAD -> main".into()],
+                    committer_timestamp: 0,
+                    dotted_parents: Default::default(),
                 }),
                 Arc::new(InitialGraphCommitData {
                     sha: first_sha,
                     parents: smallvec![],
                     ref_names: Vec::new(),
+                    committer_timestamp: 0,
+                    dotted_parents: Default::default(),
                 }),
             ],
         );
@@ -6951,6 +6909,10 @@ mod tests {
                         commit_timestamp: 1_700_000_000,
                         subject: "Commit subject".into(),
                         message: "Commit message".into(),
+                        author_timestamp: 0,
+                        committer_name: Default::default(),
+                        committer_email: Default::default(),
+                        committer_timestamp: 0,
                     },
                     false,
                 )
@@ -7029,6 +6991,8 @@ mod tests {
                 sha: first_sha,
                 parents: smallvec![],
                 ref_names: vec!["HEAD -> main".into()],
+                committer_timestamp: 0,
+                dotted_parents: Default::default(),
             })],
         );
         fs.set_commit_data(
@@ -7042,6 +7006,10 @@ mod tests {
                     commit_timestamp: 1_700_000_000,
                     subject: "Commit subject".into(),
                     message: "Commit message".into(),
+                    author_timestamp: 0,
+                    committer_name: Default::default(),
+                    committer_email: Default::default(),
+                    committer_timestamp: 0,
                 },
                 false,
             )],
@@ -7344,6 +7312,8 @@ mod tests {
             sha: commit_sha,
             parents: smallvec![],
             ref_names: vec!["HEAD -> main".into()],
+            committer_timestamp: 0,
+            dotted_parents: Default::default(),
         })];
         fs.set_graph_commits(Path::new("/project/.git"), commits);
         fs.set_commit_data(
@@ -7357,6 +7327,10 @@ mod tests {
                     commit_timestamp: 1_700_000_000,
                     subject: "Fix crash".into(),
                     message: "Fix crash\n\nThis fixes a crash that occurred when...".into(),
+                    author_timestamp: 0,
+                    committer_name: Default::default(),
+                    committer_email: Default::default(),
+                    committer_timestamp: 0,
                 },
                 false,
             )],
@@ -7424,6 +7398,8 @@ mod tests {
             sha: commit_sha,
             parents: smallvec![],
             ref_names: vec!["HEAD -> main".into()],
+            committer_timestamp: 0,
+            dotted_parents: Default::default(),
         })];
         fs.set_graph_commits(Path::new("/project/.git"), commits);
 
@@ -7446,6 +7422,10 @@ mod tests {
                     commit_timestamp: 1_700_000_000,
                     subject: "Long commit message".into(),
                     message: message.into(),
+                    author_timestamp: 0,
+                    committer_name: Default::default(),
+                    committer_email: Default::default(),
+                    committer_timestamp: 0,
                 },
                 false,
             )],
@@ -7555,6 +7535,8 @@ mod tests {
             sha: commit_sha,
             parents: smallvec![],
             ref_names: vec!["HEAD -> main".into()],
+            committer_timestamp: 0,
+            dotted_parents: Default::default(),
         })];
         fs.set_graph_commits(Path::new("/project/.git"), commits);
         fs.set_commit_data(
@@ -7568,6 +7550,10 @@ mod tests {
                     commit_timestamp: 1_700_000_000,
                     subject: "Fix crash".into(),
                     message: "Fix crash\n\nBody text.".into(),
+                    author_timestamp: 0,
+                    committer_name: Default::default(),
+                    committer_email: Default::default(),
+                    committer_timestamp: 0,
                 },
                 false,
             )],

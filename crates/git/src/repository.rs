@@ -1,4 +1,5 @@
 use crate::commit::{CommitDiffObject, CommitDiffObjectKind, parse_git_diff_raw};
+use crate::console::{GitConsoleRecorder, GitConsoleSink};
 use crate::stash::GitStash;
 use crate::status::{
     DiffTreeType, FileStatus, GitStatus, StatusCode, TrackedStatus, TreeDiff, TreeDiffStatus,
@@ -51,7 +52,7 @@ pub const REMOTE_CANCELLED_BY_USER: &str = "Operation cancelled by user";
 /// %P - Parent hashes
 /// %D - Ref names
 /// %x00 - Null byte separator, used to split up commit data
-static GRAPH_COMMIT_FORMAT: &str = "--format=%H%x00%P%x00%D";
+static GRAPH_COMMIT_FORMAT: &str = "--format=%H%x00%P%x00%D%x00%ct";
 
 /// Used to get commits that match with a search
 /// %H - Full commit hash
@@ -105,6 +106,10 @@ pub struct CommitData {
     pub author_name: SharedString,
     pub author_email: SharedString,
     pub commit_timestamp: i64,
+    pub author_timestamp: i64,
+    pub committer_name: SharedString,
+    pub committer_email: SharedString,
+    pub committer_timestamp: i64,
     pub subject: SharedString,
     pub message: SharedString,
 }
@@ -114,6 +119,8 @@ pub struct InitialGraphCommitData {
     pub sha: Oid,
     pub parents: SmallVec<[Oid; 1]>,
     pub ref_names: Vec<SharedString>,
+    pub committer_timestamp: i64,
+    pub dotted_parents: SmallVec<[Oid; 1]>,
 }
 
 impl InitialGraphCommitData {
@@ -177,11 +184,35 @@ impl CommitDataReader {
     }
 }
 
+#[derive(Default)]
+struct CommitIdentity {
+    name: SharedString,
+    email: SharedString,
+    timestamp: i64,
+}
+
+impl CommitIdentity {
+    fn update_from_header(&mut self, header: &str) {
+        let Some((name_email, _timezone)) = header.rsplit_once(' ') else {
+            return;
+        };
+        let Some((name_email, timestamp)) = name_email.rsplit_once(' ') else {
+            return;
+        };
+        if let Ok(timestamp) = timestamp.parse::<i64>() {
+            self.timestamp = timestamp;
+        }
+        if let Some((name, email)) = name_email.rsplit_once(" <") {
+            self.name = SharedString::from(name.to_string());
+            self.email = SharedString::from(email.trim_end_matches('>').to_string());
+        }
+    }
+}
+
 fn parse_cat_file_commit(sha: Oid, content: &str) -> Option<CommitData> {
     let mut parents = SmallVec::new();
-    let mut author_name = SharedString::default();
-    let mut author_email = SharedString::default();
-    let mut commit_timestamp = 0i64;
+    let mut author = CommitIdentity::default();
+    let mut committer = CommitIdentity::default();
     let mut in_headers = true;
     let mut subject = None;
     let mut message_lines = Vec::new();
@@ -198,18 +229,9 @@ fn parse_cat_file_commit(sha: Oid, content: &str) -> Option<CommitData> {
                     parents.push(oid);
                 }
             } else if let Some(author_line) = line.strip_prefix("author ") {
-                if let Some((name_email, _timestamp_tz)) = author_line.rsplit_once(' ') {
-                    if let Some((name_email, timestamp_str)) = name_email.rsplit_once(' ') {
-                        if let Ok(ts) = timestamp_str.parse::<i64>() {
-                            commit_timestamp = ts;
-                        }
-                        if let Some((name, email)) = name_email.rsplit_once(" <") {
-                            author_name = SharedString::from(name.to_string());
-                            author_email =
-                                SharedString::from(email.trim_end_matches('>').to_string());
-                        }
-                    }
-                }
+                author.update_from_header(author_line);
+            } else if let Some(committer_line) = line.strip_prefix("committer ") {
+                committer.update_from_header(committer_line);
             }
         } else {
             if subject.is_none() {
@@ -222,9 +244,13 @@ fn parse_cat_file_commit(sha: Oid, content: &str) -> Option<CommitData> {
     Some(CommitData {
         sha,
         parents,
-        author_name,
-        author_email,
-        commit_timestamp,
+        author_name: author.name,
+        author_email: author.email,
+        commit_timestamp: author.timestamp,
+        author_timestamp: author.timestamp,
+        committer_name: committer.name,
+        committer_email: committer.email,
+        committer_timestamp: committer.timestamp,
         subject: subject.unwrap_or_default(),
         message: SharedString::from(message_lines.join("\n")),
     })
@@ -325,6 +351,18 @@ pub enum RebaseOutcome {
     Completed { output: String },
     Conflicted { output: String },
     Aborted,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CherryPickOutcome {
+    Completed { output: String },
+    Conflicted { output: String },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RevertOutcome {
+    Completed { output: String },
+    Conflicted { output: String },
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
@@ -1399,6 +1437,8 @@ pub enum ResetMode {
     /// Reset the branch pointer and index, leave worktree unchanged (this makes it look as though things that were
     /// committed are now unstaged).
     Mixed,
+    Hard,
+    Keep,
 }
 
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
@@ -1472,6 +1512,7 @@ pub enum LogSource {
     Branch(SharedString),
     Sha(Oid),
     Path(RepoPath),
+    Filtered(LogFilter),
 }
 
 impl LogSource {
@@ -1491,6 +1532,7 @@ impl LogSource {
                 Cow::Borrowed("--"),
                 Cow::Borrowed(path.as_unix_str()),
             ],
+            LogSource::Filtered(filter) => return filter.get_args(),
         };
         // Without a terminator git cannot tell a branch named `docs/rewrite` from a
         // `docs/rewrite` directory in the working tree, and refuses the argument as
@@ -1500,6 +1542,305 @@ impl LogSource {
         }
         args
     }
+}
+
+const LOG_ALL_REVISIONS: [&str; 4] = ["--branches", "--remotes", "--tags", "HEAD"];
+const REGEX_SPECIAL_CHARACTERS: &str = "()[]{}.*?+^$\\|";
+const EXTENDED_REGEX_SPECIAL_CHARACTERS: &str = ".^$*+-?()[]{}|";
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
+pub struct LogFilter {
+    pub revisions: Vec<SharedString>,
+    pub authors: Vec<SharedString>,
+    pub after: Option<i64>,
+    pub before: Option<i64>,
+    pub paths: Vec<RepoPath>,
+    pub text: Option<LogTextFilter>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct LogTextFilter {
+    pub pattern: SharedString,
+    pub regex: bool,
+    pub match_case: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct GitUser {
+    pub name: SharedString,
+    pub email: SharedString,
+}
+
+impl GitUser {
+    pub fn identity(&self) -> String {
+        author_identity(&self.name, &self.email)
+    }
+}
+
+pub fn author_identity(name: &str, email: &str) -> String {
+    if name.is_empty() {
+        email.to_string()
+    } else if email.is_empty() {
+        name.to_string()
+    } else {
+        format!("{name} <{email}>")
+    }
+}
+
+impl LogTextFilter {
+    pub fn hash_prefixes(&self) -> Vec<&str> {
+        let words = self
+            .pattern
+            .split(|character: char| {
+                character == ',' || character == ';' || character.is_whitespace()
+            })
+            .filter(|word| !word.is_empty())
+            .collect::<Vec<_>>();
+        if words.iter().all(|word| is_hash_like(word)) {
+            words
+        } else {
+            Vec::new()
+        }
+    }
+
+    pub fn is_regex(&self) -> bool {
+        self.effective_regex().is_some()
+    }
+
+    pub fn matches(&self, message: &str) -> bool {
+        if let Some(regex) = self.effective_regex() {
+            return regex.is_match(message);
+        }
+        if self.match_case {
+            message.contains(self.pattern.as_str())
+        } else {
+            message
+                .to_lowercase()
+                .contains(&self.pattern.to_lowercase())
+        }
+    }
+
+    fn effective_regex(&self) -> Option<regex::Regex> {
+        let contains_special_character = self
+            .pattern
+            .contains(|character: char| REGEX_SPECIAL_CHARACTERS.contains(character));
+        if !self.regex || !contains_special_character {
+            return None;
+        }
+        regex::RegexBuilder::new(&self.pattern)
+            .case_insensitive(!self.match_case)
+            .build()
+            .ok()
+    }
+
+    pub fn matching_ranges(&self, message: &str) -> Vec<std::ops::Range<usize>> {
+        if let Some(regex) = self.effective_regex() {
+            return regex
+                .find_iter(message)
+                .map(|found| found.range())
+                .filter(|range| !range.is_empty())
+                .collect();
+        }
+        if self.pattern.is_empty() {
+            return Vec::new();
+        }
+        if self.match_case {
+            return message
+                .match_indices(self.pattern.as_str())
+                .map(|(start, found)| start..start + found.len())
+                .collect();
+        }
+        let mut ranges = Vec::new();
+        let mut search_start = 0;
+        while let Some(range) = find_ignoring_case(message, &self.pattern, search_start) {
+            search_start = range.end;
+            ranges.push(range);
+        }
+        ranges
+    }
+}
+
+fn find_ignoring_case(
+    haystack: &str,
+    needle: &str,
+    search_start: usize,
+) -> Option<std::ops::Range<usize>> {
+    let remaining = haystack.get(search_start..)?;
+    remaining.char_indices().find_map(|(offset, _)| {
+        let candidate_start = search_start + offset;
+        let mut candidate_end = candidate_start;
+        let mut haystack_characters = haystack[candidate_start..].chars();
+        for needle_character in needle.chars() {
+            let haystack_character = haystack_characters.next()?;
+            let equal = haystack_character == needle_character
+                || haystack_character
+                    .to_lowercase()
+                    .eq(needle_character.to_lowercase());
+            if !equal {
+                return None;
+            }
+            candidate_end += haystack_character.len_utf8();
+        }
+        Some(candidate_start..candidate_end)
+    })
+}
+
+impl LogFilter {
+    pub fn text_filter(&self) -> Option<&LogTextFilter> {
+        self.text
+            .as_ref()
+            .filter(|text| !text.pattern.trim().is_empty())
+    }
+
+    pub fn matches_nothing(&self) -> bool {
+        !self.revisions.is_empty() && self.valid_revisions().next().is_none()
+    }
+
+    pub fn has_commit_conditions(&self) -> bool {
+        !self.authors.is_empty()
+            || self.after.is_some()
+            || self.before.is_some()
+            || self.text_filter().is_some()
+    }
+
+    pub fn author_matches(&self, name: &str, email: &str) -> bool {
+        if self.authors.is_empty() {
+            return true;
+        }
+        let identity = author_identity(name, email);
+        if self.ignores_case() {
+            let identity = identity.to_lowercase();
+            self.authors
+                .iter()
+                .any(|author| author.to_lowercase() == identity)
+        } else {
+            self.authors
+                .iter()
+                .any(|author| author.as_str() == identity)
+        }
+    }
+
+    pub fn date_matches(&self, committer_timestamp: i64) -> bool {
+        self.after.is_none_or(|after| committer_timestamp >= after)
+            && self
+                .before
+                .is_none_or(|before| committer_timestamp <= before)
+    }
+
+    fn valid_revisions(&self) -> impl Iterator<Item = &str> {
+        self.revisions
+            .iter()
+            .map(SharedString::as_str)
+            .filter(|revision| !revision.is_empty() && !revision.starts_with('-'))
+    }
+
+    fn ignores_case(&self) -> bool {
+        !self.text_filter().is_some_and(|text| text.match_case)
+    }
+
+    fn uses_regex(&self) -> bool {
+        self.text_filter().is_none_or(LogTextFilter::is_regex)
+    }
+
+    fn condition_args(&self) -> Vec<String> {
+        let mut args = Vec::new();
+        if let Some(after) = self.after {
+            args.push(format!("--after=@{after}"));
+        }
+        if let Some(before) = self.before {
+            args.push(format!("--before=@{before}"));
+        }
+        let text = self.text_filter();
+        if text.is_none() && self.authors.is_empty() {
+            return args;
+        }
+        let uses_regex = self.uses_regex();
+        if let Some(text) = text {
+            args.push(format!("--grep={}", text.pattern));
+        }
+        args.push(if uses_regex {
+            "--extended-regexp".to_string()
+        } else {
+            "--fixed-strings".to_string()
+        });
+        if self.ignores_case() {
+            args.push("--regexp-ignore-case".to_string());
+        }
+        if !self.authors.is_empty() {
+            if uses_regex {
+                let authors = self
+                    .authors
+                    .iter()
+                    .map(|author| exact_author_pattern(author))
+                    .collect::<Vec<_>>();
+                args.push(format!("--author={}", authors.join("|")));
+            } else {
+                args.extend(
+                    self.authors
+                        .iter()
+                        .map(|author| format!("--author={}", author.replace('\\', "\\\\"))),
+                );
+            }
+            args.push("--no-use-mailmap".to_string());
+        }
+        args
+    }
+
+    fn revision_args(&self) -> Vec<Cow<'_, str>> {
+        let mut args = vec![Cow::Borrowed("--ignore-missing")];
+        if self.revisions.is_empty() {
+            args.extend(LOG_ALL_REVISIONS.into_iter().map(Cow::Borrowed));
+        } else {
+            args.extend(self.valid_revisions().map(Cow::Borrowed));
+        }
+        args
+    }
+
+    fn revision_scope_args(&self) -> Vec<Cow<'_, str>> {
+        let mut args = self.revision_args();
+        args.push(Cow::Borrowed("--"));
+        args
+    }
+
+    fn get_args(&self) -> Vec<Cow<'_, str>> {
+        let mut args = self
+            .condition_args()
+            .into_iter()
+            .map(Cow::<str>::Owned)
+            .collect::<Vec<_>>();
+        if !self.paths.is_empty() {
+            args.push(Cow::Borrowed("--full-history"));
+            args.push(Cow::Borrowed("--simplify-merges"));
+        }
+        args.extend(self.revision_args());
+        args.push(Cow::Borrowed("--"));
+        args.extend(self.paths.iter().map(|path| {
+            if path.is_empty() {
+                Cow::Borrowed(".")
+            } else {
+                Cow::Borrowed(path.as_unix_str())
+            }
+        }));
+        args
+    }
+}
+
+fn is_hash_like(word: &str) -> bool {
+    (SHORT_SHA_LENGTH..=SHA256_HEX_LENGTH).contains(&word.len())
+        && word.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+fn exact_author_pattern(author: &str) -> String {
+    let mut pattern = String::with_capacity(author.len() + 2);
+    pattern.push('^');
+    for character in author.chars() {
+        if character == '\\' || EXTENDED_REGEX_SPECIAL_CHARACTERS.contains(character) {
+            pattern.push('\\');
+        }
+        pattern.push(character);
+    }
+    pattern.push('$');
+    pattern
 }
 
 pub struct SearchCommitArgs {
@@ -1640,6 +1981,19 @@ pub trait GitRepository: Send + Sync {
         commit: String,
         env: Arc<HashMap<String, String>>,
     ) -> BoxFuture<'_, Result<()>>;
+    fn cherry_pick(
+        &self,
+        commits: Vec<Oid>,
+        env: Arc<HashMap<String, String>>,
+    ) -> BoxFuture<'_, Result<CherryPickOutcome>>;
+    fn revert_commits(
+        &self,
+        commits: Vec<Oid>,
+        env: Arc<HashMap<String, String>>,
+    ) -> BoxFuture<'_, Result<RevertOutcome>>;
+    fn branches_containing_commit(&self, sha: Oid) -> BoxFuture<'_, Result<Vec<SharedString>>>;
+    fn current_user(&self) -> BoxFuture<'_, Result<Option<GitUser>>>;
+    fn log_authors(&self) -> BoxFuture<'_, Result<Vec<GitUser>>>;
 
     fn delete_remote_branch(
         &self,
@@ -1982,6 +2336,7 @@ pub trait GitRepository: Send + Sync {
 
     fn set_trusted(&self, trusted: bool);
     fn is_trusted(&self) -> bool;
+    fn set_console(&self, console: GitConsoleSink);
 }
 
 pub enum DiffType {
@@ -2019,6 +2374,7 @@ pub struct RealGitRepository {
     any_git_binary_help_output: Arc<Mutex<Option<SharedString>>>,
     executor: BackgroundExecutor,
     is_trusted: Arc<AtomicBool>,
+    console: Arc<Mutex<Option<GitConsoleSink>>>,
 }
 
 #[derive(Debug)]
@@ -2108,6 +2464,7 @@ impl RealGitRepository {
             executor,
             any_git_binary_help_output: Arc::new(Mutex::new(None)),
             is_trusted: Arc::new(AtomicBool::new(false)),
+            console: Arc::new(Mutex::new(None)),
         })
     }
 
@@ -2123,6 +2480,10 @@ impl RealGitRepository {
             .unwrap_or_else(|| self.git_dir.clone())
     }
 
+    fn console(&self) -> Option<GitConsoleSink> {
+        self.console.lock().clone()
+    }
+
     fn git_binary_in_worktree(&self) -> Result<GitBinary> {
         Ok(GitBinary::new(
             self.any_git_binary_path.clone(),
@@ -2130,7 +2491,8 @@ impl RealGitRepository {
             self.path(),
             self.executor.clone(),
             self.is_trusted(),
-        ))
+        )
+        .with_console(self.console()))
     }
 
     fn git_binary(&self) -> GitBinary {
@@ -2141,6 +2503,7 @@ impl RealGitRepository {
             self.executor.clone(),
             self.is_trusted(),
         )
+        .with_console(self.console())
     }
 
     fn network_git_binary(
@@ -2158,7 +2521,8 @@ impl RealGitRepository {
             self.path(),
             executor,
             self.is_trusted(),
-        ))
+        )
+        .with_console(self.console()))
     }
 
     fn edit_ref(&self, edit: RefEdit) -> BoxFuture<'_, Result<()>> {
@@ -2432,6 +2796,8 @@ impl GitRepository for RealGitRepository {
             let mode_flag = match mode {
                 ResetMode::Mixed => "--mixed",
                 ResetMode::Soft => "--soft",
+                ResetMode::Hard => "--hard",
+                ResetMode::Keep => "--keep",
             };
 
             let output = git
@@ -3203,7 +3569,8 @@ impl GitRepository for RealGitRepository {
             self.path(),
             self.executor.clone(),
             self.is_trusted(),
-        );
+        )
+        .with_console(self.console());
 
         self.executor
             .spawn(async move {
@@ -4250,6 +4617,7 @@ impl GitRepository for RealGitRepository {
         let executor = cx.background_executor().clone();
         let git_binary_path = self.system_git_binary_path.clone();
         let is_trusted = self.is_trusted();
+        let console = self.console();
         // Note: Do not spawn this command on the background thread, it might pop open the credential helper
         // which we want to block on.
         async move {
@@ -4260,7 +4628,8 @@ impl GitRepository for RealGitRepository {
                 git_directory,
                 executor.clone(),
                 is_trusted,
-            );
+            )
+            .with_console(console);
             let mut command = git.build_command(&["push"]);
             command
                 .envs(env.iter())
@@ -4293,6 +4662,7 @@ impl GitRepository for RealGitRepository {
         let executor = cx.background_executor().clone();
         let git_binary_path = self.system_git_binary_path.clone();
         let is_trusted = self.is_trusted();
+        let console = self.console();
         // Note: Do not spawn this command on the background thread, it might pop open the credential helper
         // which we want to block on.
         async move {
@@ -4303,7 +4673,8 @@ impl GitRepository for RealGitRepository {
                 git_directory,
                 executor.clone(),
                 is_trusted,
-            );
+            )
+            .with_console(console);
             let mut command = git.build_command(&["pull"]);
             command.envs(env.iter());
 
@@ -4335,6 +4706,7 @@ impl GitRepository for RealGitRepository {
         let git_binary_path = self.system_git_binary_path.clone();
         let executor = cx.background_executor().clone();
         let is_trusted = self.is_trusted();
+        let console = self.console();
         // Note: Do not spawn this command on the background thread, it might pop open the credential helper
         // which we want to block on.
         async move {
@@ -4345,7 +4717,8 @@ impl GitRepository for RealGitRepository {
                 git_directory,
                 executor.clone(),
                 is_trusted,
-            );
+            )
+            .with_console(console);
             let mut command = git.build_command(&["fetch", &remote_name]);
             command
                 .envs(env.iter())
@@ -4803,6 +5176,19 @@ impl GitRepository for RealGitRepository {
         let git = self.git_binary();
 
         async move {
+            if let LogSource::Filtered(filter) = &log_source
+                && let Some(commits) = filtered_graph_commits(&git, filter, log_order).await?
+            {
+                for chunk in commits.chunks(GRAPH_CHUNK_SIZE) {
+                    if request_tx.send(chunk.to_vec()).await.is_err() {
+                        log::warn!(
+                            "initial_graph_data: receiver dropped while sending filtered commits"
+                        );
+                        break;
+                    }
+                }
+                return Ok(());
+            }
             let log_source_args = log_source.get_args();
             let mut git_log_command = vec!["log", GRAPH_COMMIT_FORMAT, log_order.as_arg()];
             git_log_command.extend(log_source_args.iter().map(|arg| arg.as_ref()));
@@ -4875,7 +5261,17 @@ impl GitRepository for RealGitRepository {
         let git = self.git_binary();
 
         async move {
-            let log_source_args = log_source.get_args();
+            let visible_commits = match &log_source {
+                LogSource::Filtered(filter) => Some(filtered_commit_shas(&git, filter).await?),
+                _ => None,
+            };
+            let all_refs_source = LogSource::All;
+            let searched_source = if visible_commits.is_some() {
+                &all_refs_source
+            } else {
+                &log_source
+            };
+            let log_source_args = searched_source.get_args();
             let mut args = vec!["log", SEARCH_COMMIT_FORMAT];
             let hash_query = commit_hash_search_query(search_args.query.as_str())
                 .map(|query| query.to_ascii_lowercase());
@@ -4917,9 +5313,16 @@ impl GitRepository for RealGitRepository {
                     continue;
                 }
 
-                if let Ok(oid) = Oid::from_str(sha)
-                    && request_tx.send(oid).await.is_err()
+                let Ok(oid) = Oid::from_str(sha) else {
+                    continue;
+                };
+                if visible_commits
+                    .as_ref()
+                    .is_some_and(|visible| !visible.contains(&oid))
                 {
+                    continue;
+                }
+                if request_tx.send(oid).await.is_err() {
                     break;
                 }
             }
@@ -5004,6 +5407,117 @@ impl GitRepository for RealGitRepository {
             request_tx,
             _task: task,
         })
+    }
+
+    fn cherry_pick(
+        &self,
+        commits: Vec<Oid>,
+        env: Arc<HashMap<String, String>>,
+    ) -> BoxFuture<'_, Result<CherryPickOutcome>> {
+        let git = self.git_binary_in_worktree();
+        let git_dir = self.path();
+        classify_task(self.executor.spawn(async move {
+            let git = git?;
+            let mut args = vec!["cherry-pick".to_string()];
+            if commits_are_published(&git, &commits).await? {
+                args.push("-x".to_string());
+            }
+            args.extend(commits.iter().rev().map(ToString::to_string));
+            let application =
+                apply_commits(&git, &git_dir, &args, RepositoryOperation::CherryPick, &env).await?;
+            anyhow::Ok(match application {
+                CommitApplication::Completed { output } => CherryPickOutcome::Completed { output },
+                CommitApplication::Conflicted { output } => {
+                    CherryPickOutcome::Conflicted { output }
+                }
+            })
+        }))
+    }
+
+    fn revert_commits(
+        &self,
+        commits: Vec<Oid>,
+        env: Arc<HashMap<String, String>>,
+    ) -> BoxFuture<'_, Result<RevertOutcome>> {
+        let git = self.git_binary_in_worktree();
+        let git_dir = self.path();
+        classify_task(self.executor.spawn(async move {
+            let git = git?;
+            let mut args = vec!["revert".to_string(), "--no-edit".to_string()];
+            args.extend(commits.iter().map(ToString::to_string));
+            let application =
+                apply_commits(&git, &git_dir, &args, RepositoryOperation::Revert, &env).await?;
+            anyhow::Ok(match application {
+                CommitApplication::Completed { output } => RevertOutcome::Completed { output },
+                CommitApplication::Conflicted { output } => RevertOutcome::Conflicted { output },
+            })
+        }))
+    }
+
+    fn branches_containing_commit(&self, sha: Oid) -> BoxFuture<'_, Result<Vec<SharedString>>> {
+        let git = self.git_binary();
+        classify_task(self.executor.spawn(async move {
+            let output = ensure_git_success(
+                git.build_stable_command(&[
+                    "for-each-ref",
+                    "--format=%(refname)",
+                    "--contains",
+                    &sha.to_string(),
+                    "refs/heads",
+                    "refs/remotes",
+                ])
+                .output()
+                .await?,
+            )?;
+            anyhow::Ok(parse_containing_branches(&String::from_utf8_lossy(
+                &output.stdout,
+            )))
+        }))
+    }
+
+    fn current_user(&self) -> BoxFuture<'_, Result<Option<GitUser>>> {
+        let git = self.git_binary();
+        classify_task(self.executor.spawn(async move {
+            let Some(name) = read_config_value(&git, "user.name")
+                .await?
+                .filter(|name| !name.is_empty())
+            else {
+                return anyhow::Ok(None);
+            };
+            let email = read_config_value(&git, "user.email")
+                .await?
+                .unwrap_or_default();
+            anyhow::Ok(Some(GitUser {
+                name: name.into(),
+                email: email.into(),
+            }))
+        }))
+    }
+
+    fn log_authors(&self) -> BoxFuture<'_, Result<Vec<GitUser>>> {
+        let git = self.git_binary();
+        classify_task(self.executor.spawn(async move {
+            let output = ensure_git_success(
+                git.build_stable_command(&[
+                    "log",
+                    "--format=%an%x00%ae",
+                    "--no-use-mailmap",
+                    "--ignore-missing",
+                    "--branches",
+                    "--remotes",
+                    "--tags",
+                    "HEAD",
+                    "--",
+                ])
+                .output()
+                .await?,
+            )?;
+            anyhow::Ok(parse_log_authors(&String::from_utf8_lossy(&output.stdout)))
+        }))
+    }
+
+    fn set_console(&self, console: GitConsoleSink) {
+        *self.console.lock() = Some(console);
     }
 
     fn set_trusted(&self, trusted: bool) {
@@ -5163,11 +5677,149 @@ fn parse_initial_graph_output<'a>(
                     .collect()
             };
 
+            let committer_timestamp: i64 = parts
+                .next()
+                .and_then(|timestamp| timestamp.trim().parse().ok())
+                .unwrap_or_default();
+
             Some(Arc::new(InitialGraphCommitData {
                 sha,
                 parents,
                 ref_names,
+                committer_timestamp,
+                dotted_parents: SmallVec::new(),
             }))
+        })
+        .collect()
+}
+
+pub fn visible_graph_commits(
+    commits: &[Arc<InitialGraphCommitData>],
+    is_visible: impl Fn(&InitialGraphCommitData) -> bool,
+) -> Vec<Arc<InitialGraphCommitData>> {
+    let index_by_sha = commits
+        .iter()
+        .enumerate()
+        .map(|(index, commit)| (commit.sha, index))
+        .collect::<HashMap<_, _>>();
+    let parent_indices = commits
+        .iter()
+        .map(|commit| {
+            commit
+                .parents
+                .iter()
+                .filter_map(|parent| index_by_sha.get(parent).copied())
+                .collect::<SmallVec<[usize; 2]>>()
+        })
+        .collect::<Vec<_>>();
+    let mut child_indices = vec![SmallVec::<[usize; 2]>::new(); commits.len()];
+    for (index, parents) in parent_indices.iter().enumerate() {
+        for parent in parents {
+            child_indices[*parent].push(index);
+        }
+    }
+    let visible = commits
+        .iter()
+        .map(|commit| is_visible(commit.as_ref()))
+        .collect::<Vec<_>>();
+    let mut dotted_parents = vec![SmallVec::<[usize; 1]>::new(); commits.len()];
+
+    let mut numbers = vec![i64::MIN; commits.len()];
+    for index in 0..commits.len() {
+        let mut nearest_up = i64::MIN;
+        if visible[index] {
+            let mut max_adjacent = i64::MIN;
+            for &child in &child_indices[index] {
+                if visible[child] {
+                    max_adjacent = max_adjacent.max(numbers[child]);
+                } else {
+                    nearest_up = nearest_up.max(numbers[child]);
+                }
+            }
+            if nearest_up == max_adjacent || nearest_up == i64::MIN {
+                numbers[index] = max_adjacent;
+            } else {
+                if let Ok(child) = usize::try_from(nearest_up) {
+                    dotted_parents[child].push(index);
+                }
+                numbers[index] = nearest_up;
+            }
+        } else {
+            for &child in &child_indices[index] {
+                let candidate = if visible[child] {
+                    child as i64
+                } else {
+                    numbers[child]
+                };
+                nearest_up = nearest_up.max(candidate);
+            }
+            numbers[index] = nearest_up;
+        }
+    }
+
+    numbers.fill(i64::MAX);
+    for index in (0..commits.len()).rev() {
+        let mut nearest_down = i64::MAX;
+        if visible[index] {
+            let mut min_adjacent = i64::MAX;
+            for &parent in &parent_indices[index] {
+                if visible[parent] {
+                    min_adjacent = min_adjacent.min(numbers[parent]);
+                } else {
+                    nearest_down = nearest_down.min(numbers[parent]);
+                }
+            }
+            if nearest_down == min_adjacent || nearest_down == i64::MAX {
+                numbers[index] = min_adjacent;
+            } else {
+                if let Ok(parent) = usize::try_from(nearest_down) {
+                    dotted_parents[index].push(parent);
+                }
+                numbers[index] = nearest_down;
+            }
+        } else {
+            for &parent in &parent_indices[index] {
+                let candidate = if visible[parent] {
+                    parent as i64
+                } else {
+                    numbers[parent]
+                };
+                nearest_down = nearest_down.min(candidate);
+            }
+            numbers[index] = nearest_down;
+        }
+    }
+
+    commits
+        .iter()
+        .enumerate()
+        .filter(|(index, _)| visible[*index])
+        .map(|(index, commit)| {
+            let mut parents = SmallVec::<[Oid; 1]>::new();
+            let mut rewritten_parents = SmallVec::<[Oid; 1]>::new();
+            for &parent in parent_indices[index]
+                .iter()
+                .filter(|parent| visible[**parent])
+            {
+                let parent_sha = commits[parent].sha;
+                if !parents.contains(&parent_sha) {
+                    parents.push(parent_sha);
+                }
+            }
+            for &parent in &dotted_parents[index] {
+                let parent_sha = commits[parent].sha;
+                if !parents.contains(&parent_sha) {
+                    parents.push(parent_sha);
+                    rewritten_parents.push(parent_sha);
+                }
+            }
+            Arc::new(InitialGraphCommitData {
+                sha: commit.sha,
+                parents,
+                ref_names: commit.ref_names.clone(),
+                committer_timestamp: commit.committer_timestamp,
+                dotted_parents: rewritten_parents,
+            })
         })
         .collect()
 }
@@ -5335,6 +5987,7 @@ pub(crate) struct GitBinary {
     index_file_path: Option<PathBuf>,
     envs: HashMap<String, String>,
     is_trusted: bool,
+    console: Option<GitConsoleSink>,
 }
 
 impl GitBinary {
@@ -5353,11 +6006,17 @@ impl GitBinary {
             index_file_path: None,
             envs: HashMap::default(),
             is_trusted,
+            console: None,
         }
     }
 
     fn envs(mut self, envs: HashMap<String, String>) -> Self {
         self.envs = envs;
+        self
+    }
+
+    fn with_console(mut self, console: Option<GitConsoleSink>) -> Self {
+        self.console = console;
         self
     }
 
@@ -5430,7 +6089,7 @@ impl GitBinary {
     }
 
     #[allow(clippy::disallowed_methods)]
-    pub(crate) fn build_command<S>(&self, args: &[S]) -> util::command::Command
+    pub(crate) fn build_command<S>(&self, args: &[S]) -> GitCommand
     where
         S: AsRef<OsStr>,
     {
@@ -5457,6 +6116,7 @@ impl GitBinary {
         // directly after the subcommand: callers end their revisions with `--`,
         // and anything after that separator is read as a pathspec rather than as
         // an option.
+        let subcommand_index = command.get_args().count();
         let mut args = args.iter();
         if let Some(subcommand) = args.next() {
             let is_diff = subcommand.as_ref() == "diff";
@@ -5471,10 +6131,19 @@ impl GitBinary {
             command.env("GIT_INDEX_FILE", index_file_path);
         }
         command.envs(&self.envs);
-        command
+        let console = self
+            .console
+            .clone()
+            .filter(|_| self.index_file_path.is_none())
+            .map(|sink| GitCommandConsole {
+                sink,
+                working_directory: self.working_directory.clone(),
+                subcommand_index,
+            });
+        GitCommand { command, console }
     }
 
-    fn build_stable_command<S>(&self, args: &[S]) -> util::command::Command
+    fn build_stable_command<S>(&self, args: &[S]) -> GitCommand
     where
         S: AsRef<OsStr>,
     {
@@ -5485,7 +6154,7 @@ impl GitBinary {
         &self,
         args: &[S],
         env: &HashMap<String, String>,
-    ) -> util::command::Command
+    ) -> GitCommand
     where
         S: AsRef<OsStr>,
     {
@@ -5520,10 +6189,131 @@ struct GitBinaryCommandError {
     status: ExitStatus,
 }
 
+pub(crate) struct GitCommand {
+    command: util::command::Command,
+    console: Option<GitCommandConsole>,
+}
+
+struct GitCommandConsole {
+    sink: GitConsoleSink,
+    working_directory: PathBuf,
+    subcommand_index: usize,
+}
+
+impl GitCommand {
+    pub(crate) fn arg(&mut self, arg: impl AsRef<OsStr>) -> &mut Self {
+        self.command.arg(arg);
+        self
+    }
+
+    pub(crate) fn args<I, S>(&mut self, args: I) -> &mut Self
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<OsStr>,
+    {
+        self.command.args(args);
+        self
+    }
+
+    pub(crate) fn env(&mut self, key: impl AsRef<OsStr>, value: impl AsRef<OsStr>) -> &mut Self {
+        self.command.env(key, value);
+        self
+    }
+
+    pub(crate) fn envs<I, K, V>(&mut self, variables: I) -> &mut Self
+    where
+        I: IntoIterator<Item = (K, V)>,
+        K: AsRef<OsStr>,
+        V: AsRef<OsStr>,
+    {
+        self.command.envs(variables);
+        self
+    }
+
+    pub(crate) fn stdin(&mut self, configuration: Stdio) -> &mut Self {
+        self.command.stdin(configuration);
+        self
+    }
+
+    pub(crate) fn stdout(&mut self, configuration: Stdio) -> &mut Self {
+        self.command.stdout(configuration);
+        self
+    }
+
+    pub(crate) fn stderr(&mut self, configuration: Stdio) -> &mut Self {
+        self.command.stderr(configuration);
+        self
+    }
+
+    pub(crate) fn kill_on_drop(&mut self, kill_on_drop: bool) -> &mut Self {
+        self.command.kill_on_drop(kill_on_drop);
+        self
+    }
+
+    pub(crate) fn spawn(&mut self) -> std::io::Result<GitChild> {
+        let console = self.start_console_run();
+        let child = self.command.spawn()?;
+        Ok(GitChild { child, console })
+    }
+
+    pub(crate) async fn output(&mut self) -> std::io::Result<Output> {
+        let console = self.start_console_run();
+        let output = self.command.output().await?;
+        if let Some(console) = console {
+            console.record_output(&output.stdout, &output.stderr);
+        }
+        Ok(output)
+    }
+
+    fn start_console_run(&self) -> Option<GitConsoleRecorder> {
+        let console = self.console.as_ref()?;
+        let arguments = self
+            .command
+            .get_args()
+            .map(|argument| argument.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        console.sink.command_started(
+            &console.working_directory,
+            &arguments,
+            console.subcommand_index,
+        )
+    }
+}
+
+pub(crate) struct GitChild {
+    child: util::command::Child,
+    console: Option<GitConsoleRecorder>,
+}
+
+impl GitChild {
+    pub(crate) async fn output(self) -> std::io::Result<Output> {
+        let GitChild { child, console } = self;
+        let output = child.output().await?;
+        if let Some(console) = console {
+            console.record_output(&output.stdout, &output.stderr);
+        }
+        Ok(output)
+    }
+}
+
+impl std::ops::Deref for GitChild {
+    type Target = util::command::Child;
+
+    fn deref(&self) -> &Self::Target {
+        &self.child
+    }
+}
+
+impl std::ops::DerefMut for GitChild {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.child
+    }
+}
+
 async fn run_git_command(
     env: Arc<HashMap<String, String>>,
     ask_pass: AskPassDelegate,
-    mut command: util::command::Command,
+    mut command: GitCommand,
     executor: BackgroundExecutor,
 ) -> Result<RemoteCommandOutput> {
     if env.contains_key("GIT_ASKPASS") {
@@ -5564,7 +6354,7 @@ async fn run_git_command(
 
 async fn run_askpass_command(
     mut ask_pass: AskPassSession,
-    git_process: util::command::Child,
+    git_process: GitChild,
 ) -> anyhow::Result<RemoteCommandOutput> {
     select_biased! {
         // Git can legitimately run long without prompting (e.g. large fetches,
@@ -5593,6 +6383,234 @@ async fn run_askpass_command(
             })
         }
     }
+}
+
+const PUBLISHED_BRANCH_NAMES: [&str; 2] = ["master", "main"];
+
+enum CommitApplication {
+    Completed { output: String },
+    Conflicted { output: String },
+}
+
+async fn apply_commits(
+    git: &GitBinary,
+    git_dir: &Path,
+    args: &[String],
+    operation: RepositoryOperation,
+    env: &HashMap<String, String>,
+) -> Result<CommitApplication> {
+    let was_in_progress = probe_operation_in_progress(git_dir) == Some(operation);
+    let output = git
+        .build_stable_command_with_env(args, env)
+        .env("GIT_EDITOR", "true")
+        .output()
+        .await?;
+    if output.status.success() {
+        return Ok(CommitApplication::Completed {
+            output: joined_output(&output),
+        });
+    }
+    if !was_in_progress && probe_operation_in_progress(git_dir) == Some(operation) {
+        return Ok(CommitApplication::Conflicted {
+            output: joined_output(&output),
+        });
+    }
+    Err(git_failure_from_output(&output))
+}
+
+async fn commits_are_published(git: &GitBinary, commits: &[Oid]) -> Result<bool> {
+    if commits.is_empty() {
+        return Ok(false);
+    }
+    for commit in commits {
+        let output = ensure_git_success(
+            git.build_stable_command(&[
+                "for-each-ref",
+                "--format=%(refname)",
+                "--contains",
+                &commit.to_string(),
+                "refs/remotes",
+            ])
+            .output()
+            .await?,
+        )?;
+        let published = String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .any(|ref_name| {
+                ref_name
+                    .strip_prefix("refs/remotes/")
+                    .and_then(|name| name.split_once('/'))
+                    .is_some_and(|(_, branch)| PUBLISHED_BRANCH_NAMES.contains(&branch))
+            });
+        if !published {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+async fn read_config_value(git: &GitBinary, key: &str) -> Result<Option<String>> {
+    let output = git
+        .build_stable_command(&["config", "--get", key])
+        .output()
+        .await?;
+    if output.status.success() {
+        return Ok(Some(
+            String::from_utf8_lossy(&output.stdout).trim().to_string(),
+        ));
+    }
+    if output.status.code() == Some(1) {
+        return Ok(None);
+    }
+    Err(git_failure_from_output(&output))
+}
+
+fn parse_containing_branches(output: &str) -> Vec<SharedString> {
+    let mut local_branches = Vec::new();
+    let mut remote_branches = Vec::new();
+    for ref_name in output.lines() {
+        if let Some(name) = ref_name.strip_prefix("refs/heads/") {
+            local_branches.push(SharedString::from(name.to_string()));
+        } else if let Some(name) = ref_name.strip_prefix("refs/remotes/")
+            && !name.ends_with("/HEAD")
+        {
+            remote_branches.push(SharedString::from(name.to_string()));
+        }
+    }
+    local_branches.extend(remote_branches);
+    local_branches
+}
+
+fn parse_log_authors(output: &str) -> Vec<GitUser> {
+    let mut users = output
+        .lines()
+        .filter_map(|line| {
+            let (name, email) = line.split_once('\0')?;
+            Some(GitUser {
+                name: name.to_string().into(),
+                email: email.to_string().into(),
+            })
+        })
+        .collect::<Vec<_>>();
+    users.sort_by(|left, right| {
+        left.name
+            .to_lowercase()
+            .cmp(&right.name.to_lowercase())
+            .then_with(|| left.email.to_lowercase().cmp(&right.email.to_lowercase()))
+    });
+    users.dedup();
+    users
+}
+
+async fn filtered_graph_commits(
+    git: &GitBinary,
+    filter: &LogFilter,
+    log_order: LogOrder,
+) -> Result<Option<Vec<Arc<InitialGraphCommitData>>>> {
+    if let Some(text) = filter.text_filter() {
+        let hash_prefixes = text.hash_prefixes();
+        if !hash_prefixes.is_empty() {
+            let all_refs_source = LogSource::All;
+            let all_refs = all_refs_source.get_args();
+            let commits = read_graph_commits(git, log_order, &all_refs).await?;
+            let mut message_search_args = vec![
+                Cow::Borrowed("--fixed-strings"),
+                Cow::Borrowed("--regexp-ignore-case"),
+            ];
+            message_search_args.extend(
+                hash_prefixes
+                    .iter()
+                    .map(|prefix| Cow::Owned(format!("--grep={prefix}"))),
+            );
+            message_search_args.extend(all_refs.iter().cloned());
+            let message_matches = read_commit_shas(git, &message_search_args).await?;
+            let lowercase_prefixes = hash_prefixes
+                .iter()
+                .map(|prefix| prefix.to_ascii_lowercase())
+                .collect::<Vec<_>>();
+            let visible = commits
+                .iter()
+                .filter(|commit| {
+                    let sha = commit.sha.to_string();
+                    message_matches.contains(&commit.sha)
+                        || lowercase_prefixes
+                            .iter()
+                            .any(|prefix| sha.starts_with(prefix.as_str()))
+                })
+                .map(|commit| commit.sha)
+                .collect::<HashSet<_>>();
+            if !visible.is_empty() {
+                return Ok(Some(visible_graph_in_order(&commits, &visible, log_order)));
+            }
+        }
+    }
+    if filter.matches_nothing() {
+        return Ok(Some(Vec::new()));
+    }
+    if !filter.has_commit_conditions() && filter.paths.is_empty() {
+        return Ok(None);
+    }
+    let commits = read_graph_commits(git, log_order, &filter.revision_scope_args()).await?;
+    let matching = read_commit_shas(git, &filter.get_args()).await?;
+    Ok(Some(visible_graph_in_order(&commits, &matching, log_order)))
+}
+
+async fn filtered_commit_shas(git: &GitBinary, filter: &LogFilter) -> Result<HashSet<Oid>> {
+    let commits = match filtered_graph_commits(git, filter, LogOrder::DateOrder).await? {
+        Some(commits) => commits,
+        None => read_graph_commits(git, LogOrder::DateOrder, &filter.get_args()).await?,
+    };
+    Ok(commits.iter().map(|commit| commit.sha).collect())
+}
+
+fn visible_graph_in_order(
+    commits: &[Arc<InitialGraphCommitData>],
+    visible: &HashSet<Oid>,
+    log_order: LogOrder,
+) -> Vec<Arc<InitialGraphCommitData>> {
+    if log_order == LogOrder::ReverseChronological {
+        let children_first = commits.iter().rev().cloned().collect::<Vec<_>>();
+        let mut graph =
+            visible_graph_commits(&children_first, |commit| visible.contains(&commit.sha));
+        graph.reverse();
+        graph
+    } else {
+        visible_graph_commits(commits, |commit| visible.contains(&commit.sha))
+    }
+}
+
+async fn read_graph_commits(
+    git: &GitBinary,
+    log_order: LogOrder,
+    args: &[Cow<'_, str>],
+) -> Result<Vec<Arc<InitialGraphCommitData>>> {
+    let mut command_args = vec!["log", GRAPH_COMMIT_FORMAT, log_order.as_arg()];
+    command_args.extend(args.iter().map(|argument| argument.as_ref()));
+    let output = git.build_command(&command_args).output().await?;
+    anyhow::ensure!(
+        output.status.success(),
+        "git log command failed with {}: {}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    Ok(parse_initial_graph_output(stdout.lines()))
+}
+
+async fn read_commit_shas(git: &GitBinary, args: &[Cow<'_, str>]) -> Result<HashSet<Oid>> {
+    let mut command_args = vec!["log", SEARCH_COMMIT_FORMAT];
+    command_args.extend(args.iter().map(|argument| argument.as_ref()));
+    let output = git.build_command(&command_args).output().await?;
+    anyhow::ensure!(
+        output.status.success(),
+        "git log command failed with {}: {}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
+    );
+    Ok(String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter_map(|line| Oid::from_str(line.trim()).ok())
+        .collect())
 }
 
 #[derive(Clone, Ord, Hash, PartialOrd, Eq, PartialEq)]
@@ -5878,6 +6896,70 @@ mod tests {
     fn git_init_repo(path: &Path) {
         fs::create_dir_all(path).expect("failed to create repo directory");
         git_command(path, ["init", "-b", "main"]);
+    }
+
+    #[gpui::test]
+    async fn test_initial_graph_data_path_filter_marks_rewritten_parents_dotted(
+        cx: &mut TestAppContext,
+    ) {
+        disable_git_global_config();
+        cx.executor().allow_parking();
+
+        let repo_dir = tempfile::tempdir().unwrap();
+        git_init_repo(repo_dir.path());
+        fs::write(repo_dir.path().join("tracked.txt"), "first").unwrap();
+        git_command(repo_dir.path(), ["add", "tracked.txt"]);
+        git_command(repo_dir.path(), ["commit", "-m", "Add tracked file"]);
+        let first_sha: Oid = git_command_output(repo_dir.path(), ["rev-parse", "HEAD"])
+            .parse()
+            .unwrap();
+        fs::write(repo_dir.path().join("other.txt"), "other").unwrap();
+        git_command(repo_dir.path(), ["add", "other.txt"]);
+        git_command(repo_dir.path(), ["commit", "-m", "Add other file"]);
+        fs::write(repo_dir.path().join("tracked.txt"), "second").unwrap();
+        git_command(repo_dir.path(), ["add", "tracked.txt"]);
+        git_command(repo_dir.path(), ["commit", "-m", "Change tracked file"]);
+        let last_sha: Oid = git_command_output(repo_dir.path(), ["rev-parse", "HEAD"])
+            .parse()
+            .unwrap();
+
+        let repo = RealGitRepository::new(
+            &repo_dir.path().join(".git"),
+            None,
+            Some("git".into()),
+            cx.executor(),
+        )
+        .unwrap();
+        let (request_tx, request_rx) = async_channel::unbounded();
+        repo.initial_graph_data(
+            LogSource::Filtered(LogFilter {
+                paths: vec![repo_path("tracked.txt")],
+                ..LogFilter::default()
+            }),
+            LogOrder::DateOrder,
+            request_tx,
+        )
+        .await
+        .unwrap();
+
+        let graph = request_rx.recv().await.unwrap();
+        let shape = graph
+            .iter()
+            .map(|commit| {
+                (
+                    commit.sha,
+                    commit.parents.to_vec(),
+                    commit.dotted_parents.to_vec(),
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            shape,
+            vec![
+                (last_sha, vec![first_sha], vec![first_sha]),
+                (first_sha, Vec::new(), Vec::new()),
+            ]
+        );
     }
 
     fn clone_remote_repository_with_main_and_feature(temp_dir: &Path) -> (PathBuf, PathBuf) {
@@ -6741,9 +7823,160 @@ mod tests {
                 SharedString::from("tag: "),
                 SharedString::from("refs/heads/feature"),
             ],
+            committer_timestamp: 0,
+            dotted_parents: SmallVec::new(),
         };
 
         assert_eq!(commit.tag_names(), ["v1.0.0", "v1.1.0"]);
+    }
+
+    fn graph_commit(sha: u8, parents: &[u8]) -> Arc<InitialGraphCommitData> {
+        Arc::new(InitialGraphCommitData {
+            sha: Oid::from_bytes(&[sha; 20]).unwrap(),
+            parents: parents
+                .iter()
+                .map(|parent| Oid::from_bytes(&[*parent; 20]).unwrap())
+                .collect(),
+            ref_names: Vec::new(),
+            committer_timestamp: 0,
+            dotted_parents: SmallVec::new(),
+        })
+    }
+
+    #[test]
+    fn test_visible_graph_commits_connects_matches_across_hidden_commits() {
+        let commits = vec![
+            graph_commit(10, &[11]),
+            graph_commit(11, &[12, 13]),
+            graph_commit(12, &[16]),
+            graph_commit(13, &[14]),
+            graph_commit(14, &[15]),
+            graph_commit(15, &[16]),
+            graph_commit(16, &[17]),
+            graph_commit(17, &[]),
+        ];
+        let visible = [13, 15, 17]
+            .map(|sha| Oid::from_bytes(&[sha; 20]).unwrap())
+            .into_iter()
+            .collect::<HashSet<_>>();
+        let graph = visible_graph_commits(&commits, |commit| visible.contains(&commit.sha));
+        let shape = graph
+            .iter()
+            .map(|commit| {
+                (
+                    commit.sha.as_bytes()[0],
+                    commit
+                        .parents
+                        .iter()
+                        .map(|parent| parent.as_bytes()[0])
+                        .collect::<Vec<_>>(),
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(shape, vec![(13, vec![15]), (15, vec![17]), (17, vec![])]);
+        assert!(
+            graph
+                .iter()
+                .all(|commit| commit.dotted_parents == commit.parents)
+        );
+    }
+
+    #[test]
+    fn test_log_filter_args_follow_intellij_git_log_provider() {
+        let filter = LogFilter {
+            revisions: vec![
+                "HEAD".into(),
+                "--output=/tmp/log".into(),
+                "origin/main".into(),
+            ],
+            authors: vec![
+                "Alice <alice@example.com>".into(),
+                "Bob (QA) <bob@example.com>".into(),
+            ],
+            after: Some(1_704_240_000),
+            before: Some(1_704_500_000),
+            paths: vec![repo_path("src/lib.rs")],
+            text: None,
+        };
+        assert_eq!(
+            filter
+                .get_args()
+                .iter()
+                .map(|argument| argument.as_ref())
+                .collect::<Vec<&str>>(),
+            vec![
+                "--after=@1704240000",
+                "--before=@1704500000",
+                "--extended-regexp",
+                "--regexp-ignore-case",
+                "--author=^Alice <alice@example\\.com>$|^Bob \\(QA\\) <bob@example\\.com>$",
+                "--no-use-mailmap",
+                "--full-history",
+                "--simplify-merges",
+                "--ignore-missing",
+                "HEAD",
+                "origin/main",
+                "--",
+                "src/lib.rs",
+            ]
+        );
+
+        let filter = LogFilter {
+            authors: vec!["Alice <alice@example.com>".into()],
+            text: Some(LogTextFilter {
+                pattern: "fix(ui)".into(),
+                regex: false,
+                match_case: true,
+            }),
+            ..LogFilter::default()
+        };
+        assert_eq!(
+            filter
+                .get_args()
+                .iter()
+                .map(|argument| argument.as_ref())
+                .collect::<Vec<&str>>(),
+            vec![
+                "--grep=fix(ui)",
+                "--fixed-strings",
+                "--author=Alice <alice@example.com>",
+                "--no-use-mailmap",
+                "--ignore-missing",
+                "--branches",
+                "--remotes",
+                "--tags",
+                "HEAD",
+                "--",
+            ]
+        );
+    }
+
+    #[test]
+    fn test_log_text_filter_detects_regex_and_hashes_like_intellij() {
+        let text = |pattern: &str, regex: bool| LogTextFilter {
+            pattern: pattern.to_string().into(),
+            regex,
+            match_case: false,
+        };
+        assert!(text("^fix.*ui", true).is_regex());
+        assert!(!text("^fix.*ui", false).is_regex());
+        assert!(!text("plain words", true).is_regex());
+        assert!(!text("fix(ui", true).is_regex());
+        assert!(text("FIX the UI", false).matches("fix the ui"));
+        assert!(text("^fix.*ui$", true).matches("Fix the UI"));
+        assert_eq!(
+            text("abc1234, DEADBEEF0;f00ba47", false).hash_prefixes(),
+            vec!["abc1234", "DEADBEEF0", "f00ba47"]
+        );
+        assert!(text("abc1234 fix", false).hash_prefixes().is_empty());
+        assert!(text("abc12", false).hash_prefixes().is_empty());
+        assert!(
+            LogFilter {
+                revisions: vec!["--all".into()],
+                ..LogFilter::default()
+            }
+            .matches_nothing()
+        );
     }
 
     #[test]

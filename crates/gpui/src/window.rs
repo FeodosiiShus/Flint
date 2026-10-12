@@ -4706,6 +4706,26 @@ impl Window {
         font_size: Pixels,
         color: Hsla,
     ) -> Result<()> {
+        self.paint_glyph_with_transformation(
+            origin,
+            font_id,
+            glyph_id,
+            font_size,
+            color,
+            TransformationMatrix::unit(),
+        )
+    }
+
+    #[expect(missing_docs)]
+    pub fn paint_glyph_with_transformation(
+        &mut self,
+        origin: Point<Pixels>,
+        font_id: FontId,
+        glyph_id: GlyphId,
+        font_size: Pixels,
+        color: Hsla,
+        transformation: TransformationMatrix,
+    ) -> Result<()> {
         self.invalidator.debug_assert_paint();
 
         let element_opacity = self.element_opacity();
@@ -4759,7 +4779,7 @@ impl Window {
                     content_mask,
                     color: color.opacity(element_opacity),
                     tile,
-                    transformation: TransformationMatrix::unit(),
+                    transformation,
                 });
             } else {
                 self.next_frame.scene.insert_primitive(MonochromeSprite {
@@ -4769,7 +4789,7 @@ impl Window {
                     content_mask,
                     color: color.opacity(element_opacity),
                     tile,
-                    transformation: TransformationMatrix::unit(),
+                    transformation,
                 });
             }
         }

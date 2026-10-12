@@ -5,6 +5,8 @@ use ui::{ChromeRegion, IconButtonShape, PopoverMenu, Tooltip, prelude::*, right_
 
 pub(crate) const TOOL_WINDOW_GROUP: &str = "tool-window";
 const PANEL_NAME_SUFFIX: &str = " Panel";
+const HEADER_LABEL_LEFT_INSET: Pixels = px(12.);
+const HEADER_LABEL_RIGHT_INSET: Pixels = px(16.);
 
 pub(crate) fn tool_window_title(name: &str) -> &str {
     name.strip_suffix(PANEL_NAME_SUFFIX).unwrap_or(name)
@@ -108,20 +110,47 @@ pub(crate) fn render_tool_window_header(
                 .child(hide_button),
         );
 
+    let header_content = panel.header_content(window, cx);
+    let has_header_content = header_content.is_some();
+    let leading = match header_content {
+        Some(content) => h_flex()
+            .flex_1()
+            .min_w_0()
+            .h_full()
+            .pl(HEADER_LABEL_LEFT_INSET)
+            .gap(HEADER_LABEL_RIGHT_INSET)
+            .child(
+                div()
+                    .debug_selector(move || format!("tool_window_header_title_{position_key}"))
+                    .flex_none()
+                    .child(Label::new(title).weight(FontWeight::SEMIBOLD)),
+            )
+            .child(
+                div()
+                    .debug_selector(move || format!("tool_window_header_content_{position_key}"))
+                    .flex_1()
+                    .min_w_0()
+                    .h_full()
+                    .overflow_hidden()
+                    .child(content),
+            )
+            .into_any_element(),
+        None => div()
+            .flex_1()
+            .min_w_0()
+            .child(Label::new(title).weight(FontWeight::SEMIBOLD).truncate())
+            .into_any_element(),
+    };
+
     let header = h_flex()
         .debug_selector(move || format!("tool_window_header_{position_key}"))
         .flex_none()
         .w_full()
         .h(ui::panel_header_height(cx))
-        .pl_2()
+        .when(!has_header_content, |this| this.pl_2())
         .pr_1()
         .gap_1()
-        .child(
-            div()
-                .flex_1()
-                .min_w_0()
-                .child(Label::new(title).weight(FontWeight::SEMIBOLD).truncate()),
-        )
+        .child(leading)
         .child(actions);
 
     right_click_menu(("tool-window-header-menu", panel_id))

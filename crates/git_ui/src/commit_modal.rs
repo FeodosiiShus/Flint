@@ -13,11 +13,7 @@ use zed_actions::{DecreaseBufferFontSize, IncreaseBufferFontSize, ResetBufferFon
 
 use editor::{Editor, EditorElement};
 use gpui::*;
-use util::ResultExt;
-use workspace::{
-    ModalView, Workspace,
-    dock::{Dock, PanelHandle},
-};
+use workspace::{ModalView, Workspace};
 
 // nate: It is a pain to get editors to size correctly and not overflow.
 //
@@ -63,7 +59,6 @@ impl ModalContainerProperties {
 pub struct CommitModal {
     git_panel: Entity<GitPanel>,
     commit_editor: Entity<Editor>,
-    restore_dock: RestoreDock,
     properties: ModalContainerProperties,
     branch_list_handle: PopoverMenuHandle<GitPickerPopover>,
     commit_menu_handle: PopoverMenuHandle<ContextMenu>,
@@ -76,33 +71,7 @@ impl Focusable for CommitModal {
 }
 
 impl EventEmitter<DismissEvent> for CommitModal {}
-impl ModalView for CommitModal {
-    fn on_before_dismiss(
-        &mut self,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> workspace::DismissDecision {
-        self.git_panel.update(cx, |git_panel, cx| {
-            git_panel.set_modal_open(false, cx);
-        });
-        self.restore_dock
-            .dock
-            .update(cx, |dock, cx| {
-                if let Some(active_index) = self.restore_dock.active_index {
-                    dock.activate_panel(active_index, window, cx)
-                }
-                dock.set_open(self.restore_dock.is_open, window, cx)
-            })
-            .log_err();
-        workspace::DismissDecision::Dismiss(true)
-    }
-}
-
-struct RestoreDock {
-    dock: WeakEntity<Dock>,
-    is_open: bool,
-    active_index: Option<usize>,
-}
+impl ModalView for CommitModal {}
 
 pub enum ForceMode {
     Amend,
@@ -151,43 +120,24 @@ impl CommitModal {
                     }
                 }
             }
-            git_panel.set_modal_open(true, cx);
         });
 
-        let dock = workspace.dock_at_position(git_panel.position(window, cx));
-        let is_open = dock.read(cx).is_open();
-        let active_index = dock.read(cx).active_panel_index();
-        let dock = dock.downgrade();
-        let restore_dock_position = RestoreDock {
-            dock,
-            is_open,
-            active_index,
-        };
-
-        workspace.open_panel::<GitPanel>(window, cx);
         workspace.toggle_modal(window, cx, move |window, cx| {
-            CommitModal::new(git_panel, restore_dock_position, window, cx)
+            CommitModal::new(git_panel, window, cx)
         })
     }
 
-    fn new(
-        git_panel: Entity<GitPanel>,
-        restore_dock: RestoreDock,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> Self {
+    fn new(git_panel: Entity<GitPanel>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let panel = git_panel.read(cx);
         let suggested_commit_message = panel.suggest_commit_message(cx);
 
         let commit_editor = git_panel.update(cx, |git_panel, cx| {
-            git_panel.set_modal_open(true, cx);
             let buffer = git_panel.commit_message_buffer(cx);
             let panel_editor = git_panel.commit_editor.clone();
             let project = git_panel.project.clone();
 
             cx.new(|cx| {
-                let mut editor =
-                    commit_message_editor(buffer, None, project.clone(), false, window, cx);
+                let mut editor = commit_message_editor(buffer, project.clone(), window, cx);
                 editor.sync_selections(panel_editor, cx).detach();
 
                 editor
@@ -220,7 +170,6 @@ impl CommitModal {
         Self {
             git_panel,
             commit_editor,
-            restore_dock,
             properties,
             branch_list_handle: PopoverMenuHandle::default(),
             commit_menu_handle: PopoverMenuHandle::default(),
@@ -265,7 +214,6 @@ impl CommitModal {
         &self,
         id: impl Into<ElementId>,
         keybinding_target: Option<FocusHandle>,
-        cx: &App,
     ) -> impl IntoElement {
         let menu_open = self.commit_menu_handle.is_deployed();
 
@@ -274,8 +222,6 @@ impl CommitModal {
             .trigger(crate::render_split_button_chevron_trigger(
                 "modal-commit-split-button-right",
                 menu_open,
-                None,
-                cx,
             ))
             .menu({
                 let git_panel_entity = self.git_panel.clone();
@@ -464,7 +410,6 @@ impl CommitModal {
                         self.render_git_commit_menu(
                             format!("split-button-right-{}", commit_label),
                             Some(focus_handle),
-                            cx,
                         )
                         .into_any_element(),
                     )),

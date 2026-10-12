@@ -12,9 +12,9 @@ pub(crate) mod single_file_merge;
 #[cfg(test)]
 mod tests;
 
-use git::repository::{RepoPath, RepositoryOperation};
+use git::repository::RepositoryOperation;
 use git::stash::StashEntry;
-use gpui::{App, AsyncApp, Context, Entity, Task, Window, actions};
+use gpui::{App, AsyncApp, Context, Entity, Window, actions};
 use project::{Project, git_store::Repository};
 use workspace::Workspace;
 
@@ -23,15 +23,7 @@ use self::conflict_resolution::{
     unmerged_files_on_disk,
 };
 
-actions!(
-    merge_tool,
-    [
-        ResolveConflicts,
-        MergeConflictedFile,
-        AcceptConflictTheirs,
-        AcceptConflictYours,
-    ]
-);
+actions!(merge_tool, [ResolveConflicts]);
 
 pub fn init(cx: &mut App) {
     conflict_banner::init(cx);
@@ -97,30 +89,6 @@ async fn repository_is_rebasing(repository: &Entity<Repository>, cx: &mut AsyncA
         }
     };
     operation == Some(RepositoryOperation::Rebase)
-}
-
-pub(crate) fn accept_conflict_sides(
-    repository: Entity<Repository>,
-    paths: Vec<RepoPath>,
-    accept_theirs: bool,
-    cx: &mut App,
-) -> Task<anyhow::Result<()>> {
-    cx.spawn(async move |cx| {
-        let reversed = repository_is_rebasing(&repository, cx).await;
-        let entries = repository
-            .update(cx, |repository, cx| repository.unmerged_entries(cx))
-            .await?;
-        let conflicts: Vec<_> = entries
-            .into_iter()
-            .filter(|entry| paths.contains(&entry.path))
-            .map(|entry| (entry.path, entry.stages))
-            .collect();
-        repository
-            .update(cx, |repository, cx| {
-                repository.accept_conflict_side(conflicts, accept_theirs, reversed, cx)
-            })
-            .await
-    })
 }
 
 fn is_context_available(context: &ConflictContext, cx: &App) -> bool {

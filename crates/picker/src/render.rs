@@ -25,6 +25,7 @@ use ui_input::ErasedEditor;
 pub mod window_controls;
 
 const PANEL_PREVIEW_HEIGHT_FRACTION: f32 = 0.4;
+const PANEL_PREVIEW_WIDTH_FRACTION: f32 = 0.5;
 
 impl<D: PickerDelegate> Render for Picker<D> {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -357,23 +358,40 @@ impl<D: PickerDelegate> Picker<D> {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        v_flex()
-            .size_full()
-            .child(
-                div()
-                    .flex_1()
-                    .min_h_0()
-                    .overflow_hidden()
-                    .child(self.render_results(window, cx)),
-            )
-            .child(
-                div()
-                    .flex_none()
-                    .h(relative(PANEL_PREVIEW_HEIGHT_FRACTION))
-                    .border_t_1()
-                    .border_color(cx.theme().colors().border_variant)
-                    .child(preview.render(cx)),
-            )
+        let border_color = cx.theme().colors().border_variant;
+        let results = div()
+            .debug_selector(|| "picker_panel_results".into())
+            .flex_1()
+            .overflow_hidden()
+            .child(self.render_results(window, cx));
+        let preview_container = div()
+            .debug_selector(|| "picker_panel_preview".into())
+            .flex_none()
+            .border_color(border_color);
+        match preview.layout {
+            Layout::Right => h_flex()
+                .size_full()
+                .child(results.min_w_0().h_full())
+                .child(
+                    preview_container
+                        .w(relative(PANEL_PREVIEW_WIDTH_FRACTION))
+                        .h_full()
+                        .border_l_1()
+                        .overflow_hidden()
+                        .child(preview.render(cx)),
+                )
+                .into_any_element(),
+            Layout::Below | Layout::Hidden => v_flex()
+                .size_full()
+                .child(results.min_h_0())
+                .child(
+                    preview_container
+                        .h(relative(PANEL_PREVIEW_HEIGHT_FRACTION))
+                        .border_t_1()
+                        .child(preview.render(cx)),
+                )
+                .into_any_element(),
+        }
     }
 
     fn render_with_preview_below(

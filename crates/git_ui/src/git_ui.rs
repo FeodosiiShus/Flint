@@ -19,9 +19,7 @@ use menu::{Cancel, Confirm};
 use project::git_store::Repository;
 use project_diff::ProjectDiff;
 use time::OffsetDateTime;
-use ui::{
-    ButtonLike, ChromeRegion, ContextMenu, ElevationIndex, PopoverMenuHandle, TintColor, prelude::*,
-};
+use ui::{ButtonLike, ContextMenu, ElevationIndex, PopoverMenuHandle, TintColor, prelude::*};
 use workspace::{
     ModalView, OpenMode, Workspace,
     notifications::{DetachAndPromptErr, NotifyTaskExt},
@@ -49,9 +47,11 @@ pub mod commit_view;
 mod conflict_view;
 mod diff_multibuffer;
 pub mod git_graph;
+mod git_log;
 pub mod git_panel;
 mod git_panel_settings;
 mod git_runtime_diagnostics;
+mod git_tool_window;
 pub mod merge_tool;
 pub mod multi_diff_view;
 pub mod picker_prompt;
@@ -455,7 +455,6 @@ fn file_diff_entry(
                     repo_path,
                     status: status_entry.status,
                     staging: status_entry.status.staging(),
-                    diff_stat: status_entry.diff_stat,
                 },
                 repository.clone(),
             ))
@@ -860,8 +859,6 @@ fn render_remote_button(
     show_fetch_button: bool,
     in_progress_operation: Option<RemoteOperationKind>,
     menu_handle: PopoverMenuHandle<ContextMenu>,
-    chrome_region: Option<ChromeRegion>,
-    cx: &App,
 ) -> Option<impl IntoElement> {
     let id = id.into();
     let upstream = branch.upstream.as_ref();
@@ -875,8 +872,6 @@ fn render_remote_button(
                 id,
                 in_progress_operation,
                 menu_handle,
-                chrome_region,
-                cx,
             )),
             (0, 0) => None,
             (ahead, 0) => Some(remote_button::render_push_button(
@@ -885,8 +880,6 @@ fn render_remote_button(
                 ahead,
                 in_progress_operation,
                 menu_handle,
-                chrome_region,
-                cx,
             )),
             (ahead, behind) => Some(remote_button::render_pull_button(
                 keybinding_target,
@@ -895,8 +888,6 @@ fn render_remote_button(
                 behind,
                 in_progress_operation,
                 menu_handle,
-                chrome_region,
-                cx,
             )),
         },
         Some(Upstream {
@@ -907,16 +898,12 @@ fn render_remote_button(
             id,
             in_progress_operation,
             menu_handle,
-            chrome_region,
-            cx,
         )),
         None => Some(remote_button::render_publish_button(
             keybinding_target,
             id,
             in_progress_operation,
             menu_handle,
-            chrome_region,
-            cx,
         )),
     }
 }
@@ -925,7 +912,7 @@ mod remote_button {
     use crate::git_panel::RemoteOperationKind;
     use gpui::{Action, Anchor, AnyView, ClickEvent, FocusHandle};
     use ui::{
-        ButtonLike, ChromeRegion, CommonAnimationExt, ContextMenu, ElevationIndex, PopoverMenu,
+        ButtonLike, CommonAnimationExt, ContextMenu, ElevationIndex, PopoverMenu,
         PopoverMenuHandle, SplitButton, Tooltip, prelude::*,
     };
 
@@ -934,8 +921,6 @@ mod remote_button {
         id: SharedString,
         in_progress_operation: Option<RemoteOperationKind>,
         menu_handle: PopoverMenuHandle<ContextMenu>,
-        chrome_region: Option<ChromeRegion>,
-        cx: &App,
     ) -> SplitButton {
         split_button(
             id,
@@ -946,8 +931,6 @@ mod remote_button {
             keybinding_target.clone(),
             in_progress_operation,
             menu_handle,
-            chrome_region,
-            cx,
             move |_, window, cx| {
                 window.dispatch_action(Box::new(git::Fetch), cx);
             },
@@ -969,8 +952,6 @@ mod remote_button {
         ahead: u32,
         in_progress_operation: Option<RemoteOperationKind>,
         menu_handle: PopoverMenuHandle<ContextMenu>,
-        chrome_region: Option<ChromeRegion>,
-        cx: &App,
     ) -> SplitButton {
         split_button(
             id,
@@ -981,8 +962,6 @@ mod remote_button {
             keybinding_target.clone(),
             in_progress_operation,
             menu_handle,
-            chrome_region,
-            cx,
             move |_, window, cx| {
                 window.dispatch_action(Box::new(git::Push), cx);
             },
@@ -1005,8 +984,6 @@ mod remote_button {
         behind: u32,
         in_progress_operation: Option<RemoteOperationKind>,
         menu_handle: PopoverMenuHandle<ContextMenu>,
-        chrome_region: Option<ChromeRegion>,
-        cx: &App,
     ) -> SplitButton {
         split_button(
             id,
@@ -1017,8 +994,6 @@ mod remote_button {
             keybinding_target.clone(),
             in_progress_operation,
             menu_handle,
-            chrome_region,
-            cx,
             move |_, window, cx| {
                 window.dispatch_action(Box::new(git::Pull), cx);
             },
@@ -1039,8 +1014,6 @@ mod remote_button {
         id: SharedString,
         in_progress_operation: Option<RemoteOperationKind>,
         menu_handle: PopoverMenuHandle<ContextMenu>,
-        chrome_region: Option<ChromeRegion>,
-        cx: &App,
     ) -> SplitButton {
         split_button(
             id,
@@ -1051,8 +1024,6 @@ mod remote_button {
             keybinding_target.clone(),
             in_progress_operation,
             menu_handle,
-            chrome_region,
-            cx,
             move |_, window, cx| {
                 window.dispatch_action(Box::new(git::Push), cx);
             },
@@ -1073,8 +1044,6 @@ mod remote_button {
         id: SharedString,
         in_progress_operation: Option<RemoteOperationKind>,
         menu_handle: PopoverMenuHandle<ContextMenu>,
-        chrome_region: Option<ChromeRegion>,
-        cx: &App,
     ) -> SplitButton {
         split_button(
             id,
@@ -1085,8 +1054,6 @@ mod remote_button {
             keybinding_target.clone(),
             in_progress_operation,
             menu_handle,
-            chrome_region,
-            cx,
             move |_, window, cx| {
                 window.dispatch_action(Box::new(git::Push), cx);
             },
@@ -1131,8 +1098,6 @@ mod remote_button {
         id: impl Into<ElementId>,
         keybinding_target: Option<FocusHandle>,
         menu_handle: PopoverMenuHandle<ContextMenu>,
-        chrome_region: Option<ChromeRegion>,
-        cx: &App,
     ) -> impl IntoElement {
         let menu_open = menu_handle.is_deployed();
 
@@ -1140,8 +1105,6 @@ mod remote_button {
             .trigger(crate::render_split_button_chevron_trigger(
                 "split-button-right",
                 menu_open,
-                chrome_region,
-                cx,
             ))
             .with_handle(menu_handle)
             .menu(move |window, cx| {
@@ -1177,8 +1140,6 @@ mod remote_button {
         keybinding_target: Option<FocusHandle>,
         in_progress_operation: Option<RemoteOperationKind>,
         menu_handle: PopoverMenuHandle<ContextMenu>,
-        chrome_region: Option<ChromeRegion>,
-        cx: &App,
         left_on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
         tooltip: impl Fn(&mut Window, &mut App) -> AnyView + 'static,
     ) -> SplitButton {
@@ -1197,15 +1158,11 @@ mod remote_button {
 
         let should_render_counts = left_icon.is_none() && (ahead_count > 0 || behind_count > 0);
         let is_in_progress = in_progress_operation.is_some();
-        let icon_size = match chrome_region {
-            Some(region) => ui::chrome_icon_size(region, IconSize::XSmall, cx),
-            None => IconSize::XSmall,
-        };
+        let icon_size = IconSize::XSmall;
 
         let left = ButtonLike::new_rounded_left(format!("split-button-left-{}", id))
             .layer(ElevationIndex::ModalSurface)
             .size(ButtonSize::Compact)
-            .when_some(chrome_region, |this, region| this.chrome_region(region))
             .disabled(is_in_progress)
             .when(should_render_counts, |this| {
                 this.child(
@@ -1254,8 +1211,6 @@ mod remote_button {
             format!("split-button-right-{}", id),
             keybinding_target,
             menu_handle,
-            chrome_region,
-            cx,
         )
         .into_any_element();
 
@@ -1266,23 +1221,8 @@ mod remote_button {
 pub(crate) fn render_split_button_chevron_trigger(
     id: impl Into<ElementId>,
     menu_open: bool,
-    chrome_region: Option<ChromeRegion>,
-    cx: &App,
 ) -> ButtonLike {
-    let default_chevron_side = rems_from_px(CHEVRON_BUTTON_SIZE);
-    let chevron_side = match chrome_region
-        .and_then(|region| ui::chrome_button_height(region, ButtonSize::Compact, cx))
-    {
-        Some(button_height) => {
-            let ui_font_size = theme::theme_settings(cx).ui_font_size(cx);
-            DefiniteLength::from(button_height.max(default_chevron_side.to_pixels(ui_font_size)))
-        }
-        None => DefiniteLength::from(default_chevron_side),
-    };
-    let chevron_icon_size = match chrome_region {
-        Some(region) => ui::chrome_icon_size(region, IconSize::XSmall, cx),
-        None => IconSize::XSmall,
-    };
+    let chevron_side = DefiniteLength::from(rems_from_px(CHEVRON_BUTTON_SIZE));
     let chevron_icon = if menu_open {
         IconName::ChevronUp
     } else {
@@ -1294,7 +1234,7 @@ pub(crate) fn render_split_button_chevron_trigger(
         .selected_style(ButtonStyle::Tinted(TintColor::Accent))
         .width(chevron_side)
         .height(chevron_side)
-        .child(Icon::new(chevron_icon).size(chevron_icon_size))
+        .child(Icon::new(chevron_icon).size(IconSize::XSmall))
 }
 
 /// A visual representation of a file's Git status.

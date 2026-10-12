@@ -502,6 +502,7 @@ pub struct SearchPanelSettingsContent {
     pub button: Option<bool>,
     pub dock: Option<DockPosition>,
     pub default_width: Option<PixelSetting>,
+    pub default_height: Option<PixelSetting>,
 }
 
 #[with_fallible_options]
@@ -510,6 +511,7 @@ pub struct ProjectDiagnosticsPanelSettingsContent {
     pub button: Option<bool>,
     pub dock: Option<DockPosition>,
     pub default_width: Option<PixelSetting>,
+    pub default_height: Option<PixelSetting>,
 }
 
 #[with_fallible_options]
@@ -518,6 +520,7 @@ pub struct LanguageServicesPanelSettingsContent {
     pub button: Option<bool>,
     pub dock: Option<DockPosition>,
     pub default_width: Option<PixelSetting>,
+    pub default_height: Option<PixelSetting>,
 }
 
 #[with_fallible_options]
@@ -529,31 +532,17 @@ pub struct GitPanelSettingsContent {
     pub button: Option<bool>,
     /// Where to dock the panel.
     ///
-    /// Default: left
+    /// Default: bottom
     pub dock: Option<DockPosition>,
     /// Default width of the panel in pixels.
     ///
     /// Default: 360
     pub default_width: Option<PixelSetting>,
+    pub default_height: Option<PixelSetting>,
     /// How entry statuses are displayed.
     ///
     /// Default: icon
     pub status_style: Option<StatusStyle>,
-
-    /// Whether to show file icons in the git panel.
-    ///
-    /// Default: false
-    pub file_icons: Option<bool>,
-
-    /// What to show for directories in the git panel.
-    ///
-    /// Default: icon
-    pub folder_indicator: Option<FolderIndicator>,
-
-    /// How and when the scrollbar should be displayed.
-    ///
-    /// Default: inherits editor scrollbar settings
-    pub scrollbar: Option<ScrollbarSettings>,
 
     /// What the default branch name should be when
     /// `init.defaultBranch` is not set in git
@@ -581,11 +570,6 @@ pub struct GitPanelSettingsContent {
     /// Default: false
     pub tree_view: Option<bool>,
 
-    /// Whether to show the addition/deletion change count next to each file in the Git panel.
-    ///
-    /// Default: true
-    pub diff_stats: Option<bool>,
-
     /// Whether to show a badge on the git panel icon with the count of uncommitted changes.
     ///
     /// Default: false
@@ -601,64 +585,6 @@ pub struct GitPanelSettingsContent {
     ///
     /// Default: 0
     pub commit_title_max_length: Option<usize>,
-
-    /// Default action when clicking a changed file in the Git panel.
-    ///
-    /// Default: project_diff
-    pub entry_primary_click_action: Option<GitPanelClickBehavior>,
-
-    /// Whether the commit message editor is shown in the Git panel by default.
-    ///
-    /// Default: expanded
-    pub commit_editor: Option<GitPanelCommitEditor>,
-}
-
-#[derive(
-    Copy,
-    Clone,
-    Debug,
-    Default,
-    Serialize,
-    Deserialize,
-    JsonSchema,
-    MergeFrom,
-    PartialEq,
-    Eq,
-    strum::VariantArray,
-    strum::VariantNames,
-)]
-#[serde(rename_all = "snake_case")]
-pub enum GitPanelCommitEditor {
-    /// Show the commit message editor.
-    #[default]
-    Expanded,
-    /// Hide the commit message editor, leaving only the commit button row.
-    Collapsed,
-}
-
-#[derive(
-    Default,
-    Copy,
-    Clone,
-    Debug,
-    Serialize,
-    Deserialize,
-    JsonSchema,
-    MergeFrom,
-    PartialEq,
-    Eq,
-    strum::VariantArray,
-    strum::VariantNames,
-)]
-#[serde(rename_all = "snake_case")]
-pub enum GitPanelClickBehavior {
-    /// Open the project diff, showing all changed files.
-    #[default]
-    ProjectDiff,
-    /// Open a single-file diff view.
-    FileDiff,
-    /// Open the file in the editor without a diff view.
-    ViewFile,
 }
 
 #[derive(
@@ -723,14 +649,6 @@ pub enum StatusStyle {
     #[default]
     Icon,
     LabelColor,
-}
-
-#[with_fallible_options]
-#[derive(
-    Copy, Clone, Default, Debug, Serialize, Deserialize, JsonSchema, MergeFrom, PartialEq, Eq,
-)]
-pub struct ScrollbarSettings {
-    pub show: Option<ShowScrollbar>,
 }
 
 #[with_fallible_options]

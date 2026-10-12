@@ -2563,14 +2563,16 @@ impl Workspace {
     pub fn persisted_panel_size_state(
         &self,
         panel_key: &'static str,
+        position: DockPosition,
         cx: &App,
     ) -> Option<dock::PanelSizeState> {
-        dock::Dock::load_persisted_size_state(self, panel_key, cx)
+        dock::Dock::load_persisted_size_state(self, panel_key, position, cx)
     }
 
     pub fn persist_panel_size_state(
         &self,
         panel_key: &str,
+        position: DockPosition,
         size_state: dock::PanelSizeState,
         cx: &mut App,
     ) {
@@ -2583,15 +2585,10 @@ impl Workspace {
         };
 
         let kvp = db::kvp::KeyValueStore::global(cx);
-        let panel_key = panel_key.to_string();
+        let key = dock::panel_size_state_key(&workspace_id, panel_key, position);
         cx.background_spawn(async move {
             let scope = kvp.scoped(dock::PANEL_SIZE_STATE_KEY);
-            scope
-                .write(
-                    format!("{workspace_id}:{panel_key}"),
-                    serde_json::to_string(&size_state)?,
-                )
-                .await
+            scope.write(key, serde_json::to_string(&size_state)?).await
         })
         .detach_and_log_err(cx);
     }
@@ -2606,13 +2603,14 @@ impl Workspace {
             return false;
         };
 
-        let dock = self.dock_at_position(panel.position(window, cx));
+        let position = panel.position(window, cx);
+        let dock = self.dock_at_position(position);
         let did_set = dock.update(cx, |dock, cx| {
             dock.set_panel_size_state(&panel, size_state, cx)
         });
 
         if did_set {
-            self.persist_panel_size_state(T::panel_key(), size_state, cx);
+            self.persist_panel_size_state(T::panel_key(), position, size_state, cx);
         }
 
         did_set
@@ -2758,18 +2756,18 @@ impl Workspace {
         let dock_position = panel.position(window, cx);
         let dock = self.dock_at_position(dock_position);
         let any_panel = panel.to_any();
-        let persisted_size_state =
-            self.persisted_panel_size_state(T::panel_key(), cx)
-                .or_else(|| {
-                    load_legacy_panel_size(T::panel_key(), dock_position, self, cx).map(|size| {
-                        let state = dock::PanelSizeState {
-                            size: Some(size),
-                            flex: None,
-                        };
-                        self.persist_panel_size_state(T::panel_key(), state, cx);
-                        state
-                    })
-                });
+        let persisted_size_state = self
+            .persisted_panel_size_state(T::panel_key(), dock_position, cx)
+            .or_else(|| {
+                load_legacy_panel_size(T::panel_key(), dock_position, self, cx).map(|size| {
+                    let state = dock::PanelSizeState {
+                        size: Some(size),
+                        flex: None,
+                    };
+                    self.persist_panel_size_state(T::panel_key(), dock_position, state, cx);
+                    state
+                })
+            });
 
         dock.update(cx, |dock, cx| {
             let index = dock.add_panel(panel.clone(), self.weak_self.clone(), window, cx);
@@ -14328,6 +14326,57 @@ mod tests {
     }
 
     #[gpui::test]
+    async fn test_tool_window_bar_stacks_bottom_dock_buttons_upward_by_priority(
+        cx: &mut TestAppContext,
+    ) {
+        let (workspace, _panels, cx) = tool_window_bar_test_workspace(cx).await;
+        workspace.update_in(cx, |workspace, window, cx| {
+            for (activation_priority, icon) in
+                [(300, IconName::GitBranch), (200, IconName::MagnifyingGlass)]
+            {
+                let panel = cx.new(|cx| {
+                    TestPanel::new_with_icon(DockPosition::Bottom, activation_priority, icon, cx)
+                });
+                workspace.add_panel(panel, window, cx);
+            }
+        });
+        cx.run_until_parked();
+
+        let left_bar = cx
+            .debug_bounds("tool_window_bar_left")
+            .expect("the left tool window bar is shown by default");
+        let more_button = cx
+            .debug_bounds("tool_window_more_button")
+            .expect("the left bar has a More tool windows button");
+        let lowest_priority = cx
+            .debug_bounds("tool_window_button_bottom_0")
+            .expect("the first bottom dock panel has a button");
+        let middle_priority = cx
+            .debug_bounds("tool_window_button_bottom_1")
+            .expect("the second bottom dock panel has a button");
+        let highest_priority = cx
+            .debug_bounds("tool_window_button_bottom_2")
+            .expect("the third bottom dock panel has a button");
+
+        assert!(
+            more_button.bottom() < highest_priority.top(),
+            "the whole bottom group sits below the More button"
+        );
+        assert!(
+            highest_priority.bottom() <= middle_priority.top(),
+            "a higher activation priority sits higher in the bottom group"
+        );
+        assert!(
+            middle_priority.bottom() <= lowest_priority.top(),
+            "the lowest activation priority is the bottom-most button, like IntelliJ's bottom stripe"
+        );
+        assert!(
+            left_bar.contains(&lowest_priority.center()),
+            "the bottom group stays in the left bar: bar {left_bar:?}, button {lowest_priority:?}"
+        );
+    }
+
+    #[gpui::test]
     async fn test_right_tool_window_bar_is_hidden_without_right_dock_buttons(
         cx: &mut TestAppContext,
     ) {
@@ -15105,6 +15154,72 @@ mod tests {
         );
     }
 
+    struct TestHeaderContent;
+
+    impl Render for TestHeaderContent {
+        fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+            div().w(px(80.)).h_full()
+        }
+    }
+
+    #[gpui::test]
+    async fn tool_window_header_shows_panel_content_between_title_and_buttons(
+        cx: &mut TestAppContext,
+    ) {
+        let (workspace, [_left_panel, bottom_panel, _right_panel], cx) =
+            tool_window_bar_test_workspace(cx).await;
+        open_dock_with_center_focus(&workspace, DockPosition::Bottom, cx);
+        assert_eq!(
+            cx.debug_bounds("tool_window_header_content_bottom"),
+            None,
+            "a panel without header content renders no content in its header"
+        );
+
+        let header_content = cx.new(|_| TestHeaderContent);
+        bottom_panel.update(cx, |panel, cx| {
+            panel.header_content = Some(header_content.into());
+            cx.notify();
+        });
+        cx.run_until_parked();
+
+        let header = cx
+            .debug_bounds("tool_window_header_bottom")
+            .expect("the open bottom dock has a header");
+        cx.simulate_mouse_move(header.center(), None, gpui::Modifiers::none());
+        let title = cx
+            .debug_bounds("tool_window_header_title_bottom")
+            .expect("the header shows the panel title before its content");
+        let content = cx
+            .debug_bounds("tool_window_header_content_bottom")
+            .expect("notifying the panel re-renders the header with its content");
+        let options = cx
+            .debug_bounds("tool_window_header_options_bottom")
+            .expect("hovering the dock reveals the options button");
+        let hide = cx
+            .debug_bounds("tool_window_header_hide_bottom")
+            .expect("hovering the dock reveals the hide button");
+
+        assert_eq!(
+            title.left() - header.left(),
+            px(12.),
+            "the title keeps IntelliJ's 12px header label inset on the left"
+        );
+        assert_eq!(
+            content.left() - title.right(),
+            px(16.),
+            "the content starts after IntelliJ's 16px header label inset on the right"
+        );
+        assert_eq!(
+            (content.top(), content.bottom()),
+            (header.top(), header.bottom()),
+            "the content spans the header height"
+        );
+        assert!(
+            content.right() <= options.left() && options.right() <= hide.left(),
+            "the content ends before the options and hide buttons: content {content:?}, options {options:?}, hide {hide:?}"
+        );
+    }
+
     #[gpui::test]
     async fn inactive_window_dims_tool_window_bar_content_only(cx: &mut TestAppContext) {
         let (workspace, _panels, cx) = tool_window_bar_test_workspace(cx).await;
@@ -15344,7 +15459,7 @@ mod tests {
             cx.run_until_parked();
 
             let persisted = workspace.read_with(cx, |workspace, cx| {
-                workspace.persisted_panel_size_state(TestPanel::panel_key(), cx)
+                workspace.persisted_panel_size_state(TestPanel::panel_key(), DockPosition::Left, cx)
             });
             assert_eq!(
                 persisted.and_then(|s| s.size),
@@ -15406,7 +15521,11 @@ mod tests {
 
             let persisted = workspace
                 .read_with(cx, |workspace, cx| {
-                    workspace.persisted_panel_size_state(TestPanel::panel_key(), cx)
+                    workspace.persisted_panel_size_state(
+                        TestPanel::panel_key(),
+                        DockPosition::Right,
+                        cx,
+                    )
                 })
                 .expect("flexible panel state should be persisted to KVP");
             assert_eq!(
@@ -15440,6 +15559,93 @@ mod tests {
                 );
             });
         }
+    }
+
+    #[gpui::test]
+    async fn test_panel_size_state_is_saved_per_dock_axis(cx: &mut gpui::TestAppContext) {
+        init_test(cx);
+        let fs = FakeFs::new(cx.executor());
+        let project = Project::test(fs, [], cx).await;
+        let (multi_workspace, cx) =
+            cx.add_window_view(|window, cx| MultiWorkspace::test_new(project, window, cx));
+        let workspace =
+            multi_workspace.read_with(cx, |multi_workspace, _| multi_workspace.workspace().clone());
+        workspace.update(cx, |workspace, _cx| {
+            workspace.set_random_database_id();
+            workspace.bounds.size.width = px(800.);
+            workspace.bounds.size.height = px(600.);
+        });
+
+        let panel = workspace.update_in(cx, |workspace, window, cx| {
+            let panel = cx.new(|cx| TestPanel::new(DockPosition::Left, 100, cx));
+            workspace.add_panel(panel.clone(), window, cx);
+            workspace.toggle_dock(DockPosition::Left, window, cx);
+            workspace.resize_left_dock(px(350.), window, cx);
+            panel
+        });
+        cx.run_until_parked();
+
+        let stored_size = |position: DockPosition, cx: &mut VisualTestContext| {
+            workspace.read_with(cx, |workspace, cx| {
+                let dock = workspace.dock_at_position(position).read(cx);
+                dock.panel::<TestPanel>()
+                    .and_then(|panel| dock.stored_panel_size_state(&panel))
+                    .and_then(|size_state| size_state.size)
+            })
+        };
+        let persisted_size = |position: DockPosition, cx: &mut VisualTestContext| {
+            workspace.read_with(cx, |workspace, cx| {
+                workspace
+                    .persisted_panel_size_state(TestPanel::panel_key(), position, cx)
+                    .and_then(|size_state| size_state.size)
+            })
+        };
+
+        panel.update_in(cx, |panel, window, cx| {
+            panel.set_position(DockPosition::Bottom, window, cx)
+        });
+        cx.run_until_parked();
+        assert_eq!(
+            stored_size(DockPosition::Bottom, cx),
+            None,
+            "a width saved in a side dock is not reused as the bottom dock height"
+        );
+
+        workspace.update_in(cx, |workspace, window, cx| {
+            workspace.resize_bottom_dock(px(200.), window, cx);
+        });
+        cx.run_until_parked();
+        assert_eq!(
+            persisted_size(DockPosition::Bottom, cx),
+            Some(px(200.)),
+            "the bottom dock height is saved under the bottom key"
+        );
+        assert_eq!(
+            persisted_size(DockPosition::Left, cx),
+            Some(px(350.)),
+            "the side dock width keeps its own key"
+        );
+
+        panel.update_in(cx, |panel, window, cx| {
+            panel.set_position(DockPosition::Left, window, cx)
+        });
+        cx.run_until_parked();
+        assert_eq!(
+            stored_size(DockPosition::Left, cx),
+            Some(px(350.)),
+            "moving back to a side dock restores the saved width"
+        );
+
+        workspace.update_in(cx, |workspace, window, cx| {
+            workspace.remove_panel(&panel, window, cx);
+            let bottom_panel = cx.new(|cx| TestPanel::new(DockPosition::Bottom, 100, cx));
+            workspace.add_panel(bottom_panel, window, cx);
+        });
+        assert_eq!(
+            stored_size(DockPosition::Bottom, cx),
+            Some(px(200.)),
+            "a panel added to the bottom dock restores the height saved under the bottom key"
+        );
     }
 
     #[gpui::test]

@@ -36,6 +36,7 @@ pub use footer::PickerAction;
 pub use language::{HighlightedText, HighlightedTextBuilder};
 pub use preview::Layout as PreviewLayout;
 pub use preview::MatchLocation;
+pub use preview::PanelPreviewPosition;
 pub use preview::Preview;
 pub use preview::PreviewBackend;
 pub use preview::PreviewSource;
@@ -153,6 +154,7 @@ pub struct Picker<D: PickerDelegate> {
     /// picker open while that menu has focus.
     actions_menu_handle: PopoverMenuHandle<ContextMenu>,
     reopenable: bool,
+    panel_preview_position: PanelPreviewPosition,
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq)]
@@ -647,6 +649,7 @@ impl<D: PickerDelegate> Picker<D> {
             size_bounds,
             actions_menu_handle: PopoverMenuHandle::default(),
             reopenable: true,
+            panel_preview_position: PanelPreviewPosition::default(),
         };
         // give delegate the initial preview layout
         this.delegate
@@ -771,6 +774,26 @@ impl<D: PickerDelegate> Picker<D> {
         }
         self.delegate.preview_layout_changed(false);
         self
+    }
+
+    pub fn set_panel_preview_position(
+        &mut self,
+        position: PanelPreviewPosition,
+        cx: &mut Context<Self>,
+    ) {
+        if self.panel_preview_position == position {
+            return;
+        }
+        self.panel_preview_position = position;
+        if self.is_panel()
+            && let Some(preview) = &mut self.preview
+            && preview.layout != preview::Layout::Hidden
+        {
+            preview.layout = position.layout();
+            self.delegate
+                .preview_layout_changed(position == PanelPreviewPosition::Right);
+        }
+        cx.notify();
     }
 
     /// Presents the picker as a popover surface: it draws its own elevated
@@ -1591,7 +1614,8 @@ impl<D: PickerDelegate> Picker<D> {
         self.preview.as_ref().map(|p| p.layout)
     }
     fn is_auto_vertical(&self, window: &Window) -> bool {
-        self.preview_layout() == Some(preview::Layout::Right)
+        !self.is_panel()
+            && self.preview_layout() == Some(preview::Layout::Right)
             && self
                 .size_bounds
                 .would_clamp_width_if_horizontal(&self.shape, window)
@@ -1644,13 +1668,16 @@ impl<D: PickerDelegate> Picker<D> {
     ) {
         if self.is_panel() {
             let layout = match layout {
-                preview::Layout::Right => preview::Layout::Below,
-                other => other,
+                preview::Layout::Hidden => preview::Layout::Hidden,
+                preview::Layout::Below | preview::Layout::Right => {
+                    self.panel_preview_position.layout()
+                }
             };
             if let Some(preview) = &mut self.preview {
                 preview.layout = layout;
             }
-            self.delegate.preview_layout_changed(false);
+            self.delegate
+                .preview_layout_changed(matches!(layout, preview::Layout::Right));
             cx.notify();
             return;
         }

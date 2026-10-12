@@ -1,7 +1,7 @@
 mod delegate;
-mod ref_menu;
+pub(crate) mod ref_menu;
 mod rows;
-mod state;
+pub(crate) mod state;
 #[cfg(test)]
 mod tests;
 mod top_actions;

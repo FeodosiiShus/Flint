@@ -41,7 +41,7 @@ pub fn app_menus() -> Vec<Menu> {
     ];
 
     view_items.extend([
-        MenuItem::action("Git Panel", git_panel::ToggleFocus),
+        MenuItem::action("Git", git_panel::ToggleFocus),
         MenuItem::action("Search Panel", search_panel::ToggleFocus),
         MenuItem::separator(),
         MenuItem::action("Diagnostics", diagnostics::Deploy),

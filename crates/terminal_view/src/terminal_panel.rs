@@ -1430,7 +1430,7 @@ impl Panel for TerminalPanel {
     }
 
     fn activation_priority(&self) -> u32 {
-        2
+        4
     }
 
     fn hide_button_setting(&self, _: &App) -> Option<workspace::HideButtonSetting> {

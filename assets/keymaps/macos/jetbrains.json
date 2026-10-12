@@ -3,7 +3,6 @@
     "bindings": {
       "cmd-{": "pane::ActivatePreviousItem",
       "cmd-}": "pane::ActivateNextItem",
-      "cmd-0": "git_panel::ToggleFocus", // overrides `cmd-0` zoom reset
       "shift-escape": null, // Unmap workspace::zoom
       "cmd-~": "git::Branch",
     },
@@ -120,6 +119,7 @@
       "cmd-1": "project_panel::ToggleFocus",
       "cmd-3": "search_panel::ToggleFocus",
       "cmd-6": "diagnostics::Deploy",
+      "cmd-9": "git_panel::ToggleFocus",
     },
   },
   {
@@ -132,8 +132,7 @@
       "cmd-6": "diagnostics::Deploy",
       "cmd-7": null,
       "cmd-8": null, // Services (bottom dock)
-      "cmd-9": null, // Git History (bottom dock)
-      "cmd-0": "git_panel::ToggleFocus",
+      "cmd-9": "git_panel::ToggleFocus", // Git History (bottom dock)
     },
   },
   {
@@ -176,7 +175,7 @@
       "shift-pagedown": "terminal::ScrollPageDown",
     },
   },
-  { "context": "GitPanel", "bindings": { "cmd-0": "workspace::CloseActiveDock" } },
+  { "context": "GitPanel", "bindings": { "cmd-9": "workspace::CloseActiveDock" } },
   { "context": "SearchPanel", "bindings": { "cmd-3": "workspace::CloseActiveDock" } },
   { "context": "ProjectPanel", "bindings": { "cmd-1": "workspace::CloseActiveDock" } },
   { "context": "ProjectDiagnosticsPanel", "bindings": { "cmd-6": "workspace::CloseActiveDock" } },
@@ -231,6 +230,111 @@
     "context": "DialogWindow",
     "bindings": {
       "cmd-w": "workspace::CloseWindow",
+    },
+  },
+  {
+    "context": "GitToolWindow",
+    "bindings": {
+      "cmd-w": "git_tool_window::CloseActiveTab",
+      "ctrl-shift-f4": "git_tool_window::CloseActiveTab",
+      "cmd-{": "git_tool_window::SelectPreviousTab",
+      "cmd-}": "git_tool_window::SelectNextTab",
+      "ctrl-left": "git_tool_window::SelectPreviousTab",
+      "ctrl-right": "git_tool_window::SelectNextTab",
+    },
+  },
+  {
+    "context": "GitLogBranches",
+    "bindings": {
+      "cmd-f": "git_log_branches::ToggleSearchFocus",
+      "cmd-d": "git_log_branches::CompareWithCurrent",
+      "cmd-backspace": "git_log_branches::DeleteSelected",
+      "cmd-delete": "git_log_branches::DeleteSelected",
+      "alt-f1": "git_log_branches::NavigateToSelectedBranch",
+    },
+  },
+  {
+    "context": "GitLogBranchesTree",
+    "bindings": {
+      "cmd-=": "git_log_branches::ExpandAll",
+      "cmd-+": "git_log_branches::ExpandAll",
+      "cmd--": "git_log_branches::CollapseAll",
+    },
+  },
+  {
+    "context": "GitLog",
+    "bindings": {
+      "cmd-r": "git_log_filters::Refresh",
+      "cmd-f": "git_log_filters::GoToHashOrRef",
+      "cmd-l": "git_log::FocusTextFilter",
+    },
+  },
+  {
+    "context": "GitLog > Editor",
+    "bindings": {
+      "cmd-l": "git_log::FocusTextFilter",
+    },
+  },
+  {
+    "context": "GitLogTable",
+    "bindings": {
+      "cmd-alt-shift-c": "git_log_table::CopyRevisionNumber",
+      "cmd-c": "git_log_table::Copy",
+      "cmd-a": "git_log_table::SelectAll",
+      "right": "git_log_table::GoToParentCommit",
+      "left": "git_log_table::GoToChildCommit",
+      "cmd-d": "git_log_table::ShowDiff",
+      "cmd-alt-n": "git_log_table::NewBranchFromCommit",
+      "pageup": "git_log_table::SelectPageUp",
+      "pagedown": "git_log_table::SelectPageDown",
+      "shift-up": "git_log_table::ExtendSelectionUp",
+      "shift-down": "git_log_table::ExtendSelectionDown",
+      "shift-pageup": "git_log_table::ExtendSelectionPageUp",
+      "shift-pagedown": "git_log_table::ExtendSelectionPageDown",
+      "shift-home": "git_log_table::ExtendSelectionToFirst",
+      "shift-end": "git_log_table::ExtendSelectionToLast",
+    },
+  },
+  {
+    "context": "GitLogTextFilter > Editor",
+    "bindings": {
+      "alt-down": "git_log_filters::ShowSearchHistory",
+      "alt-up": "git_log_filters::PreviousHistoryItem",
+    },
+  },
+  {
+    "context": "GitLogFilterChip",
+    "bindings": {
+      "delete": "git_log_filters::ResetFilter",
+      "backspace": "git_log_filters::ResetFilter",
+      "cmd-backspace": "git_log_filters::ResetFilter",
+    },
+  },
+  {
+    "context": "GitLogFilterValuesPopup > Editor",
+    "bindings": {
+      "enter": "editor::Newline",
+    },
+  },
+  {
+    "context": "GitLogFilterValuesPopup > Editor",
+    "bindings": {
+      "enter": "menu::Confirm",
+    },
+  },
+  {
+    "context": "GitLogChanges",
+    "bindings": {
+      "cmd-d": "git_log_changes::ShowDiff",
+    },
+  },
+  {
+    "context": "GitLogChangesTree",
+    "bindings": {
+      "cmd-=": "git_log_changes::ExpandAll",
+      "cmd-+": "git_log_changes::ExpandAll",
+      "cmd--": "git_log_changes::CollapseAll",
+      "ctrl-p": "git_log_changes::ToggleGroupByDirectory",
     },
   },
 ]

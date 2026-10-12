@@ -19,7 +19,7 @@ pub fn open(
 ) {
     let project = workspace.project().clone();
     workspace.toggle_modal(window, cx, |window, cx| {
-        RepositorySelector::new(project, rems(34.), window, cx)
+        RepositorySelector::new(project, window, cx)
     })
 }
 
@@ -30,7 +30,6 @@ pub struct RepositorySelector {
 impl RepositorySelector {
     pub fn new(
         project_handle: Entity<Project>,
-        width: Rems,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -64,7 +63,7 @@ impl RepositorySelector {
 
         let picker = cx.new(|cx| {
             Picker::uniform_list(delegate, window, cx)
-                .initial_width(width)
+                .initial_width(rems(34.))
                 .show_scrollbar(true)
         });
 

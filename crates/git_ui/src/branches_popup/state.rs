@@ -1,8 +1,8 @@
 use std::path::Path;
 
-use collections::HashSet;
+use collections::{HashMap, HashSet};
 use db::kvp::KeyValueStore;
-use gpui::{App, AppContext as _, SharedString, Task};
+use gpui::{App, AppContext as _, Global, SharedString, Task};
 use serde::{Deserialize, Serialize};
 use util::ResultExt as _;
 
@@ -225,12 +225,31 @@ pub fn load(key: String, cx: &App) -> Task<Option<PersistedPopupState>> {
     })
 }
 
+#[derive(Default)]
+pub(crate) struct SavedPopupStates(HashMap<String, PersistedPopupState>);
+
+impl Global for SavedPopupStates {}
+
+impl SavedPopupStates {
+    pub(crate) fn get(&self, key: &str) -> Option<&PersistedPopupState> {
+        self.0.get(key)
+    }
+}
+
 pub fn save(key: String, state: PersistedPopupState, cx: &App) -> Task<()> {
     let store = KeyValueStore::global(cx);
-    cx.background_spawn(async move {
-        if let Some(raw) = serialize(&state) {
-            store.write_kvp(key, raw).await.log_err();
+    let raw = serialize(&state);
+    let write_key = key.clone();
+    let write = cx.background_spawn(async move {
+        if let Some(raw) = raw {
+            store.write_kvp(write_key, raw).await.log_err();
         }
+    });
+    cx.spawn(async move |cx| {
+        write.await;
+        cx.update(|cx| {
+            cx.default_global::<SavedPopupStates>().0.insert(key, state);
+        });
     })
 }
 

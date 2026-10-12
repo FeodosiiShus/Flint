@@ -24,15 +24,8 @@ pub(crate) struct CommitContextMenuData {
     pub(crate) tag_names: Vec<SharedString>,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub(crate) enum CommitContextMenuSource {
-    GitGraph,
-    GitPanel,
-}
-
 pub(crate) fn commit_context_menu(
     commit: CommitContextMenuData,
-    source: CommitContextMenuSource,
     ref_name: Option<SharedString>,
     focus_handle: FocusHandle,
     repository: Option<WeakEntity<Repository>>,
@@ -119,16 +112,6 @@ pub(crate) fn commit_context_menu(
                             menu
                         }),
                     }
-                })
-            })
-            .when(source == CommitContextMenuSource::GitPanel, |menu| {
-                menu.entry("Show in Git Graph", None, move |window, cx| {
-                    window.dispatch_action(
-                        Box::new(crate::git_graph::OpenAtCommit {
-                            sha: sha.to_string(),
-                        }),
-                        cx,
-                    );
                 })
             })
     })

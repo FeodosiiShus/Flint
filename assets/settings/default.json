@@ -995,46 +995,37 @@
   },
   "search_panel": {
     "button": true,
-    "dock": "left",
+    "dock": "bottom",
     "default_width": 360,
+    "default_height": 320,
   },
   "project_diagnostics_panel": {
     "button": true,
-    "dock": "left",
+    "dock": "bottom",
     "default_width": 360,
+    "default_height": 320,
   },
   "language_services_panel": {
     "button": true,
-    "dock": "left",
+    "dock": "bottom",
     "default_width": 360,
+    "default_height": 320,
   },
   "git_panel": {
     // Whether to show the git panel button in the tool window bar.
     "button": true,
-    // Where to dock the git panel. Can be 'left' or 'right'.
-    "dock": "left",
+    // Where to dock the git panel. Can be 'left', 'right' or 'bottom'.
+    //
+    // Default: bottom
+    "dock": "bottom",
     // Default width of the git panel.
     "default_width": 360,
+    "default_height": 320,
     // Style of the git status indicator in the panel.
     //
     // Choices: label_color, icon
     // Default: icon
     "status_style": "icon",
-    // Whether to show file icons in the git panel.
-    //
-    // Default: false
-    "file_icons": false,
-    // What to show for directories in the git panel.
-    //
-    // 1. A folder icon:
-    //   "icon"
-    // 2. A disclosure chevron:
-    //   "chevron"
-    // 3. A disclosure chevron followed by a folder icon:
-    //   "both"
-    //
-    // Default: icon
-    "folder_indicator": "icon",
     // What branch name to use if `init.defaultBranch` is not set
     //
     // Default: main
@@ -1063,32 +1054,11 @@
     //
     // Default: false
     "show_count_badge": false,
-    "scrollbar": {
-      // When to show the scrollbar in the git panel.
-      //
-      // Choices: always, auto, never, system
-      // Default: inherits editor scrollbar settings
-      // "show": null
-    },
-    // Whether to show the addition/deletion change count next to each file in the Git panel.
-    //
-    // Default: true
-    "diff_stats": true,
     // Maximum length of the commit message title before a warning is shown.
     // Set to 0 to disable.
     //
     // Default: 0
     "commit_title_max_length": 0,
-    // Default action when clicking a changed file in the Git panel.
-    //
-    // Choices: project_diff, file_diff, view_file
-    // Default: project_diff
-    "entry_primary_click_action": "project_diff",
-    // Whether the commit message editor is shown in the git panel by default.
-    //
-    // Choices: expanded, collapsed
-    // Default: expanded
-    "commit_editor": "expanded",
   },
   // Whether to use language servers to provide code intelligence.
   "enable_language_server": true,

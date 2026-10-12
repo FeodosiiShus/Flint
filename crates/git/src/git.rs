@@ -1,5 +1,6 @@
 pub mod blame;
 pub mod commit;
+pub mod console;
 mod hosting_provider;
 mod remote;
 pub mod repository;
@@ -43,8 +44,6 @@ actions!(
         // per-hunk
         /// Toggles the staged state of the hunk or status entry at cursor.
         ToggleStaged,
-        /// Stage status entries between an anchor entry and the cursor.
-        StageRange,
         /// Stages the current hunk and moves to the next one.
         StageAndNext,
         /// Unstages the current hunk and moves to the next one.
@@ -65,17 +64,10 @@ actions!(
         OpenFilePermalink,
         /// Copies a permalink for the selected file on its Git hosting provider.
         CopyFilePermalink,
-        /// Opens the selected file in the editor without a diff view.
-        ViewFile,
         /// Stages the current file.
         StageFile,
         /// Unstages the current file.
         UnstageFile,
-        // per-section
-        /// Stages every entry in the section containing the selected entry.
-        StageSection,
-        /// Unstages every entry in the section containing the selected entry.
-        UnstageSection,
         // repo-wide
         /// Stages all changes in the repository.
         StageAll,
@@ -91,10 +83,6 @@ actions!(
         StashPop,
         /// Apply the most recent stash.
         StashApply,
-        /// Restores all tracked files to their last committed state.
-        RestoreTrackedFiles,
-        /// Moves all untracked files to trash.
-        TrashUntrackedFiles,
         /// Undoes the last commit, keeping changes in the working directory.
         Uncommit,
         /// Pushes commits to the remote repository.
@@ -119,15 +107,8 @@ actions!(
         Amend,
         /// Enable the --signoff option.
         Signoff,
-        /// Cancels the current git operation.
-        Cancel,
         /// Expands the commit message editor.
         ExpandCommitEditor,
-        /// Toggles whether the commit message editor fills all the available
-        /// vertical space within the git panel.
-        ToggleFillCommitEditor,
-        /// Toggles whether the commit message editor is shown in the git panel.
-        ToggleCommitEditor,
         /// Initializes a new git repository.
         Init,
         /// Opens all modified files in the editor.

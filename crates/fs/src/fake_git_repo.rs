@@ -7,19 +7,20 @@ use collections::{HashMap, HashSet};
 use futures::FutureExt as _;
 use futures::channel::oneshot;
 use futures::future::{self, BoxFuture, join_all};
+use git::console::GitConsoleSink;
 use git::repository::GitCommitTemplate;
 use git::{
     Oid, RunHook,
     blame::Blame,
     repository::{
-        AskPassDelegate, Branch, CommitData, CommitDataReader, CommitDetails, CommitOptions,
-        CommitSummary, ConflictSide, CreateWorktreeTarget, FetchOptions,
+        AskPassDelegate, Branch, CherryPickOutcome, CommitData, CommitDataReader, CommitDetails,
+        CommitOptions, CommitSummary, ConflictSide, CreateWorktreeTarget, FetchOptions,
         FileHistoryChangedFileSets, GRAPH_CHUNK_SIZE, GitFailure, GitFailureKind, GitRepository,
-        GitRepositoryCheckpoint, InitialGraphCommitData, LogOrder, LogSource, MergeOutcome,
-        PushOptions, RebaseAction, RebaseOutcome, RefEdit, Remote, RemoteCommandOutput, RepoPath,
-        RepositoryOperation, ResetMode, SearchCommitArgs, Tag, UnmergedEntry,
-        UnmergedStagePresence, Upstream, UpstreamTracking, UpstreamTrackingStatus, Worktree,
-        commit_hash_search_query,
+        GitRepositoryCheckpoint, GitUser, InitialGraphCommitData, LogFilter, LogOrder, LogSource,
+        MergeOutcome, PushOptions, RebaseAction, RebaseOutcome, RefEdit, Remote,
+        RemoteCommandOutput, RepoPath, RepositoryOperation, ResetMode, RevertOutcome,
+        SearchCommitArgs, Tag, UnmergedEntry, UnmergedStagePresence, Upstream, UpstreamTracking,
+        UpstreamTrackingStatus, Worktree, commit_hash_search_query, visible_graph_commits,
     },
     stash::GitStash,
     status::{
@@ -31,9 +32,11 @@ use gpui::{AsyncApp, BackgroundExecutor, SharedString, Task};
 use ignore::gitignore::GitignoreBuilder;
 use parking_lot::Mutex;
 use rope::Rope;
-use std::{path::PathBuf, sync::Arc, sync::atomic::AtomicBool, time::SystemTime};
+use std::{
+    collections::BTreeSet, path::PathBuf, sync::Arc, sync::atomic::AtomicBool, time::SystemTime,
+};
 use text::LineEnding;
-use util::{paths::PathStyle, rel_path::RelPath};
+use util::{ResultExt, paths::PathStyle, rel_path::RelPath};
 
 #[derive(Clone)]
 pub struct FakeGitRepository {
@@ -98,6 +101,13 @@ pub struct FakeGitRepositoryState {
     pub rebase_session: Option<FakeRebaseSession>,
     pub simulated_failures: HashMap<FakeGitOperation, FakeGitFailure>,
     pub pushed_tags: Vec<(String, String)>,
+    pub console: Option<GitConsoleSink>,
+    pub current_user: Option<GitUser>,
+    pub graph_commit_paths: HashMap<Oid, Vec<RepoPath>>,
+    pub cherry_pick_conflicts: HashMap<Oid, Vec<(RepoPath, FakeConflictStages)>>,
+    pub revert_conflicts: HashMap<Oid, Vec<(RepoPath, FakeConflictStages)>>,
+    pub cherry_picked_commits: Vec<Oid>,
+    pub reverted_commits: Vec<Oid>,
 }
 
 impl FakeGitRepositoryState {
@@ -138,6 +148,13 @@ impl FakeGitRepositoryState {
             rebase_session: None,
             simulated_failures: Default::default(),
             pushed_tags: Vec::new(),
+            console: None,
+            current_user: None,
+            graph_commit_paths: Default::default(),
+            cherry_pick_conflicts: Default::default(),
+            revert_conflicts: Default::default(),
+            cherry_picked_commits: Vec::new(),
+            reverted_commits: Vec::new(),
         }
     }
 }
@@ -262,6 +279,8 @@ pub enum FakeGitOperation {
     DeleteRemoteBranch,
     FastForwardBranch,
     PushTag,
+    CherryPick,
+    Revert,
 }
 
 #[derive(Debug, Clone)]
@@ -920,6 +939,377 @@ fn fake_rebase(
     }
 }
 
+#[derive(Clone, Copy)]
+enum FakeSequencerOperation {
+    CherryPick,
+    Revert,
+}
+
+struct FakeSequencerResult {
+    conflicted: bool,
+    output: String,
+    conflict_files: ConflictFiles,
+}
+
+fn commit_data_payload(entry: &FakeCommitDataEntry) -> &CommitData {
+    match entry {
+        FakeCommitDataEntry::Success(commit_data) | FakeCommitDataEntry::Fail(commit_data) => {
+            commit_data
+        }
+    }
+}
+
+fn commit_subject(state: &FakeGitRepositoryState, sha: &Oid) -> String {
+    state
+        .commit_data
+        .get(sha)
+        .map(|entry| commit_data_payload(entry).subject.to_string())
+        .unwrap_or_default()
+}
+
+fn record_fake_console_command(
+    state: &FakeGitRepositoryState,
+    working_directory: &Path,
+    arguments: &[String],
+    result: &Result<FakeSequencerResult>,
+) {
+    let Some(recorder) = state
+        .console
+        .as_ref()
+        .and_then(|console| console.command_started(working_directory, arguments, 0))
+    else {
+        return;
+    };
+    match result {
+        Ok(result) if result.conflicted => recorder.record_output(&[], result.output.as_bytes()),
+        Ok(result) => recorder.record_output(result.output.as_bytes(), &[]),
+        Err(error) => recorder.record_output(&[], error.to_string().as_bytes()),
+    }
+}
+
+fn fake_sequencer(
+    state: &mut FakeGitRepositoryState,
+    commits: Vec<Oid>,
+    operation: FakeSequencerOperation,
+) -> Result<FakeSequencerResult> {
+    let (failure_operation, head_ref, command, verb, progressive) = match operation {
+        FakeSequencerOperation::CherryPick => (
+            FakeGitOperation::CherryPick,
+            "CHERRY_PICK_HEAD",
+            "cherry-pick",
+            "apply",
+            "Cherry-picking",
+        ),
+        FakeSequencerOperation::Revert => (
+            FakeGitOperation::Revert,
+            "REVERT_HEAD",
+            "revert",
+            "revert",
+            "Reverting",
+        ),
+    };
+    ensure_no_unmerged_paths(
+        state,
+        &format!(
+            "error: {progressive} is not possible because you have unmerged files.\nhint: Fix them up in the work tree, and then use 'git add/rm <file>'\nhint: as appropriate to mark resolution and make a commit.\nfatal: {command} failed"
+        ),
+    )?;
+    simulated_failure(state, failure_operation)?;
+
+    let ordered_commits = match operation {
+        FakeSequencerOperation::CherryPick => commits.into_iter().rev().collect::<Vec<_>>(),
+        FakeSequencerOperation::Revert => commits,
+    };
+    let branch = state
+        .current_branch_name
+        .clone()
+        .unwrap_or_else(|| "detached HEAD".to_string());
+    let mut output = String::new();
+    for sha in ordered_commits {
+        let subject = commit_subject(state, &sha);
+        let full_sha = sha.to_string();
+        let short = short_sha(&full_sha);
+        let (message_subject, message_body, conflicts) = match operation {
+            FakeSequencerOperation::CherryPick => (
+                subject.clone(),
+                String::new(),
+                state.cherry_pick_conflicts.get(&sha).cloned(),
+            ),
+            FakeSequencerOperation::Revert => (
+                format!("Revert \"{subject}\""),
+                format!("\n\nThis reverts commit {full_sha}."),
+                state.revert_conflicts.get(&sha).cloned(),
+            ),
+        };
+        if let Some(conflicts) = conflicts {
+            let paths = conflicts
+                .iter()
+                .map(|(path, _)| path.clone())
+                .collect::<Vec<_>>();
+            let conflict_files = apply_conflicts(state, conflicts);
+            state.refs.insert(head_ref.to_string(), full_sha.clone());
+            let conflict_lines = paths
+                .iter()
+                .map(|path| format!("#\t{}\n", path.as_unix_str()))
+                .collect::<String>();
+            state.merge_message = Some(format!(
+                "{message_subject}{message_body}\n\n# Conflicts:\n{conflict_lines}"
+            ));
+            output.push_str(&conflict_summary(
+                &paths,
+                &format!(
+                    "error: could not {verb} {short}... {subject}\nhint: After resolving the conflicts, mark them with\nhint: \"git add/rm <pathspec>\", then run\nhint: \"git {command} --continue\".\n"
+                ),
+            ));
+            return Ok(FakeSequencerResult {
+                conflicted: true,
+                output,
+                conflict_files,
+            });
+        }
+        output.push_str(&format!("[{branch} {short}] {message_subject}\n"));
+        match operation {
+            FakeSequencerOperation::CherryPick => state.cherry_picked_commits.push(sha),
+            FakeSequencerOperation::Revert => state.reverted_commits.push(sha),
+        }
+    }
+    Ok(FakeSequencerResult {
+        conflicted: false,
+        output,
+        conflict_files: Vec::new(),
+    })
+}
+
+fn reachable_graph_commits(
+    graph_commits: &[Arc<InitialGraphCommitData>],
+    tips: impl IntoIterator<Item = Oid>,
+) -> HashSet<Oid> {
+    let commits_by_sha = graph_commits
+        .iter()
+        .map(|commit| (commit.sha, commit.as_ref()))
+        .collect::<HashMap<Oid, &InitialGraphCommitData>>();
+    let mut reachable = HashSet::default();
+    let mut pending = tips.into_iter().collect::<Vec<_>>();
+    while let Some(sha) = pending.pop() {
+        if !reachable.insert(sha) {
+            continue;
+        }
+        if let Some(commit) = commits_by_sha.get(&sha) {
+            pending.extend(commit.parents.iter().copied());
+        }
+    }
+    reachable
+}
+
+fn revision_matches_decoration(revision: &str, decoration: &str) -> bool {
+    if revision == "HEAD" {
+        return decoration == "HEAD" || decoration.starts_with("HEAD -> ");
+    }
+    let mut name = decoration;
+    for prefix in [
+        "HEAD -> ",
+        "refs/heads/",
+        "refs/remotes/",
+        "tag: ",
+        "refs/tags/",
+    ] {
+        if let Some(stripped) = name.strip_prefix(prefix) {
+            name = stripped;
+        }
+    }
+    name == revision
+}
+
+fn commit_matches_filter(
+    state: &FakeGitRepositoryState,
+    filter: &LogFilter,
+    commit: &InitialGraphCommitData,
+) -> bool {
+    let matches_conditions = match state.commit_data.get(&commit.sha) {
+        Some(entry) => {
+            let commit_data = commit_data_payload(entry);
+            filter.author_matches(&commit_data.author_name, &commit_data.author_email)
+                && filter.date_matches(commit_data.committer_timestamp)
+                && filter
+                    .text_filter()
+                    .is_none_or(|text| text.matches(&commit_data.message))
+        }
+        None => !filter.has_commit_conditions(),
+    };
+    matches_conditions
+        && (filter.paths.is_empty()
+            || state
+                .graph_commit_paths
+                .get(&commit.sha)
+                .is_some_and(|changed_paths| {
+                    changed_paths.iter().any(|changed_path| {
+                        filter
+                            .paths
+                            .iter()
+                            .any(|filter_path| changed_path.starts_with(filter_path))
+                    })
+                }))
+}
+
+fn hash_filtered_graph_commits(
+    state: &FakeGitRepositoryState,
+    filter: &LogFilter,
+) -> Option<Vec<Arc<InitialGraphCommitData>>> {
+    let hash_prefixes = filter
+        .text_filter()?
+        .hash_prefixes()
+        .into_iter()
+        .map(str::to_lowercase)
+        .collect::<Vec<_>>();
+    if hash_prefixes.is_empty() {
+        return None;
+    }
+    let visible = state
+        .graph_commits
+        .iter()
+        .filter(|commit| {
+            let sha = commit.sha.to_string().to_lowercase();
+            hash_prefixes
+                .iter()
+                .any(|prefix| sha.starts_with(prefix.as_str()))
+                || state.commit_data.get(&commit.sha).is_some_and(|entry| {
+                    let message = commit_data_payload(entry).message.to_lowercase();
+                    hash_prefixes
+                        .iter()
+                        .any(|prefix| message.contains(prefix.as_str()))
+                })
+        })
+        .map(|commit| commit.sha)
+        .collect::<HashSet<Oid>>();
+    if visible.is_empty() {
+        return None;
+    }
+    Some(visible_graph_commits(&state.graph_commits, |commit| {
+        visible.contains(&commit.sha)
+    }))
+}
+
+fn filtered_graph_commits(
+    state: &FakeGitRepositoryState,
+    filter: &LogFilter,
+) -> Vec<Arc<InitialGraphCommitData>> {
+    if let Some(commits) = hash_filtered_graph_commits(state, filter) {
+        return commits;
+    }
+    if filter.matches_nothing() {
+        return Vec::new();
+    }
+    let scoped_commits = if filter.revisions.is_empty() {
+        state.graph_commits.clone()
+    } else {
+        let tips = state
+            .graph_commits
+            .iter()
+            .filter(|commit| {
+                let sha = commit.sha.to_string();
+                filter.revisions.iter().any(|revision| {
+                    sha.eq_ignore_ascii_case(revision)
+                        || commit
+                            .ref_names
+                            .iter()
+                            .any(|decoration| revision_matches_decoration(revision, decoration))
+                })
+            })
+            .map(|commit| commit.sha);
+        let reachable = reachable_graph_commits(&state.graph_commits, tips);
+        state
+            .graph_commits
+            .iter()
+            .filter(|commit| reachable.contains(&commit.sha))
+            .cloned()
+            .collect::<Vec<_>>()
+    };
+    let visible = scoped_commits
+        .iter()
+        .filter(|commit| commit_matches_filter(state, filter, commit))
+        .map(|commit| commit.sha)
+        .collect::<HashSet<Oid>>();
+    visible_graph_commits(&scoped_commits, |commit| visible.contains(&commit.sha))
+}
+
+fn branch_name_from_decoration(decoration: &str) -> Option<(String, bool)> {
+    let decoration = decoration.strip_prefix("HEAD -> ").unwrap_or(decoration);
+    if decoration == "HEAD"
+        || decoration == "refs/stash"
+        || decoration.starts_with("tag: ")
+        || decoration.starts_with("refs/tags/")
+        || decoration.ends_with("/HEAD")
+    {
+        return None;
+    }
+    if let Some(name) = decoration.strip_prefix("refs/heads/") {
+        return Some((name.to_string(), false));
+    }
+    if let Some(name) = decoration.strip_prefix("refs/remotes/") {
+        return Some((name.to_string(), true));
+    }
+    Some((decoration.to_string(), false))
+}
+
+fn fake_branches_containing_commit(state: &FakeGitRepositoryState, sha: Oid) -> Vec<SharedString> {
+    let mut local_branches = BTreeSet::new();
+    let mut remote_branches = BTreeSet::new();
+    for commit in &state.graph_commits {
+        let branch_names = commit
+            .ref_names
+            .iter()
+            .filter_map(|decoration| branch_name_from_decoration(decoration))
+            .collect::<Vec<_>>();
+        if branch_names.is_empty()
+            || !reachable_graph_commits(&state.graph_commits, [commit.sha]).contains(&sha)
+        {
+            continue;
+        }
+        for (name, from_remotes) in branch_names {
+            let is_remote_tracking = from_remotes
+                || name
+                    .split_once('/')
+                    .is_some_and(|(remote, _)| state.remotes.contains_key(remote));
+            if is_remote_tracking {
+                remote_branches.insert(name);
+            } else {
+                local_branches.insert(name);
+            }
+        }
+    }
+    local_branches.retain(|name| !remote_branches.contains(name));
+    local_branches
+        .into_iter()
+        .chain(remote_branches)
+        .map(SharedString::from)
+        .collect()
+}
+
+fn fake_log_authors(state: &FakeGitRepositoryState) -> Vec<GitUser> {
+    let mut authors = state
+        .commit_data
+        .values()
+        .map(|entry| {
+            let commit_data = commit_data_payload(entry);
+            GitUser {
+                name: commit_data.author_name.clone(),
+                email: commit_data.author_email.clone(),
+            }
+        })
+        .collect::<HashSet<GitUser>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    authors.sort_by(|left, right| {
+        left.name
+            .to_lowercase()
+            .cmp(&right.name.to_lowercase())
+            .then_with(|| left.email.to_lowercase().cmp(&right.email.to_lowercase()))
+            .then_with(|| left.name.cmp(&right.name))
+            .then_with(|| left.email.cmp(&right.email))
+    });
+    authors
+}
+
 #[derive(Clone, Default, Debug)]
 pub struct FakeBlobReadGate(Arc<Mutex<BlobReadGateState>>);
 
@@ -1011,6 +1401,13 @@ impl Drop for WaiterGuard {
 }
 
 impl FakeGitRepository {
+    fn fake_working_directory(&self) -> PathBuf {
+        self.dot_git_path
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| self.dot_git_path.clone())
+    }
+
     fn with_state_async<F, T>(&self, write: bool, f: F) -> BoxFuture<'static, Result<T>>
     where
         F: 'static + Send + FnOnce(&mut FakeGitRepositoryState) -> Result<T>,
@@ -1328,9 +1725,16 @@ impl GitRepository for FakeGitRepository {
                 ResetMode::Soft => {
                     state.head_contents = snapshot.head_contents;
                 }
-                ResetMode::Mixed => {
+                ResetMode::Mixed | ResetMode::Keep => {
                     state.head_contents = snapshot.head_contents;
                     state.index_contents = state.head_contents.clone();
+                }
+                ResetMode::Hard => {
+                    state.head_contents = snapshot.head_contents;
+                    state.index_contents = state.head_contents.clone();
+                    state.unmerged_paths.clear();
+                    state.conflict_stages.clear();
+                    clear_merge_markers(state);
                 }
             }
 
@@ -2257,6 +2661,77 @@ impl GitRepository for FakeGitRepository {
             Ok(outcome)
         }
         .boxed()
+    }
+
+    fn cherry_pick(
+        &self,
+        commits: Vec<Oid>,
+        _env: Arc<HashMap<String, String>>,
+    ) -> BoxFuture<'_, Result<CherryPickOutcome>> {
+        let working_directory = self.fake_working_directory();
+        async move {
+            let result = self
+                .with_state_async(true, move |state| {
+                    let arguments = std::iter::once("cherry-pick".to_string())
+                        .chain(commits.iter().rev().map(ToString::to_string))
+                        .collect::<Vec<_>>();
+                    let result = fake_sequencer(state, commits, FakeSequencerOperation::CherryPick);
+                    record_fake_console_command(state, &working_directory, &arguments, &result);
+                    result
+                })
+                .await?;
+            self.write_conflict_files(result.conflict_files).await?;
+            let output = result.output;
+            Ok(if result.conflicted {
+                CherryPickOutcome::Conflicted { output }
+            } else {
+                CherryPickOutcome::Completed { output }
+            })
+        }
+        .boxed()
+    }
+
+    fn revert_commits(
+        &self,
+        commits: Vec<Oid>,
+        _env: Arc<HashMap<String, String>>,
+    ) -> BoxFuture<'_, Result<RevertOutcome>> {
+        let working_directory = self.fake_working_directory();
+        async move {
+            let result = self
+                .with_state_async(true, move |state| {
+                    let arguments = ["revert".to_string(), "--no-edit".to_string()]
+                        .into_iter()
+                        .chain(commits.iter().map(ToString::to_string))
+                        .collect::<Vec<_>>();
+                    let result = fake_sequencer(state, commits, FakeSequencerOperation::Revert);
+                    record_fake_console_command(state, &working_directory, &arguments, &result);
+                    result
+                })
+                .await?;
+            self.write_conflict_files(result.conflict_files).await?;
+            let output = result.output;
+            Ok(if result.conflicted {
+                RevertOutcome::Conflicted { output }
+            } else {
+                RevertOutcome::Completed { output }
+            })
+        }
+        .boxed()
+    }
+
+    fn branches_containing_commit(&self, sha: Oid) -> BoxFuture<'_, Result<Vec<SharedString>>> {
+        self.with_state_async(false, move |state| {
+            Ok(fake_branches_containing_commit(state, sha))
+        })
+    }
+
+    fn current_user(&self) -> BoxFuture<'_, Result<Option<GitUser>>> {
+        self.with_state_async(false, |state| Ok(state.current_user.clone()))
+    }
+
+    fn log_authors(&self) -> BoxFuture<'_, Result<Vec<GitUser>>> {
+        self.with_state_async(false, |state| Ok(fake_log_authors(state)))
     }
 
     fn reset_hard(
@@ -3241,7 +3716,7 @@ impl GitRepository for FakeGitRepository {
 
     fn initial_graph_data(
         &self,
-        _log_source: LogSource,
+        log_source: LogSource,
         _log_order: LogOrder,
         request_tx: Sender<Vec<Arc<InitialGraphCommitData>>>,
     ) -> BoxFuture<'_, Result<()>> {
@@ -3250,10 +3725,14 @@ impl GitRepository for FakeGitRepository {
         async move {
             let (graph_commits, simulated_error) =
                 fs.with_git_state(&dot_git_path, false, |state| {
-                    (
-                        state.graph_commits.clone(),
-                        state.simulated_graph_error.clone(),
-                    )
+                    let graph_commits = match &log_source {
+                        LogSource::Filtered(filter) => filtered_graph_commits(state, filter),
+                        LogSource::All
+                        | LogSource::Branch(_)
+                        | LogSource::Sha(_)
+                        | LogSource::Path(_) => state.graph_commits.clone(),
+                    };
+                    (graph_commits, state.simulated_graph_error.clone())
                 })?;
 
             if let Some(error) = simulated_error {
@@ -3270,7 +3749,7 @@ impl GitRepository for FakeGitRepository {
 
     fn search_commits(
         &self,
-        _log_source: LogSource,
+        log_source: LogSource,
         search_args: SearchCommitArgs,
         request_tx: Sender<Oid>,
     ) -> BoxFuture<'_, Result<()>> {
@@ -3284,9 +3763,26 @@ impl GitRepository for FakeGitRepository {
             };
 
             let matching_shas = self.fs.with_git_state(&self.dot_git_path, false, |state| {
+                let visible_shas = match &log_source {
+                    LogSource::Filtered(filter) => Some(
+                        filtered_graph_commits(state, filter)
+                            .iter()
+                            .map(|commit| commit.sha)
+                            .collect::<HashSet<Oid>>(),
+                    ),
+                    LogSource::All
+                    | LogSource::Branch(_)
+                    | LogSource::Sha(_)
+                    | LogSource::Path(_) => None,
+                };
                 state
                     .commit_data
                     .iter()
+                    .filter(|(sha, _)| {
+                        visible_shas
+                            .as_ref()
+                            .is_none_or(|visible_shas| visible_shas.contains(*sha))
+                    })
                     .filter_map(|(sha, entry)| {
                         let FakeCommitDataEntry::Success(commit_data) = entry else {
                             return None;
@@ -3367,5 +3863,13 @@ impl GitRepository for FakeGitRepository {
 
     fn is_trusted(&self) -> bool {
         self.is_trusted.load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    fn set_console(&self, console: GitConsoleSink) {
+        self.fs
+            .with_git_state(&self.dot_git_path, false, |state| {
+                state.console = Some(console)
+            })
+            .log_err();
     }
 }

@@ -1,7 +1,7 @@
 use crate::{
     branch_diff::BranchDiff,
     diff_multibuffer::DiffMultibuffer,
-    git_panel::{GitPanel, GitPanelAddon, GitStatusEntry},
+    git_panel::{GitPanel, GitPanelAddon},
     staged_diff::StagedDiff,
     unstaged_diff::UnstagedDiff,
 };
@@ -76,7 +76,7 @@ impl ProjectDiff {
     pub(crate) fn register(workspace: &mut Workspace, cx: &mut Context<Workspace>) {
         workspace.register_action(Self::deploy);
         workspace.register_action(|workspace, _: &DiffHead, window, cx| {
-            Self::deploy_at(workspace, None, window, cx);
+            Self::deploy_at(workspace, window, cx);
         });
         workspace.register_action(|workspace, _: &ToggleDiffBase, _window, cx| {
             settings::update_settings_file(
@@ -93,21 +93,21 @@ impl ProjectDiff {
         });
         workspace.register_action(
             |workspace, _: &git_actions::ViewUncommittedChanges, window, cx| {
-                Self::deploy_at(workspace, None, window, cx);
+                Self::deploy_at(workspace, window, cx);
             },
         );
         workspace.register_action(
             |workspace, _: &git_actions::ViewUnstagedChanges, window, cx| {
-                UnstagedDiff::deploy_at(workspace, None, window, cx);
+                UnstagedDiff::deploy_at(workspace, window, cx);
             },
         );
         workspace.register_action(
             |workspace, _: &git_actions::ViewStagedChanges, window, cx| {
-                StagedDiff::deploy_at(workspace, None, window, cx);
+                StagedDiff::deploy_at(workspace, window, cx);
             },
         );
         workspace.register_action(|workspace, _: &Add, window, cx| {
-            Self::deploy_at(workspace, None, window, cx);
+            Self::deploy_at(workspace, window, cx);
         });
         workspace::register_serializable_item::<ProjectDiff>(cx);
     }
@@ -123,15 +123,10 @@ impl ProjectDiff {
             BranchDiff::deploy_branch_diff(workspace, window, cx);
             return;
         }
-        Self::deploy_at(workspace, None, window, cx)
+        Self::deploy_at(workspace, window, cx)
     }
 
-    pub fn deploy_at(
-        workspace: &mut Workspace,
-        entry: Option<GitStatusEntry>,
-        window: &mut Window,
-        cx: &mut Context<Workspace>,
-    ) {
+    pub fn deploy_at(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
         let intended_repo = workspace.project().read(cx).active_repository(cx);
 
         let existing = workspace.items_of_type::<Self>(cx).next();
@@ -167,12 +162,6 @@ impl ProjectDiff {
                 });
             }
         }
-
-        if let Some(entry) = entry {
-            project_diff.update(cx, |project_diff, cx| {
-                project_diff.move_to_entry(entry, window, cx);
-            })
-        }
     }
 
     pub fn deploy_at_project_path(
@@ -201,10 +190,6 @@ impl ProjectDiff {
         project_diff.update(cx, |project_diff, cx| {
             project_diff.move_to_project_path(&project_path, window, cx);
         });
-    }
-
-    pub fn autoscroll(&self, cx: &mut Context<Self>) {
-        self.diff.update(cx, |diff, cx| diff.autoscroll(cx));
     }
 
     fn new(
@@ -283,16 +268,6 @@ impl ProjectDiff {
     pub(crate) fn set_repo(&mut self, repo: Option<Entity<Repository>>, cx: &mut Context<Self>) {
         self.diff
             .update(cx, |diff, cx| diff.set_repo(repo.clone(), cx));
-    }
-
-    pub fn move_to_entry(
-        &mut self,
-        entry: GitStatusEntry,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.diff
-            .update(cx, |diff, cx| diff.move_to_entry(entry, window, cx));
     }
 
     pub fn move_to_project_path(

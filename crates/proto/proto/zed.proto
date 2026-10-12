@@ -409,6 +409,7 @@ message Envelope {
     RefreshDocumentHighlights refresh_document_highlights = 493;
     GetTerminalShell get_terminal_shell = 494;
     GetTerminalShellResponse get_terminal_shell_response = 495; // current max
+    GitConsoleLines git_console_lines = 496;
   }
 
   reserved 87 to 88;

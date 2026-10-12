@@ -31,6 +31,22 @@ pub enum Layout {
     Right,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PanelPreviewPosition {
+    #[default]
+    Below,
+    Right,
+}
+
+impl PanelPreviewPosition {
+    pub(crate) fn layout(self) -> Layout {
+        match self {
+            Self::Below => Layout::Below,
+            Self::Right => Layout::Right,
+        }
+    }
+}
+
 impl Preview {
     pub fn new(content: Arc<dyn PreviewBackend>) -> Self {
         Preview {

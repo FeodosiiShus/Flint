@@ -1,8 +1,4 @@
-use crate::{
-    conflict_view,
-    git_panel::{GitPanel, GitStatusEntry},
-    git_panel_settings::GitPanelSettings,
-};
+use crate::{conflict_view, git_panel::GitPanel, git_panel_settings::GitPanelSettings};
 use anyhow::Result;
 use buffer_diff::BufferDiff;
 use collections::{HashMap, HashSet};
@@ -192,21 +188,6 @@ impl DiffMultibuffer {
         &self.multibuffer
     }
 
-    pub(crate) fn move_to_entry(
-        &mut self,
-        entry: GitStatusEntry,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let Some(git_repo) = self.branch_diff.read(cx).repo() else {
-            return;
-        };
-        let repo = git_repo.read(cx);
-        let path_key = project_diff_path_key(repo, &entry.repo_path, entry.status, cx);
-
-        self.move_to_path(path_key, window, cx)
-    }
-
     pub(crate) fn move_to_project_path(
         &mut self,
         project_path: &ProjectPath,
@@ -263,14 +244,6 @@ impl DiffMultibuffer {
         } else {
             self.pending_scroll = Some(path_key);
         }
-    }
-
-    pub(crate) fn autoscroll(&self, cx: &mut Context<Self>) {
-        self.editor.update(cx, |editor, cx| {
-            editor.rhs_editor().update(cx, |editor, cx| {
-                editor.request_autoscroll(Autoscroll::fit(), cx);
-            })
-        })
     }
 
     pub(crate) fn calculate_changed_lines(&self, cx: &App) -> (u32, u32) {
@@ -386,18 +359,6 @@ impl DiffMultibuffer {
                     return;
                 }
                 cx.emit(event.clone());
-                let Some(project_path) = self.active_project_path(cx) else {
-                    return;
-                };
-                self.workspace
-                    .update(cx, |workspace, cx| {
-                        if let Some(git_panel) = workspace.panel::<GitPanel>(cx) {
-                            git_panel.update(cx, |git_panel, cx| {
-                                git_panel.select_entry_by_path(project_path, window, cx)
-                            })
-                        }
-                    })
-                    .ok();
             }
             EditorEvent::Saved => {
                 self._task =
@@ -919,7 +880,7 @@ impl Render for DiffMultibuffer {
                     .upgrade()
                     .and_then(|workspace| workspace.read(cx).panel::<GitPanel>(cx))
                 {
-                    panel.update(cx, |panel, cx| panel.render_remote_button(None, cx))
+                    panel.read(cx).render_remote_button(cx)
                 } else {
                     None
                 };

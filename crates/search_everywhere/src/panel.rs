@@ -9,8 +9,9 @@ use gpui::{
     FocusHandle, Focusable, InteractiveElement, ParentElement, Pixels, Render, SharedString,
     Styled, Subscription, Task, WeakEntity, Window, div,
 };
+use picker::PanelPreviewPosition;
 use search::project_search::{ProjectSearchView, buffer_search_query};
-use settings::{IntoGpui, RegisterSetting, Settings};
+use settings::{IntoGpui, RegisterSetting, Settings, SettingsStore};
 use ui::{IconName, IntoElement};
 use util::{ResultExt, paths::PathMatcher};
 use workspace::{
@@ -28,13 +29,14 @@ use crate::{
 };
 
 const SEARCH_PANEL_KEY: &str = "SearchPanel";
-const SEARCH_PANEL_ACTIVATION_PRIORITY: u32 = 4;
+const SEARCH_PANEL_ACTIVATION_PRIORITY: u32 = 5;
 
 #[derive(Debug, Clone, PartialEq, RegisterSetting)]
 pub struct SearchPanelSettings {
     pub button: bool,
     pub dock: DockPosition,
     pub default_width: Pixels,
+    pub default_height: Pixels,
 }
 
 impl Settings for SearchPanelSettings {
@@ -44,6 +46,7 @@ impl Settings for SearchPanelSettings {
             button: search_panel.button.unwrap(),
             dock: search_panel.dock.unwrap().into(),
             default_width: search_panel.default_width.unwrap().into_gpui(),
+            default_height: search_panel.default_height.unwrap().into_gpui(),
         }
     }
 }
@@ -129,15 +132,25 @@ impl SearchPanel {
                     this.refresh_context(window, cx);
                 });
             }),
+            cx.observe_global::<SettingsStore>(Self::sync_preview_position),
         ];
-        Self {
+        let mut this = Self {
             focus_handle,
             workspace: workspace.weak_handle(),
             fs: workspace.app_state().fs.clone(),
             search,
             _recent_files_task: Task::ready(()),
             _subscriptions: subscriptions,
-        }
+        };
+        this.sync_preview_position(cx);
+        this
+    }
+
+    fn sync_preview_position(&mut self, cx: &mut Context<Self>) {
+        let position = preview_position_for_dock(SearchPanelSettings::get_global(cx).dock);
+        self.search.update(cx, |search, cx| {
+            search.set_panel_preview_position(position, cx);
+        });
     }
 
     fn search_dismissed(
@@ -216,6 +229,13 @@ impl SearchPanel {
         self.search.update(cx, |search, cx| {
             search.show_text_search(query, scope, window, cx);
         });
+    }
+}
+
+fn preview_position_for_dock(dock: DockPosition) -> PanelPreviewPosition {
+    match dock {
+        DockPosition::Bottom => PanelPreviewPosition::Right,
+        DockPosition::Left | DockPosition::Right => PanelPreviewPosition::Below,
     }
 }
 
@@ -372,8 +392,12 @@ impl Panel for SearchPanel {
         });
     }
 
-    fn default_size(&self, _: &Window, cx: &App) -> Pixels {
-        SearchPanelSettings::get_global(cx).default_width
+    fn default_size(&self, window: &Window, cx: &App) -> Pixels {
+        let settings = SearchPanelSettings::get_global(cx);
+        match self.position(window, cx) {
+            DockPosition::Left | DockPosition::Right => settings.default_width,
+            DockPosition::Bottom => settings.default_height,
+        }
     }
 
     fn icon(&self, _: &Window, cx: &App) -> Option<IconName> {

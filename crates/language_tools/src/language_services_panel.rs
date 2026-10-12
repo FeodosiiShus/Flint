@@ -34,6 +34,7 @@ pub struct LanguageServicesPanelSettings {
     pub button: bool,
     pub dock: DockPosition,
     pub default_width: Pixels,
+    pub default_height: Pixels,
 }
 
 impl Settings for LanguageServicesPanelSettings {
@@ -43,6 +44,7 @@ impl Settings for LanguageServicesPanelSettings {
             button: language_services_panel.button.unwrap(),
             dock: language_services_panel.dock.unwrap().into(),
             default_width: language_services_panel.default_width.unwrap().into_gpui(),
+            default_height: language_services_panel.default_height.unwrap().into_gpui(),
         }
     }
 }
@@ -548,8 +550,12 @@ impl Panel for LanguageServicesPanel {
         });
     }
 
-    fn default_size(&self, _: &Window, cx: &App) -> Pixels {
-        LanguageServicesPanelSettings::get_global(cx).default_width
+    fn default_size(&self, window: &Window, cx: &App) -> Pixels {
+        let settings = LanguageServicesPanelSettings::get_global(cx);
+        match self.position(window, cx) {
+            DockPosition::Left | DockPosition::Right => settings.default_width,
+            DockPosition::Bottom => settings.default_height,
+        }
     }
 
     fn icon(&self, _: &Window, cx: &App) -> Option<IconName> {

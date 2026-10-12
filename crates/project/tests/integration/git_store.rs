@@ -2740,3 +2740,241 @@ mod repository_activation_tests {
         });
     }
 }
+
+mod git_log_backend_tests {
+    use std::{cell::Cell, path::Path, rc::Rc, sync::Arc};
+
+    use fs::FakeFs;
+    use git::{
+        Oid,
+        console::{GitConsoleContentType, GitConsoleLine, MAX_CONSOLE_LINES},
+        repository::{CommitData, InitialGraphCommitData, LogFilter, LogOrder, LogSource},
+    };
+    use gpui::{Entity, TestAppContext};
+    use project::git_store::{GitStoreEvent, Repository};
+    use serde_json::json;
+    use settings::SettingsStore;
+    use util::path;
+
+    use crate::Project;
+
+    fn init_test(cx: &mut TestAppContext) {
+        zlog::init_test();
+
+        cx.update(|cx| {
+            let settings_store = SettingsStore::test(cx);
+            cx.set_global(settings_store);
+        });
+    }
+
+    fn oid(byte: u8) -> Oid {
+        Oid::from_bytes(&[byte; 20]).unwrap()
+    }
+
+    fn graph_commit(sha: u8, parents: &[u8], ref_names: &[&str]) -> Arc<InitialGraphCommitData> {
+        Arc::new(InitialGraphCommitData {
+            sha: oid(sha),
+            parents: parents.iter().map(|parent| oid(*parent)).collect(),
+            ref_names: ref_names.iter().map(|name| (*name).into()).collect(),
+            committer_timestamp: 0,
+            dotted_parents: Default::default(),
+        })
+    }
+
+    fn commit_data(sha: u8, parents: &[u8], author: &str, message: &str) -> (CommitData, bool) {
+        let email = format!("{}@example.com", author.to_lowercase());
+        (
+            CommitData {
+                sha: oid(sha),
+                parents: parents.iter().map(|parent| oid(*parent)).collect(),
+                author_name: author.to_string().into(),
+                author_email: email.clone().into(),
+                commit_timestamp: i64::from(sha),
+                author_timestamp: i64::from(sha),
+                committer_name: author.to_string().into(),
+                committer_email: email.into(),
+                committer_timestamp: i64::from(sha),
+                subject: message.to_string().into(),
+                message: message.to_string().into(),
+            },
+            false,
+        )
+    }
+
+    async fn project_with_repository(
+        cx: &mut TestAppContext,
+    ) -> (Arc<FakeFs>, Entity<Project>, Entity<Repository>) {
+        let fs = FakeFs::new(cx.background_executor.clone());
+        fs.insert_tree(
+            path!("/root"),
+            json!({
+                ".git": {},
+                "file.txt": "content",
+            }),
+        )
+        .await;
+        let project = Project::test(fs.clone(), [path!("/root").as_ref()], cx).await;
+        cx.executor().run_until_parked();
+        let repository = project.read_with(cx, |project, cx| {
+            project.repositories(cx).values().next().unwrap().clone()
+        });
+        (fs, project, repository)
+    }
+
+    fn filtered_graph_shape(
+        repository: &Entity<Repository>,
+        source: &LogSource,
+        cx: &mut TestAppContext,
+    ) -> Vec<(Oid, Vec<Oid>, Vec<Oid>)> {
+        repository.update(cx, |repository, cx| {
+            let response =
+                repository.graph_data(source.clone(), LogOrder::DateOrder, 0..usize::MAX, cx);
+            response
+                .commits
+                .iter()
+                .map(|commit| {
+                    (
+                        commit.sha,
+                        commit.parents.to_vec(),
+                        commit.dotted_parents.to_vec(),
+                    )
+                })
+                .collect()
+        })
+    }
+
+    #[gpui::test]
+    async fn test_git_store_filtered_graph_data_connects_matching_commits(cx: &mut TestAppContext) {
+        init_test(cx);
+        let (fs, _project, repository) = project_with_repository(cx).await;
+        let dot_git = Path::new(path!("/root/.git"));
+        fs.set_graph_commits(
+            dot_git,
+            vec![
+                graph_commit(10, &[11], &["HEAD -> main"]),
+                graph_commit(11, &[12, 13], &[]),
+                graph_commit(12, &[16], &[]),
+                graph_commit(13, &[14], &["feature"]),
+                graph_commit(14, &[15], &[]),
+                graph_commit(15, &[16], &[]),
+                graph_commit(16, &[17], &[]),
+                graph_commit(17, &[], &[]),
+            ],
+        );
+        fs.set_commit_data(
+            dot_git,
+            [
+                commit_data(10, &[11], "Bob", "B4 after merge"),
+                commit_data(11, &[12, 13], "Carol", "M1 merge feature"),
+                commit_data(12, &[16], "Bob", "B3 main"),
+                commit_data(13, &[14], "Alice", "A3 feature"),
+                commit_data(14, &[15], "Bob", "B2 feature"),
+                commit_data(15, &[16], "Alice", "A2 feature"),
+                commit_data(16, &[17], "Bob", "B1 change"),
+                commit_data(17, &[], "Alice", "A1 init"),
+            ],
+        );
+
+        let by_alice = LogSource::Filtered(LogFilter {
+            authors: vec!["Alice <alice@example.com>".into()],
+            ..LogFilter::default()
+        });
+        filtered_graph_shape(&repository, &by_alice, cx);
+        cx.executor().run_until_parked();
+        assert_eq!(
+            filtered_graph_shape(&repository, &by_alice, cx),
+            vec![
+                (oid(13), vec![oid(15)], vec![oid(15)]),
+                (oid(15), vec![oid(17)], vec![oid(17)]),
+                (oid(17), Vec::new(), Vec::new()),
+            ],
+            "hidden commits between Alice's commits become dotted parents so the graph stays connected"
+        );
+
+        let bob_on_feature = LogSource::Filtered(LogFilter {
+            revisions: vec!["feature".into()],
+            authors: vec!["Bob <bob@example.com>".into()],
+            ..LogFilter::default()
+        });
+        filtered_graph_shape(&repository, &bob_on_feature, cx);
+        cx.executor().run_until_parked();
+        assert_eq!(
+            filtered_graph_shape(&repository, &bob_on_feature, cx),
+            vec![
+                (oid(14), vec![oid(16)], vec![oid(16)]),
+                (oid(16), Vec::new(), Vec::new()),
+            ],
+            "the branch filter limits the scope to commits reachable from feature"
+        );
+    }
+
+    #[gpui::test]
+    async fn test_git_store_console_lines_are_capped_cleared_and_announced(
+        cx: &mut TestAppContext,
+    ) {
+        init_test(cx);
+        let (fs, project, repository) = project_with_repository(cx).await;
+        let git_store = project.read_with(cx, |project, _| project.git_store().clone());
+        let console_updates = Rc::new(Cell::new(0));
+        let _subscription = cx.update(|cx| {
+            let console_updates = console_updates.clone();
+            cx.subscribe(&git_store, move |_, event: &GitStoreEvent, _| {
+                if matches!(event, GitStoreEvent::ConsoleUpdated) {
+                    console_updates.set(console_updates.get() + 1);
+                }
+            })
+        });
+        let console_text = |cx: &mut TestAppContext| {
+            git_store.read_with(cx, |git_store, _| {
+                git_store
+                    .console_lines()
+                    .iter()
+                    .map(GitConsoleLine::text)
+                    .collect::<Vec<_>>()
+            })
+        };
+
+        cx.update(|cx| repository.update(cx, |repository, _| repository.cherry_pick(vec![oid(1)])))
+            .await
+            .unwrap()
+            .unwrap();
+        cx.executor().run_until_parked();
+        let lines = console_text(cx);
+        assert!(
+            lines
+                .first()
+                .is_some_and(|line| line.ends_with(&format!("] git cherry-pick {}", oid(1)))),
+            "the cherry-pick command line reaches the project console first: {lines:?}"
+        );
+        assert!(console_updates.get() > 0);
+
+        let sink = fs
+            .with_git_state(Path::new(path!("/root/.git")), false, |state| {
+                state.console.clone()
+            })
+            .unwrap()
+            .unwrap();
+        for index in 0..MAX_CONSOLE_LINES + 5 {
+            sink.push(
+                GitConsoleLine::from_message(
+                    format!("line {index}"),
+                    GitConsoleContentType::NormalOutput,
+                )
+                .unwrap(),
+            );
+        }
+        cx.executor().run_until_parked();
+        let lines = console_text(cx);
+        assert_eq!(lines.len(), MAX_CONSOLE_LINES);
+        assert_eq!(lines.first().map(String::as_str), Some("line 5"));
+        assert_eq!(
+            lines.last().cloned(),
+            Some(format!("line {}", MAX_CONSOLE_LINES + 4))
+        );
+
+        let updates_before_clear = console_updates.get();
+        git_store.update(cx, |git_store, cx| git_store.clear_console(cx));
+        assert!(console_text(cx).is_empty());
+        assert_eq!(console_updates.get(), updates_before_clear + 1);
+    }
+}

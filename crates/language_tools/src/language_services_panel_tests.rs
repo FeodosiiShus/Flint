@@ -6,12 +6,13 @@ use std::{
 
 use gpui::{
     Action as _, AppContext as _, Entity, Focusable as _, SharedString, TestAppContext,
-    VisualTestContext,
+    UpdateGlobal as _, VisualTestContext, px,
 };
 use language::{BinaryStatus, ServerHealth};
 use lsp::{LanguageServerId, LanguageServerName};
 use project::{FakeFs, Project};
 use serde_json::json;
+use settings::SettingsStore;
 use ui::{Color, IconName};
 use util::path;
 use workspace::{
@@ -26,7 +27,7 @@ use crate::{
     },
 };
 
-const EXPECTED_LEFT_DOCK_PRIORITY: u32 = 6;
+const EXPECTED_BOTTOM_DOCK_PRIORITY: u32 = 6;
 
 struct ServerFixture {
     id: usize,
@@ -185,18 +186,41 @@ fn icon_label(panel: &Entity<LanguageServicesPanel>, cx: &mut VisualTestContext)
     cx.update(|window, cx| panel.read(cx).icon_label(window, cx))
 }
 
+fn dock_language_services_panel(position: DockPosition, cx: &mut VisualTestContext) {
+    cx.update(|_, cx| {
+        SettingsStore::update_global(cx, |store, cx| {
+            store.update_user_settings(cx, |settings| {
+                settings
+                    .language_services_panel
+                    .get_or_insert_default()
+                    .dock = Some(position.into());
+            });
+        });
+    });
+    cx.run_until_parked();
+}
+
 #[gpui::test]
-async fn test_language_services_panel_lives_in_left_dock_with_bolt_button(cx: &mut TestAppContext) {
+async fn test_language_services_panel_lives_in_bottom_dock_with_bolt_button(
+    cx: &mut TestAppContext,
+) {
     let (workspace, panel, cx) = build_panel(cx).await;
 
     workspace.read_with(cx, |workspace, cx| {
         assert!(
             workspace
-                .left_dock()
+                .bottom_dock()
                 .read(cx)
                 .panel::<LanguageServicesPanel>()
                 .is_some(),
-            "the language services panel is added to the left dock"
+            "the language services panel is added to the bottom dock"
+        );
+        assert!(
+            workspace
+                .left_dock()
+                .read(cx)
+                .panel::<LanguageServicesPanel>()
+                .is_none()
         );
         assert!(
             workspace
@@ -205,23 +229,16 @@ async fn test_language_services_panel_lives_in_left_dock_with_bolt_button(cx: &m
                 .panel::<LanguageServicesPanel>()
                 .is_none()
         );
-        assert!(
-            workspace
-                .bottom_dock()
-                .read(cx)
-                .panel::<LanguageServicesPanel>()
-                .is_none()
-        );
     });
     cx.update(|window, cx| {
         let panel = panel.read(cx);
-        assert_eq!(panel.position(window, cx), DockPosition::Left);
+        assert_eq!(panel.position(window, cx), DockPosition::Bottom);
         assert_eq!(panel.icon(window, cx), Some(IconName::BoltOutlined));
         assert_eq!(
             panel.icon_tooltip(window, cx),
             Some("Language Services Panel")
         );
-        assert_eq!(panel.activation_priority(), EXPECTED_LEFT_DOCK_PRIORITY);
+        assert_eq!(panel.activation_priority(), EXPECTED_BOTTOM_DOCK_PRIORITY);
         assert_eq!(
             panel.toggle_action().name(),
             ToggleFocus.name(),
@@ -240,6 +257,30 @@ async fn test_language_services_panel_lives_in_left_dock_with_bolt_button(cx: &m
         );
         assert_eq!(LanguageServicesPanel::panel_key(), "LanguageServicesPanel");
     });
+}
+
+#[gpui::test]
+async fn test_language_services_panel_default_size_is_the_height_at_the_bottom_and_the_width_at_the_sides(
+    cx: &mut TestAppContext,
+) {
+    let (_workspace, panel, cx) = build_panel(cx).await;
+
+    let default_size = |cx: &mut VisualTestContext| {
+        cx.update(|window, cx| panel.read(cx).default_size(window, cx))
+    };
+    assert_eq!(
+        default_size(cx),
+        px(320.),
+        "the bottom dock uses language_services_panel.default_height"
+    );
+    for position in [DockPosition::Left, DockPosition::Right] {
+        dock_language_services_panel(position, cx);
+        assert_eq!(
+            default_size(cx),
+            px(360.),
+            "the {position:?} dock uses language_services_panel.default_width"
+        );
+    }
 }
 
 #[gpui::test]
@@ -400,12 +441,12 @@ async fn test_language_services_panel_toggle_focus_action_toggles_the_panel(
     cx.run_until_parked();
 
     workspace.read_with(cx, |workspace, cx| {
-        let dock = workspace.left_dock().read(cx);
-        assert!(dock.is_open(), "the left dock opens");
+        let dock = workspace.bottom_dock().read(cx);
+        assert!(dock.is_open(), "the bottom dock opens");
         assert_eq!(
             dock.visible_panel().map(|visible| visible.panel_id()),
             Some(panel.entity_id()),
-            "the language services panel is the visible panel of the left dock"
+            "the language services panel is the visible panel of the bottom dock"
         );
     });
     cx.update(|window, cx| {

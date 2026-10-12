@@ -102,6 +102,9 @@ jobs:
       - name: Run Git Branches popup tests
         run: cargo test --locked --package git_ui --lib -- branches_popup branch_operations branch_refs
 
+      - name: Run Git tool window and Git Log tests
+        run: cargo test --locked --package git_ui --lib -- git_log git_tool_window
+
       - name: Run keybinding glyph tests
         run: cargo test --locked --package ui --lib keybinding
 
@@ -121,6 +124,9 @@ jobs:
 
       - name: Run editor tab menu, tab bar menu and bottom toolbar tests
         run: cargo test --locked --package workspace --lib -- tab_context_menu tab_bar_more_menu bottom_toolbar
+
+      - name: Run dock panel size persistence tests
+        run: cargo test --locked --package workspace --lib -- panel_size_state
 
       - name: Run icon asset tests
         run: cargo test --locked --package icons

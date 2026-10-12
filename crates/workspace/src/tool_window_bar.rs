@@ -396,6 +396,7 @@ impl Render for ToolWindowBar {
             .map(|dock| Self::dock_buttons(dock, window, cx))
             .unwrap_or_default()
             .into_iter()
+            .rev()
             .map(|button| self.render_button(button, &settings, window, cx))
             .collect::<Vec<_>>();
         let more_button = (side == ToolWindowBarSide::Left)

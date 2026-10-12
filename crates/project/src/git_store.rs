@@ -36,16 +36,20 @@ use futures::{
 use git::{
     BuildPermalinkParams, GitHostingProviderRegistry, Oid, RunHook,
     blame::Blame,
+    console::{
+        GitConsoleChunk, GitConsoleContentType, GitConsoleLine, GitConsoleSink, MAX_CONSOLE_LINES,
+    },
     parse_git_remote_url,
     repository::{
-        Branch, BranchesScanResult, CommitData, CommitDetails, CommitFileStatus, CommitOptions,
-        CommitSummary, ConflictBlobs, ConflictSide, CreateWorktreeTarget, DiffStatType, DiffType,
-        FetchOptions, FileHistoryChangedFileSets, GitCommitTemplate, GitRepository,
-        GitRepositoryCheckpoint, InitialGraphCommitData, LogOrder, LogSource, MergeOutcome,
-        PushOptions, RebaseAction, RebaseOutcome, Remote, RemoteCommandOutput, RepoPath,
-        RepositoryOperation, ResetMode, SearchCommitArgs, Tag, UnmergedEntry,
-        UnmergedStagePresence, UpstreamTrackingStatus, Worktree as GitWorktree,
-        conflicts_with_side, delete_branch_flag, is_binary_content, split_conflicts_for_resolution,
+        Branch, BranchesScanResult, CherryPickOutcome, CommitData, CommitDetails, CommitFileStatus,
+        CommitOptions, CommitSummary, ConflictBlobs, ConflictSide, CreateWorktreeTarget,
+        DiffStatType, DiffType, FetchOptions, FileHistoryChangedFileSets, GitCommitTemplate,
+        GitRepository, GitRepositoryCheckpoint, GitUser, InitialGraphCommitData, LogFilter,
+        LogOrder, LogSource, LogTextFilter, MergeOutcome, PushOptions, RebaseAction, RebaseOutcome,
+        Remote, RemoteCommandOutput, RepoPath, RepositoryOperation, ResetMode, RevertOutcome,
+        SearchCommitArgs, Tag, UnmergedEntry, UnmergedStagePresence, UpstreamTrackingStatus,
+        Worktree as GitWorktree, conflicts_with_side, delete_branch_flag, is_binary_content,
+        split_conflicts_for_resolution,
     },
     stash::{GitStash, StashEntry},
     status::{
@@ -120,6 +124,8 @@ pub struct GitStore {
     buffer_ids_by_index_text_buffer_id: HashMap<BufferId, BufferId>,
     shared_diffs: HashMap<proto::PeerId, HashMap<BufferId, SharedDiffs>>,
     object_read_limiter: Arc<Semaphore>,
+    console_lines: Vec<GitConsoleLine>,
+    _console_task: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -475,6 +481,7 @@ enum GitStoreState {
         downstream: Option<LocalDownstreamState>,
         project_environment: Entity<ProjectEnvironment>,
         fs: Arc<dyn Fs>,
+        console: GitConsoleSink,
         _fs_watches: Box<[Task<()>]>,
     },
     Remote {
@@ -703,6 +710,7 @@ pub struct Repository {
     commit_message_buffer: Option<Entity<Buffer>>,
     git_store: WeakEntity<GitStore>,
     object_read_limiter: Arc<Semaphore>,
+    console: Option<GitConsoleSink>,
     // For a local repository, holds paths that have had worktree events since the last status scan completed,
     // and that should be examined during the next status scan.
     paths_needing_status_update: Vec<Vec<RepoPath>>,
@@ -778,6 +786,7 @@ impl LocalRepositoryState {
         project_environment: WeakEntity<ProjectEnvironment>,
         fs: Arc<dyn Fs>,
         is_trusted: bool,
+        console: Option<GitConsoleSink>,
         cx: &mut AsyncApp,
     ) -> anyhow::Result<Self> {
         let environment = project_environment
@@ -806,6 +815,9 @@ impl LocalRepositoryState {
             })
             .await?;
         backend.set_trusted(is_trusted);
+        if let Some(console) = console {
+            backend.set_console(console);
+        }
         Ok(LocalRepositoryState {
             backend,
             environment: Arc::new(environment),
@@ -876,6 +888,7 @@ pub enum GitStoreEvent {
     ConflictsUpdated,
     GlobalConfigurationUpdated,
     DiffBaseChanged(Option<RepositoryId>),
+    ConsoleUpdated,
 }
 
 impl EventEmitter<RepositoryEvent> for Repository {}
@@ -968,6 +981,22 @@ impl GitStore {
             .into_boxed_slice()
         };
 
+        let (console_sender, console_receiver) = async_channel::unbounded::<GitConsoleLine>();
+        let console_task = cx.spawn(async move |this, cx| {
+            while let Ok(line) = console_receiver.recv().await {
+                let mut lines = vec![line];
+                while let Ok(line) = console_receiver.try_recv() {
+                    lines.push(line);
+                }
+                if this
+                    .update(cx, |this, cx| this.append_console_lines(lines, cx))
+                    .is_err()
+                {
+                    return;
+                }
+            }
+        });
+
         Self::new(
             worktree_store.clone(),
             buffer_store,
@@ -975,9 +1004,11 @@ impl GitStore {
                 next_repository_id: Arc::new(AtomicU64::new(1)),
                 downstream: None,
                 project_environment: environment,
+                console: GitConsoleSink::new(console_sender),
                 _fs_watches,
                 fs,
             },
+            Some(console_task),
             cx,
         )
     }
@@ -997,6 +1028,7 @@ impl GitStore {
                 upstream_project_id: project_id,
                 downstream: None,
             },
+            None,
             cx,
         )
     }
@@ -1005,6 +1037,7 @@ impl GitStore {
         worktree_store: Entity<WorktreeStore>,
         buffer_store: Entity<BufferStore>,
         state: GitStoreState,
+        console_task: Option<Task<()>>,
         cx: &mut Context<Self>,
     ) -> Self {
         let mut _subscriptions = vec![
@@ -1042,6 +1075,8 @@ impl GitStore {
             object_read_limiter: Arc::new(Semaphore::new(MAX_CONCURRENT_OBJECT_READS)),
             diffs: HashMap::default(),
             buffer_ids_by_index_text_buffer_id: HashMap::default(),
+            console_lines: Vec::new(),
+            _console_task: console_task,
         }
     }
 
@@ -1100,6 +1135,7 @@ impl GitStore {
         client.add_entity_request_handler(Self::handle_blame_buffer_at_revision);
         client.add_entity_message_handler(Self::handle_update_repository);
         client.add_entity_message_handler(Self::handle_remove_repository);
+        client.add_entity_message_handler(Self::handle_git_console_lines);
         client.add_entity_request_handler(Self::handle_git_clone);
         client.add_entity_request_handler(Self::handle_get_worktrees);
         client.add_entity_request_handler(Self::handle_create_worktree);
@@ -1168,6 +1204,11 @@ impl GitStore {
     }
 
     pub fn shared(&mut self, project_id: u64, client: AnyProtoClient, cx: &mut Context<Self>) {
+        if !self.console_lines.is_empty() {
+            client
+                .send(console_lines_to_proto(project_id, &self.console_lines))
+                .log_err();
+        }
         match &mut self.state {
             GitStoreState::Remote {
                 downstream: downstream_client,
@@ -1264,6 +1305,30 @@ impl GitStore {
             }
         }
         self.shared_diffs.clear();
+    }
+
+    pub fn console_lines(&self) -> &[GitConsoleLine] {
+        &self.console_lines
+    }
+
+    pub fn clear_console(&mut self, cx: &mut Context<Self>) {
+        self.console_lines.clear();
+        cx.emit(GitStoreEvent::ConsoleUpdated);
+    }
+
+    fn append_console_lines(&mut self, lines: Vec<GitConsoleLine>, cx: &mut Context<Self>) {
+        if lines.is_empty() {
+            return;
+        }
+        if let Some((client, project_id)) = self.downstream_client() {
+            client
+                .send(console_lines_to_proto(project_id.to_proto(), &lines))
+                .log_err();
+        }
+        self.console_lines.extend(lines);
+        let overflow = self.console_lines.len().saturating_sub(MAX_CONSOLE_LINES);
+        self.console_lines.drain(..overflow);
+        cx.emit(GitStoreEvent::ConsoleUpdated);
     }
 
     pub fn active_repository(&self) -> Option<Entity<Repository>> {
@@ -2909,6 +2974,7 @@ impl GitStore {
             downstream,
             project_environment,
             fs,
+            console,
             ..
         } = &self.state
         else {
@@ -2919,6 +2985,7 @@ impl GitStore {
             .map(|downstream| downstream.updates_tx.clone());
         let project_environment = project_environment.downgrade();
         let fs = fs.clone();
+        let console = console.clone();
         let is_trusted = TrustedWorktrees::try_get_global(cx)
             .map(|trusted_worktrees| {
                 trusted_worktrees.update(cx, |trusted_worktrees, cx| {
@@ -2940,6 +3007,7 @@ impl GitStore {
                 project_environment,
                 fs,
                 is_trusted,
+                console,
                 git_store,
                 object_read_limiter,
                 cx,
@@ -3295,10 +3363,13 @@ impl GitStore {
         cx: &App,
     ) -> Task<Result<()>> {
         match &self.state {
-            GitStoreState::Local { fs, .. } => {
+            GitStoreState::Local { fs, console, .. } => {
                 let fs = fs.clone();
-                cx.background_executor()
-                    .spawn(async move { fs.git_init(&path, fallback_branch_name).await })
+                let console = console.clone();
+                cx.background_executor().spawn(async move {
+                    fs.git_init(&path, fallback_branch_name, Some(console))
+                        .await
+                })
             }
             GitStoreState::Remote {
                 upstream_client,
@@ -3364,10 +3435,11 @@ impl GitStore {
 
     pub fn git_config(&self, path: Arc<Path>, args: Vec<String>, cx: &App) -> Task<Result<String>> {
         match &self.state {
-            GitStoreState::Local { fs, .. } => {
+            GitStoreState::Local { fs, console, .. } => {
                 let fs = fs.clone();
+                let console = console.clone();
                 cx.background_executor()
-                    .spawn(async move { fs.git_config(&path, args).await })
+                    .spawn(async move { fs.git_config(&path, args, Some(console)).await })
             }
             GitStoreState::Remote {
                 upstream_client, ..
@@ -3475,6 +3547,21 @@ impl GitStore {
             }
             cx.emit(GitStoreEvent::RepositoryRemoved(id));
         });
+        Ok(())
+    }
+
+    async fn handle_git_console_lines(
+        this: Entity<Self>,
+        envelope: TypedEnvelope<proto::GitConsoleLines>,
+        mut cx: AsyncApp,
+    ) -> Result<()> {
+        let lines = envelope
+            .payload
+            .lines
+            .into_iter()
+            .filter_map(console_line_from_proto)
+            .collect::<Vec<_>>();
+        this.update(&mut cx, |this, cx| this.append_console_lines(lines, cx));
         Ok(())
     }
 
@@ -4603,6 +4690,8 @@ impl GitStore {
         let mode = match envelope.payload.mode() {
             git_reset::ResetMode::Soft => ResetMode::Soft,
             git_reset::ResetMode::Mixed => ResetMode::Mixed,
+            git_reset::ResetMode::Hard => ResetMode::Hard,
+            git_reset::ResetMode::Keep => ResetMode::Keep,
         };
 
         repository_handle
@@ -6497,6 +6586,7 @@ impl Repository {
     ) {
         let work_directory_abs_path = self.snapshot.work_directory_abs_path.clone();
         let dot_git_abs_path = self.snapshot.dot_git_abs_path.clone();
+        let console = self.console.clone();
 
         let state = cx
             .spawn(async move |_, cx| {
@@ -6506,6 +6596,7 @@ impl Repository {
                     project_environment,
                     fs,
                     is_trusted,
+                    console,
                     cx,
                 )
                 .await
@@ -6557,6 +6648,7 @@ impl Repository {
         project_environment: WeakEntity<ProjectEnvironment>,
         fs: Arc<dyn Fs>,
         is_trusted: bool,
+        console: GitConsoleSink,
         git_store: WeakEntity<GitStore>,
         object_read_limiter: Arc<Semaphore>,
         cx: &mut Context<Self>,
@@ -6574,6 +6666,7 @@ impl Repository {
             this: cx.weak_entity(),
             git_store,
             object_read_limiter,
+            console: Some(console),
             snapshot,
             unshallow_state: UnshallowState::default(),
             pending_ops: Default::default(),
@@ -6629,6 +6722,7 @@ impl Repository {
             commit_message_buffer: None,
             git_store,
             object_read_limiter,
+            console: None,
             pending_ops: Default::default(),
             paths_needing_status_update: Default::default(),
             job_sender,
@@ -6657,7 +6751,11 @@ impl Repository {
             RepositoryEvent::StashEntriesChanged => {
                 if self.scan_id > 2 {
                     self.initial_graph_data
-                        .retain(|(log_source, _), _| *log_source != LogSource::All);
+                        .retain(|(log_source, _), _| match log_source {
+                            LogSource::All => false,
+                            LogSource::Filtered(filter) => !filter.revisions.is_empty(),
+                            LogSource::Branch(_) | LogSource::Sha(_) | LogSource::Path(_) => true,
+                        });
                 }
             }
             _ => {}
@@ -7155,6 +7253,8 @@ impl Repository {
                             mode: match reset_mode {
                                 ResetMode::Soft => git_reset::ResetMode::Soft.into(),
                                 ResetMode::Mixed => git_reset::ResetMode::Mixed.into(),
+                                ResetMode::Hard => git_reset::ResetMode::Hard.into(),
+                                ResetMode::Keep => git_reset::ResetMode::Keep.into(),
                             },
                         })
                         .await?;
@@ -7164,6 +7264,12 @@ impl Repository {
             }
         });
 
+        self.rescan(cx);
+
+        receiver
+    }
+
+    pub fn rescan(&mut self, cx: &mut Context<Self>) {
         let scan_updates_tx =
             self.git_store()
                 .and_then(|git_store| match &git_store.read(cx).state {
@@ -7177,8 +7283,6 @@ impl Repository {
         if let Some(updates_tx) = scan_updates_tx {
             self.schedule_scan(updates_tx, cx);
         }
-
-        receiver
     }
 
     pub fn show(&mut self, commit: String) -> oneshot::Receiver<Result<CommitDetails>> {
@@ -7226,6 +7330,58 @@ impl Repository {
                 })
             }
         }
+    }
+
+    pub fn branches_containing_commit(
+        &self,
+        sha: Oid,
+        cx: &App,
+    ) -> Task<Result<Vec<SharedString>>> {
+        let repository_state = self.repository_state.clone();
+        let object_read_limiter = self.object_read_limiter.clone();
+        cx.background_spawn(async move {
+            let _permit = object_read_limiter.acquire_arc().await;
+            match repository_state.await.map_err(|err| anyhow::anyhow!(err))? {
+                RepositoryState::Local(LocalRepositoryState { backend, .. }) => {
+                    backend.branches_containing_commit(sha).await
+                }
+                RepositoryState::Remote(_) => Err(anyhow!(
+                    "listing containing branches is not supported for remote repositories"
+                )),
+            }
+        })
+    }
+
+    pub fn current_user(&self, cx: &App) -> Task<Result<Option<GitUser>>> {
+        let repository_state = self.repository_state.clone();
+        let object_read_limiter = self.object_read_limiter.clone();
+        cx.background_spawn(async move {
+            let _permit = object_read_limiter.acquire_arc().await;
+            match repository_state.await.map_err(|err| anyhow::anyhow!(err))? {
+                RepositoryState::Local(LocalRepositoryState { backend, .. }) => {
+                    backend.current_user().await
+                }
+                RepositoryState::Remote(_) => Err(anyhow!(
+                    "reading the current git user is not supported for remote repositories"
+                )),
+            }
+        })
+    }
+
+    pub fn log_authors(&self, cx: &App) -> Task<Result<Vec<GitUser>>> {
+        let repository_state = self.repository_state.clone();
+        let object_read_limiter = self.object_read_limiter.clone();
+        cx.background_spawn(async move {
+            let _permit = object_read_limiter.acquire_arc().await;
+            match repository_state.await.map_err(|err| anyhow::anyhow!(err))? {
+                RepositoryState::Local(LocalRepositoryState { backend, .. }) => {
+                    backend.log_authors().await
+                }
+                RepositoryState::Remote(_) => Err(anyhow!(
+                    "listing log authors is not supported for remote repositories"
+                )),
+            }
+        })
     }
 
     pub fn load_commit_diff(
@@ -10429,6 +10585,61 @@ impl Repository {
         })
     }
 
+    pub fn cherry_pick(
+        &mut self,
+        commits: Vec<Oid>,
+    ) -> oneshot::Receiver<Result<CherryPickOutcome>> {
+        let short_shas = commits
+            .iter()
+            .rev()
+            .map(Oid::display_short)
+            .collect::<Vec<_>>()
+            .join(" ");
+        self.send_job(
+            "cherry_pick",
+            Some(format!("git cherry-pick {short_shas}").into()),
+            move |repo, _cx| async move {
+                match repo {
+                    RepositoryState::Local(LocalRepositoryState {
+                        backend,
+                        environment,
+                        ..
+                    }) => backend.cherry_pick(commits, environment.clone()).await,
+                    RepositoryState::Remote(_) => Err(anyhow!(
+                        "cherry-picking is not supported for remote repositories"
+                    )),
+                }
+            },
+        )
+    }
+
+    pub fn revert_commits(
+        &mut self,
+        commits: Vec<Oid>,
+    ) -> oneshot::Receiver<Result<RevertOutcome>> {
+        let short_shas = commits
+            .iter()
+            .map(Oid::display_short)
+            .collect::<Vec<_>>()
+            .join(" ");
+        self.send_job(
+            "revert_commits",
+            Some(format!("git revert --no-edit {short_shas}").into()),
+            move |repo, _cx| async move {
+                match repo {
+                    RepositoryState::Local(LocalRepositoryState {
+                        backend,
+                        environment,
+                        ..
+                    }) => backend.revert_commits(commits, environment.clone()).await,
+                    RepositoryState::Remote(_) => Err(anyhow!(
+                        "reverting is not supported for remote repositories"
+                    )),
+                }
+            },
+        )
+    }
+
     pub fn reset_hard(&mut self, commit: String) -> oneshot::Receiver<Result<()>> {
         self.send_job(
             "reset_hard",
@@ -11865,6 +12076,9 @@ fn log_source_to_proto(log_source: &LogSource) -> proto::GitLogSource {
             LogSource::Path(path) => {
                 proto::git_log_source::Source::Path(path.as_unix_str().to_owned())
             }
+            LogSource::Filtered(filter) => {
+                proto::git_log_source::Source::Filtered(log_filter_to_proto(filter))
+            }
         }),
     }
 }
@@ -11880,7 +12094,60 @@ fn log_source_from_proto(log_source: proto::GitLogSource) -> Result<LogSource> {
         proto::git_log_source::Source::Path(path) => {
             Ok(LogSource::Path(RepoPath::from_proto(&path)?))
         }
+        proto::git_log_source::Source::Filtered(filter) => {
+            Ok(LogSource::Filtered(log_filter_from_proto(filter)?))
+        }
     }
+}
+
+fn log_filter_to_proto(filter: &LogFilter) -> proto::GitLogFilter {
+    proto::GitLogFilter {
+        revisions: filter
+            .revisions
+            .iter()
+            .map(|revision| revision.to_string())
+            .collect(),
+        authors: filter
+            .authors
+            .iter()
+            .map(|author| author.to_string())
+            .collect(),
+        after: filter.after,
+        before: filter.before,
+        paths: filter
+            .paths
+            .iter()
+            .map(|path| path.as_unix_str().to_owned())
+            .collect(),
+        text: filter.text.as_ref().map(|text| proto::GitLogTextFilter {
+            pattern: text.pattern.to_string(),
+            regex: text.regex,
+            match_case: text.match_case,
+        }),
+    }
+}
+
+fn log_filter_from_proto(filter: proto::GitLogFilter) -> Result<LogFilter> {
+    Ok(LogFilter {
+        revisions: filter
+            .revisions
+            .into_iter()
+            .map(SharedString::from)
+            .collect(),
+        authors: filter.authors.into_iter().map(SharedString::from).collect(),
+        after: filter.after,
+        before: filter.before,
+        paths: filter
+            .paths
+            .iter()
+            .map(|path| RepoPath::from_proto(path))
+            .collect::<Result<Vec<_>>>()?,
+        text: filter.text.map(|text| LogTextFilter {
+            pattern: text.pattern.into(),
+            regex: text.regex,
+            match_case: text.match_case,
+        }),
+    })
 }
 
 fn log_order_to_proto(log_order: LogOrder) -> i32 {
@@ -11920,6 +12187,12 @@ fn initial_graph_commit_to_proto(commit: &InitialGraphCommitData) -> proto::Init
             .iter()
             .map(|ref_name| ref_name.to_string())
             .collect(),
+        committer_timestamp: commit.committer_timestamp,
+        dotted_parents: commit
+            .dotted_parents
+            .iter()
+            .map(|parent| parent.to_string())
+            .collect(),
     }
 }
 
@@ -11931,6 +12204,10 @@ fn initial_graph_commit_from_proto(
     for parent in &commit.parents {
         parents.push(Oid::from_str(parent)?);
     }
+    let mut dotted_parents = SmallVec::with_capacity(commit.dotted_parents.len());
+    for parent in &commit.dotted_parents {
+        dotted_parents.push(Oid::from_str(parent)?);
+    }
     Ok(Arc::new(InitialGraphCommitData {
         sha,
         parents,
@@ -11939,6 +12216,8 @@ fn initial_graph_commit_from_proto(
             .into_iter()
             .map(SharedString::from)
             .collect(),
+        committer_timestamp: commit.committer_timestamp,
+        dotted_parents,
     }))
 }
 
@@ -11949,6 +12228,10 @@ fn commit_data_to_proto(commit: &CommitData) -> proto::CommitData {
         author_name: commit.author_name.to_string(),
         author_email: commit.author_email.to_string(),
         commit_timestamp: commit.commit_timestamp,
+        author_timestamp: commit.author_timestamp,
+        committer_name: commit.committer_name.to_string(),
+        committer_email: commit.committer_email.to_string(),
+        committer_timestamp: commit.committer_timestamp,
         subject: commit.subject.to_string(),
         message: commit.message.to_string(),
     }
@@ -11966,9 +12249,66 @@ fn commit_data_from_proto(commit: proto::CommitData) -> Result<CommitData> {
         author_name: SharedString::from(commit.author_name),
         author_email: SharedString::from(commit.author_email),
         commit_timestamp: commit.commit_timestamp,
+        author_timestamp: commit.author_timestamp,
+        committer_name: SharedString::from(commit.committer_name),
+        committer_email: SharedString::from(commit.committer_email),
+        committer_timestamp: commit.committer_timestamp,
         subject: SharedString::from(commit.subject),
         message: SharedString::from(commit.message),
     })
+}
+
+fn console_lines_to_proto(project_id: u64, lines: &[GitConsoleLine]) -> proto::GitConsoleLines {
+    proto::GitConsoleLines {
+        project_id,
+        lines: lines.iter().map(console_line_to_proto).collect(),
+    }
+}
+
+fn console_line_to_proto(line: &GitConsoleLine) -> proto::GitConsoleLine {
+    proto::GitConsoleLine {
+        chunks: line
+            .chunks
+            .iter()
+            .map(|chunk| proto::GitConsoleChunk {
+                text: chunk.text.to_string(),
+                content_type: console_content_type_to_proto(chunk.content_type),
+            })
+            .collect(),
+    }
+}
+
+fn console_line_from_proto(line: proto::GitConsoleLine) -> Option<GitConsoleLine> {
+    GitConsoleLine::new(
+        line.chunks
+            .into_iter()
+            .map(|chunk| {
+                let content_type = console_content_type_from_proto(chunk.content_type());
+                GitConsoleChunk {
+                    text: chunk.text.into(),
+                    content_type,
+                }
+            })
+            .collect(),
+    )
+}
+
+fn console_content_type_to_proto(content_type: GitConsoleContentType) -> i32 {
+    match content_type {
+        GitConsoleContentType::NormalOutput => proto::GitConsoleContentType::NormalOutput as i32,
+        GitConsoleContentType::ErrorOutput => proto::GitConsoleContentType::ErrorOutput as i32,
+        GitConsoleContentType::SystemOutput => proto::GitConsoleContentType::SystemOutput as i32,
+    }
+}
+
+fn console_content_type_from_proto(
+    content_type: proto::GitConsoleContentType,
+) -> GitConsoleContentType {
+    match content_type {
+        proto::GitConsoleContentType::NormalOutput => GitConsoleContentType::NormalOutput,
+        proto::GitConsoleContentType::ErrorOutput => GitConsoleContentType::ErrorOutput,
+        proto::GitConsoleContentType::SystemOutput => GitConsoleContentType::SystemOutput,
+    }
 }
 
 fn branch_to_proto(branch: &git::repository::Branch) -> proto::Branch {
@@ -13094,13 +13434,18 @@ mod tests {
             .iter()
             .filter(|sha| !missing_shas.contains(sha))
             .map(|sha| {
+                let commit_timestamp = rng.random_range(0..10_000);
                 (
                     CommitData {
                         sha: *sha,
                         parents: SmallVec::new(),
                         author_name: SharedString::from(format!("Author {sha}")),
                         author_email: SharedString::from(format!("{sha}@example.com")),
-                        commit_timestamp: rng.random_range(0..10_000),
+                        commit_timestamp,
+                        author_timestamp: commit_timestamp,
+                        committer_name: SharedString::from(format!("Author {sha}")),
+                        committer_email: SharedString::from(format!("{sha}@example.com")),
+                        committer_timestamp: commit_timestamp,
                         subject: SharedString::from(format!("Subject {sha}")),
                         message: SharedString::from(format!("Subject {sha}\n\nBody for {sha}")),
                     },

@@ -135,6 +135,9 @@ pub trait Panel: Focusable + EventEmitter<PanelEvent> + Render + Sized {
     fn header_actions(&self, _window: &Window, _cx: &App) -> Vec<PanelHeaderAction> {
         Vec::new()
     }
+    fn header_content(&self, _window: &Window, _cx: &App) -> Option<AnyView> {
+        None
+    }
 }
 
 pub trait PanelHandle: Send + Sync {
@@ -168,6 +171,7 @@ pub trait PanelHandle: Send + Sync {
     fn enabled(&self, cx: &App) -> bool;
     fn hide_button_setting(&self, cx: &App) -> Option<HideButtonSetting>;
     fn header_actions(&self, window: &Window, cx: &App) -> Vec<PanelHeaderAction>;
+    fn header_content(&self, window: &Window, cx: &App) -> Option<AnyView>;
     fn move_to_next_position(&self, window: &mut Window, cx: &mut App) {
         let current_position = self.position(window, cx);
         let next_position = [
@@ -304,6 +308,10 @@ where
     fn header_actions(&self, window: &Window, cx: &App) -> Vec<PanelHeaderAction> {
         self.read(cx).header_actions(window, cx)
     }
+
+    fn header_content(&self, window: &Window, cx: &App) -> Option<AnyView> {
+        self.read(cx).header_content(window, cx)
+    }
 }
 
 impl From<&dyn PanelHandle> for AnyView {
@@ -430,6 +438,20 @@ struct PanelEntry {
 }
 
 pub(crate) const PANEL_SIZE_STATE_KEY: &str = "dock_panel_size";
+const BOTTOM_DOCK_PANEL_SIZE_STATE_KEY_SUFFIX: &str = ":bottom";
+
+pub(crate) fn panel_size_state_key(
+    workspace_id: &str,
+    panel_key: &str,
+    position: DockPosition,
+) -> String {
+    match position {
+        DockPosition::Left | DockPosition::Right => format!("{workspace_id}:{panel_key}"),
+        DockPosition::Bottom => {
+            format!("{workspace_id}:{panel_key}{BOTTOM_DOCK_PANEL_SIZE_STATE_KEY_SUFFIX}")
+        }
+    }
+}
 
 fn panel_uses_flexible_width(
     position: DockPosition,
@@ -681,17 +703,30 @@ impl Dock {
                         return;
                     }
 
-                    let Ok(new_dock) = workspace.update(cx, |workspace, cx| {
-                        if panel.is_zoomed(window, cx) {
-                            workspace.zoomed_position = Some(new_position);
-                        }
-                        match new_position {
-                            DockPosition::Left => &workspace.left_dock,
-                            DockPosition::Bottom => &workspace.bottom_dock,
-                            DockPosition::Right => &workspace.right_dock,
-                        }
-                        .clone()
-                    }) else {
+                    let axis_changes = this.position.axis() != new_position.axis();
+                    let Ok((new_dock, persisted_size_state)) =
+                        workspace.update(cx, |workspace, cx| {
+                            if panel.is_zoomed(window, cx) {
+                                workspace.zoomed_position = Some(new_position);
+                            }
+                            let new_dock = match new_position {
+                                DockPosition::Left => &workspace.left_dock,
+                                DockPosition::Bottom => &workspace.bottom_dock,
+                                DockPosition::Right => &workspace.right_dock,
+                            }
+                            .clone();
+                            let persisted_size_state = axis_changes
+                                .then(|| {
+                                    workspace.persisted_panel_size_state(
+                                        T::panel_key(),
+                                        new_position,
+                                        cx,
+                                    )
+                                })
+                                .flatten();
+                            (new_dock, persisted_size_state)
+                        })
+                    else {
                         return;
                     };
 
@@ -700,19 +735,14 @@ impl Dock {
                         && this
                             .visible_panel()
                             .is_some_and(|active_panel| active_panel.panel_id() == panel_id);
-                    let size_state = this
-                        .panel_entries
-                        .iter()
-                        .find(|entry| entry.panel.panel_id() == panel_id)
-                        .map(|entry| entry.size_state)
-                        .unwrap_or_default();
-
-                    let previous_axis = this.position.axis();
-                    let next_axis = new_position.axis();
-                    let size_state = if previous_axis == next_axis {
-                        size_state
+                    let size_state = if axis_changes {
+                        persisted_size_state.unwrap_or_default()
                     } else {
-                        PanelSizeState::default()
+                        this.panel_entries
+                            .iter()
+                            .find(|entry| entry.panel.panel_id() == panel_id)
+                            .map(|entry| entry.size_state)
+                            .unwrap_or_default()
                     };
 
                     if !this.remove_panel(&panel, window, cx) {
@@ -1110,6 +1140,7 @@ impl Dock {
         }
         let panel_key = entry.panel.panel_key();
         let size_state = entry.size_state;
+        let position = self.position;
         let workspace = self.workspace.clone();
         entry
             .panel
@@ -1118,7 +1149,7 @@ impl Dock {
         cx.defer(move |cx| {
             if let Some(workspace) = workspace.upgrade() {
                 workspace.update(cx, |workspace, cx| {
-                    workspace.persist_panel_size_state(panel_key, size_state, cx);
+                    workspace.persist_panel_size_state(panel_key, position, size_state, cx);
                 });
             }
         });
@@ -1141,7 +1172,7 @@ impl Dock {
             cx.defer(move |cx| {
                 if let Some(workspace) = workspace.upgrade() {
                     workspace.update(cx, |workspace, cx| {
-                        workspace.persist_panel_size_state(panel_key, size_state, cx);
+                        workspace.persist_panel_size_state(panel_key, position, size_state, cx);
                     });
                 }
             });
@@ -1229,12 +1260,13 @@ impl Dock {
             }
         }
 
+        let position = self.position;
         let workspace = self.workspace.clone();
         cx.defer(move |cx| {
             if let Some(workspace) = workspace.upgrade() {
                 workspace.update(cx, |workspace, cx| {
                     for (panel_key, size_state) in size_states_to_persist {
-                        workspace.persist_panel_size_state(panel_key, size_state, cx);
+                        workspace.persist_panel_size_state(panel_key, position, size_state, cx);
                     }
                 });
             }
@@ -1285,6 +1317,7 @@ impl Dock {
     pub(crate) fn load_persisted_size_state(
         workspace: &Workspace,
         panel_key: &'static str,
+        position: DockPosition,
         cx: &App,
     ) -> Option<PanelSizeState> {
         let workspace_id = workspace
@@ -1294,7 +1327,7 @@ impl Dock {
         let kvp = KeyValueStore::global(cx);
         let scope = kvp.scoped(PANEL_SIZE_STATE_KEY);
         scope
-            .read(&format!("{workspace_id}:{panel_key}"))
+            .read(&panel_size_state_key(&workspace_id, panel_key, position))
             .log_err()
             .flatten()
             .and_then(|json| serde_json::from_str::<PanelSizeState>(&json).log_err())
@@ -1609,6 +1642,7 @@ pub mod test {
         pub icon: Option<ui::IconName>,
         pub pane: Option<Entity<Pane>>,
         pub header_actions: Vec<PanelHeaderAction>,
+        pub header_content: Option<AnyView>,
     }
     actions!(test_only, [ToggleTestPanel]);
 
@@ -1628,6 +1662,7 @@ pub mod test {
                 icon: None,
                 pane: None,
                 header_actions: Vec::new(),
+                header_content: None,
             }
         }
 
@@ -1779,6 +1814,10 @@ pub mod test {
 
         fn header_actions(&self, _window: &Window, _cx: &App) -> Vec<PanelHeaderAction> {
             self.header_actions.clone()
+        }
+
+        fn header_content(&self, _window: &Window, _cx: &App) -> Option<AnyView> {
+            self.header_content.clone()
         }
     }
 

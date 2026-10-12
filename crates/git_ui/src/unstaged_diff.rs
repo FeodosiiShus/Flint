@@ -1,6 +1,6 @@
 use crate::{
     diff_multibuffer::DiffMultibuffer,
-    git_panel::{GitPanel, GitPanelAddon, GitStatusEntry},
+    git_panel::{GitPanel, GitPanelAddon},
 };
 use anyhow::{Context as _, Result};
 use buffer_diff::DiffHunkStatus;
@@ -130,12 +130,7 @@ impl UnstagedDiff {
         workspace::register_serializable_item::<Self>(cx);
     }
 
-    pub fn deploy_at(
-        workspace: &mut Workspace,
-        entry: Option<GitStatusEntry>,
-        window: &mut Window,
-        cx: &mut Context<Workspace>,
-    ) {
+    pub fn deploy_at(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
         let intended_repo = workspace.project().read(cx).active_repository(cx);
         let existing = workspace.items_of_type::<Self>(cx).next();
         let unstaged_diff = if let Some(existing) = existing {
@@ -170,22 +165,6 @@ impl UnstagedDiff {
                 });
             }
         }
-
-        if let Some(entry) = entry {
-            unstaged_diff.update(cx, |unstaged_diff, cx| {
-                unstaged_diff.move_to_entry(entry, window, cx);
-            });
-        }
-    }
-
-    pub(crate) fn move_to_entry(
-        &mut self,
-        entry: GitStatusEntry,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.diff
-            .update(cx, |diff, cx| diff.move_to_entry(entry, window, cx));
     }
 
     pub(crate) fn new(

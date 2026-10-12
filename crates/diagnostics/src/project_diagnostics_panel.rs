@@ -25,8 +25,7 @@ use crate::{
 };
 
 const PROJECT_DIAGNOSTICS_PANEL_KEY: &str = "ProjectDiagnosticsPanel";
-const PROJECT_DIAGNOSTICS_PANEL_ACTIVATION_PRIORITY: u32 = 5;
-const DEFAULT_BOTTOM_DOCK_HEIGHT: Pixels = px(320.);
+const PROJECT_DIAGNOSTICS_PANEL_ACTIVATION_PRIORITY: u32 = 3;
 const TAB_PROBLEM_COUNT_GAP: Pixels = px(8.);
 const NO_SELECTED_FILE_TEXT: &str = "Open file in editor to see problems";
 const PROBLEMS_FILTERED_OUT_TEXT: &str = "Problems could be filtered out";
@@ -36,6 +35,7 @@ pub struct ProjectDiagnosticsPanelSettings {
     pub button: bool,
     pub dock: DockPosition,
     pub default_width: Pixels,
+    pub default_height: Pixels,
 }
 
 impl Settings for ProjectDiagnosticsPanelSettings {
@@ -45,6 +45,10 @@ impl Settings for ProjectDiagnosticsPanelSettings {
             button: project_diagnostics_panel.button.unwrap(),
             dock: project_diagnostics_panel.dock.unwrap().into(),
             default_width: project_diagnostics_panel.default_width.unwrap().into_gpui(),
+            default_height: project_diagnostics_panel
+                .default_height
+                .unwrap()
+                .into_gpui(),
         }
     }
 }
@@ -671,11 +675,10 @@ impl Panel for ProjectDiagnosticsPanel {
     }
 
     fn default_size(&self, window: &Window, cx: &App) -> Pixels {
+        let settings = ProjectDiagnosticsPanelSettings::get_global(cx);
         match self.position(window, cx) {
-            DockPosition::Left | DockPosition::Right => {
-                ProjectDiagnosticsPanelSettings::get_global(cx).default_width
-            }
-            DockPosition::Bottom => DEFAULT_BOTTOM_DOCK_HEIGHT,
+            DockPosition::Left | DockPosition::Right => settings.default_width,
+            DockPosition::Bottom => settings.default_height,
         }
     }
 

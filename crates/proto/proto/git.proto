@@ -322,6 +322,8 @@ message GitReset {
   enum ResetMode {
     SOFT = 0;
     MIXED = 1;
+    HARD = 2;
+    KEEP = 3;
   }
 }
 
@@ -781,6 +783,10 @@ message CommitData {
   int64 commit_timestamp = 5;
   string subject = 6;
   string message = 7;
+  int64 author_timestamp = 8;
+  string committer_name = 9;
+  string committer_email = 10;
+  int64 committer_timestamp = 11;
 }
 
 message GetCommitDataResponse {
@@ -789,12 +795,28 @@ message GetCommitDataResponse {
 
 message GitLogSourceAll {}
 
+message GitLogTextFilter {
+  string pattern = 1;
+  bool regex = 2;
+  bool match_case = 3;
+}
+
+message GitLogFilter {
+  repeated string revisions = 1;
+  repeated string authors = 2;
+  optional int64 after = 3;
+  optional int64 before = 4;
+  repeated string paths = 5;
+  optional GitLogTextFilter text = 6;
+}
+
 message GitLogSource {
   oneof source {
     GitLogSourceAll all = 1;
     string branch = 2;
     string sha = 3;
     string path = 4;
+    GitLogFilter filtered = 5;
   }
 }
 
@@ -816,6 +838,8 @@ message InitialGraphCommit {
   string sha = 1;
   repeated string parents = 2;
   repeated string ref_names = 3;
+  int64 committer_timestamp = 4;
+  repeated string dotted_parents = 5;
 }
 
 message GetInitialGraphDataResponse {
@@ -832,4 +856,24 @@ message SearchCommits {
 
 message SearchCommitsResponse {
   repeated string shas = 1;
+}
+
+enum GitConsoleContentType {
+  NORMAL_OUTPUT = 0;
+  ERROR_OUTPUT = 1;
+  SYSTEM_OUTPUT = 2;
+}
+
+message GitConsoleChunk {
+  string text = 1;
+  GitConsoleContentType content_type = 2;
+}
+
+message GitConsoleLine {
+  repeated GitConsoleChunk chunks = 1;
+}
+
+message GitConsoleLines {
+  uint64 project_id = 1;
+  repeated GitConsoleLine lines = 2;
 }

@@ -1,6 +1,6 @@
 use crate::{
     diff_multibuffer::DiffMultibuffer,
-    git_panel::{GitPanel, GitPanelAddon, GitStatusEntry},
+    git_panel::{GitPanel, GitPanelAddon},
 };
 use anyhow::{Context as _, Result};
 use buffer_diff::DiffHunkStatus;
@@ -105,12 +105,7 @@ impl StagedDiff {
         workspace::register_serializable_item::<Self>(cx);
     }
 
-    pub fn deploy_at(
-        workspace: &mut Workspace,
-        entry: Option<GitStatusEntry>,
-        window: &mut Window,
-        cx: &mut Context<Workspace>,
-    ) {
+    pub fn deploy_at(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
         let intended_repo = workspace.project().read(cx).active_repository(cx);
         let existing = workspace.items_of_type::<Self>(cx).next();
         let staged_diff = if let Some(existing) = existing {
@@ -145,22 +140,6 @@ impl StagedDiff {
                 });
             }
         }
-
-        if let Some(entry) = entry {
-            staged_diff.update(cx, |staged_diff, cx| {
-                staged_diff.move_to_entry(entry, window, cx);
-            });
-        }
-    }
-
-    pub(crate) fn move_to_entry(
-        &mut self,
-        entry: GitStatusEntry,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.diff
-            .update(cx, |diff, cx| diff.move_to_entry(entry, window, cx));
     }
 
     pub(crate) fn new(
@@ -769,7 +748,7 @@ mod tests {
         });
 
         workspace.update_in(cx, |workspace, window, cx| {
-            StagedDiff::deploy_at(workspace, None, window, cx);
+            StagedDiff::deploy_at(workspace, window, cx);
         });
         cx.run_until_parked();
 
@@ -860,7 +839,7 @@ mod tests {
         cx.run_until_parked();
 
         workspace.update_in(cx, |workspace, window, cx| {
-            StagedDiff::deploy_at(workspace, None, window, cx);
+            StagedDiff::deploy_at(workspace, window, cx);
         });
         cx.run_until_parked();
 

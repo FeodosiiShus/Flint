@@ -1,11 +1,12 @@
 use editor::Editor;
 use gpui::{
-    Action as _, AppContext as _, Entity, Focusable, TestAppContext, VisualContext,
-    VisualTestContext,
+    Action as _, AppContext as _, Entity, Focusable, TestAppContext, UpdateGlobal as _,
+    VisualContext, VisualTestContext, px,
 };
-use picker::Picker;
+use picker::{Picker, TogglePreview};
 use project::Project;
 use serde_json::json;
+use settings::SettingsStore;
 use ui::IconName;
 use util::path;
 use workspace::{
@@ -24,7 +25,7 @@ use crate::{
     },
 };
 
-const EXPECTED_LEFT_DOCK_PRIORITY: u32 = 4;
+const EXPECTED_BOTTOM_DOCK_PRIORITY: u32 = 5;
 
 fn add_search_panel(
     workspace: &Entity<Workspace>,
@@ -50,14 +51,25 @@ fn assert_panel_visible(
     cx: &mut VisualTestContext,
 ) {
     workspace.read_with(cx, |workspace, cx| {
-        let dock = workspace.left_dock().read(cx);
-        assert!(dock.is_open(), "the left dock is open");
+        let dock = workspace.bottom_dock().read(cx);
+        assert!(dock.is_open(), "the bottom dock is open");
         assert_eq!(
             dock.visible_panel().map(|visible| visible.panel_id()),
             Some(panel.entity_id()),
-            "the search panel is the visible panel of the left dock"
+            "the search panel is the visible panel of the bottom dock"
         );
     });
+}
+
+fn dock_search_panel(position: DockPosition, cx: &mut VisualTestContext) {
+    cx.update(|_, cx| {
+        SettingsStore::update_global(cx, |store, cx| {
+            store.update_user_settings(cx, |settings| {
+                settings.search_panel.get_or_insert_default().dock = Some(position.into());
+            });
+        });
+    });
+    cx.run_until_parked();
 }
 
 fn add_focused_editor(
@@ -78,7 +90,7 @@ fn add_focused_editor(
 }
 
 #[gpui::test]
-async fn test_panel_lives_in_left_dock_with_search_tool_window_button(cx: &mut TestAppContext) {
+async fn test_panel_lives_in_bottom_dock_with_search_tool_window_button(cx: &mut TestAppContext) {
     let app_state = init_test(cx);
     let project = Project::test(app_state.fs.clone(), [], cx).await;
     let (workspace, cx) = build_workspace(project, cx);
@@ -87,11 +99,18 @@ async fn test_panel_lives_in_left_dock_with_search_tool_window_button(cx: &mut T
     workspace.read_with(cx, |workspace, cx| {
         assert!(
             workspace
-                .left_dock()
+                .bottom_dock()
                 .read(cx)
                 .panel::<SearchPanel>()
                 .is_some(),
-            "the search panel is added to the left dock"
+            "the search panel is added to the bottom dock"
+        );
+        assert!(
+            workspace
+                .left_dock()
+                .read(cx)
+                .panel::<SearchPanel>()
+                .is_none()
         );
         assert!(
             workspace
@@ -100,20 +119,13 @@ async fn test_panel_lives_in_left_dock_with_search_tool_window_button(cx: &mut T
                 .panel::<SearchPanel>()
                 .is_none()
         );
-        assert!(
-            workspace
-                .bottom_dock()
-                .read(cx)
-                .panel::<SearchPanel>()
-                .is_none()
-        );
     });
     cx.update(|window, cx| {
         let panel = panel.read(cx);
-        assert_eq!(panel.position(window, cx), DockPosition::Left);
+        assert_eq!(panel.position(window, cx), DockPosition::Bottom);
         assert_eq!(panel.icon(window, cx), Some(IconName::MagnifyingGlass));
         assert_eq!(panel.icon_tooltip(window, cx), Some("Search"));
-        assert_eq!(panel.activation_priority(), EXPECTED_LEFT_DOCK_PRIORITY);
+        assert_eq!(panel.activation_priority(), EXPECTED_BOTTOM_DOCK_PRIORITY);
         assert_eq!(
             panel.toggle_action().name(),
             ToggleFocus.name(),
@@ -121,6 +133,98 @@ async fn test_panel_lives_in_left_dock_with_search_tool_window_button(cx: &mut T
         );
         assert_eq!(SearchPanel::persistent_name(), "SearchPanel");
     });
+}
+
+#[gpui::test]
+async fn test_panel_default_size_is_the_height_at_the_bottom_and_the_width_at_the_sides(
+    cx: &mut TestAppContext,
+) {
+    let app_state = init_test(cx);
+    let project = Project::test(app_state.fs.clone(), [], cx).await;
+    let (workspace, cx) = build_workspace(project, cx);
+    let panel = add_search_panel(&workspace, cx);
+
+    let default_size = |cx: &mut VisualTestContext| {
+        cx.update(|window, cx| panel.read(cx).default_size(window, cx))
+    };
+    assert_eq!(
+        default_size(cx),
+        px(320.),
+        "the bottom dock uses search_panel.default_height"
+    );
+    for position in [DockPosition::Left, DockPosition::Right] {
+        dock_search_panel(position, cx);
+        assert_eq!(
+            default_size(cx),
+            px(360.),
+            "the {position:?} dock uses search_panel.default_width"
+        );
+    }
+}
+
+#[gpui::test]
+async fn test_panel_preview_sits_right_of_the_results_in_the_bottom_dock_and_below_them_at_the_sides(
+    cx: &mut TestAppContext,
+) {
+    let app_state = init_test(cx);
+    app_state
+        .fs
+        .as_fake()
+        .insert_tree(path!("/dir"), json!({ "qzalpha.txt": "alpha" }))
+        .await;
+    let project = Project::test(app_state.fs.clone(), [path!("/dir").as_ref()], cx).await;
+    let (workspace, cx) = build_workspace(project, cx);
+    let panel = add_search_panel(&workspace, cx);
+
+    cx.dispatch_action(ToggleFocus);
+    cx.run_until_parked();
+    assert_panel_visible(&workspace, &panel, cx);
+    assert_eq!(
+        cx.debug_bounds("picker_panel_preview"),
+        None,
+        "the panel keeps the preview hidden until it is toggled"
+    );
+
+    cx.dispatch_action(TogglePreview);
+    cx.run_until_parked();
+    let results = cx
+        .debug_bounds("picker_panel_results")
+        .expect("the panel shows its results next to the preview");
+    let preview = cx
+        .debug_bounds("picker_panel_preview")
+        .expect("toggling the preview shows it");
+    assert_eq!(
+        preview.left(),
+        results.right(),
+        "in the bottom dock the preview sits to the right of the results, like IntelliJ's Find tool window"
+    );
+    assert_eq!(
+        (preview.top(), preview.bottom()),
+        (results.top(), results.bottom()),
+        "the preview spans the height of the results"
+    );
+    assert!(
+        (preview.size.width - results.size.width).abs() <= px(1.),
+        "the results and the preview split the width in half, IntelliJ's default preview splitter proportion: results {results:?}, preview {preview:?}"
+    );
+
+    dock_search_panel(DockPosition::Left, cx);
+    let results = cx
+        .debug_bounds("picker_panel_results")
+        .expect("the panel moved to the left dock keeps its results");
+    let preview = cx
+        .debug_bounds("picker_panel_preview")
+        .expect("the panel moved to the left dock keeps the preview open");
+    assert_eq!(
+        preview.top(),
+        results.bottom(),
+        "in a side dock the preview sits below the results"
+    );
+    assert_eq!(
+        (preview.left(), preview.right()),
+        (results.left(), results.right()),
+        "the preview spans the width of the results"
+    );
 }
 
 #[gpui::test]

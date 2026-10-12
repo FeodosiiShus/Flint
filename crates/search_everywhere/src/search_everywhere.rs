@@ -15,7 +15,7 @@ use gpui::{
     Action, App, AppContext, Context, DismissEvent, Entity, EventEmitter, FocusHandle, Focusable,
     InteractiveElement, ParentElement, Render, SharedString, Styled, Task, WeakEntity, Window,
 };
-use picker::{Direction, Picker};
+use picker::{Direction, PanelPreviewPosition, Picker};
 use project::Project;
 use ui::{FluentBuilder, IntoElement, v_flex};
 use workspace::{ModalView, Workspace};
@@ -185,6 +185,16 @@ impl SearchEverywhere {
             }
             picker.refresh_placeholder(window, cx);
             picker.refresh(window, cx);
+        });
+    }
+
+    fn set_panel_preview_position(
+        &mut self,
+        position: PanelPreviewPosition,
+        cx: &mut Context<Self>,
+    ) {
+        self.picker.update(cx, |picker, cx| {
+            picker.set_panel_preview_position(position, cx);
         });
     }
 

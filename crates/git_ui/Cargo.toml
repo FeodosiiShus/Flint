@@ -43,6 +43,7 @@ notifications.workspace = true
 picker.workspace = true
 project.workspace = true
 rand.workspace = true
+regex.workspace = true
 release_channel.workspace = true
 remote_connection.workspace = true
 schemars.workspace = true

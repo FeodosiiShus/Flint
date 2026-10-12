@@ -5839,7 +5839,7 @@ fn panels_page() -> SettingsPage {
         ]
     }
 
-    fn git_panel_section() -> [SettingsPageItem; 19] {
+    fn git_panel_section() -> [SettingsPageItem; 14] {
         [
             SettingsPageItem::SectionHeader("Git Panel"),
             SettingsPageItem::SettingItem(SettingItem {
@@ -5905,6 +5905,24 @@ fn panels_page() -> SettingsPage {
                 files: USER,
             }),
             SettingsPageItem::SettingItem(SettingItem {
+                title: "Git Panel Default Height",
+                description: "Default height of the Git panel in pixels when it is docked to the bottom.",
+                field: Box::new(SettingField {
+                    json_path: Some("git_panel.default_height"),
+                    pick: |settings_content| {
+                        settings_content.git_panel.as_ref()?.default_height.as_ref()
+                    },
+                    write: |settings_content, value, _| {
+                        settings_content
+                            .git_panel
+                            .get_or_insert_default()
+                            .default_height = value;
+                    },
+                }),
+                metadata: None,
+                files: USER,
+            }),
+            SettingsPageItem::SettingItem(SettingItem {
                 title: "Git Panel Status Style",
                 description: "How entry statuses are displayed.",
                 field: Box::new(SettingField {
@@ -5946,7 +5964,7 @@ fn panels_page() -> SettingsPage {
             }),
             SettingsPageItem::SettingItem(SettingItem {
                 title: "Sort By",
-                description: "How to sort entries in the git panel.",
+                description: "How to sort files in the Uncommitted, Staged and Unstaged Changes views.",
                 field: Box::new(SettingField {
                     json_path: Some("git_panel.sort_by"),
                     pick: |settings_content| settings_content.git_panel.as_ref()?.sort_by.as_ref(),
@@ -5959,7 +5977,7 @@ fn panels_page() -> SettingsPage {
             }),
             SettingsPageItem::SettingItem(SettingItem {
                 title: "Group By",
-                description: "How to group entries in the git panel.",
+                description: "How to group files in the Uncommitted, Staged and Unstaged Changes views.",
                 field: Box::new(SettingField {
                     json_path: Some("git_panel.group_by"),
                     pick: |settings_content| settings_content.git_panel.as_ref()?.group_by.as_ref(),
@@ -5994,7 +6012,7 @@ fn panels_page() -> SettingsPage {
             }),
             SettingsPageItem::SettingItem(SettingItem {
                 title: "Tree View",
-                description: "Enable to show entries in tree view list, disable to show in flat view list.",
+                description: "Enable to order files in the Uncommitted, Staged and Unstaged Changes views as a tree, disable to order them as a flat list.",
                 field: Box::new(SettingField {
                     json_path: Some("git_panel.tree_view"),
                     pick: |settings_content| {
@@ -6002,104 +6020,6 @@ fn panels_page() -> SettingsPage {
                     },
                     write: |settings_content, value, _| {
                         settings_content.git_panel.get_or_insert_default().tree_view = value;
-                    },
-                }),
-                metadata: None,
-                files: USER,
-            }),
-            SettingsPageItem::SettingItem(SettingItem {
-                title: "File Icons",
-                description: "Show file icons next to the Git status icon.",
-                field: Box::new(SettingField {
-                    json_path: Some("git_panel.file_icons"),
-                    pick: |settings_content| {
-                        settings_content.git_panel.as_ref()?.file_icons.as_ref()
-                    },
-                    write: |settings_content, value, _| {
-                        settings_content
-                            .git_panel
-                            .get_or_insert_default()
-                            .file_icons = value;
-                    },
-                }),
-                metadata: None,
-                files: USER,
-            }),
-            SettingsPageItem::SettingItem(SettingItem {
-                title: "Folder Indicator",
-                description: "What to show for directories in the git panel.",
-                field: Box::new(SettingField {
-                    json_path: Some("git_panel.folder_indicator"),
-                    pick: |settings_content| {
-                        settings_content
-                            .git_panel
-                            .as_ref()?
-                            .folder_indicator
-                            .as_ref()
-                    },
-                    write: |settings_content, value, _| {
-                        settings_content
-                            .git_panel
-                            .get_or_insert_default()
-                            .folder_indicator = value;
-                    },
-                }),
-                metadata: None,
-                files: USER,
-            }),
-            SettingsPageItem::SettingItem(SettingItem {
-                title: "Diff Stats",
-                description: "Whether to show the addition/deletion change count next to each file in the Git panel.",
-                field: Box::new(SettingField {
-                    json_path: Some("git_panel.diff_stats"),
-                    pick: |settings_content| {
-                        settings_content.git_panel.as_ref()?.diff_stats.as_ref()
-                    },
-                    write: |settings_content, value, _| {
-                        settings_content
-                            .git_panel
-                            .get_or_insert_default()
-                            .diff_stats = value;
-                    },
-                }),
-                metadata: None,
-                files: USER,
-            }),
-            SettingsPageItem::SettingItem(SettingItem {
-                title: "Primary Click Behavior",
-                description: "Default action when clicking a changed file in the Git panel.",
-                field: Box::new(SettingField {
-                    json_path: Some("git_panel.entry_primary_click_action"),
-                    pick: |settings_content| {
-                        settings_content
-                            .git_panel
-                            .as_ref()?
-                            .entry_primary_click_action
-                            .as_ref()
-                    },
-                    write: |settings_content, value, _| {
-                        settings_content
-                            .git_panel
-                            .get_or_insert_default()
-                            .entry_primary_click_action = value;
-                    },
-                }),
-                metadata: None,
-                files: USER,
-            }),
-            SettingsPageItem::SettingItem(SettingItem {
-                title: "Commit Editor",
-                description: "Whether the commit message editor is shown in the Git panel by default.",
-                field: Box::new(SettingField {
-                    json_path: Some("git_panel.commit_editor"),
-                    pick: |settings_content| {
-                        settings_content.git_panel.as_ref()?.commit_editor.as_ref()
-                    },
-                    write: |settings_content, value, _| {
-                        settings_content
-                            .git_panel
-                            .get_or_insert_default()
-                            .commit_editor = value;
                     },
                 }),
                 metadata: None,
@@ -6149,38 +6069,10 @@ fn panels_page() -> SettingsPage {
                 metadata: None,
                 files: USER,
             }),
-            SettingsPageItem::SettingItem(SettingItem {
-                title: "Scroll Bar",
-                description: "How and when the scrollbar should be displayed.",
-                field: Box::new(SettingField {
-                    json_path: Some("git_panel.scrollbar.show"),
-                    pick: |settings_content| {
-                        show_scrollbar_or_editor(settings_content, |settings_content| {
-                            settings_content
-                                .git_panel
-                                .as_ref()?
-                                .scrollbar
-                                .as_ref()?
-                                .show
-                                .as_ref()
-                        })
-                    },
-                    write: |settings_content, value, _| {
-                        settings_content
-                            .git_panel
-                            .get_or_insert_default()
-                            .scrollbar
-                            .get_or_insert_default()
-                            .show = value;
-                    },
-                }),
-                metadata: None,
-                files: USER,
-            }),
         ]
     }
 
-    fn search_panel_section() -> [SettingsPageItem; 4] {
+    fn search_panel_section() -> [SettingsPageItem; 5] {
         [
             SettingsPageItem::SectionHeader("Search Panel"),
             SettingsPageItem::SettingItem(SettingItem {
@@ -6233,10 +6125,32 @@ fn panels_page() -> SettingsPage {
                 metadata: None,
                 files: USER,
             }),
+            SettingsPageItem::SettingItem(SettingItem {
+                title: "Search Panel Default Height",
+                description: "Default height of the Search panel in pixels when it is docked to the bottom.",
+                field: Box::new(SettingField {
+                    json_path: Some("search_panel.default_height"),
+                    pick: |settings_content| {
+                        settings_content
+                            .search_panel
+                            .as_ref()?
+                            .default_height
+                            .as_ref()
+                    },
+                    write: |settings_content, value, _| {
+                        settings_content
+                            .search_panel
+                            .get_or_insert_default()
+                            .default_height = value;
+                    },
+                }),
+                metadata: None,
+                files: USER,
+            }),
         ]
     }
 
-    fn project_diagnostics_panel_section() -> [SettingsPageItem; 4] {
+    fn project_diagnostics_panel_section() -> [SettingsPageItem; 5] {
         [
             SettingsPageItem::SectionHeader("Project Diagnostics Panel"),
             SettingsPageItem::SettingItem(SettingItem {
@@ -6305,10 +6219,32 @@ fn panels_page() -> SettingsPage {
                 metadata: None,
                 files: USER,
             }),
+            SettingsPageItem::SettingItem(SettingItem {
+                title: "Project Diagnostics Panel Default Height",
+                description: "Default height of the Project Diagnostics panel in pixels when it is docked to the bottom.",
+                field: Box::new(SettingField {
+                    json_path: Some("project_diagnostics_panel.default_height"),
+                    pick: |settings_content| {
+                        settings_content
+                            .project_diagnostics_panel
+                            .as_ref()?
+                            .default_height
+                            .as_ref()
+                    },
+                    write: |settings_content, value, _| {
+                        settings_content
+                            .project_diagnostics_panel
+                            .get_or_insert_default()
+                            .default_height = value;
+                    },
+                }),
+                metadata: None,
+                files: USER,
+            }),
         ]
     }
 
-    fn language_services_panel_section() -> [SettingsPageItem; 4] {
+    fn language_services_panel_section() -> [SettingsPageItem; 5] {
         [
             SettingsPageItem::SectionHeader("Language Services Panel"),
             SettingsPageItem::SettingItem(SettingItem {
@@ -6372,6 +6308,28 @@ fn panels_page() -> SettingsPage {
                             .language_services_panel
                             .get_or_insert_default()
                             .default_width = value;
+                    },
+                }),
+                metadata: None,
+                files: USER,
+            }),
+            SettingsPageItem::SettingItem(SettingItem {
+                title: "Language Services Panel Default Height",
+                description: "Default height of the Language Services panel in pixels when it is docked to the bottom.",
+                field: Box::new(SettingField {
+                    json_path: Some("language_services_panel.default_height"),
+                    pick: |settings_content| {
+                        settings_content
+                            .language_services_panel
+                            .as_ref()?
+                            .default_height
+                            .as_ref()
+                    },
+                    write: |settings_content, value, _| {
+                        settings_content
+                            .language_services_panel
+                            .get_or_insert_default()
+                            .default_height = value;
                     },
                 }),
                 metadata: None,

@@ -1,6 +1,9 @@
 use std::time::Duration;
 
-use gpui::{Action as _, AppContext as _, Entity, Focusable, TestAppContext, VisualTestContext};
+use gpui::{
+    Action as _, AppContext as _, Entity, Focusable, TestAppContext, UpdateGlobal as _,
+    VisualTestContext, px,
+};
 use language::DiagnosticSourceKind;
 use lsp::LanguageServerId;
 use project::{FakeFs, Project, ProjectPath};
@@ -20,7 +23,7 @@ use crate::{
     project_diagnostics_panel::{ActiveFile, ProblemsTab},
 };
 
-const EXPECTED_LEFT_DOCK_PRIORITY: u32 = 5;
+const EXPECTED_BOTTOM_DOCK_PRIORITY: u32 = 3;
 const SETTLE_DURATION: Duration = Duration::from_millis(100);
 
 fn init_test(cx: &mut TestAppContext) {
@@ -185,7 +188,7 @@ fn panel_is_shown(
     cx: &mut VisualTestContext,
 ) -> bool {
     workspace.read_with(cx, |workspace, cx| {
-        let dock = workspace.left_dock().read(cx);
+        let dock = workspace.bottom_dock().read(cx);
         dock.is_open()
             && dock.visible_panel().map(|visible| visible.panel_id()) == Some(panel.entity_id())
     })
@@ -211,8 +214,22 @@ fn problem_count(
     cx.update(|_, cx| panel.read(cx).problem_count(tab, cx))
 }
 
+fn dock_project_diagnostics_panel(position: DockPosition, cx: &mut VisualTestContext) {
+    cx.update(|_, cx| {
+        SettingsStore::update_global(cx, |store, cx| {
+            store.update_user_settings(cx, |settings| {
+                settings
+                    .project_diagnostics_panel
+                    .get_or_insert_default()
+                    .dock = Some(position.into());
+            });
+        });
+    });
+    cx.run_until_parked();
+}
+
 #[gpui::test]
-async fn test_project_diagnostics_panel_lives_in_left_dock_with_tool_window_button(
+async fn test_project_diagnostics_panel_lives_in_bottom_dock_with_tool_window_button(
     cx: &mut TestAppContext,
 ) {
     init_test(cx);
@@ -223,11 +240,18 @@ async fn test_project_diagnostics_panel_lives_in_left_dock_with_tool_window_butt
     workspace.read_with(cx, |workspace, cx| {
         assert!(
             workspace
-                .left_dock()
+                .bottom_dock()
                 .read(cx)
                 .panel::<ProjectDiagnosticsPanel>()
                 .is_some(),
-            "the project diagnostics panel is added to the left dock"
+            "the project diagnostics panel is added to the bottom dock"
+        );
+        assert!(
+            workspace
+                .left_dock()
+                .read(cx)
+                .panel::<ProjectDiagnosticsPanel>()
+                .is_none()
         );
         assert!(
             workspace
@@ -236,23 +260,16 @@ async fn test_project_diagnostics_panel_lives_in_left_dock_with_tool_window_butt
                 .panel::<ProjectDiagnosticsPanel>()
                 .is_none()
         );
-        assert!(
-            workspace
-                .bottom_dock()
-                .read(cx)
-                .panel::<ProjectDiagnosticsPanel>()
-                .is_none()
-        );
     });
     cx.update(|window, cx| {
         let panel = panel.read(cx);
-        assert_eq!(panel.position(window, cx), DockPosition::Left);
+        assert_eq!(panel.position(window, cx), DockPosition::Bottom);
         assert_eq!(panel.icon(window, cx), Some(IconName::Warning));
         assert_eq!(
             panel.icon_tooltip(window, cx),
             Some("Project Diagnostics Panel")
         );
-        assert_eq!(panel.activation_priority(), EXPECTED_LEFT_DOCK_PRIORITY);
+        assert_eq!(panel.activation_priority(), EXPECTED_BOTTOM_DOCK_PRIORITY);
         assert_eq!(
             panel.toggle_action().name(),
             Deploy.name(),
@@ -275,6 +292,33 @@ async fn test_project_diagnostics_panel_lives_in_left_dock_with_tool_window_butt
             "ProjectDiagnosticsPanel"
         );
     });
+}
+
+#[gpui::test]
+async fn test_project_diagnostics_panel_default_size_is_the_height_at_the_bottom_and_the_width_at_the_sides(
+    cx: &mut TestAppContext,
+) {
+    init_test(cx);
+    let project = build_project(cx).await;
+    let (workspace, cx) = build_workspace(project, cx);
+    let panel = add_project_diagnostics_panel(&workspace, cx);
+
+    let default_size = |cx: &mut VisualTestContext| {
+        cx.update(|window, cx| panel.read(cx).default_size(window, cx))
+    };
+    assert_eq!(
+        default_size(cx),
+        px(320.),
+        "the bottom dock uses project_diagnostics_panel.default_height"
+    );
+    for position in [DockPosition::Left, DockPosition::Right] {
+        dock_project_diagnostics_panel(position, cx);
+        assert_eq!(
+            default_size(cx),
+            px(360.),
+            "the {position:?} dock uses project_diagnostics_panel.default_width"
+        );
+    }
 }
 
 #[gpui::test]
@@ -302,7 +346,7 @@ async fn test_project_diagnostics_panel_creates_hosted_view_on_first_activation(
         "the hosted view exists once the panel is activated"
     );
     workspace.read_with(cx, |workspace, cx| {
-        let dock = workspace.left_dock().read(cx);
+        let dock = workspace.bottom_dock().read(cx);
         assert!(dock.is_open());
         assert_eq!(
             dock.visible_panel().map(|visible| visible.panel_id()),
@@ -349,8 +393,8 @@ async fn test_project_diagnostics_panel_deploy_action_toggles_panel_focus(cx: &m
     cx.run_until_parked();
 
     workspace.read_with(cx, |workspace, cx| {
-        let dock = workspace.left_dock().read(cx);
-        assert!(dock.is_open(), "Deploy opens the left dock");
+        let dock = workspace.bottom_dock().read(cx);
+        assert!(dock.is_open(), "Deploy opens the bottom dock");
         assert_eq!(
             dock.visible_panel().map(|visible| visible.panel_id()),
             Some(panel.entity_id())

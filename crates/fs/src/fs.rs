@@ -32,6 +32,7 @@ use std::mem::MaybeUninit;
 
 use async_tar::Archive;
 use futures::{AsyncRead, Stream, StreamExt, future::BoxFuture};
+use git::console::GitConsoleSink;
 use git::repository::{GitRepository, RealGitRepository};
 #[cfg(windows)]
 use is_executable::IsExecutable;
@@ -192,10 +193,19 @@ pub trait Fs: Send + Sync {
         abs_dot_git: &Path,
         system_git_binary_path: Option<&Path>,
     ) -> Result<Arc<dyn GitRepository>>;
-    async fn git_init(&self, abs_work_directory: &Path, fallback_branch_name: String)
-    -> Result<()>;
+    async fn git_init(
+        &self,
+        abs_work_directory: &Path,
+        fallback_branch_name: String,
+        console: Option<GitConsoleSink>,
+    ) -> Result<()>;
     async fn git_clone(&self, abs_work_directory: &Path, repo_url: &str) -> Result<()>;
-    async fn git_config(&self, abs_work_directory: &Path, args: Vec<String>) -> Result<String>;
+    async fn git_config(
+        &self,
+        abs_work_directory: &Path,
+        args: Vec<String>,
+        console: Option<GitConsoleSink>,
+    ) -> Result<String>;
     fn is_fake(&self) -> bool;
     async fn is_case_sensitive(&self) -> bool;
     fn subscribe_to_jobs(&self) -> JobEventReceiver;
@@ -1251,6 +1261,7 @@ impl Fs for RealFs {
         &self,
         abs_work_directory_path: &Path,
         fallback_branch_name: String,
+        console: Option<GitConsoleSink>,
     ) -> Result<()> {
         let result = new_command("git")
             .current_dir(abs_work_directory_path)
@@ -1266,12 +1277,22 @@ impl Fs for RealFs {
             _ => fallback_branch_name,
         };
 
-        new_command("git")
+        let arguments = vec![
+            "init".to_string(),
+            "-b".to_string(),
+            branch_name.trim().to_string(),
+        ];
+        let recorder = console
+            .as_ref()
+            .and_then(|console| console.command_started(abs_work_directory_path, &arguments, 0));
+        let output = new_command("git")
             .current_dir(abs_work_directory_path)
-            .args(&["init", "-b"])
-            .arg(branch_name.trim())
+            .args(&arguments)
             .output()
             .await?;
+        if let Some(recorder) = recorder {
+            recorder.record_output(&output.stdout, &output.stderr);
+        }
 
         Ok(())
     }
@@ -1315,12 +1336,26 @@ impl Fs for RealFs {
     /// Runs `git config` with the given arguments.
     /// Will return `Ok` if the commands exit status is `0`, with the stdout
     /// contents. Otherwise returns `Err` with the stderr contents.
-    async fn git_config(&self, abs_work_directory: &Path, args: Vec<String>) -> Result<String> {
+    async fn git_config(
+        &self,
+        abs_work_directory: &Path,
+        args: Vec<String>,
+        console: Option<GitConsoleSink>,
+    ) -> Result<String> {
+        let arguments = std::iter::once(String::from("config"))
+            .chain(args)
+            .collect::<Vec<_>>();
+        let recorder = console
+            .as_ref()
+            .and_then(|console| console.command_started(abs_work_directory, &arguments, 0));
         let output = new_command("git")
             .current_dir(abs_work_directory)
-            .args([String::from("config")].into_iter().chain(args))
+            .args(&arguments)
             .output()
             .await?;
+        if let Some(recorder) = recorder {
+            recorder.record_output(&output.stdout, &output.stderr);
+        }
 
         if !output.status.success() {
             let err = String::from_utf8(output.stderr)?;
@@ -3741,6 +3776,7 @@ impl Fs for FakeFs {
         &self,
         abs_work_directory_path: &Path,
         _fallback_branch_name: String,
+        _console: Option<GitConsoleSink>,
     ) -> Result<()> {
         self.create_dir(&abs_work_directory_path.join(".git")).await
     }
@@ -3749,7 +3785,12 @@ impl Fs for FakeFs {
         anyhow::bail!("Git clone is not supported in fake Fs")
     }
 
-    async fn git_config(&self, _abs_work_directory: &Path, _args: Vec<String>) -> Result<String> {
+    async fn git_config(
+        &self,
+        _abs_work_directory: &Path,
+        _args: Vec<String>,
+        _console: Option<GitConsoleSink>,
+    ) -> Result<String> {
         anyhow::bail!("Git config is not supported in fake Fs")
     }
 
