@@ -11957,7 +11957,8 @@ impl Focusable for Editor {
 }
 
 impl Render for Editor {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.redirect_focus_away_from_hidden_side(window, cx);
         self.render_with_preview(cx)
     }
 }

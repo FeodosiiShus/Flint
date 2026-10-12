@@ -211,6 +211,21 @@ impl Editor {
         true
     }
 
+    pub(crate) fn redirect_focus_away_from_hidden_side(&self, window: &mut Window, cx: &mut App) {
+        let Some(host) = self.preview_host.as_ref() else {
+            return;
+        };
+        match host.layout {
+            PreviewLayout::PreviewOnly if self.focus_handle.is_focused(window) => {
+                window.focus(&host.preview.focus_handle, cx);
+            }
+            PreviewLayout::EditorOnly if host.preview.focus_handle.is_focused(window) => {
+                window.focus(&self.focus_handle, cx);
+            }
+            _ => {}
+        }
+    }
+
     pub(crate) fn render_with_preview(&self, cx: &mut Context<Self>) -> AnyElement {
         let Some(host) = self.preview_host.as_ref() else {
             return EditorElement::new(&cx.entity(), self.create_style(cx)).into_any_element();
