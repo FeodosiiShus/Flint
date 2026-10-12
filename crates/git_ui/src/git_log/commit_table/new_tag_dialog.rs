@@ -5,7 +5,7 @@ use gpui::{
     Subscription, Window,
 };
 use menu::{Cancel, Confirm};
-use ui::{TintColor, prelude::*};
+use ui::{DialogButton, prelude::*};
 use workspace::ModalView;
 
 use crate::branch_operations::{BranchContext, error_notice};
@@ -147,15 +147,16 @@ impl Render for NewTagDialog {
             .child(
                 h_flex()
                     .p_3()
-                    .gap_1()
+                    .gap_2()
                     .justify_end()
                     .child(
-                        Button::new("new-tag-cancel", CANCEL_LABEL)
+                        DialogButton::new("new-tag-cancel", CANCEL_LABEL)
+                            .default_button(false)
                             .on_click(cx.listener(|_, _, _, cx| cx.emit(DismissEvent))),
                     )
                     .child(
-                        Button::new("new-tag-confirm", OK_LABEL)
-                            .style(ButtonStyle::Tinted(TintColor::Accent))
+                        DialogButton::new("new-tag-confirm", OK_LABEL)
+                            .default_button(true)
                             .disabled(!can_confirm)
                             .on_click(cx.listener(|this, _, _, cx| this.submit(cx))),
                     ),

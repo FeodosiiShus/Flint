@@ -13,8 +13,8 @@ use file_icons::FileIcons;
 use futures::future::join_all;
 use fuzzy_nucleo::{PathMatch, StringMatchCandidate};
 use gpui::{
-    Action, AnyElement, App, Context, DismissEvent, Div, Entity, FocusHandle, Task, WeakEntity,
-    Window,
+    Action, AnyElement, App, Context, DismissEvent, Div, Entity, FocusHandle, Role, Task,
+    WeakEntity, Window,
 };
 use language::Point;
 use picker::{Direction, ErasedEditor, Picker, PickerDelegate, PreviewUpdate};
@@ -22,8 +22,9 @@ use project::{Project, ProjectPath, Symbol, WorktreeId};
 use search::text_finder::{SearchMatch, TextFinder};
 use settings::Settings;
 use ui::{
-    Checkbox, Divider, HighlightedLabel, KeyBinding, LabelLike, ListItem, ListItemSpacing,
-    ToggleButtonGroup, ToggleButtonGroupStyle, ToggleButtonSimple, Tooltip, prelude::*,
+    Checkbox, Divider, HighlightedLabel, IslandTabMetrics, KeyBinding, LabelLike, ListItem,
+    ListItemSpacing, PopupRowMetrics, PopupRowStyle, Tooltip, island_tab_pill_colors, prelude::*,
+    ui_density,
 };
 use util::{ResultExt, paths::PathMatcher, post_inc};
 use workspace::{
@@ -44,6 +45,12 @@ const ALL_TAB_FILE_LIMIT: usize = 6;
 const ALL_TAB_SYMBOL_LIMIT: usize = 6;
 const ALL_TAB_ACTION_LIMIT: usize = 6;
 const ALL_TAB_TEXT_LIMIT: usize = 6;
+const HEADER_PADDING_START: Pixels = px(4.);
+const HEADER_PADDING_END: Pixels = px(9.);
+const HEADER_PADDING_Y: Pixels = px(4.);
+const TAB_HORIZONTAL_PADDING: Pixels = px(12.);
+const QUERY_ROW_END_PADDING: Pixels = px(12.);
+const LIST_ROW_METRICS: PopupRowMetrics = PopupRowMetrics::for_style(PopupRowStyle::List);
 
 pub(crate) const TABS: [Tab; 6] = [
     Tab::All,
@@ -214,7 +221,6 @@ pub(crate) struct TextScope {
 
 pub(crate) struct SearchEverywhereDelegate {
     pub(crate) search_everywhere: WeakEntity<SearchEverywhere>,
-    pub(crate) presentation: Presentation,
     pub(crate) workspace: WeakEntity<Workspace>,
     pub(crate) project: Entity<Project>,
     pub(crate) previous_focus_handle: FocusHandle,
@@ -242,7 +248,6 @@ pub(crate) struct SearchEverywhereDelegate {
 impl SearchEverywhereDelegate {
     pub(crate) fn new(
         search_everywhere: WeakEntity<SearchEverywhere>,
-        presentation: Presentation,
         workspace: WeakEntity<Workspace>,
         project: Entity<Project>,
         previous_focus_handle: FocusHandle,
@@ -254,7 +259,6 @@ impl SearchEverywhereDelegate {
         let (commands, action_candidates) = Self::build_commands(actions);
         Self {
             search_everywhere,
-            presentation,
             workspace,
             project,
             previous_focus_handle,
@@ -763,26 +767,73 @@ impl SearchEverywhereDelegate {
         });
     }
 
-    fn render_tab_bar(&self, cx: &mut Context<Picker<Self>>) -> impl IntoElement {
-        let buttons = TABS.map(|tab| {
-            ToggleButtonSimple::new(
-                tab_label(tab),
-                cx.listener(move |picker, _, window, cx| activate_tab(picker, tab, window, cx)),
+    fn render_header(
+        &self,
+        window: &mut Window,
+        cx: &mut Context<Picker<Self>>,
+    ) -> impl IntoElement {
+        let metrics = IslandTabMetrics::for_density(ui_density(cx));
+        let colors = cx.theme().colors();
+        let selected_pill = island_tab_pill_colors(true, colors);
+        let unselected_border = colors.border_transparent;
+        let hover_background = colors.ghost_element_hover;
+        let tabs = TABS
+            .into_iter()
+            .enumerate()
+            .map(|(index, tab)| {
+                let selected = tab == self.tab;
+                let label = tab_label(tab);
+                div()
+                    .id(("search-everywhere-tab", index))
+                    .role(Role::Tab)
+                    .aria_label(label)
+                    .aria_selected(selected)
+                    .flex()
+                    .flex_none()
+                    .items_center()
+                    .h(metrics.pill_height)
+                    .px(TAB_HORIZONTAL_PADDING)
+                    .rounded(metrics.pill_radius)
+                    .border_1()
+                    .cursor_pointer()
+                    .map(|this| {
+                        if selected {
+                            this.bg(selected_pill.background)
+                                .border_color(selected_pill.border)
+                        } else {
+                            this.border_color(unselected_border)
+                                .hover(move |style| style.bg(hover_background))
+                        }
+                    })
+                    .child(Label::new(label))
+                    .on_click(cx.listener(move |picker, _, window, cx| {
+                        activate_tab(picker, tab, window, cx)
+                    }))
+            })
+            .collect::<Vec<_>>();
+        h_flex()
+            .w_full()
+            .flex_none()
+            .flex_wrap()
+            .gap_x_4()
+            .gap_y_1()
+            .pl(HEADER_PADDING_START)
+            .pr(HEADER_PADDING_END)
+            .py(HEADER_PADDING_Y)
+            .child(
+                h_flex()
+                    .id("search-everywhere-tabs")
+                    .role(Role::TabList)
+                    .flex_wrap()
+                    .gap_y_1()
+                    .children(tabs),
             )
-        });
-        let selected_index = TABS
-            .iter()
-            .position(|tab| *tab == self.tab)
-            .unwrap_or_default();
-        let group = ToggleButtonGroup::single_row("search-everywhere-tabs", buttons)
-            .label_size(LabelSize::Small)
-            .style(ToggleButtonGroupStyle::Transparent)
-            .selected_index(selected_index);
-        let group = match self.presentation {
-            Presentation::Modal => group.auto_width(),
-            Presentation::Panel => group,
-        };
-        h_flex().px_2().pt_2().pb_1().w_full().child(group)
+            .child(
+                h_flex()
+                    .ml_auto()
+                    .min_w_0()
+                    .children(self.searchbar_trailer(window, cx)),
+            )
     }
 
     fn render_text_scope(&self, cx: &mut Context<Picker<Self>>) -> Option<AnyElement> {
@@ -1218,28 +1269,24 @@ impl PickerDelegate for SearchEverywhereDelegate {
     ) -> Option<Div> {
         let query_row = h_flex()
             .h_9()
-            .px_2p5()
             .flex_none()
+            .pl(LIST_ROW_METRICS.pill_inset_x + LIST_ROW_METRICS.content_padding_x)
+            .pr(QUERY_ROW_END_PADDING)
+            .gap_1p5()
             .overflow_hidden()
-            .child(div().flex_1().child(editor.render(window, cx)));
-        Some(match self.presentation {
-            Presentation::Modal => v_flex()
-                .child(self.render_tab_bar(cx))
-                .child(query_row.children(self.searchbar_trailer(window, cx)))
-                .child(Divider::horizontal()),
-            Presentation::Panel => v_flex()
-                .child(self.render_tab_bar(cx))
+            .child(
+                Icon::new(IconName::MagnifyingGlass)
+                    .size(IconSize::Small)
+                    .color(Color::Muted),
+            )
+            .child(div().flex_1().min_w_0().child(editor.render(window, cx)));
+        Some(
+            v_flex()
+                .child(self.render_header(window, cx))
+                .child(Divider::horizontal())
                 .child(query_row)
-                .child(
-                    h_flex()
-                        .px_2p5()
-                        .pb_1p5()
-                        .flex_none()
-                        .overflow_hidden()
-                        .children(self.searchbar_trailer(window, cx)),
-                )
                 .child(Divider::horizontal()),
-        })
+        )
     }
 
     fn searchbar_trailer(
@@ -1295,9 +1342,15 @@ impl PickerDelegate for SearchEverywhereDelegate {
             .inset(true);
         let row = match entry {
             Entry::Header(section) => row.selectable(false).child(
-                Label::new(section.title())
-                    .size(LabelSize::Small)
-                    .color(Color::Muted),
+                h_flex()
+                    .w_full()
+                    .gap_2()
+                    .child(
+                        Label::new(section.title())
+                            .size(LabelSize::Small)
+                            .color(Color::Placeholder),
+                    )
+                    .child(div().flex_1().h_px().bg(cx.theme().colors().border_variant)),
             ),
             Entry::More(_) => row.toggle_state(selected).child(
                 Label::new("more…")

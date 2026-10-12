@@ -1,8 +1,8 @@
 use gpui::{App, Div, FocusHandle, FontWeight, Img, Stateful, Window, px};
-use ui::prelude::*;
+use ui::{DialogButton, prelude::*};
 
 use super::{
-    chrome::{ThemedImage, dialog_button, themed_image},
+    chrome::{ThemedImage, themed_image},
     finish::{ConfirmationIcon, ConfirmationText},
 };
 
@@ -27,22 +27,11 @@ pub(crate) fn render_confirmation(
     on_no: impl Fn(&mut Window, &mut App) + 'static,
     cx: &App,
 ) -> Stateful<Div> {
-    let yes_button = dialog_button(
-        "merge-confirmation-yes",
-        text.yes_label.clone(),
-        true,
-        false,
-        cx,
-    )
-    .on_click(move |_, window, cx| on_yes(window, cx));
-    let no_button = dialog_button(
-        "merge-confirmation-no",
-        text.no_label.clone(),
-        false,
-        false,
-        cx,
-    )
-    .on_click(move |_, window, cx| on_no(window, cx));
+    let yes_button = DialogButton::new("merge-confirmation-yes", text.yes_label.clone())
+        .default_button(true)
+        .on_click(move |_, window, cx| on_yes(window, cx));
+    let no_button = DialogButton::new("merge-confirmation-no", text.no_label.clone())
+        .on_click(move |_, window, cx| on_no(window, cx));
     let message = h_flex()
         .gap_3()
         .items_start()

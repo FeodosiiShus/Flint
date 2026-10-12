@@ -6,7 +6,7 @@ use gpui::{
     App, Context, Entity, FocusHandle, Focusable, Render, SharedString, Task, Window, px, size,
 };
 use project::git_store::{CommitDiff, Repository};
-use ui::{Checkbox, prelude::*};
+use ui::{Checkbox, DialogButton, prelude::*};
 use util::ResultExt as _;
 
 use super::messages;
@@ -403,11 +403,11 @@ impl Render for CommitDetailsDialog {
                         )
                     }))
                     .child(
-                        Button::new("commit-details-close", messages::CLOSE).on_click(cx.listener(
-                            |_, _, window, _| {
+                        DialogButton::new("commit-details-close", messages::CLOSE).on_click(
+                            cx.listener(|_, _, window, _| {
                                 close_dialog_window(window);
-                            },
-                        )),
+                            }),
+                        ),
                     ),
             )
     }

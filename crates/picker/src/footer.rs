@@ -11,6 +11,9 @@ use crate::ToggleActionsMenu;
 use crate::TogglePreview;
 use crate::preview;
 
+const FOOTER_PADDING_X: Pixels = px(8.);
+const FOOTER_PADDING_Y: Pixels = px(5.);
+
 /// Line in the Actions menu on the default footer.
 pub enum PickerAction {
     Header(SharedString),
@@ -108,7 +111,8 @@ impl<D: PickerDelegate> Picker<D> {
         Some(
             h_flex()
                 .w_full()
-                .p_1p5()
+                .px(FOOTER_PADDING_X)
+                .py(FOOTER_PADDING_Y)
                 .justify_between()
                 .border_t_1()
                 .border_color(cx.theme().colors().border_variant)
@@ -146,7 +150,12 @@ impl<D: PickerDelegate> Picker<D> {
         h_flex()
             .child(
                 Button::new("picker-preview-toggle", "Preview")
-                    .when(preview_visible, |this| this.color(Color::Accent))
+                    .label_size(LabelSize::Small)
+                    .color(if preview_visible {
+                        Color::Accent
+                    } else {
+                        Color::Placeholder
+                    })
                     .key_binding(
                         KeyBinding::for_action_in(&TogglePreview, &focus_handle, cx)
                             .size(rems_from_px(12_f32)),
@@ -207,6 +216,8 @@ impl<D: PickerDelegate> Picker<D> {
             .with_handle(self.actions_menu_handle.clone())
             .trigger(
                 Button::new("picker-actions-trigger", "Actions…")
+                    .label_size(LabelSize::Small)
+                    .color(Color::Placeholder)
                     .key_binding(
                         KeyBinding::for_action_in(&ToggleActionsMenu, &focus_handle, cx)
                             .size(rems_from_px(12_f32)),

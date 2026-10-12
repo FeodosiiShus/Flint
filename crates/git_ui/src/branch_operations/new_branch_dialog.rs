@@ -6,7 +6,7 @@ use gpui::{
     Subscription, Window,
 };
 use menu::{Cancel, Confirm, SelectNext, SelectPrevious};
-use ui::{Checkbox, TintColor, prelude::*};
+use ui::{Checkbox, DialogButton, prelude::*};
 use workspace::ModalView;
 
 use crate::branch_operations::BranchContext;
@@ -497,15 +497,16 @@ impl Render for NewBranchDialog {
             .child(
                 h_flex()
                     .p_3()
-                    .gap_1()
+                    .gap_2()
                     .justify_end()
                     .child(
-                        Button::new("new-branch-cancel", "Cancel")
+                        DialogButton::new("new-branch-cancel", "Cancel")
+                            .default_button(false)
                             .on_click(cx.listener(|_, _, _, cx| cx.emit(DismissEvent))),
                     )
                     .child(
-                        Button::new("new-branch-confirm", self.confirm_label.clone())
-                            .style(ButtonStyle::Tinted(TintColor::Accent))
+                        DialogButton::new("new-branch-confirm", self.confirm_label.clone())
+                            .default_button(true)
                             .disabled(!can_confirm)
                             .on_click(cx.listener(|this, _, window, cx| this.submit(window, cx))),
                     ),

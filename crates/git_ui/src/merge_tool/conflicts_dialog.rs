@@ -26,7 +26,7 @@ use gpui::{
     Render, Task, UniformListScrollHandle, Window, px, size,
 };
 use project::{Project, git_store::Repository};
-use ui::{CommonAnimationExt as _, Tooltip, prelude::*};
+use ui::{CommonAnimationExt as _, DialogButton, Tooltip, prelude::*};
 use util::ResultExt as _;
 
 use self::menus::RowContextMenu;
@@ -40,7 +40,6 @@ use crate::merge_tool::dialog_window::{
     open_dialog_window,
 };
 use crate::merge_tool::merge_model::iterative_data_holder::MergeConflictIterativeDataHolder;
-use crate::merge_tool::merge_window::{dialog_button, dialog_button_with_content};
 
 pub(crate) use self::request::{ConflictsDialogRequest, ConflictsDialogResult};
 
@@ -54,7 +53,6 @@ const BOUNDS_KEY: &str = "MultipleFileMergeDialog";
 const SOUTH_BUTTON_GAP: f32 = 12.;
 const SOUTH_TOP_GAP: f32 = 32.;
 const CONTROLS_GAP: f32 = 16.;
-const RESOLVE_ICON_TEXT_GAP: f32 = 4.;
 
 enum Description {
     Loading,
@@ -337,23 +335,18 @@ impl ConflictsDialog {
         } else {
             Some(messages::RESOLVE_ALL_DISABLED_TOOLTIP)
         };
-        let icon = if resolving {
-            Icon::new(IconName::LoadCircle)
-                .size(IconSize::Small)
-                .color(Color::Muted)
-                .with_keyed_rotate_animation("conflicts-resolve-all-spinner", 2)
-                .into_any_element()
+        let button = DialogButton::new("conflicts-resolve-all-simple", label).disabled(!enabled);
+        let button = if resolving {
+            button.start_slot(
+                Icon::new(IconName::LoadCircle)
+                    .size(IconSize::Small)
+                    .color(Color::Muted)
+                    .with_keyed_rotate_animation("conflicts-resolve-all-spinner", 2),
+            )
         } else {
-            Icon::new(IconName::DiffMagicResolve)
-                .size(IconSize::Small)
-                .into_any_element()
+            button.icon(IconName::DiffMagicResolve)
         };
-        let content = h_flex()
-            .gap(px(RESOLVE_ICON_TEXT_GAP))
-            .items_center()
-            .child(icon)
-            .child(Label::new(label));
-        dialog_button_with_content("conflicts-resolve-all-simple", content, false, !enabled, cx)
+        button
             .when_some(tooltip, |button, text| button.tooltip(Tooltip::text(text)))
             .when(enabled, |button| {
                 button.on_click(cx.listener(|this, _, window, cx| {
@@ -395,40 +388,32 @@ impl ConflictsDialog {
             .gap(px(SOUTH_BUTTON_GAP))
             .justify_end()
             .child(
-                dialog_button("conflicts-close", messages::CLOSE, false, false, cx).on_click(
-                    cx.listener(|this, _, window, cx| {
+                DialogButton::new("conflicts-close", messages::CLOSE).on_click(cx.listener(
+                    |this, _, window, cx| {
                         this.close_button_pressed(window, cx);
-                    }),
-                ),
+                    },
+                )),
             )
             .child(
-                dialog_button(
-                    "conflicts-accept-and-finish",
-                    messages::ACCEPT_AND_FINISH,
-                    default_button == DefaultButton::AcceptAndFinish,
-                    !accept_enabled,
-                    cx,
-                )
-                .when(accept_enabled, |button| {
-                    button.on_click(cx.listener(|this, _, window, cx| {
-                        this.accept_and_finish(window, cx);
-                    }))
-                }),
+                DialogButton::new("conflicts-accept-and-finish", messages::ACCEPT_AND_FINISH)
+                    .default_button(default_button == DefaultButton::AcceptAndFinish)
+                    .disabled(!accept_enabled)
+                    .when(accept_enabled, |button| {
+                        button.on_click(cx.listener(|this, _, window, cx| {
+                            this.accept_and_finish(window, cx);
+                        }))
+                    }),
             )
             .when(review_visible, |this| {
                 this.child(
-                    dialog_button(
-                        "conflicts-review-or-resolve",
-                        review_label,
-                        default_button == DefaultButton::ReviewOrResolve,
-                        !enabled,
-                        cx,
-                    )
-                    .when(enabled, |button| {
-                        button.on_click(cx.listener(|this, _, window, cx| {
-                            this.review_button_pressed(window, cx);
-                        }))
-                    }),
+                    DialogButton::new("conflicts-review-or-resolve", review_label)
+                        .default_button(default_button == DefaultButton::ReviewOrResolve)
+                        .disabled(!enabled)
+                        .when(enabled, |button| {
+                            button.on_click(cx.listener(|this, _, window, cx| {
+                                this.review_button_pressed(window, cx);
+                            }))
+                        }),
                 )
             })
             .into_any_element()

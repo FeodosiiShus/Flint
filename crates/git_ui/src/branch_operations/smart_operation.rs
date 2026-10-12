@@ -13,7 +13,7 @@ use gpui::{
 use menu::Cancel;
 use project::git_store::{Repository, RepositoryEvent};
 use release_channel::ReleaseChannel;
-use ui::{TintColor, prelude::*};
+use ui::{DialogButton, prelude::*};
 use util::ResultExt as _;
 use workspace::ModalView;
 
@@ -342,8 +342,8 @@ impl Render for SmartOperationDialog {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let operation = self.operation;
         let force_button = operation.force_label().map(|label| {
-            Button::new("smart-operation-force", label)
-                .color(Color::Error)
+            DialogButton::new("smart-operation-force", label)
+                .default_button(false)
                 .on_click(cx.listener(|this, _, _, cx| this.choose(SmartChoice::Force, cx)))
         });
 
@@ -388,21 +388,25 @@ impl Render for SmartOperationDialog {
             .child(
                 h_flex()
                     .p_3()
-                    .gap_1()
+                    .gap_2()
                     .justify_between()
                     .child(div().children(force_button))
                     .child(
                         h_flex()
-                            .gap_1()
+                            .gap_2()
                             .child(
-                                Button::new("smart-operation-decline", operation.decline_label())
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.choose(SmartChoice::Cancel, cx)
-                                    })),
+                                DialogButton::new(
+                                    "smart-operation-decline",
+                                    operation.decline_label(),
+                                )
+                                .default_button(false)
+                                .on_click(cx.listener(
+                                    |this, _, _, cx| this.choose(SmartChoice::Cancel, cx),
+                                )),
                             )
                             .child(
-                                Button::new("smart-operation-smart", operation.smart_label())
-                                    .style(ButtonStyle::Tinted(TintColor::Accent))
+                                DialogButton::new("smart-operation-smart", operation.smart_label())
+                                    .default_button(true)
                                     .on_click(cx.listener(|this, _, _, cx| {
                                         this.choose(SmartChoice::Smart, cx)
                                     })),

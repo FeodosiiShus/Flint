@@ -12,7 +12,7 @@ use project::{
     trusted_worktrees::{TrustedWorktrees, TrustedWorktreesEvent},
 };
 use settings::{IntoGpui, RegisterSetting, Settings};
-use ui::{IconButtonShape, Tooltip, prelude::*};
+use ui::{DialogButton, Tooltip, prelude::*};
 use workspace::{
     HideButtonSetting, ItemHandle, ToggleWorktreeSecurity, Workspace,
     dock::{DockPosition, Panel, PanelEvent},
@@ -317,7 +317,7 @@ impl LanguageServicesPanel {
             .child(Label::new(name).size(LabelSize::Small).color(Color::Muted))
     }
 
-    fn render_toggle_all_row(restart: bool, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_toggle_all_button(restart: bool, cx: &mut Context<Self>) -> DialogButton {
         let (id, label, icon) = if restart {
             (
                 "language-services-restart-all",
@@ -331,11 +331,9 @@ impl LanguageServicesPanel {
                 IconName::Stop,
             )
         };
-        Button::new(id, label)
-            .full_width()
-            .style(ButtonStyle::Subtle)
-            .label_size(LabelSize::Small)
-            .start_icon(Icon::new(icon).size(IconSize::Small))
+        DialogButton::new(id, label)
+            .default_button(false)
+            .icon(icon)
             .on_click(cx.listener(move |this, _, _, cx| {
                 this.server_state.update(cx, |state, cx| {
                     if restart {
@@ -345,6 +343,24 @@ impl LanguageServicesPanel {
                     }
                 });
             }))
+    }
+
+    fn push_toggle_all_row(
+        row_elements: &mut Vec<AnyElement>,
+        toggle_all_buttons: &mut Vec<DialogButton>,
+    ) {
+        if toggle_all_buttons.is_empty() {
+            return;
+        }
+        row_elements.push(
+            h_flex()
+                .w_full()
+                .px_2()
+                .py_1()
+                .gap_2()
+                .children(toggle_all_buttons.drain(..))
+                .into_any_element(),
+        );
     }
 
     fn render_server_row(&self, row: ServerRow, cx: &mut Context<Self>) -> impl IntoElement {
@@ -371,9 +387,9 @@ impl LanguageServicesPanel {
 
         let view_message_button = row.message.clone().map(|message| {
             let server_name = server_name.clone();
-            IconButton::new(("language-server-view-message", server_id), IconName::Info)
-                .shape(IconButtonShape::Square)
-                .icon_size(IconSize::Small)
+            DialogButton::new(("language-server-view-message", server_id), "Message")
+                .default_button(false)
+                .icon(IconName::Info)
                 .tooltip(Tooltip::text("View Message"))
                 .on_click(cx.listener(move |this, _, window, cx| {
                     this.server_state.update(cx, |state, cx| {
@@ -384,38 +400,34 @@ impl LanguageServicesPanel {
 
         let view_logs_button = has_logs.then(|| {
             let server_selector = server_selector.clone();
-            IconButton::new(
-                ("language-server-view-logs", server_id),
-                IconName::FileTextOutlined,
-            )
-            .shape(IconButtonShape::Square)
-            .icon_size(IconSize::Small)
-            .tooltip(Tooltip::text("View Logs"))
-            .on_click(cx.listener(move |this, _, window, cx| {
-                this.server_state.update(cx, |state, cx| {
-                    state.view_logs(server_selector.clone(), window, cx);
-                });
-            }))
+            DialogButton::new(("language-server-view-logs", server_id), "Logs")
+                .default_button(false)
+                .icon(IconName::FileTextOutlined)
+                .tooltip(Tooltip::text("View Logs"))
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.server_state.update(cx, |state, cx| {
+                        state.view_logs(server_selector.clone(), window, cx);
+                    });
+                }))
         });
 
-        let restart_button =
-            IconButton::new(("language-server-restart", server_id), IconName::RotateCw)
-                .shape(IconButtonShape::Square)
-                .icon_size(IconSize::Small)
-                .tooltip(Tooltip::text("Restart Server"))
-                .on_click(cx.listener({
-                    let server_name = server_name.clone();
-                    move |this, _, _, cx| {
-                        this.server_state
-                            .update(cx, |state, cx| state.restart_server(&server_name, cx));
-                    }
-                }));
+        let restart_button = DialogButton::new(("language-server-restart", server_id), "Restart")
+            .default_button(false)
+            .icon(IconName::RotateCw)
+            .tooltip(Tooltip::text("Restart Server"))
+            .on_click(cx.listener({
+                let server_name = server_name.clone();
+                move |this, _, _, cx| {
+                    this.server_state
+                        .update(cx, |state, cx| state.restart_server(&server_name, cx));
+                }
+            }));
 
         let stop_button = can_stop.then(|| {
             let server_selector = server_selector.clone();
-            IconButton::new(("language-server-stop", server_id), IconName::Stop)
-                .shape(IconButtonShape::Square)
-                .icon_size(IconSize::Small)
+            DialogButton::new(("language-server-stop", server_id), "Stop")
+                .default_button(false)
+                .icon(IconName::Stop)
                 .tooltip(Tooltip::text("Stop Server"))
                 .on_click(cx.listener(move |this, _, _, cx| {
                     this.server_state.update(cx, |state, cx| {
@@ -461,7 +473,7 @@ impl LanguageServicesPanel {
             .child(
                 h_flex()
                     .flex_none()
-                    .gap_0p5()
+                    .gap_2()
                     .children(view_message_button)
                     .children(view_logs_button)
                     .child(restart_button)
@@ -493,17 +505,23 @@ impl Render for LanguageServicesPanel {
         let is_empty = rows.is_empty();
 
         let mut row_elements = Vec::with_capacity(rows.len());
+        let mut toggle_all_buttons = Vec::new();
         for row in rows {
-            row_elements.push(match row {
-                PanelRow::Header(name) => Self::render_header_row(name).into_any_element(),
+            match row {
                 PanelRow::ToggleAllServers { restart } => {
-                    Self::render_toggle_all_row(restart, cx).into_any_element()
+                    toggle_all_buttons.push(Self::render_toggle_all_button(restart, cx));
+                }
+                PanelRow::Header(name) => {
+                    Self::push_toggle_all_row(&mut row_elements, &mut toggle_all_buttons);
+                    row_elements.push(Self::render_header_row(name).into_any_element());
                 }
                 PanelRow::Server(server_row) => {
-                    self.render_server_row(server_row, cx).into_any_element()
+                    Self::push_toggle_all_row(&mut row_elements, &mut toggle_all_buttons);
+                    row_elements.push(self.render_server_row(server_row, cx).into_any_element());
                 }
-            });
+            }
         }
+        Self::push_toggle_all_row(&mut row_elements, &mut toggle_all_buttons);
 
         v_flex()
             .key_context("LanguageServicesPanel")

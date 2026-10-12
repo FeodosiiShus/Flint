@@ -13,13 +13,11 @@ use gpui::{
     SharedString, Subscription, Window, px, size,
 };
 use merge_diff::{Side, ThreeSide};
-use ui::prelude::*;
+use ui::{DialogButton, prelude::*};
 use util::ResultExt as _;
 
 use self::chrome::dialog_background;
-pub(crate) use self::chrome::{
-    ThemedImage, dialog_button, dialog_button_with_content, themed_image,
-};
+pub(crate) use self::chrome::{ThemedImage, themed_image};
 pub(crate) use self::finish::MergeResult;
 use self::{
     confirmation::render_confirmation,
@@ -441,48 +439,36 @@ impl MergeWindow {
                 h_flex()
                     .gap(px(BUTTON_GAP))
                     .child(
-                        dialog_button("merge-accept-left", ACCEPT_LEFT_LABEL, false, false, cx)
-                            .on_click(cx.listener(|merge_window, _, window, cx| {
+                        DialogButton::new("merge-accept-left", ACCEPT_LEFT_LABEL).on_click(
+                            cx.listener(|merge_window, _, window, cx| {
                                 merge_window.accept_side(Side::Left, window, cx);
-                            })),
+                            }),
+                        ),
                     )
                     .child(
-                        dialog_button("merge-accept-right", ACCEPT_RIGHT_LABEL, false, false, cx)
-                            .on_click(cx.listener(|merge_window, _, window, cx| {
+                        DialogButton::new("merge-accept-right", ACCEPT_RIGHT_LABEL).on_click(
+                            cx.listener(|merge_window, _, window, cx| {
                                 merge_window.accept_side(Side::Right, window, cx);
-                            })),
+                            }),
+                        ),
                     ),
             )
             .child(
                 h_flex()
                     .gap(px(BUTTON_GAP))
                     .child(
-                        dialog_button(
-                            "merge-cancel",
-                            cancel_button_label(self.iterative),
-                            false,
-                            false,
-                            cx,
-                        )
-                        .on_click(cx.listener(
-                            |merge_window, _, window, cx| {
+                        DialogButton::new("merge-cancel", cancel_button_label(self.iterative))
+                            .on_click(cx.listener(|merge_window, _, window, cx| {
                                 merge_window.cancel_or_save(window, cx);
-                            },
-                        )),
+                            })),
                     )
                     .child(
-                        dialog_button(
-                            "merge-apply-changes",
-                            APPLY_CHANGES_LABEL,
-                            true,
-                            !apply_enabled,
-                            cx,
-                        )
-                        .on_click(cx.listener(
-                            |merge_window, _, window, cx| {
+                        DialogButton::new("merge-apply-changes", APPLY_CHANGES_LABEL)
+                            .default_button(true)
+                            .disabled(!apply_enabled)
+                            .on_click(cx.listener(|merge_window, _, window, cx| {
                                 merge_window.apply_changes(window, cx);
-                            },
-                        )),
+                            })),
                     ),
             )
     }

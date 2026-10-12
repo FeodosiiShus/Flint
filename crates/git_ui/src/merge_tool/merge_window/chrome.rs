@@ -1,16 +1,8 @@
-use gpui::{App, ElementId, Hsla, Img, SharedString, Stateful, div, img, px};
+use gpui::{App, Hsla, Img, img, px};
 use ui::prelude::*;
 
 use crate::merge_tool::palette::{current_palette, hex_color};
 
-const BUTTON_HEIGHT: f32 = 24.0;
-const BUTTON_MIN_WIDTH: f32 = 72.0;
-const BUTTON_RADIUS: f32 = 8.0;
-const BUTTON_HORIZONTAL_PADDING: f32 = 14.0;
-const DEFAULT_FILL: u32 = 0x3871E1;
-const OUTLINE_DARK: u32 = 0x40434A;
-const OUTLINE_LIGHT: u32 = 0xD1D3D9;
-const DEFAULT_TEXT: u32 = 0xFFFFFF;
 const DIALOG_BACKGROUND_DARK: u32 = 0x191A1C;
 const DIALOG_BACKGROUND_LIGHT: u32 = 0xF7F8F9;
 
@@ -51,56 +43,6 @@ impl ThemedImage {
 pub(crate) fn themed_image(image: ThemedImage, size: f32, cx: &App) -> Img {
     let dark = current_palette(cx).kind.is_dark();
     img(image.path(dark)).w(px(size)).h(px(size)).flex_none()
-}
-
-pub(crate) fn dialog_button(
-    id: impl Into<ElementId>,
-    label: impl Into<SharedString>,
-    is_default: bool,
-    disabled: bool,
-    cx: &App,
-) -> Stateful<gpui::Div> {
-    let label: SharedString = label.into();
-    dialog_button_with_content(id, label, is_default, disabled, cx)
-}
-
-pub(crate) fn dialog_button_with_content(
-    id: impl Into<ElementId>,
-    content: impl IntoElement,
-    is_default: bool,
-    disabled: bool,
-    cx: &App,
-) -> Stateful<gpui::Div> {
-    let palette = current_palette(cx);
-    let dark = palette.kind.is_dark();
-    let fill = DEFAULT_FILL;
-    let outline = if dark { OUTLINE_DARK } else { OUTLINE_LIGHT };
-    let button = div()
-        .id(id)
-        .h(px(BUTTON_HEIGHT))
-        .min_w(px(BUTTON_MIN_WIDTH))
-        .px(px(BUTTON_HORIZONTAL_PADDING))
-        .flex()
-        .items_center()
-        .justify_center()
-        .rounded(px(BUTTON_RADIUS))
-        .border_1();
-    let styled = if is_default {
-        button
-            .border_color(hex_color(fill))
-            .bg(hex_color(fill))
-            .text_color(hex_color(DEFAULT_TEXT))
-    } else {
-        button
-            .border_color(hex_color(outline))
-            .text_color(cx.theme().colors().text)
-    };
-    let labelled = styled.child(content);
-    if disabled {
-        labelled.opacity(0.4)
-    } else {
-        labelled.cursor_pointer()
-    }
 }
 
 #[cfg(test)]

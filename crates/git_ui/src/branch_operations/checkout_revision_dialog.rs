@@ -5,7 +5,7 @@ use gpui::{
 };
 use menu::{Cancel, Confirm, SelectNext, SelectPrevious};
 use project::git_store::Repository;
-use ui::{TintColor, prelude::*};
+use ui::{DialogButton, prelude::*};
 use util::ResultExt as _;
 use workspace::ModalView;
 
@@ -287,15 +287,16 @@ impl Render for CheckoutRevisionDialog {
             .child(
                 h_flex()
                     .p_3()
-                    .gap_1()
+                    .gap_2()
                     .justify_end()
                     .child(
-                        Button::new("checkout-revision-cancel", "Cancel")
+                        DialogButton::new("checkout-revision-cancel", "Cancel")
+                            .default_button(false)
                             .on_click(cx.listener(|_, _, _, cx| cx.emit(DismissEvent))),
                     )
                     .child(
-                        Button::new("checkout-revision-confirm", CONFIRM_LABEL)
-                            .style(ButtonStyle::Tinted(TintColor::Accent))
+                        DialogButton::new("checkout-revision-confirm", CONFIRM_LABEL)
+                            .default_button(true)
                             .disabled(!can_confirm)
                             .on_click(cx.listener(|this, _, window, cx| this.submit(window, cx))),
                     ),

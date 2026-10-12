@@ -110,7 +110,6 @@ impl SearchEverywhere {
         let commands = command_palette::palette_actions(window, cx);
         let delegate = SearchEverywhereDelegate::new(
             cx.entity().downgrade(),
-            presentation,
             workspace,
             project.clone(),
             previous_focus_handle,

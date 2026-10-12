@@ -1,6 +1,6 @@
 use gpui::{DismissEvent, EventEmitter, FocusHandle, Focusable, Role, SharedString};
 use menu::{Cancel, Confirm};
-use ui::{Checkbox, ChoiceCard, TintColor, prelude::*};
+use ui::{Checkbox, ChoiceCard, DialogButton, prelude::*};
 use workspace::ModalView;
 
 use super::BranchContext;
@@ -78,8 +78,8 @@ impl Render for UpdateOptionsDialog {
         let merge_selected = self.method == UpdateMethod::Merge;
         let rebase_selected = self.method == UpdateMethod::Rebase;
         let reset_button = self.reset_target.as_ref().map(|target| {
-            Button::new("update-reset", "Reset to the Remote Branch")
-                .style(ButtonStyle::Subtle)
+            DialogButton::new("update-reset", "Reset to the Remote Branch")
+                .default_button(false)
                 .tooltip(ui::Tooltip::text(format!(
                     "Reset {} to {}",
                     target.branch, target.upstream
@@ -154,12 +154,16 @@ impl Render for UpdateOptionsDialog {
                     .child(
                         h_flex()
                             .gap_2()
-                            .child(Button::new("update-cancel", "Cancel").on_click(
-                                cx.listener(|this, _, window, cx| this.cancel(&Cancel, window, cx)),
-                            ))
                             .child(
-                                Button::new("update-confirm", "OK")
-                                    .style(ButtonStyle::Tinted(TintColor::Accent))
+                                DialogButton::new("update-cancel", "Cancel")
+                                    .default_button(false)
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.cancel(&Cancel, window, cx)
+                                    })),
+                            )
+                            .child(
+                                DialogButton::new("update-confirm", "OK")
+                                    .default_button(true)
                                     .on_click(cx.listener(|this, _, window, cx| {
                                         this.confirm(&Confirm, window, cx)
                                     })),

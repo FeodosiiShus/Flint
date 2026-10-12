@@ -4,7 +4,7 @@ use gpui::{
     SharedString, Subscription, Window, rems,
 };
 use menu::{Cancel, Confirm};
-use ui::{Checkbox, Modal, ModalFooter, ModalHeader, Section, prelude::*};
+use ui::{Checkbox, DialogButton, Modal, ModalFooter, ModalHeader, Section, prelude::*};
 use workspace::ModalView;
 
 use super::BranchContext;
@@ -233,15 +233,17 @@ impl Render for RenameBranchDialog {
                     .footer(
                         ModalFooter::new().end_slot(
                             h_flex()
-                                .gap_1()
-                                .child(Button::new("rename-cancel", "Cancel").on_click(
-                                    cx.listener(|_, _, _, cx| {
-                                        cx.emit(DismissEvent);
-                                    }),
-                                ))
+                                .gap_2()
                                 .child(
-                                    Button::new("rename-confirm", "Rename")
-                                        .style(ButtonStyle::Filled)
+                                    DialogButton::new("rename-cancel", "Cancel")
+                                        .default_button(false)
+                                        .on_click(cx.listener(|_, _, _, cx| {
+                                            cx.emit(DismissEvent);
+                                        })),
+                                )
+                                .child(
+                                    DialogButton::new("rename-confirm", "Rename")
+                                        .default_button(true)
                                         .disabled(!can_rename)
                                         .on_click(cx.listener(|this, _, window, cx| {
                                             this.confirm(&Confirm, window, cx);

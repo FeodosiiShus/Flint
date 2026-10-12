@@ -5,11 +5,11 @@ use std::sync::{
 
 use futures::channel::oneshot;
 use gpui::{Hsla, SharedString, Window};
-use ui::{ProgressBar, prelude::*};
+use ui::{DialogButton, ProgressBar, prelude::*};
 
 use super::ConflictsDialog;
 use super::messages;
-use crate::merge_tool::merge_window::{ThemedImage, dialog_button, themed_image};
+use crate::merge_tool::merge_window::{ThemedImage, themed_image};
 
 const OVERLAY_PANEL_WIDTH: f32 = 420.;
 const OVERLAY_SCRIM_ALPHA: f32 = 0.4;
@@ -181,28 +181,17 @@ impl ConflictsDialog {
                     .gap_3()
                     .pt_2()
                     .child(
-                        dialog_button(
-                            "conflicts-confirm-no",
-                            confirmation.no_label.clone(),
-                            false,
-                            false,
-                            cx,
-                        )
-                        .on_click(cx.listener(|this, _, window, cx| {
-                            this.answer_confirmation(false, window, cx);
-                        })),
+                        DialogButton::new("conflicts-confirm-no", confirmation.no_label.clone())
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.answer_confirmation(false, window, cx);
+                            })),
                     )
                     .child(
-                        dialog_button(
-                            "conflicts-confirm-yes",
-                            confirmation.yes_label.clone(),
-                            true,
-                            false,
-                            cx,
-                        )
-                        .on_click(cx.listener(|this, _, window, cx| {
-                            this.answer_confirmation(true, window, cx);
-                        })),
+                        DialogButton::new("conflicts-confirm-yes", confirmation.yes_label.clone())
+                            .default_button(true)
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.answer_confirmation(true, window, cx);
+                            })),
                     ),
             )
             .into_any_element()
@@ -236,20 +225,13 @@ impl ConflictsDialog {
                 ))
             })
             .when_some(cancellation, |this, cancellation| {
-                this.child(
-                    h_flex().justify_end().child(
-                        dialog_button(
-                            "conflicts-progress-cancel",
-                            messages::CANCEL,
-                            false,
-                            false,
-                            cx,
-                        )
-                        .on_click(move |_, _, _| {
+                this.child(h_flex().justify_end().child(
+                    DialogButton::new("conflicts-progress-cancel", messages::CANCEL).on_click(
+                        move |_, _, _| {
                             cancellation.store(true, Ordering::Relaxed);
-                        }),
+                        },
                     ),
-                )
+                ))
             })
             .into_any_element()
     }

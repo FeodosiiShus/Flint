@@ -7,7 +7,7 @@ use gpui::{
     IntoElement, Render, SharedString, Subscription, Window, rems,
 };
 use menu::{Cancel, Confirm};
-use ui::{Modal, ModalFooter, ModalHeader, Section, TintColor, prelude::*};
+use ui::{DialogButton, Modal, ModalFooter, ModalHeader, Section, prelude::*};
 use util::ResultExt as _;
 use workspace::ModalView;
 
@@ -489,23 +489,25 @@ impl Render for PushDialog {
                     .footer(
                         ModalFooter::new().end_slot(
                             h_flex()
-                                .gap_1()
-                                .child(Button::new("push-cancel", "Cancel").on_click(cx.listener(
-                                    |_, _, _, cx| {
-                                        cx.emit(DismissEvent);
-                                    },
-                                )))
+                                .gap_2()
                                 .child(
-                                    Button::new("push-force", "Force Push")
-                                        .style(ButtonStyle::Tinted(TintColor::Warning))
+                                    DialogButton::new("push-cancel", "Cancel")
+                                        .default_button(false)
+                                        .on_click(cx.listener(|_, _, _, cx| {
+                                            cx.emit(DismissEvent);
+                                        })),
+                                )
+                                .child(
+                                    DialogButton::new("push-force", "Force Push")
+                                        .default_button(false)
                                         .disabled(!can_push)
                                         .on_click(cx.listener(|this, _, window, cx| {
                                             this.push(true, window, cx);
                                         })),
                                 )
                                 .child(
-                                    Button::new("push-confirm", "Push")
-                                        .style(ButtonStyle::Filled)
+                                    DialogButton::new("push-confirm", "Push")
+                                        .default_button(true)
                                         .disabled(!can_push)
                                         .on_click(cx.listener(|this, _, window, cx| {
                                             this.push(false, window, cx);

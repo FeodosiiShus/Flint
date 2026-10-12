@@ -4,7 +4,7 @@ use gpui::{
     Render, SharedString, Window, rems,
 };
 use menu::{Cancel, Confirm};
-use ui::{Checkbox, Modal, ModalFooter, ModalHeader, Section, prelude::*};
+use ui::{Checkbox, DialogButton, Modal, ModalFooter, ModalHeader, Section, prelude::*};
 use workspace::ModalView;
 
 const DELETE_REMOTE_DIALOG_WIDTH: f32 = 30.;
@@ -182,15 +182,17 @@ impl Render for DeleteRemoteBranchDialog {
                     .footer(
                         ModalFooter::new().end_slot(
                             h_flex()
-                                .gap_1()
-                                .child(Button::new("delete-remote-cancel", "Cancel").on_click(
-                                    cx.listener(|_, _, _, cx| {
-                                        cx.emit(DismissEvent);
-                                    }),
-                                ))
+                                .gap_2()
                                 .child(
-                                    Button::new("delete-remote-confirm", "Delete")
-                                        .style(ButtonStyle::Filled)
+                                    DialogButton::new("delete-remote-cancel", "Cancel")
+                                        .default_button(false)
+                                        .on_click(cx.listener(|_, _, _, cx| {
+                                            cx.emit(DismissEvent);
+                                        })),
+                                )
+                                .child(
+                                    DialogButton::new("delete-remote-confirm", "Delete")
+                                        .default_button(true)
                                         .on_click(cx.listener(|this, _, window, cx| {
                                             this.confirm(&Confirm, window, cx);
                                         })),
@@ -286,15 +288,17 @@ impl Render for UnmergedCommitsDialog {
                     .footer(
                         ModalFooter::new().end_slot(
                             h_flex()
-                                .gap_1()
-                                .child(Button::new("unmerged-close", "Close").on_click(
-                                    cx.listener(|_, _, _, cx| {
-                                        cx.emit(DismissEvent);
-                                    }),
-                                ))
+                                .gap_2()
                                 .child(
-                                    Button::new("unmerged-restore", "Restore")
-                                        .style(ButtonStyle::Filled)
+                                    DialogButton::new("unmerged-close", "Close")
+                                        .default_button(false)
+                                        .on_click(cx.listener(|_, _, _, cx| {
+                                            cx.emit(DismissEvent);
+                                        })),
+                                )
+                                .child(
+                                    DialogButton::new("unmerged-restore", "Restore")
+                                        .default_button(true)
                                         .on_click(cx.listener(|this, _, window, cx| {
                                             this.restore(&Confirm, window, cx);
                                         })),

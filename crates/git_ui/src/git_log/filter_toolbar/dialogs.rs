@@ -6,7 +6,7 @@ use gpui::{
 use menu::{Cancel, Confirm, SecondaryConfirm, SelectNext, SelectPrevious};
 use project::git_store::Repository;
 use time::{Date, Month, OffsetDateTime, UtcOffset};
-use ui::{Checkbox, TintColor, ToggleState, prelude::*};
+use ui::{Checkbox, DialogButton, ToggleState, prelude::*};
 use util::ResultExt as _;
 use workspace::ModalView;
 
@@ -424,8 +424,8 @@ impl Render for DatePeriodDialog {
             })
             .child(
                 h_flex().p_3().justify_end().child(
-                    Button::new("git-log-date-ok", OK_LABEL)
-                        .style(ButtonStyle::Tinted(TintColor::Accent))
+                    DialogButton::new("git-log-date-ok", OK_LABEL)
+                        .default_button(true)
                         .on_click(cx.listener(|this, _, window, cx| this.submit(window, cx))),
                 ),
             )

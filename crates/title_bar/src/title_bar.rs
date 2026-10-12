@@ -8,7 +8,7 @@ pub use platform_title_bar::{
     self, DraggedWindowTab, MergeAllWindows, MoveTabToNewWindow, PlatformTitleBar,
     ShowNextWindowTab, ShowPreviousWindowTab,
 };
-use project::{linked_worktree_short_name, repo_identity_path, repo_identity_path_if_local};
+use project::{linked_worktree_short_name, repo_identity_path_if_local};
 
 #[cfg(not(target_os = "macos"))]
 use crate::application_menu::{
@@ -17,7 +17,7 @@ use crate::application_menu::{
 
 use gpui::{
     AnyElement, App, Context, Entity, Hsla, InteractiveElement, IntoElement, MouseButton,
-    ParentElement, Render, Styled, Subscription, WeakEntity, Window, actions, div,
+    ParentElement, Render, Styled, Subscription, WeakEntity, Window, actions, div, rgb,
 };
 use project::{
     Project, git_store::GitStoreEvent, project_settings::ProjectSettings,
@@ -29,7 +29,7 @@ use settings::Settings as _;
 use std::path::Path;
 use theme::ActiveTheme;
 use title_bar_settings::TitleBarSettings;
-use toolbar_widgets::{project_color, upstream_tracking_label};
+use toolbar_widgets::upstream_tracking_label;
 use ui::{
     ButtonLike, IconWithIndicator, Indicator, KeyBinding, PopoverMenu, TintColor, Tooltip,
     prelude::*, utils::platform_title_bar_height,
@@ -46,6 +46,7 @@ const MAX_SHORT_SHA_LENGTH: usize = 8;
 const SEARCH_FIELD_WIDTH: f32 = 240.;
 const SEARCH_FIELD_DEBUG_SELECTOR: &str = "title_bar_search_field";
 const WORKTREE_AND_BRANCH_DEBUG_SELECTOR: &str = "title_bar_worktree_and_branch";
+const PROJECT_GRADIENT_COLOR: u32 = 0x955AE0;
 
 fn linked_worktree_name_anchor<'a>(
     main_worktree_path: Option<&'a Path>,
@@ -162,7 +163,6 @@ impl Render for TitleBar {
         let mut linked_worktree_name = None;
         if let Some(worktree) = self.effective_active_worktree(cx) {
             repository = self.get_repository_for_worktree(&worktree, cx);
-            let worktree_abs_path = worktree.read(cx).abs_path();
             project_name = worktree
                 .read(cx)
                 .root_name()
@@ -170,7 +170,6 @@ impl Render for TitleBar {
                 .map(|name| SharedString::from(name.to_string()));
             if let Some(repo) = &repository {
                 let repo = repo.read(cx);
-                let identity = repo_identity_path(&repo.common_dir_abs_path, repo.path_style);
                 let identity_fallback =
                     repo_identity_path_if_local(&repo.common_dir_abs_path, repo.path_style);
                 linked_worktree_name = linked_worktree_name_anchor(
@@ -189,39 +188,11 @@ impl Render for TitleBar {
                         .then_some(project_name.clone())
                         .flatten()
                 });
-
-                let display_name = if identity.extension() == Some(std::ffi::OsStr::new("git")) {
-                    identity.file_stem().and_then(|n| n.to_str())
-                } else {
-                    repo.path_style.file_name(identity)
-                };
-
-                if let Some(repo_name) = display_name {
-                    let visible_worktrees_in_repo = self.visible_worktrees_in_repository(repo, cx);
-                    let name = if visible_worktrees_in_repo == 1 {
-                        if let Ok(relative) =
-                            worktree_abs_path.strip_prefix(&*repo.work_directory_abs_path)
-                        {
-                            if relative.as_os_str().is_empty() {
-                                repo_name.to_string()
-                            } else {
-                                format!("{}/{}", repo_name, relative.display())
-                            }
-                        } else {
-                            repo_name.to_string()
-                        }
-                    } else {
-                        repo_name.to_string()
-                    };
-                    project_name = Some(SharedString::from(name));
-                }
             }
         }
 
-        let project_gradient = project_name
-            .as_ref()
-            .filter(|_| title_bar_settings.show_project_gradient)
-            .map(|name| Self::themed_project_color(name, cx));
+        let project_gradient = (project_name.is_some() && title_bar_settings.show_project_gradient)
+            .then(Self::project_gradient_color);
 
         let project_items = h_flex()
             .h_full()
@@ -442,22 +413,6 @@ impl TitleBar {
             .cloned()
     }
 
-    fn visible_worktrees_in_repository(
-        &self,
-        repository: &project::git_store::Repository,
-        cx: &App,
-    ) -> usize {
-        let repo_path = &repository.work_directory_abs_path;
-        self.project
-            .read(cx)
-            .visible_worktrees(cx)
-            .filter(|worktree| {
-                let worktree_path = worktree.read(cx).abs_path();
-                worktree_path == *repo_path || worktree_path.starts_with(repo_path.as_ref())
-            })
-            .count()
-    }
-
     fn render_remote_project_connection(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let workspace = self.workspace.clone();
 
@@ -602,9 +557,8 @@ impl TitleBar {
         None
     }
 
-    fn themed_project_color(project_name: &str, cx: &App) -> Hsla {
-        let theme = cx.theme();
-        project_color(project_name, &theme.accents().0, theme.colors().text_accent)
+    fn project_gradient_color() -> Hsla {
+        rgb(PROJECT_GRADIENT_COLOR).into()
     }
 
     fn render_search_field(cx: &App) -> impl IntoElement {
@@ -859,7 +813,6 @@ impl TitleBar {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::toolbar_widgets::project_accent_index;
     use gpui::{
         Background, Modifiers, Quad, TestAppContext, UpdateGlobal as _, VisualTestContext, point,
     };
@@ -869,7 +822,6 @@ mod tests {
     use workspace::AppState;
 
     const PROJECT_ROOT: &str = "/flint";
-    const PROJECT_NAME: &str = "flint";
 
     async fn open_project_title_bar<'a>(
         cx: &'a mut TestAppContext,
@@ -964,24 +916,17 @@ mod tests {
     }
 
     #[gpui::test]
-    async fn project_gradient_is_painted_with_the_accent_picked_for_the_project_name(
-        cx: &mut TestAppContext,
-    ) {
+    async fn project_gradient_is_intellij_violet_for_every_project(cx: &mut TestAppContext) {
         let (_workspace, _title_bar, cx) = open_project_title_bar(cx, None).await;
 
-        let project_accent = cx.update(|_, cx| {
-            let accents = &cx.theme().accents().0;
-            let accent_index = project_accent_index(PROJECT_NAME, accents.len())
-                .expect("the test theme should define accent colors");
-            accents[accent_index]
-        });
+        let violet: Hsla = rgb(0x955AE0).into();
         let painted_quads = cx.update(|window, _| window.painted_quads());
 
         assert!(
             painted_quads
                 .iter()
-                .any(|quad| quad.background == ui::project_gradient_background(project_accent)),
-            "the title bar gradient is painted with the theme accent picked for the project name"
+                .any(|quad| quad.background == ui::project_gradient_background(violet)),
+            "the title bar gradient is painted with IntelliJ's violet project color whatever the project name"
         );
     }
 
@@ -998,7 +943,7 @@ mod tests {
         });
         let (project_color, inactive_opacity) = cx.update(|_, cx| {
             (
-                TitleBar::themed_project_color(PROJECT_NAME, cx),
+                TitleBar::project_gradient_color(),
                 <WorkspaceSettings as settings::Settings>::get_global(cx)
                     .islands
                     .frame_content_opacity(false),

@@ -7,7 +7,7 @@ use gpui::{
     PromptLevel, Role,
 };
 use menu::{Cancel, Confirm};
-use ui::{ChoiceCard, TintColor, prelude::*};
+use ui::{ChoiceCard, DialogButton, prelude::*};
 use util::ResultExt as _;
 use workspace::ModalView;
 
@@ -621,12 +621,16 @@ impl Render for GitResetDialog {
                     .pb_2()
                     .gap_2()
                     .justify_end()
-                    .child(Button::new("git-reset-cancel", CANCEL_BUTTON).on_click(
-                        cx.listener(|this, _, window, cx| this.cancel(&Cancel, window, cx)),
-                    ))
                     .child(
-                        Button::new("git-reset-confirm", RESET_BUTTON)
-                            .style(ButtonStyle::Tinted(TintColor::Accent))
+                        DialogButton::new("git-reset-cancel", CANCEL_BUTTON)
+                            .default_button(false)
+                            .on_click(
+                                cx.listener(|this, _, window, cx| this.cancel(&Cancel, window, cx)),
+                            ),
+                    )
+                    .child(
+                        DialogButton::new("git-reset-confirm", RESET_BUTTON)
+                            .default_button(true)
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.confirm(&Confirm, window, cx)
                             })),
