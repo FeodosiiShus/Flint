@@ -1945,7 +1945,6 @@ impl GitPanel {
         let mut tracked_change_count = 0;
         let mut last_tracked_index = None;
         for status_entry in repo.cached_status() {
-            self.changes_count += 1;
             if let Some(pending) = repo.pending_ops_for_path(&status_entry.repo_path)
                 && pending
                     .ops
@@ -1954,6 +1953,7 @@ impl GitPanel {
             {
                 continue;
             }
+            self.changes_count += 1;
 
             let is_conflict = repo.had_conflict_on_last_merge_head_change(&status_entry.repo_path);
             let staging = status_entry.status.staging();
@@ -2738,6 +2738,48 @@ mod tests {
             panel.toggle_skip_hooks(&SkipHooks, window, cx);
             assert!(!panel.skip_hooks_enabled());
             assert!(!panel.commit_options().no_verify);
+        });
+    }
+
+    #[gpui::test]
+    async fn test_git_panel_changes_count_skips_reverted_entries(cx: &mut TestAppContext) {
+        init_test(cx);
+        let (_, _, _, panel, mut cx) = setup_git_panel_with_changes(
+            cx,
+            json!({
+                ".git": {},
+                "file": "modified\n",
+                "other": "modified\n",
+            }),
+            &[
+                ("file", StatusCode::Modified),
+                ("other", StatusCode::Modified),
+            ],
+        )
+        .await;
+        panel.read_with(&cx, |panel, _| {
+            assert_eq!(panel.status_entries.len(), 2);
+            assert_eq!(panel.changes_count, 2);
+        });
+
+        let repository = panel.read_with(&cx, |panel, _| {
+            panel
+                .active_repository
+                .clone()
+                .expect("the panel has an active repository")
+        });
+        repository
+            .update(&mut cx, |repository, cx| {
+                repository.checkout_files("HEAD", vec![repo_path("file")], cx)
+            })
+            .await
+            .expect("reverting the file succeeds");
+        cx.run_until_parked();
+
+        panel.update(&mut cx, |panel, cx| panel.update_status_entries(cx));
+        panel.read_with(&cx, |panel, _| {
+            assert_eq!(panel.status_entries.len(), 1);
+            assert_eq!(panel.changes_count, panel.status_entries.len());
         });
     }
 

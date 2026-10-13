@@ -133,7 +133,7 @@
 use crate::{ProjectPanel, RemovalKind};
 use anyhow::{Context, Result, anyhow};
 use fs::{TrashId, TrashRestoreError};
-use futures::channel::mpsc;
+use futures::{StreamExt as _, channel::mpsc};
 use gpui::{
     AppContext, AsyncApp, IntoElement, PromptLevel, SharedString, Styled, Task, WeakEntity,
 };
@@ -717,23 +717,35 @@ impl Inner {
             return Err(anyhow!("Failed to obtain workspace."));
         };
 
+        let candidate = workspace.update(cx, |workspace, cx| {
+            let project = workspace.project().read(cx);
+            let worktree = project.worktree_for_id(path.worktree_id, cx)?;
+            let worktree = worktree.read(cx);
+            let entry = worktree.entry_for_path(path.path.as_ref())?;
+            if !entry.is_dir()
+                || !worktree.is_local()
+                || worktree.child_entries(path.path.as_ref()).next().is_some()
+            {
+                return None;
+            }
+            Some((
+                entry.id,
+                worktree.absolutize(path.path.as_ref()),
+                project.fs().clone(),
+            ))
+        });
+        let Some((entry_id, abs_path, fs)) = candidate else {
+            return Ok(());
+        };
+
+        if fs.read_dir(&abs_path).await?.next().await.is_some() {
+            return Ok(());
+        }
+
         let task = workspace.update(cx, |workspace, cx| {
-            workspace.project().update(cx, |project, cx| {
-                let worktree = project.worktree_for_id(path.worktree_id, cx)?;
-
-                let entry_id = {
-                    let worktree = worktree.read(cx);
-                    let entry = worktree.entry_for_path(path.path.as_ref())?;
-                    if !entry.is_dir()
-                        || worktree.child_entries(path.path.as_ref()).next().is_some()
-                    {
-                        return None;
-                    }
-                    entry.id
-                };
-
-                project.delete_entry(entry_id, cx)
-            })
+            workspace
+                .project()
+                .update(cx, |project, cx| project.delete_entry(entry_id, cx))
         });
 
         if let Some(task) = task {

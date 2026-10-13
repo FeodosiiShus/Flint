@@ -629,8 +629,10 @@ impl PathWithPosition {
                 let row = maybe_row.parse::<u32>().ok();
                 let column = maybe_column.parse::<u32>().ok();
 
-                let (_, suffix) = trimmed.split_once(file_name).unwrap();
-                let path_without_suffix = &trimmed[..trimmed.len() - suffix.len()];
+                let file_name_start = trimmed
+                    .rfind(maybe_file_name_with_row_col)
+                    .unwrap_or_default();
+                let path_without_suffix = &trimmed[..file_name_start + file_name.len()];
 
                 Self {
                     path: Path::new(path_without_suffix).to_path_buf(),
@@ -2413,6 +2415,35 @@ mod tests {
                 path: PathBuf::from("/testing/out/src/file_finder.odin"),
                 row: Some(7),
                 column: Some(15),
+            }
+        );
+    }
+
+    #[perf]
+    #[cfg(not(target_os = "windows"))]
+    fn path_with_position_parse_keeps_directories_containing_the_file_name() {
+        assert_eq!(
+            PathWithPosition::parse_str("tests/test:3"),
+            PathWithPosition {
+                path: PathBuf::from("tests/test"),
+                row: Some(3),
+                column: None,
+            }
+        );
+        assert_eq!(
+            PathWithPosition::parse_str("src/main/main:10:4"),
+            PathWithPosition {
+                path: PathBuf::from("src/main/main"),
+                row: Some(10),
+                column: Some(4),
+            }
+        );
+        assert_eq!(
+            PathWithPosition::parse_str("lib/lib(7,2)"),
+            PathWithPosition {
+                path: PathBuf::from("lib/lib"),
+                row: Some(7),
+                column: Some(2),
             }
         );
     }

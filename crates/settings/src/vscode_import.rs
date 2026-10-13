@@ -739,7 +739,7 @@ impl VsCodeSettings {
             ),
             show_diagnostics: self
                 .read_bool("problems.decorations.enabled")
-                .and_then(|b| if b { Some(ShowDiagnostics::Off) } else { None }),
+                .and_then(|enabled| (!enabled).then_some(ShowDiagnostics::Off)),
             sort_mode: self.read_enum("explorer.sortOrder", |s| match s {
                 "default" | "foldersNestsFiles" => Some(ProjectPanelSortMode::DirectoriesFirst),
                 "mixed" => Some(ProjectPanelSortMode::Mixed),
@@ -1318,6 +1318,29 @@ mod tests {
                     .command_palette
                     .and_then(|settings| settings.use_command_history),
                 expected,
+            );
+        }
+    }
+
+    #[test]
+    fn test_import_problems_decorations_show_diagnostics() {
+        for (content, expected) in [
+            (r#"{ "problems.decorations.enabled": true }"#, None),
+            (
+                r#"{ "problems.decorations.enabled": false }"#,
+                Some(ShowDiagnostics::Off),
+            ),
+            ("{}", None),
+        ] {
+            let settings = VsCodeSettings::from_str(content, VsCodeSettingsSource::VsCode)
+                .unwrap()
+                .settings_content();
+            assert_eq!(
+                settings
+                    .project_panel
+                    .and_then(|settings| settings.show_diagnostics),
+                expected,
+                "{content}"
             );
         }
     }

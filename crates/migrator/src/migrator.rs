@@ -5061,4 +5061,32 @@ mod tests {
             "#}),
         );
     }
+
+    #[test]
+    fn test_rename_restore_on_startup_values_at_root_and_in_overrides() {
+        let restore_on_startup_migration = &[MigrationType::TreeSitter(
+            migrations::m_2025_12_15::SETTINGS_PATTERNS,
+            &SETTINGS_QUERY_2025_12_15,
+        )];
+        assert_migrate_with_migrations(
+            restore_on_startup_migration,
+            r#"{ "restore_on_startup": "welcome" }"#,
+            Some(r#"{ "restore_on_startup": "launchpad" }"#),
+        );
+        assert_migrate_with_migrations(
+            restore_on_startup_migration,
+            r#"{ "restore_on_startup": "none" }"#,
+            Some(r#"{ "restore_on_startup": "empty_tab" }"#),
+        );
+        assert_migrate_with_migrations(
+            restore_on_startup_migration,
+            r#"{ "macos": { "restore_on_startup": "welcome" } }"#,
+            Some(r#"{ "macos": { "restore_on_startup": "launchpad" } }"#),
+        );
+        assert_migrate_with_migrations(
+            restore_on_startup_migration,
+            r#"{ "restore_on_startup": "last_session" }"#,
+            None,
+        );
+    }
 }

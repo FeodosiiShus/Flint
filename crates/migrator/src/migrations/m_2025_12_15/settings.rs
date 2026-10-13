@@ -2,23 +2,52 @@ use std::ops::Range;
 use tree_sitter::{Query, QueryMatch};
 
 use crate::MigrationPatterns;
-use crate::patterns::SETTINGS_NESTED_KEY_VALUE_PATTERN;
+use crate::patterns::{SETTINGS_NESTED_KEY_VALUE_PATTERN, SETTINGS_ROOT_KEY_VALUE_PATTERN};
 
-pub const SETTINGS_PATTERNS: MigrationPatterns = &[(
-    SETTINGS_NESTED_KEY_VALUE_PATTERN,
-    rename_restore_on_startup_values,
-)];
+pub const SETTINGS_PATTERNS: MigrationPatterns = &[
+    (
+        SETTINGS_ROOT_KEY_VALUE_PATTERN,
+        rename_root_restore_on_startup_values,
+    ),
+    (
+        SETTINGS_NESTED_KEY_VALUE_PATTERN,
+        rename_nested_restore_on_startup_values,
+    ),
+];
+
+fn rename_root_restore_on_startup_values(
+    contents: &str,
+    mat: &QueryMatch,
+    query: &Query,
+) -> Option<(Range<usize>, String)> {
+    rename_restore_on_startup_values(contents, mat, query, "name", "value")
+}
+
+fn rename_nested_restore_on_startup_values(
+    contents: &str,
+    mat: &QueryMatch,
+    query: &Query,
+) -> Option<(Range<usize>, String)> {
+    rename_restore_on_startup_values(contents, mat, query, "setting_name", "setting_value")
+}
 
 fn rename_restore_on_startup_values(
     contents: &str,
     mat: &QueryMatch,
     query: &Query,
+    name_capture: &str,
+    value_capture: &str,
 ) -> Option<(Range<usize>, String)> {
-    if !is_restore_on_startup_setting(contents, mat, query) {
+    let setting_name_ix = query.capture_index_for_name(name_capture)?;
+    let setting_name_range = mat
+        .nodes_for_capture_index(setting_name_ix)
+        .next()?
+        .byte_range();
+    if contents.get(setting_name_range)? != "restore_on_startup" {
         return None;
     }
 
-    let setting_value_ix = query.capture_index_for_name("setting_value")?;
+    let setting_value_ix = query.capture_index_for_name(value_capture)?;
     let setting_value_range = mat
         .nodes_for_capture_index(setting_value_ix)
         .next()?
@@ -33,20 +62,4 @@ fn rename_restore_on_startup_values(
     };
 
     Some((setting_value_range, new_value.to_string()))
-}
-
-fn is_restore_on_startup_setting(contents: &str, mat: &QueryMatch, query: &Query) -> bool {
-    // Check that the parent key is "workspace" (since restore_on_startup is under workspace settings)
-    // Actually, restore_on_startup can be at the root level too, so we need to handle both cases
-    // The SETTINGS_NESTED_KEY_VALUE_PATTERN captures parent_key and setting_name
-
-    let setting_name_ix = match query.capture_index_for_name("setting_name") {
-        Some(ix) => ix,
-        None => return false,
-    };
-    let setting_name_range = match mat.nodes_for_capture_index(setting_name_ix).next() {
-        Some(node) => node.byte_range(),
-        None => return false,
-    };
-    contents.get(setting_name_range) == Some("restore_on_startup")
 }

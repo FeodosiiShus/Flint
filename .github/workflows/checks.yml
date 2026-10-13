@@ -82,6 +82,7 @@ jobs:
             --package git --package fs --package project --package git_ui --package icons --package project_panel \
             --package editor --package markdown --package markdown_preview \
             --package languages --package language --package extensions_ui \
+            --package migrator --package util --package settings_ui \
             --features fs/test-support,project/test-support \
             -E 'package(=settings) | package(=release_channel) | package(=cli) | package(=theme_settings)' \
             -E '(package(=ui) | package(=workspace)) & kind(lib) & test(~background_image)' \
@@ -96,16 +97,19 @@ jobs:
             -E 'binary_id(=project::integration) & test(~git_store)' \
             -E 'package(=project) & kind(lib) & (test(~dotnet_root) | test(~server_activation))' \
             -E 'package(=git_ui) & kind(lib) & (test(~merge_tool) | test(~git_panel) | test(~branches_popup) | test(~branch_operations) | test(~branch_refs) | test(~git_log) | test(~git_tool_window))' \
-            -E '(package(=workspace) | package(=ui)) & kind(lib) & (test(~tool_window_bar) | test(~tool_window_header) | test(~island) | test(~inactive_window) | test(~workspace_settings) | test(~tab::tests) | test(~hidden_tabs) | test(~test_new_tab_scrolls_into_view_completely) | test(~test_pinned_tabs_scroll_to_item_uses_correct_index) | test(~project_gradient))' \
+            -E '(package(=workspace) | package(=ui)) & kind(lib) & (test(~tool_window_bar) | test(~tool_window_header) | test(~island) | test(~inactive_window) | test(~workspace_settings) | test(~tab::tests) | test(~hidden_tabs) | test(~test_new_tab_scrolls_into_view_completely) | test(~test_pinned_tabs_scroll_to_item_uses_correct_index) | test(~project_gradient) | test(~test_swap_item_))' \
             -E 'package(=workspace) & kind(lib) & (test(~tab_context_menu) | test(~tab_bar_more_menu) | test(~bottom_toolbar) | test(~panel_size_state))' \
             -E 'package(=icons)' \
-            -E 'package(=project_panel) & kind(lib) & (test(~rounded_selection) | test(~select_opened_file))' \
+            -E 'package(=project_panel) & kind(lib) & (test(~rounded_selection) | test(~select_opened_file) | test(~undo_rename_keeps_created_dir_holding_excluded_files))' \
             -E 'package(=editor) & kind(lib) & (test(~rounded_thumb) | test(~mouse_context_menu) | test(~intellij_gutter) | test(~inspection_widget) | test(~breadcrumb) | test(~test_matching_bracket_highlights) | test(~inlay_hint_pill) | test(~text_editor_with_preview))' \
             -E 'package(=markdown) & kind(lib) & test(~top_aligned_autoscroll)' \
             -E 'package(=markdown_preview)' \
             -E 'package(=languages) & kind(lib) & (test(~tsgo) | test(~server_activation))' \
             -E 'package(=language) & kind(lib) & (test(~test_resolve_language_servers) | test(~test_language_servers_across_settings_files) | test(~test_language_servers_combined_restrictions))' \
-            -E 'package(=extensions_ui) & kind(lib) & test(~marker_install)'
+            -E 'package(=extensions_ui) & kind(lib) & test(~marker_install)' \
+            -E 'package(=migrator) & kind(lib) & test(~test_rename_restore_on_startup_values_at_root_and_in_overrides)' \
+            -E 'package(=util) & kind(lib) & test(~path_with_position_parse_keeps_directories_containing_the_file_name)' \
+            -E 'package(=settings_ui) & kind(lib) & test(~test_trust_all_projects_json_path_names_the_written_key)'
 
   test-ui-heavy:
     name: GPUI and app tests

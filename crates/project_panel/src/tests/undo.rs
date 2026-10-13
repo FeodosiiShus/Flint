@@ -378,6 +378,31 @@ async fn rename_with_dir_undo_redo(cx: &mut gpui::TestAppContext) {
 }
 
 #[gpui::test]
+async fn undo_rename_keeps_created_dir_holding_excluded_files(cx: &mut gpui::TestAppContext) {
+    let mut cx = TestContext::new(cx).await;
+    cx.update_app(|cx| {
+        cx.update_global::<SettingsStore, _>(|store, cx| {
+            store.update_user_settings(cx, |settings| {
+                settings.project.worktree.file_scan_exclusions =
+                    Some(SplicingVec::from(vec!["**/*.secret".to_string()]));
+            });
+        });
+    });
+
+    cx.rename("a.txt", "files/a.txt").await;
+    cx.assert_fs_state_is(&["b.txt", "files/", "files/a.txt"]);
+
+    cx.fs
+        .insert_file(path("/workspace/files/token.secret"), Vec::new())
+        .await;
+    cx.cx.run_until_parked();
+    cx.assert_not_exists("files/token.secret");
+
+    cx.undo().await;
+    cx.assert_fs_state_is(&["a.txt", "b.txt", "files/", "files/token.secret"]);
+}
+
+#[gpui::test]
 async fn create_undo_redo(cx: &mut gpui::TestAppContext) {
     let mut cx = TestContext::new(cx).await;
     let path = path("/workspace/c.txt");

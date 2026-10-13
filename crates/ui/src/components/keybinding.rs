@@ -551,7 +551,7 @@ pub struct Key {
 
 impl RenderOnce for Key {
     fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
-        let single_char = self.key.len() == 1;
+        let single_char = is_single_glyph(&self.key);
         let size = self
             .size
             .unwrap_or_else(|| TextSize::default().rems(cx).into());
@@ -571,6 +571,10 @@ impl RenderOnce for Key {
             .text_color(self.color.unwrap_or(Color::Muted).color(cx))
             .child(self.key)
     }
+}
+
+fn is_single_glyph(key: &str) -> bool {
+    key.chars().count() == 1
 }
 
 impl Key {
@@ -871,6 +875,16 @@ mod tests {
             assert!(backspace.is_some());
             assert!(delete.is_some());
             assert_ne!(backspace, delete);
+        }
+    }
+
+    #[test]
+    fn test_single_multibyte_key_renders_as_single_glyph() {
+        for key in ["C", "Ä", "Ї", "§", "⌘"] {
+            assert!(is_single_glyph(key), "{key}");
+        }
+        for key in ["", "F1", "Esc", "Ctrl"] {
+            assert!(!is_single_glyph(key), "{key}");
         }
     }
 

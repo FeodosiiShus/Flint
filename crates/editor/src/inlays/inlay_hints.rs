@@ -2482,9 +2482,7 @@ pub mod tests {
                     .unwrap();
             }));
         }
-        for result in future::join_all(edits).await {
-            result.log_err();
-        }
+        future::join_all(edits).await;
         cx.executor().run_until_parked();
 
         editor

@@ -251,7 +251,7 @@ fn general_page(cx: &App) -> SettingsPage {
                 title: "Trust All Projects By Default",
                 description: "When opening Zed, avoid Restricted Mode by auto-trusting all projects, enabling use of all features without having to give permission to each new project.",
                 field: Box::new(SettingField {
-                    json_path: Some("session.trust_all_projects"),
+                    json_path: Some("session.trust_all_worktrees"),
                     pick: |settings_content| {
                         settings_content
                             .session
@@ -9523,5 +9523,39 @@ mod tests {
         write_vim_mode_inner(&mut settings, Some(true));
         assert_eq!(settings.vim_mode, Some(true));
         assert_eq!(settings.helix_mode, Some(false));
+    }
+
+    #[gpui::test]
+    fn test_trust_all_projects_json_path_names_the_written_key(cx: &mut gpui::TestAppContext) {
+        use crate::AnySettingField as _;
+
+        cx.update(|cx| {
+            let page = general_page(cx);
+            let field = page
+                .items
+                .iter()
+                .find_map(|item| match item {
+                    SettingsPageItem::SettingItem(item)
+                        if item.title == "Trust All Projects By Default" =>
+                    {
+                        item.field.as_any().downcast_ref::<SettingField<bool>>()
+                    }
+                    _ => None,
+                })
+                .expect("the trust all projects setting should be listed");
+
+            let mut content = SettingsContent::default();
+            (field.write)(&mut content, Some(true), cx);
+            let written = serde_json::to_value(&content).expect("settings content serializes");
+            let json_path = field
+                .json_path
+                .expect("the trust all projects setting has a json path");
+
+            assert_eq!(
+                written.pointer(&format!("/{}", json_path.replace('.', "/"))),
+                Some(&serde_json::Value::Bool(true)),
+                "{json_path} must name the key that the setting writes"
+            );
+        });
     }
 }

@@ -1749,7 +1749,7 @@ impl GitRepository for FakeGitRepository {
         _paths: Vec<RepoPath>,
         _env: Arc<HashMap<String, String>>,
     ) -> BoxFuture<'_, Result<()>> {
-        unimplemented!()
+        async { Ok(()) }.boxed()
     }
 
     fn path(&self) -> PathBuf {

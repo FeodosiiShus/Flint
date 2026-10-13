@@ -50,6 +50,20 @@ pub fn validate_rename(
             "Branch name {name} conflicts with local branch directory with the same name"
         ));
     }
+    if let Some(branch) = name
+        .match_indices('/')
+        .map(|(index, _)| &name[..index])
+        .find(|ancestor| {
+            *ancestor != old_name
+                && local_branches
+                    .iter()
+                    .any(|local| local.as_ref() == *ancestor)
+        })
+    {
+        return RenameValidation::Invalid(format!(
+            "Branch name {name} conflicts with local branch {branch}"
+        ));
+    }
     if local_branches.iter().any(|local| local.as_ref() == name) {
         return RenameValidation::Invalid(format!("Branch name {name} already exists."));
     }
@@ -359,6 +373,29 @@ mod tests {
         assert_eq!(
             validate_rename("main", "release/1.0.", &names(&["main"]), &[]),
             RenameValidation::Valid("release/1.0".to_string())
+        );
+    }
+
+    #[test]
+    fn name_nested_under_an_existing_local_branch_is_rejected() {
+        assert_eq!(
+            validate_rename("main", "feature/login", &names(&["main", "feature"]), &[]),
+            RenameValidation::Invalid(
+                "Branch name feature/login conflicts with local branch feature".to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn renaming_a_branch_into_its_own_directory_is_allowed() {
+        assert_eq!(
+            validate_rename(
+                "feature",
+                "feature/login",
+                &names(&["main", "feature"]),
+                &[]
+            ),
+            RenameValidation::Valid("feature/login".to_string())
         );
     }
 }
