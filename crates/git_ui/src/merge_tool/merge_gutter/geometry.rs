@@ -6,6 +6,7 @@ pub(crate) const ICON_SIZE: f32 = 14.0;
 pub(crate) const FOLD_CHEVRON_SIZE: f32 = 9.0;
 pub(crate) const ICON_GAP: f32 = 3.0;
 pub(crate) const ICON_LEFT_INSET: f32 = 2.0;
+pub(crate) const MAX_ICONS_PER_LINE: usize = 4;
 pub(crate) const ANNOTATION_PLACEHOLDER_WIDTH: f32 = 4.0;
 pub(crate) const GAP_BEFORE_LINE_NUMBERS: f32 = 4.0;
 pub(crate) const MIN_LINE_NUMBER_WIDTH: f32 = 14.0;
@@ -157,9 +158,13 @@ pub(crate) fn icon_left(layout: &GutterLayout, index: usize) -> f32 {
     layout.icons.start + ICON_LEFT_INSET + index as f32 * (ICON_SIZE + ICON_GAP)
 }
 
-pub(crate) fn icon_top_offset(line_height: f32, ascent: f32) -> f32 {
+pub(crate) fn line_baseline(line_height: f32, text_ascent: f32, text_descent: f32) -> f32 {
+    (line_height - text_ascent - text_descent) / 2.0 + text_ascent
+}
+
+pub(crate) fn icon_top_offset(line_height: f32, baseline: f32) -> f32 {
     let centered = ((line_height - ICON_SIZE) / 2.0).trunc();
-    centered.max(ascent.trunc() - ICON_SIZE)
+    centered.max(baseline.trunc() - ICON_SIZE)
 }
 
 pub(crate) fn fold_chevron_top(line_top: f32, line_height: f32) -> f32 {
@@ -391,7 +396,7 @@ mod tests {
     }
 
     #[test]
-    fn merge_tool_icon_top_offset_uses_larger_of_center_and_ascent() {
+    fn merge_tool_icon_top_offset_uses_larger_of_center_and_baseline() {
         assert_eq!(icon_top_offset(20.0, 12.0), 3.0);
         assert_eq!(icon_top_offset(17.0, 16.0), 2.0);
         assert_eq!(icon_top_offset(14.0, 10.0), 0.0);

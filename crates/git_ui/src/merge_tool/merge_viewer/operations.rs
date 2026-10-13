@@ -2,7 +2,7 @@ use gpui::{Context, Window};
 use merge_diff::{ComparisonPolicy, Side, ThreeSide};
 
 use super::{
-    MergeViewer, MergeViewerEvent,
+    MergeViewer, MergeViewerEvent, RediffState,
     change_view::GutterAction,
     navigation::{DifferenceNavigation, NavigableChange},
     selection::{EditorSelection, read_editor_selection},
@@ -222,7 +222,14 @@ impl MergeViewer {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.deferred_ignore_policy = None;
         if policy == self.ignore_policy {
+            cx.notify();
+            return;
+        }
+        if self.rediff != RediffState::Finished {
+            self.deferred_ignore_policy = Some(policy);
+            cx.notify();
             return;
         }
         if self.model.read(cx).content_modified() {
@@ -247,7 +254,7 @@ impl MergeViewer {
     }
 
     pub(crate) fn ignore_policy(&self) -> ComparisonPolicy {
-        self.ignore_policy
+        self.deferred_ignore_policy.unwrap_or(self.ignore_policy)
     }
 
     pub(crate) fn sync_scroll_enabled(&self) -> bool {

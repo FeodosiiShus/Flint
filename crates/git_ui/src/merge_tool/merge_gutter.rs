@@ -8,8 +8,8 @@ use self::borders::{FoldHitRegion, register_fold_click};
 use collections::HashMap;
 use editor::Editor;
 use gpui::{
-    AnyElement, App, AvailableSpace, Bounds, ClickEvent, ContentMask, CursorStyle, Element,
-    ElementId, Entity, Font, GlobalElementId, HitboxBehavior, Hsla, InspectorElementId,
+    AnyElement, App, AvailableSpace, Bounds, ClickEvent, ContentMask, CursorStyle, DefiniteLength,
+    Element, ElementId, Entity, Font, GlobalElementId, HitboxBehavior, Hsla, InspectorElementId,
     IntoElement, LayoutId, MouseButton, Pixels, ShapedLine, SharedString, Style, TextAlign,
     TextRun, Window, fill, point, px, size, svg,
 };
@@ -19,9 +19,9 @@ use ui::{IconName, Tooltip, prelude::*};
 use util::ResultExt as _;
 
 use self::geometry::{
-    FOLD_CHEVRON_SIZE, FillRole, GutterLayout, ICON_SIZE, PixelRect, fold_chevron_top,
-    gutter_band_rects, gutter_layout, icon_left, icon_top_offset, icons_area_width,
-    line_number_left, marker_paint_range,
+    FOLD_CHEVRON_SIZE, FillRole, GutterLayout, ICON_SIZE, MAX_ICONS_PER_LINE, PixelRect,
+    fold_chevron_top, gutter_band_rects, gutter_layout, icon_left, icon_top_offset,
+    icons_area_width, line_baseline, line_number_left, marker_paint_range,
 };
 use self::pane::PaneGeometry;
 use super::merge_ribbons::wave::{
@@ -47,6 +47,15 @@ fn indent_guide_hex(kind: MergePaletteKind) -> u32 {
         MergePaletteKind::Light => 0xEBECF0,
     }
 }
+
+fn caret_row_line_number_hex(kind: MergePaletteKind) -> u32 {
+    match kind {
+        MergePaletteKind::EvaDark => 0xB0B7C3,
+        MergePaletteKind::IslandsDark => 0xA1A3AB,
+        MergePaletteKind::Light => 0x767A8A,
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum GutterIconKind {
     AcceptFromLeft,
@@ -116,7 +125,12 @@ pub(crate) fn max_icons_per_line(icons: &[GutterIconSpec]) -> usize {
     for icon in icons.iter().filter(|icon| icon.enabled) {
         *counts.entry(icon.line).or_default() += 1;
     }
-    counts.values().copied().max().unwrap_or(0)
+    counts
+        .values()
+        .copied()
+        .max()
+        .unwrap_or(0)
+        .min(MAX_ICONS_PER_LINE)
 }
 
 fn editor_font(cx: &App) -> (Font, Pixels) {
@@ -124,18 +138,30 @@ fn editor_font(cx: &App) -> (Font, Pixels) {
     (settings.buffer_font.clone(), settings.buffer_font_size(cx))
 }
 
-pub(crate) fn line_number_text_width(window: &mut Window, cx: &App, line_count: u32) -> f32 {
+fn shape_editor_text(window: &mut Window, cx: &App, text: SharedString) -> ShapedLine {
     let (font, font_size) = editor_font(cx);
-    let text = SharedString::from(line_count.max(1).to_string());
     let run = TextRun {
         len: text.len(),
         font,
         ..Default::default()
     };
-    let shaped = window
+    window
         .text_system()
-        .shape_line(text, font_size, &[run], None);
-    f32::from(shaped.width).ceil()
+        .shape_line(text, font_size, &[run], None)
+}
+
+pub(crate) fn line_number_text_width(window: &mut Window, cx: &App, line_count: u32) -> f32 {
+    let text = SharedString::from(line_count.max(1).to_string());
+    f32::from(shape_editor_text(window, cx, text).width).ceil()
+}
+
+fn text_baseline(window: &mut Window, cx: &App, line_height: f32) -> f32 {
+    let shaped = shape_editor_text(window, cx, SharedString::new_static("0"));
+    line_baseline(
+        line_height,
+        f32::from(shaped.ascent),
+        f32::from(shaped.descent),
+    )
 }
 
 pub(crate) fn gutter_width(
@@ -189,6 +215,7 @@ fn icon_element(
     let ctrl_click_handler = spec.on_click.clone();
     div()
         .id((id_namespace, index))
+        .debug_selector(|| format!("{id_namespace}-{index}"))
         .size(px(ICON_SIZE))
         .flex_none()
         .cursor_pointer()
@@ -203,9 +230,13 @@ fn icon_element(
             tooltip_content(kind.tooltip_title(), hint)
         }))
         .on_click(move |event: &ClickEvent, window, cx| {
+            let modifiers = event.modifiers();
+            if modifiers.alt {
+                return;
+            }
             click_handler(
                 GutterIconClick {
-                    ctrl: event.modifiers().control,
+                    ctrl: modifiers.control,
                 },
                 window,
                 cx,
@@ -245,6 +276,7 @@ pub(crate) struct MergeGutter {
     line_count: u32,
     changes: Vec<PaneChange>,
     icons: Vec<GutterIconSpec>,
+    icon_columns: usize,
     folded_lines: Vec<FoldedLine>,
     show_line_numbers: bool,
     fold_expand: Option<FoldExpand>,
@@ -261,6 +293,7 @@ impl MergeGutter {
         changes: Vec<PaneChange>,
         icons: Vec<GutterIconSpec>,
     ) -> Self {
+        let icon_columns = max_icons_per_line(&icons);
         Self {
             id: id.into(),
             editor,
@@ -268,6 +301,7 @@ impl MergeGutter {
             line_count,
             changes,
             icons,
+            icon_columns,
             folded_lines: Vec::new(),
             show_line_numbers: true,
             fold_expand: None,
@@ -290,10 +324,15 @@ impl MergeGutter {
         self
     }
 
+    pub(crate) fn icon_columns(mut self, icon_columns: usize) -> Self {
+        self.icon_columns = icon_columns;
+        self
+    }
+
     fn compute_layout(&self, window: &mut Window, cx: &App) -> GutterLayout {
         gutter_layout(
             line_number_text_width(window, cx, self.line_count),
-            icons_area_width(max_icons_per_line(&self.icons)),
+            icons_area_width(self.icon_columns),
             self.show_line_numbers,
         )
     }
@@ -367,7 +406,7 @@ impl MergeGutter {
         geometry: &PaneGeometry,
         layout: &GutterLayout,
         origin_x: f32,
-        color: Hsla,
+        colors: LineNumberColors,
         window: &mut Window,
         cx: &App,
     ) -> Vec<(ShapedLine, gpui::Point<Pixels>)> {
@@ -384,6 +423,11 @@ impl MergeGutter {
             }
             previous_line = Some(line);
             let text = SharedString::from((line + 1).to_string());
+            let color = if line == geometry.caret_line {
+                colors.caret_row
+            } else {
+                colors.regular
+            };
             let run = TextRun {
                 len: text.len(),
                 font: font.clone(),
@@ -405,7 +449,7 @@ impl MergeGutter {
         geometry: &PaneGeometry,
         layout: &GutterLayout,
         bounds: Bounds<Pixels>,
-        ascent: f32,
+        baseline: f32,
         color: Hsla,
         window: &mut Window,
         cx: &mut App,
@@ -424,8 +468,11 @@ impl MergeGutter {
             let slot = slots.entry(line).or_default();
             let slot_index = *slot;
             *slot += 1;
+            if slot_index >= MAX_ICONS_PER_LINE {
+                continue;
+            }
             let top =
-                geometry.line_top_y(line).round() + icon_top_offset(geometry.line_height, ascent);
+                geometry.line_top_y(line).round() + icon_top_offset(geometry.line_height, baseline);
             if top < view_top || top > view_bottom {
                 continue;
             }
@@ -564,8 +611,14 @@ impl MergeGutter {
     }
 }
 
+#[derive(Clone, Copy)]
+struct LineNumberColors {
+    regular: Hsla,
+    caret_row: Hsla,
+}
+
 impl Element for MergeGutter {
-    type RequestLayoutState = ();
+    type RequestLayoutState = GutterLayout;
     type PrepaintState = Option<GutterPrepaint>;
 
     fn id(&self) -> Option<ElementId> {
@@ -586,8 +639,9 @@ impl Element for MergeGutter {
         let layout = self.compute_layout(window, cx);
         let mut style = Style::default();
         style.size.width = px(layout.width).into();
+        style.size.height = DefiniteLength::Fraction(1.).into();
         style.flex_shrink = 0.0;
-        (window.request_layout(style, [], cx), ())
+        (window.request_layout(style, [], cx), layout)
     }
 
     fn prepaint(
@@ -595,7 +649,7 @@ impl Element for MergeGutter {
         _id: Option<&GlobalElementId>,
         _inspector_id: Option<&InspectorElementId>,
         bounds: Bounds<Pixels>,
-        _request_layout: &mut Self::RequestLayoutState,
+        layout: &mut Self::RequestLayoutState,
         window: &mut Window,
         cx: &mut App,
     ) -> Self::PrepaintState {
@@ -603,40 +657,41 @@ impl Element for MergeGutter {
             window.request_animation_frame();
             return None;
         };
-        let layout = self.compute_layout(window, cx);
+        let layout = &*layout;
         let palette = current_palette(cx);
-        let (font, font_size) = editor_font(cx);
-        let font_id = window.text_system().resolve_font(&font);
-        let ascent = f32::from(window.text_system().ascent(font_id, font_size));
+        let baseline = text_baseline(window, cx, geometry.line_height);
         let origin_x = f32::from(bounds.origin.x);
-        let quads = self.band_quads(&geometry, &layout, origin_x, cx);
+        let quads = self.band_quads(&geometry, layout, origin_x, cx);
         let numbers = self.line_numbers(
             &geometry,
-            &layout,
+            layout,
             origin_x,
-            hex_color(palette.line_numbers),
+            LineNumberColors {
+                regular: hex_color(palette.line_numbers),
+                caret_row: hex_color(caret_row_line_number_hex(palette.kind)),
+            },
             window,
             cx,
         );
-        let waves = self.folded_waves(&geometry, &layout);
+        let waves = self.folded_waves(&geometry, layout);
         let mut icons = self.icon_elements(
             &geometry,
-            &layout,
+            layout,
             bounds,
-            ascent,
+            baseline,
             hex_color(palette.icon_stroke),
             window,
             cx,
         );
         icons.extend(self.fold_chevron_elements(
             &geometry,
-            &layout,
+            layout,
             bounds,
             hex_color(palette.fold_chevron),
             window,
             cx,
         ));
-        let fold_regions = self.fold_chevron_regions(&geometry, &layout, bounds, window);
+        let fold_regions = self.fold_chevron_regions(&geometry, layout, bounds, window);
         let separator = physical_bounds(
             PixelRect::new(
                 layout.separator,
@@ -792,6 +847,8 @@ mod tests {
             2
         );
         assert_eq!(max_icons_per_line(&[spec(3, true), spec(3, false)]), 1);
+        let crowded: [GutterIconSpec; 5] = std::array::from_fn(|_| spec(7, true));
+        assert_eq!(max_icons_per_line(&crowded), 4);
     }
 
     #[test]

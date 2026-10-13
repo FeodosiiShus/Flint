@@ -1,5 +1,5 @@
 use editor::{SelectionEffects, SoftWrap};
-use gpui::{AppContext as _, Entity, TestAppContext, VisualTestContext, px, size};
+use gpui::{AppContext as _, Entity, Modifiers, TestAppContext, VisualTestContext, px, size};
 use language::{Point, language_settings::ShowWhitespaceSetting};
 use merge_diff::{ComparisonPolicy, Side, ThreeSide};
 use settings::SettingsStore;
@@ -420,6 +420,31 @@ async fn merge_tool_viewer_ignore_policy_change_restarts_the_merge_and_is_rememb
         assert_eq!(
             viewer_settings::stored_ignore_policy(cx),
             ComparisonPolicy::IgnoreWhitespaces
+        );
+    });
+}
+
+#[gpui::test]
+async fn merge_tool_viewer_clicking_the_left_accept_icon_applies_the_left_change(
+    cx: &mut TestAppContext,
+) {
+    let (viewer, cx) = settled_viewer(cx, LEFT_ONLY_CHANGE, BASE, BASE);
+    cx.update(|window, _| window.refresh());
+    cx.run_until_parked();
+    let accept_icon = cx
+        .debug_bounds("merge-gutter-icon-left-0")
+        .expect("the left pane gutter lays out its Accept icon");
+
+    cx.simulate_click(accept_icon.center(), Modifiers::alt());
+    viewer.read_with(cx, |viewer, cx| {
+        assert_eq!(viewer.editor(ThreeSide::Base).read(cx).text(cx), BASE);
+    });
+
+    cx.simulate_click(accept_icon.center(), Modifiers::none());
+    viewer.read_with(cx, |viewer, cx| {
+        assert_eq!(
+            viewer.editor(ThreeSide::Base).read(cx).text(cx),
+            LEFT_ONLY_CHANGE
         );
     });
 }

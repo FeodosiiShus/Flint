@@ -55,7 +55,6 @@ fn configure_pane_editor(
     editor.set_show_breakpoints(false, cx);
     editor.set_show_bookmarks(false, cx);
     editor.set_show_wrap_guides(false, cx);
-    editor.set_show_cursor_when_unfocused(true, cx);
     editor.set_current_line_highlight(Some(CurrentLineHighlight::None));
     apply_appearance_to_editor(editor, appearance, cx);
 }

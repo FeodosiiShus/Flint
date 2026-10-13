@@ -428,6 +428,16 @@ impl MergeWindow {
 
     fn render_button_row(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let apply_enabled = self.apply_enabled(cx);
+        let cancel_button = DialogButton::new("merge-cancel", cancel_button_label(self.iterative))
+            .on_click(cx.listener(|merge_window, _, window, cx| {
+                merge_window.cancel_or_save(window, cx);
+            }));
+        let apply_button = DialogButton::new("merge-apply-changes", APPLY_CHANGES_LABEL)
+            .default_button(true)
+            .disabled(!apply_enabled)
+            .on_click(cx.listener(|merge_window, _, window, cx| {
+                merge_window.apply_changes(window, cx);
+            }));
         h_flex()
             .w_full()
             .flex_none()
@@ -456,20 +466,8 @@ impl MergeWindow {
             .child(
                 h_flex()
                     .gap(px(BUTTON_GAP))
-                    .child(
-                        DialogButton::new("merge-cancel", cancel_button_label(self.iterative))
-                            .on_click(cx.listener(|merge_window, _, window, cx| {
-                                merge_window.cancel_or_save(window, cx);
-                            })),
-                    )
-                    .child(
-                        DialogButton::new("merge-apply-changes", APPLY_CHANGES_LABEL)
-                            .default_button(true)
-                            .disabled(!apply_enabled)
-                            .on_click(cx.listener(|merge_window, _, window, cx| {
-                                merge_window.apply_changes(window, cx);
-                            })),
-                    ),
+                    .child(cancel_button)
+                    .child(apply_button),
             )
     }
 }

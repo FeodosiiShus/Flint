@@ -19,6 +19,7 @@ use crate::merge_tool::{
 const ISLAND_HEIGHT: f32 = 40.0;
 const ISLAND_RADIUS: f32 = 6.0;
 const TOOLBAR_GAP: f32 = 10.0;
+const STATUS_HORIZONTAL_INSET: f32 = 4.0;
 const NON_CONFLICTING_TITLE: &str = "Apply non-conflicting changes:";
 const SPINNER_TOOLTIP: &str = "Computing differences";
 const GREEN_CHECKMARK_LIGHT: u32 = 0x369650;
@@ -118,11 +119,7 @@ impl MergeViewer {
                     })),
             )
             .child(Divider::vertical())
-            .child(
-                Label::new(NON_CONFLICTING_TITLE)
-                    .size(LabelSize::Small)
-                    .color(Color::Muted),
-            )
+            .child(Label::new(NON_CONFLICTING_TITLE).size(LabelSize::Small))
             .child(
                 Button::new("merge-apply-non-conflicting-left", "Left")
                     .label_size(LabelSize::Small)
@@ -204,7 +201,7 @@ impl MergeViewer {
         h_flex()
             .flex_none()
             .gap_1()
-            .px(px(2.0))
+            .px(px(STATUS_HORIZONTAL_INSET))
             .items_center()
             .when(self.is_busy(), |status_row| {
                 status_row.child(

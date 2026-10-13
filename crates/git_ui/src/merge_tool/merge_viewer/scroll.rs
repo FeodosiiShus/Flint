@@ -1,10 +1,11 @@
 use editor::{
-    Bias, DisplayPoint, Editor,
+    Bias, DisplayPoint, Editor, EditorSettings, ScrollBeyondLastLine,
     display_map::{DisplayRow, DisplaySnapshot},
 };
 use gpui::{App, Context, Entity, Point, Window, point};
 use language::Point as TextPoint;
 use merge_diff::ThreeSide;
+use settings::Settings as _;
 
 use super::{
     MergeViewer,
@@ -67,10 +68,14 @@ impl PaneRows {
         i64::from(self.snapshot.max_point().row().0) + 1
     }
 
+    fn is_empty(&self) -> bool {
+        self.snapshot.buffer_snapshot().is_empty()
+    }
+
     pub(super) fn visual_row_of_line(&self, line: i64) -> i64 {
-        let max_row = i64::from(self.snapshot.buffer_snapshot().max_point().row);
-        if line > max_row {
-            return self.total_rows();
+        let line_count = self.line_count();
+        if line >= line_count {
+            return line - line_count + self.total_rows();
         }
         let point = TextPoint::new(line.max(0) as u32, 0);
         i64::from(
@@ -82,12 +87,28 @@ impl PaneRows {
     }
 
     pub(super) fn line_of_visual_row(&self, row: i64) -> i64 {
+        let total_rows = self.total_rows();
+        if row >= total_rows {
+            return row - total_rows + self.line_count();
+        }
         let display_point = DisplayPoint::new(DisplayRow(row.max(0) as u32), 0);
         i64::from(
             self.snapshot
                 .display_point_to_point(display_point, Bias::Left)
                 .row,
         )
+    }
+
+    fn maximum_scroll_top(&self, visible_rows: f64, cx: &App) -> f64 {
+        let max_row = (self.total_rows() - 1) as f64;
+        let settings = EditorSettings::get_global(cx);
+        match settings.scroll_beyond_last_line {
+            ScrollBeyondLastLine::OnePage => max_row,
+            ScrollBeyondLastLine::Off => (max_row - visible_rows + 1.0).max(0.0),
+            ScrollBeyondLastLine::VerticalScrollMargin => {
+                (max_row - visible_rows + 1.0 + settings.vertical_scroll_margin).max(0.0)
+            }
+        }
     }
 }
 
@@ -259,7 +280,10 @@ impl MergeViewer {
         if horizontal_changed {
             target.x = master_position.x;
         }
-        if vertical_changed {
+        let master_rows = vertical_changed
+            .then(|| PaneRows::capture(self.editor(master), cx))
+            .filter(|rows| !rows.is_empty());
+        if let Some(master_rows) = master_rows {
             let visible_rows = self
                 .editor(master)
                 .read(cx)
@@ -267,7 +291,7 @@ impl MergeViewer {
                 .unwrap_or_default();
             let scrollable = self.pair_scrollable(pair, cx);
             let mapping = PairRowMapping {
-                master: PaneRows::capture(self.editor(master), cx),
+                master: master_rows,
                 slave: PaneRows::capture(self.editor(slave), cx),
             };
             let output = sync_vertical_scroll(&VerticalSyncInput {
@@ -312,7 +336,7 @@ impl MergeViewer {
                     .visual_row_of_line(ends[side.index()] as i64 + 1)
                     as f64,
                 visible_rows,
-                maximum_scroll_top_rows: (rows.total_rows() as f64 - visible_rows).max(0.0),
+                maximum_scroll_top_rows: rows.maximum_scroll_top(visible_rows, cx),
             }
         });
         let offsets = target_offsets(metrics);

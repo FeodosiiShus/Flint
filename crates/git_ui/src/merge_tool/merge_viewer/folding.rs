@@ -117,32 +117,215 @@ pub(crate) struct HoveredFold {
     pub side: ThreeSide,
 }
 
+#[derive(Clone, PartialEq, Eq, Debug)]
+struct FoldedGroupState {
+    expanded: Option<Range<usize>>,
+    collapsed: Option<Range<usize>>,
+}
+
+impl FoldedGroupState {
+    fn line_range(&self) -> Option<&Range<usize>> {
+        self.expanded.as_ref().or(self.collapsed.as_ref())
+    }
+}
+
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub(crate) struct FoldingCache {
+    expand_by_default: bool,
+    ranges: [Vec<FoldedGroupState>; PANE_COUNT],
+}
+
+fn contains_lines(outer: &Range<usize>, inner: &Range<usize>) -> bool {
+    outer.start <= inner.start && inner.end <= outer.end
+}
+
+impl FoldingCache {
+    fn capture(
+        expanded_blocks: &[usize],
+        region_lines: &[Vec<[Option<Range<usize>>; 3]>],
+        expand_by_default: bool,
+    ) -> Self {
+        let ranges: [Vec<FoldedGroupState>; PANE_COUNT] = std::array::from_fn(|pane| {
+            region_lines
+                .iter()
+                .zip(expanded_blocks)
+                .filter_map(|(blocks, &expanded_count)| {
+                    let mut expanded = None;
+                    let mut collapsed = None;
+                    for (block_index, block) in blocks.iter().enumerate() {
+                        let Some(lines) = block.get(pane).cloned().flatten() else {
+                            continue;
+                        };
+                        if block_index >= expanded_count {
+                            collapsed = Some(lines);
+                            break;
+                        }
+                        if expanded.is_none() {
+                            expanded = Some(lines);
+                        }
+                    }
+                    (expanded.is_some() || collapsed.is_some()).then_some(FoldedGroupState {
+                        expanded,
+                        collapsed,
+                    })
+                })
+                .collect()
+        });
+        Self {
+            expand_by_default,
+            ranges,
+        }
+    }
+}
+
+struct ExpandSuggester<'a> {
+    cache: Option<&'a FoldingCache>,
+    cursors: [usize; PANE_COUNT],
+    expanded_by_default: bool,
+}
+
+impl<'a> ExpandSuggester<'a> {
+    fn new(cache: Option<&'a FoldingCache>, expanded_by_default: bool) -> Self {
+        Self {
+            cache,
+            cursors: [0; PANE_COUNT],
+            expanded_by_default,
+        }
+    }
+
+    fn expanded_block_count(&mut self, group: &FoldGroup) -> usize {
+        let expanded: Vec<bool> = group
+            .blocks
+            .iter()
+            .map(|block| self.is_expanded(block))
+            .collect();
+        expanded
+            .iter()
+            .position(|block_expanded| !block_expanded)
+            .unwrap_or(expanded.len())
+    }
+
+    fn is_expanded(&mut self, block: &FoldBlock) -> bool {
+        let Some(cache) = self.cache else {
+            return self.expanded_by_default;
+        };
+        if cache.expand_by_default != self.expanded_by_default {
+            return self.expanded_by_default;
+        }
+        let mut state = None;
+        for (pane, region) in block.regions.iter().enumerate() {
+            let Some(region) = region else {
+                continue;
+            };
+            let Some(pane_state) = self.cached_expanded(cache, region, pane) else {
+                continue;
+            };
+            match state {
+                None => state = Some(pane_state),
+                Some(previous) if previous != pane_state => return self.expanded_by_default,
+                Some(_) => {}
+            }
+        }
+        state.unwrap_or(self.expanded_by_default)
+    }
+
+    fn cached_expanded(
+        &mut self,
+        cache: &FoldingCache,
+        region: &Range<usize>,
+        pane: usize,
+    ) -> Option<bool> {
+        let group = self.cached_state(cache, region, pane)?;
+        if group
+            .collapsed
+            .as_ref()
+            .is_some_and(|collapsed| contains_lines(collapsed, region))
+        {
+            return Some(false);
+        }
+        if group
+            .expanded
+            .as_ref()
+            .is_some_and(|expanded| contains_lines(expanded, region))
+        {
+            return Some(true);
+        }
+        None
+    }
+
+    fn cached_state<'c>(
+        &mut self,
+        cache: &'c FoldingCache,
+        region: &Range<usize>,
+        pane: usize,
+    ) -> Option<&'c FoldedGroupState> {
+        if region.start == region.end {
+            return None;
+        }
+        let states = cache.ranges.get(pane)?;
+        let cursor = self.cursors.get_mut(pane)?;
+        while let Some(state) = states.get(*cursor) {
+            let line_range = state.line_range()?;
+            if line_range.end > region.start {
+                if contains_lines(line_range, region) {
+                    return Some(state);
+                }
+                if line_range.start >= region.start {
+                    return None;
+                }
+            }
+            *cursor += 1;
+        }
+        None
+    }
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct FoldState {
     groups: Vec<FoldGroup>,
     expanded_blocks: Vec<usize>,
     anchored_regions: Vec<Vec<[Option<Range<Anchor>>; 3]>>,
     hovered: Option<HoveredFold>,
+    cache: Option<FoldingCache>,
 }
 
 impl FoldState {
-    pub(crate) fn new(groups: Vec<FoldGroup>, expanded_by_default: bool) -> Self {
+    pub(crate) fn new(
+        groups: Vec<FoldGroup>,
+        expanded_by_default: bool,
+        cache: Option<FoldingCache>,
+    ) -> Self {
+        let mut suggester = ExpandSuggester::new(cache.as_ref(), expanded_by_default);
         let expanded_blocks = groups
             .iter()
-            .map(|group| {
-                if expanded_by_default {
-                    group.blocks.len()
-                } else {
-                    0
-                }
-            })
+            .map(|group| suggester.expanded_block_count(group))
             .collect();
         Self {
             groups,
             expanded_blocks,
             anchored_regions: Vec::new(),
             hovered: None,
+            cache,
         }
+    }
+
+    pub(crate) fn into_cache(
+        self,
+        region_lines: &[Vec<[Option<Range<usize>>; 3]>],
+        expand_by_default: bool,
+    ) -> Option<FoldingCache> {
+        if self.groups.is_empty() {
+            return self.cache;
+        }
+        Some(FoldingCache::capture(
+            &self.expanded_blocks,
+            region_lines,
+            expand_by_default,
+        ))
+    }
+
+    pub(crate) fn anchored_regions(&self) -> &[Vec<[Option<Range<Anchor>>; 3]>] {
+        &self.anchored_regions
     }
 
     pub(crate) fn with_anchored_regions(
@@ -326,7 +509,7 @@ mod tests {
 
     #[test]
     fn merge_tool_folding_state_expands_nested_blocks_one_at_a_time() {
-        let mut state = FoldState::new(middle_fragment_groups(), false);
+        let mut state = FoldState::new(middle_fragment_groups(), false, None);
         assert_eq!(state.collapsed_block(0), Some(0));
         assert_eq!(state.collapsed_block(1), Some(0));
         state.expand_block(1, 0);
@@ -340,14 +523,14 @@ mod tests {
 
     #[test]
     fn merge_tool_folding_state_expanding_an_inner_block_expands_the_outer_ones() {
-        let mut state = FoldState::new(middle_fragment_groups(), false);
+        let mut state = FoldState::new(middle_fragment_groups(), false, None);
         state.expand_block(1, 1);
         assert_eq!(state.collapsed_block(1), Some(2));
     }
 
     #[test]
     fn merge_tool_folding_state_expanding_an_outer_block_again_keeps_inner_blocks_expanded() {
-        let mut state = FoldState::new(middle_fragment_groups(), false);
+        let mut state = FoldState::new(middle_fragment_groups(), false, None);
         state.expand_block(1, 1);
         state.expand_block(1, 0);
         assert_eq!(state.collapsed_block(1), Some(2));
@@ -355,7 +538,7 @@ mod tests {
 
     #[test]
     fn merge_tool_folding_state_expand_all_toggles_every_group() {
-        let mut state = FoldState::new(middle_fragment_groups(), true);
+        let mut state = FoldState::new(middle_fragment_groups(), true, None);
         assert_eq!(state.collapsed_block(0), None);
         assert_eq!(state.collapsed_block(1), None);
         state.expand_all(false);
@@ -368,7 +551,7 @@ mod tests {
 
     #[test]
     fn merge_tool_folding_state_ignores_unknown_groups() {
-        let mut state = FoldState::new(middle_fragment_groups(), false);
+        let mut state = FoldState::new(middle_fragment_groups(), false, None);
         assert_eq!(state.groups().len(), 2);
         assert_eq!(state.collapsed_block(7), None);
         state.expand_block(7, 0);
@@ -379,7 +562,7 @@ mod tests {
 
     #[test]
     fn merge_tool_folding_hover_is_cleared_only_by_the_pane_that_set_it() {
-        let mut state = FoldState::new(middle_fragment_groups(), false);
+        let mut state = FoldState::new(middle_fragment_groups(), false, None);
         let hovered = HoveredFold {
             group: 1,
             side: ThreeSide::Left,
@@ -394,12 +577,53 @@ mod tests {
 
     #[test]
     fn merge_tool_folding_expand_all_drops_the_hover() {
-        let mut state = FoldState::new(middle_fragment_groups(), false);
+        let mut state = FoldState::new(middle_fragment_groups(), false, None);
         state.hover(HoveredFold {
             group: 0,
             side: ThreeSide::Base,
         });
         state.expand_all(true);
         assert_eq!(state.hovered(), None);
+    }
+
+    fn unedited_region_lines(groups: &[FoldGroup]) -> Vec<Vec<[Option<Range<usize>>; 3]>> {
+        groups.iter().map(block_regions).collect()
+    }
+
+    fn cache_with_second_group_partly_expanded() -> Option<FoldingCache> {
+        let groups = middle_fragment_groups();
+        let region_lines = unedited_region_lines(&groups);
+        let mut state = FoldState::new(groups, false, None);
+        state.expand_block(1, 0);
+        state.into_cache(&region_lines, false)
+    }
+
+    #[test]
+    fn merge_tool_folding_rediff_restores_the_expansion_state_from_the_cache() {
+        let restored = FoldState::new(
+            middle_fragment_groups(),
+            false,
+            cache_with_second_group_partly_expanded(),
+        );
+        assert_eq!(restored.collapsed_block(0), Some(0));
+        assert_eq!(restored.collapsed_block(1), Some(1));
+    }
+
+    #[test]
+    fn merge_tool_folding_cache_is_ignored_after_the_default_changed() {
+        let restored = FoldState::new(
+            middle_fragment_groups(),
+            true,
+            cache_with_second_group_partly_expanded(),
+        );
+        assert_eq!(restored.collapsed_block(0), None);
+        assert_eq!(restored.collapsed_block(1), None);
+    }
+
+    #[test]
+    fn merge_tool_folding_state_without_groups_keeps_the_previous_cache() {
+        let cache = cache_with_second_group_partly_expanded();
+        let empty = FoldState::new(Vec::new(), false, cache.clone());
+        assert_eq!(empty.into_cache(&[], false), cache);
     }
 }

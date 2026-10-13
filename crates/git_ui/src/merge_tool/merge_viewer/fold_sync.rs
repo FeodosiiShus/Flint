@@ -16,7 +16,7 @@ use util::ResultExt as _;
 use super::{
     MergeViewer,
     folding::{
-        DEFAULT_CONTEXT_RANGE, FoldGroup, FoldState, FragmentLines, HoveredFold,
+        DEFAULT_CONTEXT_RANGE, FoldGroup, FoldState, FoldingCache, FragmentLines, HoveredFold,
         compute_fold_groups,
     },
     viewer_settings,
@@ -79,7 +79,7 @@ fn fold_placeholder(
 
 impl MergeViewer {
     pub(super) fn install_folds(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.remove_folds(cx);
+        let cache = self.take_fold_cache(cx);
         let fragments: Vec<FragmentLines> = {
             let model = self.model.read(cx);
             model
@@ -99,7 +99,8 @@ impl MergeViewer {
         let anchored_regions = self.capture_anchored_regions(&groups, cx);
         let group_count = groups.len();
         self.folds = Some(
-            FoldState::new(groups, self.expand_by_default).with_anchored_regions(anchored_regions),
+            FoldState::new(groups, self.expand_by_default, cache)
+                .with_anchored_regions(anchored_regions),
         );
         self.fold_anchors = vec![[None; 3]; group_count];
         for group_index in 0..group_count {
@@ -131,10 +132,35 @@ impl MergeViewer {
             .collect()
     }
 
-    pub(super) fn remove_folds(&mut self, cx: &mut Context<Self>) {
-        if self.folds.take().is_none() {
-            return;
+    fn region_lines(&self, state: &FoldState, cx: &App) -> Vec<Vec<[Option<Range<usize>>; 3]>> {
+        let snapshots =
+            ThreeSide::ALL.map(|side| self.editor(side).read(cx).buffer().read(cx).snapshot(cx));
+        state
+            .anchored_regions()
+            .iter()
+            .map(|blocks| {
+                blocks
+                    .iter()
+                    .map(|block| {
+                        ThreeSide::ALL.map(|side| {
+                            let region = block.get(side.index())?.as_ref()?;
+                            let snapshot = snapshots.get(side.index())?;
+                            let start = region.start.to_point(snapshot);
+                            let end = region.end.to_point(snapshot);
+                            (start <= end).then(|| start.row as usize..end.row as usize + 1)
+                        })
+                    })
+                    .collect()
+            })
+            .collect()
+    }
+
+    fn take_fold_cache(&mut self, cx: &mut Context<Self>) -> Option<FoldingCache> {
+        let state = self.folds.take()?;
+        if state.groups().is_empty() {
+            return state.into_cache(&[], self.expand_by_default);
         }
+        let region_lines = self.region_lines(&state, cx);
         self.fold_anchors.clear();
         for side in ThreeSide::ALL {
             self.editor(side).update(cx, |editor, cx| {
@@ -148,6 +174,12 @@ impl MergeViewer {
                 );
             });
         }
+        state.into_cache(&region_lines, self.expand_by_default)
+    }
+
+    pub(super) fn remove_folds(&mut self, cx: &mut Context<Self>) {
+        let cache = self.take_fold_cache(cx);
+        self.folds = Some(FoldState::new(Vec::new(), self.expand_by_default, cache));
     }
 
     fn apply_fold_group(

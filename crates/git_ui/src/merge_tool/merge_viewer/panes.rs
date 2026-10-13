@@ -63,6 +63,19 @@ const BALLOON_LINK: &str = "Apply Changes";
 const SHOW_DETAILS_LABEL: &str = "Show Details";
 const HIDE_NOTIFICATION_LABEL: &str = "Hide";
 const HIDE_NOTIFICATION_TOOLTIP: &str = "Hide this notification";
+const ERROR_MESSAGE: &str = "Error";
+const MESSAGE_PANEL_INSET: f32 = 5.0;
+const COMMENT_CAPTURE: &str = "comment";
+
+fn message_panel_foreground(cx: &App) -> Hsla {
+    let theme = cx.theme();
+    theme
+        .syntax()
+        .style_for_name(COMMENT_CAPTURE)
+        .filter(|style| style.background_color.is_none())
+        .and_then(|style| style.color)
+        .unwrap_or(theme.colors().editor_foreground)
+}
 
 fn success_image(cx: &App) -> Img {
     let path = if current_palette(cx).kind.is_dark() {
@@ -288,13 +301,9 @@ impl MergeViewer {
         let changes = self.pane_changes(side, cx);
         let folded_lines = self.folded_lines(side, cx);
         let show_line_numbers = self.appearance.line_numbers;
-        let gutter_pixels = gutter_width(
-            window,
-            cx,
-            line_count,
-            max_icons_per_line(&icons),
-            show_line_numbers,
-        );
+        let icon_columns = max_icons_per_line(&icons).max(self.retained_icon_columns[index]);
+        self.retained_icon_columns[index] = icon_columns;
+        let gutter_pixels = gutter_width(window, cx, line_count, icon_columns, show_line_numbers);
         let fold_interaction = self.fold_interaction(side, cx);
         let gutter = MergeGutter::new(
             ("merge-gutter", index),
@@ -305,6 +314,7 @@ impl MergeViewer {
             changes.clone(),
             icons,
         )
+        .icon_columns(icon_columns)
         .line_numbers_visible(show_line_numbers)
         .fold_expand(fold_interaction.on_expand.clone())
         .folded_lines(folded_lines.clone());
@@ -325,9 +335,9 @@ impl MergeViewer {
             .min_w_0()
             .h_full()
             .child(editor)
-            .child(overlay)
-            .when_some(balloon, |area, balloon| area.child(balloon));
+            .child(overlay);
         let pane = h_flex()
+            .relative()
             .w(px(width as f32))
             .flex_none()
             .h_full()
@@ -338,6 +348,7 @@ impl MergeViewer {
         } else {
             pane.child(gutter).child(editor_area)
         };
+        let pane = pane.when_some(balloon, |pane, balloon| pane.child(balloon));
         if side == ThreeSide::Base {
             return pane.into_any_element();
         }
@@ -640,14 +651,21 @@ impl MergeViewer {
 impl Render for MergeViewer {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let header = self.render_header(window, cx).into_any_element();
-        let notification = self.render_notification(cx);
-        let body = if self.has_error_content() {
+        let error_content = self.has_error_content();
+        let notification = if error_content {
+            None
+        } else {
+            self.render_notification(cx)
+        };
+        let body = if error_content {
+            let foreground = message_panel_foreground(cx);
             div()
                 .flex_1()
                 .flex()
                 .items_center()
                 .justify_center()
-                .child(Label::new("Error"))
+                .p(px(MESSAGE_PANEL_INSET))
+                .child(Label::new(ERROR_MESSAGE).color(Color::Custom(foreground)))
                 .into_any_element()
         } else {
             self.render_panes(window, cx)

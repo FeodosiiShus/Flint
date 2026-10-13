@@ -20,7 +20,6 @@ use crate::merge_tool::palette::{change_colors, current_palette, hex_color};
 const VISIBLE_CULL_MARGIN: f32 = 4.0;
 const EMPTY_MARKER_WIDTH: f32 = 2.0;
 const EMPTY_MARKER_HALF_WIDTH: f32 = 1.0;
-const WAVE_TOP_NUDGE: f32 = 1.0;
 
 pub(crate) fn content_rect_to_window(rect: PixelRect, area_left: f32, scroll_x: f32) -> PixelRect {
     PixelRect {
@@ -240,7 +239,7 @@ impl MergeEditorOverlay {
                 if line_top < view_top || line_top > view_bottom {
                     return None;
                 }
-                let top = line_top + WAVE_TOP_NUDGE + wave_vertical_offset(geometry.line_height);
+                let top = line_top + wave_vertical_offset(geometry.line_height);
                 Some(OverlayWave {
                     commands: wave_commands(tile_origin, top, area_left..area_left + area_width),
                     width: wave_stroke_width(folded.hovered),

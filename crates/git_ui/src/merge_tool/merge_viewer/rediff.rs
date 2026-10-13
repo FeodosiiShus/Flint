@@ -113,6 +113,9 @@ impl MergeViewer {
         {
             self.apply_non_conflicting(ThreeSide::Base, window, cx);
         }
+        if let Some(policy) = self.deferred_ignore_policy.take() {
+            self.request_ignore_policy(policy, window, cx);
+        }
     }
 
     fn fail_rediff(

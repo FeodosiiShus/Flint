@@ -13,6 +13,7 @@ pub(crate) struct PaneGeometry {
     pub(crate) bounds: Bounds<Pixels>,
     pub(crate) line_height: f32,
     pub(crate) metrics: LastTextMetrics,
+    pub(crate) caret_line: u32,
     scroll_top: f64,
     snapshot: DisplaySnapshot,
     text_layout_details: TextLayoutDetails,
@@ -33,10 +34,16 @@ impl PaneGeometry {
             }
             let text_layout_details = editor.text_layout_details(window, cx);
             let snapshot = editor.snapshot(window, cx);
+            let caret_line = editor
+                .selections
+                .newest::<Point>(&snapshot.display_snapshot)
+                .head()
+                .row;
             Some(Self {
                 bounds,
                 line_height,
                 metrics,
+                caret_line,
                 scroll_top: snapshot.scroll_position().y,
                 snapshot: snapshot.display_snapshot,
                 text_layout_details,

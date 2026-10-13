@@ -1,7 +1,7 @@
 pub(crate) mod highlights;
 
 use gpui::{App, Global, Hsla, rgb};
-use theme::ActiveTheme;
+use theme::{ActiveTheme, Theme};
 
 const EVA_DARK_THEME_NAME: &str = "Eva Dark";
 const FADE_BALANCE: f64 = 0.6;
@@ -265,14 +265,21 @@ pub(crate) fn color_hex(color: Hsla) -> u32 {
     (to_byte(rgba.r) << 16) | (to_byte(rgba.g) << 8) | to_byte(rgba.b)
 }
 
+pub(crate) fn palette_override(cx: &App) -> Option<MergePaletteKind> {
+    cx.try_global::<MergePaletteOverride>()
+        .and_then(|selection| selection.0)
+}
+
+pub(crate) fn palette_kind_for_theme(
+    theme: &Theme,
+    override_kind: Option<MergePaletteKind>,
+) -> MergePaletteKind {
+    override_kind
+        .unwrap_or_else(|| MergePaletteKind::for_theme(&theme.name, theme.appearance().is_light()))
+}
+
 pub(crate) fn current_palette_kind(cx: &App) -> MergePaletteKind {
-    let override_kind = cx
-        .try_global::<MergePaletteOverride>()
-        .and_then(|selection| selection.0);
-    override_kind.unwrap_or_else(|| {
-        let theme = cx.theme();
-        MergePaletteKind::for_theme(&theme.name, theme.appearance().is_light())
-    })
+    palette_kind_for_theme(cx.theme(), palette_override(cx))
 }
 
 pub(crate) fn current_palette(cx: &App) -> MergePalette {

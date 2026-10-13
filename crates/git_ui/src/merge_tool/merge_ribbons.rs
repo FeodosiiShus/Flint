@@ -1,13 +1,15 @@
 pub(crate) mod wave;
 
+use std::cell::Cell;
 use std::ops::Range;
 use std::rc::Rc;
 
 use editor::Editor;
 use gpui::{
-    App, Bounds, ContentMask, CursorStyle, Element, ElementId, Entity, GlobalElementId, Hitbox,
-    HitboxBehavior, Hsla, InspectorElementId, IntoElement, LayoutId, MouseButton, MouseDownEvent,
-    MouseMoveEvent, PathBuilder, Pixels, Point, Style, Window, fill, point, px, size,
+    App, Bounds, ContentMask, CursorStyle, DefiniteLength, Element, ElementId, Entity,
+    GlobalElementId, Hitbox, HitboxBehavior, Hsla, InspectorElementId, IntoElement, LayoutId,
+    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PathBuilder, Pixels, Point, Style,
+    Window, fill, point, px, size,
 };
 use util::ResultExt as _;
 
@@ -22,6 +24,7 @@ pub(crate) const DOTTED_STROKE_WIDTH: f32 = 2.3;
 pub(crate) const DOTTED_DASH: f32 = 2.0;
 pub(crate) const CENTRE_LINE_WIDTH: f32 = 1.0;
 pub(crate) const COLLAPSED_ROW_THRESHOLD: f32 = 2.0;
+pub(crate) const TOGGLE_CLICK_COUNT: usize = 2;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct RibbonRows {
@@ -220,13 +223,18 @@ struct PreparedConnector {
     hovered: bool,
 }
 
-pub(crate) struct RibbonsPrepaint {
+struct RibbonsScene {
     band: Bounds<Pixels>,
     band_color: Hsla,
     wave_color: Hsla,
     ribbons: Vec<PreparedRibbon>,
     connectors: Vec<PreparedConnector>,
+}
+
+pub(crate) struct RibbonsPrepaint {
     hitbox: Hitbox,
+    dragging: Rc<Cell<bool>>,
+    scene: Option<RibbonsScene>,
 }
 
 fn place(origin: Point<Pixels>, xy: Xy) -> Point<Pixels> {
@@ -275,10 +283,18 @@ fn paint_dotted(window: &mut Window, origin: Point<Pixels>, curve: &Cubic, color
     }
 }
 
-fn register_interaction(window: &mut Window, hitbox: &Hitbox, interaction: &DividerInteraction) {
+fn register_interaction(
+    window: &mut Window,
+    hitbox: &Hitbox,
+    dragging: &Rc<Cell<bool>>,
+    interaction: &DividerInteraction,
+) {
     window.set_cursor_style(CursorStyle::ResizeLeft, hitbox);
+    if dragging.get() {
+        window.capture_pointer(hitbox.id);
+    }
     let mouse_down_hitbox = hitbox.clone();
-    let on_double_click = interaction.on_double_click.clone();
+    let mouse_down_dragging = dragging.clone();
     window.on_mouse_event(move |event: &MouseDownEvent, phase, window, cx| {
         if !phase.bubble()
             || event.button != MouseButton::Left
@@ -287,20 +303,36 @@ fn register_interaction(window: &mut Window, hitbox: &Hitbox, interaction: &Divi
             return;
         }
         cx.stop_propagation();
-        if event.click_count >= 2 {
+        mouse_down_dragging.set(true);
+        window.capture_pointer(mouse_down_hitbox.id);
+    });
+    let mouse_up_hitbox = hitbox.clone();
+    let mouse_up_dragging = dragging.clone();
+    let on_double_click = interaction.on_double_click.clone();
+    window.on_mouse_event(move |event: &MouseUpEvent, phase, window, cx| {
+        if !phase.capture() || !mouse_up_dragging.get() {
+            return;
+        }
+        mouse_up_dragging.set(false);
+        cx.stop_propagation();
+        if event.button == MouseButton::Left
+            && event.click_count == TOGGLE_CLICK_COUNT
+            && mouse_up_hitbox.is_hovered_at(event.position, window)
+        {
             on_double_click(window, cx);
-        } else {
-            window.capture_pointer(mouse_down_hitbox.id);
         }
     });
-    let mouse_move_hitbox = hitbox.clone();
+    let mouse_move_dragging = dragging.clone();
     let on_drag = interaction.on_drag.clone();
     window.on_mouse_event(move |event: &MouseMoveEvent, phase, window, cx| {
-        if phase.bubble()
-            && event.dragging()
-            && window.captured_hitbox() == Some(mouse_move_hitbox.id)
-        {
+        if !phase.capture() || !mouse_move_dragging.get() {
+            return;
+        }
+        if event.dragging() {
             on_drag(event.position.x, window, cx);
+        } else {
+            mouse_move_dragging.set(false);
+            window.release_pointer();
         }
     });
 }
@@ -380,6 +412,37 @@ impl MergeRibbons {
         }
         connectors
     }
+
+    fn prepare_scene(
+        &self,
+        bounds: Bounds<Pixels>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Option<RibbonsScene> {
+        let left = PaneGeometry::measure(&self.left_editor, window, cx);
+        let right = PaneGeometry::measure(&self.right_editor, window, cx);
+        let (Some(left), Some(right)) = (left, right) else {
+            window.request_animation_frame();
+            return None;
+        };
+        let band_top = left.top().max(right.top());
+        let band_bottom = (left.top() + left.height()).min(right.top() + right.height());
+        if band_bottom <= band_top {
+            return None;
+        }
+        let band_height = band_bottom - band_top;
+        let band = Bounds::new(
+            point(bounds.origin.x, px(band_top)),
+            size(bounds.size.width, px(band_height)),
+        );
+        Some(RibbonsScene {
+            band,
+            band_color: editor_background(cx),
+            wave_color: hex_color(current_palette(cx).wave),
+            ribbons: self.prepare_ribbons(&left, &right, band_top, band_height, cx),
+            connectors: self.prepare_connectors(&left, &right, band_top, band_height),
+        })
+    }
 }
 
 impl IntoElement for MergeRibbons {
@@ -392,7 +455,7 @@ impl IntoElement for MergeRibbons {
 
 impl Element for MergeRibbons {
     type RequestLayoutState = ();
-    type PrepaintState = Option<RibbonsPrepaint>;
+    type PrepaintState = RibbonsPrepaint;
 
     fn id(&self) -> Option<ElementId> {
         Some(self.id.clone())
@@ -411,46 +474,34 @@ impl Element for MergeRibbons {
     ) -> (LayoutId, Self::RequestLayoutState) {
         let mut style = Style::default();
         style.size.width = px(DIVIDER_WIDTH).into();
+        style.size.height = DefiniteLength::Fraction(1.).into();
         style.flex_shrink = 0.0;
         (window.request_layout(style, [], cx), ())
     }
 
     fn prepaint(
         &mut self,
-        _id: Option<&GlobalElementId>,
+        id: Option<&GlobalElementId>,
         _inspector_id: Option<&InspectorElementId>,
         bounds: Bounds<Pixels>,
         _request_layout: &mut Self::RequestLayoutState,
         window: &mut Window,
         cx: &mut App,
     ) -> Self::PrepaintState {
-        let left = PaneGeometry::measure(&self.left_editor, window, cx);
-        let right = PaneGeometry::measure(&self.right_editor, window, cx);
-        let (Some(left), Some(right)) = (left, right) else {
-            window.request_animation_frame();
-            return None;
-        };
-        let band_top = left.top().max(right.top());
-        let band_bottom = (left.top() + left.height()).min(right.top() + right.height());
-        if band_bottom <= band_top {
-            return None;
-        }
-        let band_height = band_bottom - band_top;
-        let band = Bounds::new(
-            point(bounds.origin.x, px(band_top)),
-            size(bounds.size.width, px(band_height)),
-        );
-        let ribbons = self.prepare_ribbons(&left, &right, band_top, band_height, cx);
-        let connectors = self.prepare_connectors(&left, &right, band_top, band_height);
         let hitbox = window.insert_hitbox(bounds, HitboxBehavior::Normal);
-        Some(RibbonsPrepaint {
-            band,
-            band_color: editor_background(cx),
-            wave_color: hex_color(current_palette(cx).wave),
-            ribbons,
-            connectors,
+        let dragging = match id {
+            Some(id) => window.with_element_state(id, |state: Option<Rc<Cell<bool>>>, _| {
+                let dragging = state.unwrap_or_default();
+                (dragging.clone(), dragging)
+            }),
+            None => Rc::default(),
+        };
+        let scene = self.prepare_scene(bounds, window, cx);
+        RibbonsPrepaint {
             hitbox,
-        })
+            dragging,
+            scene,
+        }
     }
 
     fn paint(
@@ -463,21 +514,21 @@ impl Element for MergeRibbons {
         window: &mut Window,
         _cx: &mut App,
     ) {
-        let Some(prepaint) = prepaint else {
+        if let Some(interaction) = &self.interaction {
+            register_interaction(window, &prepaint.hitbox, &prepaint.dragging, interaction);
+        }
+        let Some(scene) = &prepaint.scene else {
             return;
         };
-        if let Some(interaction) = &self.interaction {
-            register_interaction(window, &prepaint.hitbox, interaction);
-        }
-        window.paint_quad(fill(prepaint.band, prepaint.band_color));
-        let origin = prepaint.band.origin;
+        window.paint_quad(fill(scene.band, scene.band_color));
+        let origin = scene.band.origin;
         window.with_content_mask(
             Some(ContentMask {
-                bounds: prepaint.band,
+                bounds: scene.band,
                 ..Default::default()
             }),
             |window| {
-                for ribbon in &prepaint.ribbons {
+                for ribbon in &scene.ribbons {
                     match &ribbon.shape {
                         RibbonShape::Filled { outline, centre } => {
                             paint_filled(window, origin, outline, centre, ribbon.color)
@@ -488,13 +539,13 @@ impl Element for MergeRibbons {
                         }
                     }
                 }
-                for connector in &prepaint.connectors {
+                for connector in &scene.connectors {
                     paint_stroke(
                         window,
                         &connector.commands,
                         origin,
                         wave_stroke_width(connector.hovered),
-                        prepaint.wave_color,
+                        scene.wave_color,
                     );
                 }
             },

@@ -5,8 +5,12 @@ use editor::{
 };
 use gpui::{App, Context, Hsla};
 use language::Point;
+use theme::Theme;
 
-use super::{ChangeKind, change_colors};
+use super::{
+    ChangeKind, MergePalette, MergePaletteKind, change_colors, hex_color, palette_kind_for_theme,
+    palette_override,
+};
 
 const ROW_OPTIONS: RowHighlightOptions = RowHighlightOptions {
     autoscroll: false,
@@ -152,20 +156,29 @@ pub(crate) fn apply_pane_highlights(
             }
         }
     }
+    let override_kind = palette_override(cx);
     for kind in ChangeKind::ALL {
         let ranges = &inline_ranges[kind.index()];
         if ranges.is_empty() {
             continue;
         }
-        let color = change_colors(cx, kind, false).solid;
-        editor.highlight_background(INLINE_KEYS[kind.index()], ranges, move |_, _| color, cx);
+        editor.highlight_background(
+            INLINE_KEYS[kind.index()],
+            ranges,
+            move |_, theme| inline_color(theme, override_kind, kind),
+            cx,
+        );
     }
+}
+
+fn inline_color(theme: &Theme, override_kind: Option<MergePaletteKind>, kind: ChangeKind) -> Hsla {
+    hex_color(MergePalette::of(palette_kind_for_theme(theme, override_kind)).background(kind))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::merge_tool::palette::{MergePaletteKind, MergePaletteOverride, hex_color};
+    use crate::merge_tool::palette::MergePaletteOverride;
     use editor::ToPoint;
     use gpui::{AppContext as _, TestAppContext};
     use language::Buffer;
