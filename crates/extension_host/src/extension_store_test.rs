@@ -5,7 +5,7 @@ use crate::{
 };
 use collections::BTreeMap;
 use extension::ExtensionHostProxy;
-use fs::{FakeFs, RemoveOptions};
+use fs::{FakeFs, Fs, RemoveOptions};
 use gpui::{AppContext as _, BackgroundExecutor, Entity, TaskExt, TestAppContext};
 use http_client::FakeHttpClient;
 use language::{LanguageConfig, LanguageMatcher, LanguageName, LanguageRegistry, QueryFiles};
