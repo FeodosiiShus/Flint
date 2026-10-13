@@ -601,7 +601,9 @@ impl DapStore {
 
         cx.background_spawn(async move {
             if !shutdown_children.is_empty() {
-                let _ = join_all(shutdown_children).await;
+                for result in join_all(shutdown_children).await {
+                    result.log_err();
+                }
             }
 
             shutdown_task.await;

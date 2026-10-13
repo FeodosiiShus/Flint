@@ -161,7 +161,7 @@ pub async fn get_recent_projects(
 }
 
 pub async fn delete_recent_project(workspace_id: WorkspaceId, db: &WorkspaceDb) {
-    let _ = db.delete_workspace_by_id(workspace_id).await;
+    db.delete_workspace_by_id(workspace_id).await.log_err();
 }
 
 fn get_open_folders(workspace: &Workspace, cx: &App) -> Vec<OpenFolderEntry> {

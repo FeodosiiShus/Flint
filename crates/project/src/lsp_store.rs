@@ -12891,7 +12891,7 @@ impl LspStore {
                 all: false,
             });
             cx.background_spawn(async move {
-                let _ = request.await?;
+                request.await?;
                 Ok(())
             })
         } else {

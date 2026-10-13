@@ -1663,7 +1663,7 @@ impl Session {
             let task = cx
                 .background_executor()
                 .spawn(async move {
-                    let _ = task.await?;
+                    task.await?;
                     Some(())
                 })
                 .shared();
