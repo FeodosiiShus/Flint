@@ -55,11 +55,15 @@ jobs:
           rustc --version
           cargo --version
 
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: nextest
+
       - name: Cache Rust build
         uses: Swatinem/rust-cache@v2
         with:
-          shared-key: flint-ci
-          add-job-id-key: "false"
+          cache-on-failure: "true"
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Check formatting
@@ -68,98 +72,43 @@ jobs:
       - name: Check app crates compile
         run: cargo check --locked --package zed --package cli
 
-      - name: Run tests for crates changed by Flint
-        run: cargo nextest run --locked --package settings --package release_channel --package cli --package theme_settings
-
-      - name: Run background image tests
-        run: cargo nextest run --locked --package ui --package workspace --lib background_image
-
-      - name: Run chrome size tests
-        run: cargo nextest run --locked --package ui --lib chrome_size
-
-      - name: Run title bar tests
-        run: cargo nextest run --locked --package title_bar
-
-      - name: Run Search Everywhere tests
-        run: cargo nextest run --locked --package search_everywhere --package file_finder --package project_symbols --package command_palette --package picker
-
-      - name: Run project search deploy tests
-        run: cargo nextest run --locked --package search --lib -- test_new_project_search_in_directory test_deploy_search_with_multiple_panes test_search_dismisses_modal
-
-      - name: Run merge_diff tests
-        run: cargo nextest run --locked --package merge_diff
-
-      - name: Run Project Diagnostics and Language Services panel tests
-        run: cargo nextest run --locked --package diagnostics --package language_tools --lib -- project_diagnostics_panel language_services_panel
-
-      - name: Run git conflict stage tests
-        run: cargo nextest run --locked --package git --package fs --features fs/test-support
-
-      - name: Run project git store integration tests
-        run: cargo nextest run --locked --package project --features project/test-support --test integration git_store
-
-      - name: Run merge tool and git panel tests
-        run: cargo nextest run --locked --package git_ui --lib -- merge_tool git_panel
-
-      - name: Run Git Branches popup tests
-        run: cargo nextest run --locked --package git_ui --lib -- branches_popup branch_operations branch_refs
-
-      - name: Run Git tool window and Git Log tests
-        run: cargo nextest run --locked --package git_ui --lib -- git_log git_tool_window
-
-      - name: Run keybinding glyph tests
-        run: cargo nextest run --locked --package ui --lib keybinding
-
-      - name: Run icon column tests
-        run: cargo nextest run --locked --package ui --lib icon_column
-
-      - name: Run islands, tool window bar, tool window header and tab tests
-        run: cargo nextest run --locked --package workspace --package ui --lib -- tool_window_bar tool_window_header island inactive_window workspace_settings tab::tests hidden_tabs test_new_tab_scrolls_into_view_completely test_pinned_tabs_scroll_to_item_uses_correct_index project_gradient
-
-      - name: Run editor tab menu, tab bar menu and bottom toolbar tests
-        run: cargo nextest run --locked --package workspace --lib -- tab_context_menu tab_bar_more_menu bottom_toolbar
-
-      - name: Run dock panel size persistence tests
-        run: cargo nextest run --locked --package workspace --lib -- panel_size_state
-
-      - name: Run icon asset tests
-        run: cargo nextest run --locked --package icons
-
-      - name: Run project panel rounded selection tests
-        run: cargo nextest run --locked --package project_panel --lib rounded_selection
-
-      - name: Run project panel select opened file tests
-        run: cargo nextest run --locked --package project_panel --lib select_opened_file
-
-      - name: Run editor rounded scrollbar thumb tests
-        run: cargo nextest run --locked --package editor --lib rounded_thumb
-
-      - name: Run editor context menu, gutter, inspection widget, breadcrumb, matching bracket and inlay hint pill tests
-        run: cargo nextest run --locked --package editor --lib -- mouse_context_menu intellij_gutter inspection_widget breadcrumb test_matching_bracket_highlights inlay_hint_pill
-
-      - name: Run editor with preview and Markdown preview tests
+      - name: Run core tests
         run: |
-          cargo nextest run --locked --package editor --lib -- text_editor_with_preview
-          cargo nextest run --locked --package markdown --lib -- top_aligned_autoscroll
-          cargo nextest run --locked --package markdown_preview
-
-      - name: Run language server DOTNET_ROOT tests
-        run: cargo nextest run --locked --package project --features project/test-support --lib dotnet_root
-
-      - name: Run TypeScript native language server and activation rule tests
-        run: cargo nextest run --locked --package languages --lib -- tsgo server_activation
-
-      - name: Run language server settings tests
-        run: cargo nextest run --locked --package language --lib -- test_resolve_language_servers test_language_servers_across_settings_files test_language_servers_combined_restrictions
-
-      - name: Run marker-driven extension install tests
-        run: cargo nextest run --locked --package extensions_ui --lib marker_install
-
-      - name: Run language server activation tests
-        run: cargo nextest run --locked --package project --features project/test-support --lib server_activation
+          cargo nextest run --locked --profile ci --tests \
+            --package settings --package release_channel --package cli --package theme_settings \
+            --package ui --package workspace --package title_bar \
+            --package search_everywhere --package file_finder --package project_symbols --package command_palette --package picker \
+            --package search --package merge_diff --package diagnostics --package language_tools \
+            --package git --package fs --package project --package git_ui --package icons --package project_panel \
+            --package editor --package markdown --package markdown_preview \
+            --package languages --package language --package extensions_ui \
+            --features fs/test-support,project/test-support \
+            -E 'package(=settings) | package(=release_channel) | package(=cli) | package(=theme_settings)' \
+            -E '(package(=ui) | package(=workspace)) & kind(lib) & test(~background_image)' \
+            -E 'package(=ui) & kind(lib) & (test(~chrome_size) | test(~keybinding) | test(~icon_column))' \
+            -E 'binary_id(=ui::islands_chrome_pixels) | binary_id(=ui::popup_pixels)' \
+            -E 'package(=title_bar)' \
+            -E 'package(=search_everywhere) | package(=file_finder) | package(=project_symbols) | package(=command_palette) | package(=picker)' \
+            -E 'package(=search) & kind(lib) & (test(~test_new_project_search_in_directory) | test(~test_deploy_search_with_multiple_panes) | test(~test_search_dismisses_modal))' \
+            -E 'package(=merge_diff)' \
+            -E '(package(=diagnostics) | package(=language_tools)) & kind(lib) & (test(~project_diagnostics_panel) | test(~language_services_panel))' \
+            -E 'package(=git) | package(=fs)' \
+            -E 'binary_id(=project::integration) & test(~git_store)' \
+            -E 'package(=project) & kind(lib) & (test(~dotnet_root) | test(~server_activation))' \
+            -E 'package(=git_ui) & kind(lib) & (test(~merge_tool) | test(~git_panel) | test(~branches_popup) | test(~branch_operations) | test(~branch_refs) | test(~git_log) | test(~git_tool_window))' \
+            -E '(package(=workspace) | package(=ui)) & kind(lib) & (test(~tool_window_bar) | test(~tool_window_header) | test(~island) | test(~inactive_window) | test(~workspace_settings) | test(~tab::tests) | test(~hidden_tabs) | test(~test_new_tab_scrolls_into_view_completely) | test(~test_pinned_tabs_scroll_to_item_uses_correct_index) | test(~project_gradient))' \
+            -E 'package(=workspace) & kind(lib) & (test(~tab_context_menu) | test(~tab_bar_more_menu) | test(~bottom_toolbar) | test(~panel_size_state))' \
+            -E 'package(=icons)' \
+            -E 'package(=project_panel) & kind(lib) & (test(~rounded_selection) | test(~select_opened_file))' \
+            -E 'package(=editor) & kind(lib) & (test(~rounded_thumb) | test(~mouse_context_menu) | test(~intellij_gutter) | test(~inspection_widget) | test(~breadcrumb) | test(~test_matching_bracket_highlights) | test(~inlay_hint_pill) | test(~text_editor_with_preview))' \
+            -E 'package(=markdown) & kind(lib) & test(~top_aligned_autoscroll)' \
+            -E 'package(=markdown_preview)' \
+            -E 'package(=languages) & kind(lib) & (test(~tsgo) | test(~server_activation))' \
+            -E 'package(=language) & kind(lib) & (test(~test_resolve_language_servers) | test(~test_language_servers_across_settings_files) | test(~test_language_servers_combined_restrictions))' \
+            -E 'package(=extensions_ui) & kind(lib) & test(~marker_install)'
 
   test-ui-heavy:
-    name: GPU and pixel tests
+    name: GPUI and app tests
     runs-on: macos-26
     timeout-minutes: 180
     steps:
@@ -193,21 +142,14 @@ jobs:
       - name: Cache Rust build
         uses: Swatinem/rust-cache@v2
         with:
-          shared-key: flint-ci
-          add-job-id-key: "false"
+          cache-on-failure: "true"
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Run gpui tests
-        run: cargo nextest run --locked --package gpui
+        run: cargo test --locked --package gpui
 
       - name: Run zed action and keymap tests
-        run: cargo nextest run --locked --package zed --bin zed -- test_action_namespaces test_base_keymap test_open_paths test_bundled_languages
-
-      - name: Run islands chrome pixel tests
-        run: cargo nextest run --locked --package ui --test islands_chrome_pixels
-
-      - name: Run popup pixel tests
-        run: cargo nextest run --locked --package ui --test popup_pixels
+        run: cargo test --locked --package zed --bin zed -- test_action_namespaces test_base_keymap test_open_paths test_bundled_languages
 
       - name: Check tests of crates changed by Flint compile
         run: cargo check --locked --tests --package editor --package workspace --package client --package settings_ui --package settings_content --package terminal_view --package language_tools --package diagnostics --package extension_host --package markdown --package markdown_preview
