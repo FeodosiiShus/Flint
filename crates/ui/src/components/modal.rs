@@ -1,4 +1,4 @@
-use crate::{IconButtonShape, prelude::*};
+use crate::{COMPONENT_CORNER_RADII, IconButtonShape, prelude::*};
 
 use gpui::{prelude::FluentBuilder, *};
 use smallvec::SmallVec;
@@ -367,7 +367,7 @@ impl RenderOnce for Section {
                 .child(
                     v_flex()
                         .w_full()
-                        .rounded_sm()
+                        .rounded(COMPONENT_CORNER_RADII.banner)
                         .border_1()
                         .border_color(cx.theme().colors().border)
                         .bg(section_bg)

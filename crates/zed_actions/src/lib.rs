@@ -47,8 +47,6 @@ actions!(
         /// Opens the keymap editor.
         #[action(deprecated_aliases = ["zed_actions::OpenKeymapEditor"])]
         OpenKeymap,
-        /// Opens server settings.
-        OpenServerSettings,
         /// Quits the application.
         Quit,
         /// Shows information about Zed.
@@ -205,25 +203,6 @@ pub mod dev {
             /// Resets the debug frame-time overlay's statistics, except for the
             /// total frame count.
             ResetFrameOverlayStats
-        ]
-    );
-}
-
-pub mod remote_debug {
-    use gpui::actions;
-
-    actions!(
-        remote_debug,
-        [
-            /// Simulates a disconnection from the remote server for testing purposes.
-            /// This will trigger the reconnection logic.
-            SimulateDisconnect,
-            /// Simulates a timeout/slow connection to the remote server for testing purposes.
-            /// This will cause heartbeat failures and trigger reconnection.
-            SimulateTimeout,
-            /// Simulates a timeout/slow connection to the remote server for testing purposes.
-            /// This will cause heartbeat failures and attempting a reconnection while having exhausted all attempts.
-            SimulateTimeoutExhausted,
         ]
     );
 }
@@ -519,17 +498,6 @@ pub mod buffer_search {
 #[action(namespace = projects)]
 #[serde(deny_unknown_fields)]
 pub struct OpenRecent {
-    #[serde(default)]
-    pub create_new_window: Option<bool>,
-}
-
-/// Creates a project from a selected template.
-#[derive(PartialEq, Clone, Deserialize, Default, JsonSchema, Action)]
-#[action(namespace = projects)]
-#[serde(deny_unknown_fields)]
-pub struct OpenRemote {
-    #[serde(default)]
-    pub from_existing_connection: bool,
     #[serde(default)]
     pub create_new_window: Option<bool>,
 }

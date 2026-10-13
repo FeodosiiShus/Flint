@@ -145,8 +145,8 @@ pub struct WorkspaceSettingsContent {
     /// Window title template.
     ///
     /// Available variables are `${projectName}`, `${fileName}`,
-    /// `${filePath}`, `${relativePath}`, `${fileStem}`, `${remoteName}`,
-    /// `${remoteHost}`, `${appName}`, `${branch}`,
+    /// `${filePath}`, `${relativePath}`, `${fileStem}`,
+    /// `${appName}`, `${branch}`,
     /// and `${separator}`.
     /// `${separator}` is omitted when adjacent variables are empty,
     /// but literal text is preserved.

@@ -5,7 +5,12 @@ use gpui::{
     A11ySubtreeBuilder, AccessibleAction, ElementId, Entity, Focusable, Role,
     accesskit::{self, ActionData},
 };
-use ui::prelude::*;
+use ui::{COMPONENT_CORNER_RADII, prelude::*};
+
+use crate::components::{
+    CONTROL_HEIGHT, CONTROL_TEXT_MARGIN_BOTTOM, CONTROL_TEXT_MARGIN_LEFT,
+    CONTROL_TEXT_MARGIN_RIGHT, CONTROL_TEXT_MARGIN_TOP, TEXT_FIELD_MIN_WIDTH,
+};
 
 #[derive(IntoElement)]
 pub struct SettingsInputField {
@@ -181,14 +186,16 @@ impl RenderOnce for SettingsInputField {
                     }
                 }
             })
-            .py_1()
-            .px_2()
-            .h_8()
-            .min_w_64()
-            .rounded_md()
+            .pt(CONTROL_TEXT_MARGIN_TOP)
+            .pl(CONTROL_TEXT_MARGIN_LEFT)
+            .pb(CONTROL_TEXT_MARGIN_BOTTOM)
+            .pr(CONTROL_TEXT_MARGIN_RIGHT)
+            .h(CONTROL_HEIGHT)
+            .min_w(TEXT_FIELD_MIN_WIDTH)
+            .rounded(COMPONENT_CORNER_RADII.input)
             .border_1()
             .border_color(theme_colors.border)
-            .bg(theme_colors.editor_background)
+            .bg(theme_colors.panel_background)
             .map(|this| {
                 let focus_handle = editor.focus_handle(cx);
                 let focus_handle = if let Some(tab_index) = self.tab_index {

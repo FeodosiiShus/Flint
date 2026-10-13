@@ -1841,7 +1841,6 @@ impl PickerDelegate for FileFinderDelegate {
                             .worktree_for_id(history_item.project.worktree_id, cx)
                             .is_some()
                             || project.is_local()
-                            || project.is_via_remote_server()
                     }),
                     self.currently_opened_path.as_ref(),
                     None,

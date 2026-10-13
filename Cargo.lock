@@ -2569,11 +2569,9 @@ dependencies = [
  "lsp",
  "moka",
  "node_runtime",
- "parking_lot",
  "paths",
  "project",
  "release_channel",
- "remote",
  "reqwest_client",
  "semver",
  "serde",
@@ -2585,7 +2583,6 @@ dependencies = [
  "theme",
  "theme_extension",
  "theme_settings",
- "toml 0.8.23",
  "tracing",
  "url",
  "util",
@@ -3316,7 +3313,6 @@ dependencies = [
  "rand 0.9.4",
  "regex",
  "release_channel",
- "remote_connection",
  "schemars",
  "search",
  "serde",
@@ -3365,8 +3361,6 @@ dependencies = [
  "project",
  "proto",
  "rand 0.9.4",
- "remote",
- "remote_connection",
  "serde_json",
  "settings",
  "terminal",
@@ -7259,7 +7253,6 @@ dependencies = [
  "rand 0.9.4",
  "regex",
  "release_channel",
- "remote",
  "rpc",
  "schemars",
  "semver",
@@ -7826,29 +7819,19 @@ dependencies = [
 name = "recent_projects"
 version = "0.1.0"
 dependencies = [
- "anyhow",
- "askpass",
  "chrono",
  "editor",
  "fs",
  "futures",
  "fuzzy_nucleo",
  "gpui",
- "indoc",
- "log",
  "menu",
- "open_path_prompt",
- "ordered-float",
- "paths",
  "picker",
  "project",
- "remote",
- "remote_connection",
  "serde_json",
  "settings",
  "ui",
  "util",
- "windows-registry 0.6.1",
  "workspace",
  "zed_actions",
 ]
@@ -7959,59 +7942,6 @@ version = "0.1.0"
 dependencies = [
  "gpui",
  "semver",
-]
-
-[[package]]
-name = "remote"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "askpass",
- "async-trait",
- "base64",
- "collections",
- "fs",
- "futures",
- "gpui",
- "log",
- "parking_lot",
- "paths",
- "release_channel",
- "rpc",
- "schemars",
- "semver",
- "serde",
- "serde_json",
- "settings",
- "smol",
- "tempfile",
- "thiserror 2.0.17",
- "urlencoding",
- "util",
- "which",
-]
-
-[[package]]
-name = "remote_connection"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "askpass",
- "editor",
- "futures",
- "gpui",
- "log",
- "markdown",
- "menu",
- "release_channel",
- "remote",
- "semver",
- "settings",
- "theme",
- "theme_settings",
- "ui",
- "ui_input",
- "workspace",
 ]
 
 [[package]]
@@ -9510,11 +9440,7 @@ dependencies = [
  "pretty_assertions",
  "project",
  "regex",
- "release_channel",
- "remote",
- "rpc",
  "schemars",
- "semver",
  "serde",
  "serde_json",
  "settings",
@@ -9779,8 +9705,6 @@ dependencies = [
  "gpui",
  "platform_title_bar",
  "project",
- "recent_projects",
- "remote",
  "schemars",
  "serde",
  "settings",
@@ -11532,17 +11456,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "windows-registry"
-version = "0.6.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "02752bf7fbdcce7f2a27a742f798510f3e5ad88dbe84871e5168e2120c3d5720"
-dependencies = [
- "windows-link 0.2.1",
- "windows-result 0.4.1",
- "windows-strings 0.5.1",
-]
-
-[[package]]
 name = "windows-result"
 version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -12093,7 +12006,6 @@ dependencies = [
  "proptest",
  "proptest-derive",
  "release_channel",
- "remote",
  "schemars",
  "serde",
  "serde_json",
@@ -12312,7 +12224,6 @@ dependencies = [
  "rayon",
  "recent_projects",
  "release_channel",
- "remote",
  "reqwest_client",
  "rope",
  "search",
@@ -12419,7 +12330,7 @@ dependencies = [
  "wasm-bindgen-futures",
  "wasm-streams",
  "web-sys",
- "windows-registry 0.4.0",
+ "windows-registry",
 ]
 
 [[package]]

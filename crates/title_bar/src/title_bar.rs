@@ -17,33 +17,33 @@ use crate::application_menu::{
 
 use gpui::{
     AnyElement, App, Context, Entity, Hsla, InteractiveElement, IntoElement, MouseButton,
-    ParentElement, Render, Styled, Subscription, WeakEntity, Window, actions, div, rgb,
+    ParentElement, Render, Role, Styled, Subscription, WeakEntity, Window, actions, div, rgb,
 };
 use project::{
     Project, git_store::GitStoreEvent, project_settings::ProjectSettings,
     trusted_worktrees::TrustedWorktrees,
 };
-use remote::RemoteConnectionOptions;
 use settings::Settings as _;
 
 use std::path::Path;
 use theme::ActiveTheme;
 use title_bar_settings::TitleBarSettings;
-use toolbar_widgets::upstream_tracking_label;
+use toolbar_widgets::{
+    TOOLBAR_WIDGET_HEIGHT, TOOLBAR_WIDGET_ICON_TEXT_GAP, TOOLBAR_WIDGET_PADDING_LEFT,
+    TOOLBAR_WIDGET_PADDING_RIGHT, ToolbarWidget, ToolbarWidgetColors, upstream_tracking_label,
+};
 use ui::{
-    ButtonLike, IconWithIndicator, Indicator, KeyBinding, PopoverMenu, TintColor, Tooltip,
-    prelude::*, utils::platform_title_bar_height,
+    COMPONENT_CORNER_RADII, KeyBinding, PopoverMenu, TintColor, Tooltip, prelude::*,
+    utils::platform_title_bar_height,
 };
 use util::ResultExt;
 use workspace::{
     AccessibleMode, MultiWorkspace, ToggleWorktreeSecurity, Workspace, WorkspaceSettings,
 };
 
-use zed_actions::OpenRemote;
-
 const MAX_BRANCH_NAME_LENGTH: usize = 40;
 const MAX_SHORT_SHA_LENGTH: usize = 8;
-const SEARCH_FIELD_WIDTH: f32 = 240.;
+const SEARCH_FIELD_WIDTH: f32 = 280.;
 const SEARCH_FIELD_DEBUG_SELECTOR: &str = "title_bar_search_field";
 const WORKTREE_AND_BRANCH_DEBUG_SELECTOR: &str = "title_bar_worktree_and_branch";
 const PROJECT_GRADIENT_COLOR: u32 = 0x955AE0;
@@ -216,7 +216,6 @@ impl Render for TitleBar {
                     .children(self.render_restricted_mode(cx))
                     .when(render_project_items, |title_bar| {
                         title_bar
-                            .children(self.render_project_host(cx))
                             .when_some(
                                 repository.filter(|_| is_git_enabled),
                                 |title_bar, repository| {
@@ -413,99 +412,6 @@ impl TitleBar {
             .cloned()
     }
 
-    fn render_remote_project_connection(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let workspace = self.workspace.clone();
-
-        let options = self.project.read(cx).remote_connection_options(cx)?;
-        let host: SharedString = options.display_name().into();
-
-        let (nickname, tooltip_title, icon) = match options {
-            RemoteConnectionOptions::Ssh(options) => (
-                options.nickname.map(|nick| nick.into()),
-                "Remote Project",
-                IconName::Server,
-            ),
-            #[cfg(any(test, feature = "test-support"))]
-            RemoteConnectionOptions::Mock(_) => (None, "Mock Remote Project", IconName::Server),
-        };
-
-        let nickname = nickname.unwrap_or_else(|| host.clone());
-
-        let (indicator_color, meta) = match self.project.read(cx).remote_connection_state(cx)? {
-            remote::ConnectionState::Connecting => (Color::Info, format!("Connecting to: {host}")),
-            remote::ConnectionState::Connected => (Color::Success, format!("Connected to: {host}")),
-            remote::ConnectionState::HeartbeatMissed => (
-                Color::Warning,
-                format!("Connection attempt to {host} missed. Retrying..."),
-            ),
-            remote::ConnectionState::Reconnecting => (
-                Color::Warning,
-                format!("Lost connection to {host}. Reconnecting..."),
-            ),
-            remote::ConnectionState::Disconnected => {
-                (Color::Error, format!("Disconnected from {host}"))
-            }
-        };
-
-        let icon_color = match self.project.read(cx).remote_connection_state(cx)? {
-            remote::ConnectionState::Connecting => Color::Info,
-            remote::ConnectionState::Connected => Color::Default,
-            remote::ConnectionState::HeartbeatMissed => Color::Warning,
-            remote::ConnectionState::Reconnecting => Color::Warning,
-            remote::ConnectionState::Disconnected => Color::Error,
-        };
-
-        let meta = SharedString::from(meta);
-        let region = ui::ChromeRegion::TitleBar;
-        let icon_size = ui::chrome_icon_size(region, IconSize::Small, cx);
-
-        Some(
-            PopoverMenu::new("remote-project-menu")
-                .menu(move |window, cx| {
-                    let workspace_entity = workspace.upgrade()?;
-                    let fs = workspace_entity.read(cx).project().read(cx).fs().clone();
-                    Some(recent_projects::RemoteServerProjects::popover(
-                        fs,
-                        workspace.clone(),
-                        None,
-                        window,
-                        cx,
-                    ))
-                })
-                .trigger_with_tooltip(
-                    ButtonLike::new("remote_project")
-                        .selected_style(ButtonStyle::Tinted(TintColor::Accent))
-                        .chrome_region(region)
-                        .child(
-                            h_flex()
-                                .gap_2()
-                                .max_w_32()
-                                .child(
-                                    IconWithIndicator::new(
-                                        Icon::new(icon).size(icon_size).color(icon_color),
-                                        Some(Indicator::dot().color(indicator_color)),
-                                    )
-                                    .indicator_border_color(Some(
-                                        cx.theme().colors().title_bar_background,
-                                    ))
-                                    .into_any_element(),
-                                )
-                                .child(Label::new(nickname).size(LabelSize::Small).truncate()),
-                        ),
-                    move |_window, cx| {
-                        Tooltip::with_meta(
-                            tooltip_title,
-                            Some(&OpenRemote::default()),
-                            meta.clone(),
-                            cx,
-                        )
-                    },
-                )
-                .anchor(gpui::Anchor::TopLeft)
-                .into_any_element(),
-        )
-    }
-
     pub fn render_restricted_mode(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let has_restricted_worktrees =
             TrustedWorktrees::has_restricted_worktrees(&self.project.read(cx).worktree_store(), cx);
@@ -549,14 +455,6 @@ impl TitleBar {
         }
     }
 
-    pub fn render_project_host(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        if self.project.read(cx).is_via_remote_server() {
-            return self.render_remote_project_connection(cx);
-        }
-
-        None
-    }
-
     fn project_gradient_color() -> Hsla {
         rgb(PROJECT_GRADIENT_COLOR).into()
     }
@@ -564,39 +462,48 @@ impl TitleBar {
     fn render_search_field(cx: &App) -> impl IntoElement {
         let region = ui::ChromeRegion::TitleBar;
         let action = zed_actions::search_everywhere::Toggle { tab: None };
+        let colors = ToolbarWidgetColors::current(cx);
+        let focused_border = cx.theme().colors().border_focused;
 
         h_flex()
             .debug_selector(|| SEARCH_FIELD_DEBUG_SELECTOR.into())
             .child(
-                ButtonLike::new("title_bar_search_field")
-                    .style(ButtonStyle::Outlined)
-                    .chrome_region(region)
-                    .width(px(SEARCH_FIELD_WIDTH))
-                    .tab_index(0isize)
+                h_flex()
+                    .id("title_bar_search_field")
+                    .role(Role::Button)
                     .aria_label("Search Everywhere")
+                    .tab_index(0isize)
+                    .font_ui(cx)
+                    .flex_none()
+                    .w(px(SEARCH_FIELD_WIDTH))
+                    .h(TOOLBAR_WIDGET_HEIGHT)
+                    .pl(TOOLBAR_WIDGET_PADDING_LEFT)
+                    .pr(TOOLBAR_WIDGET_PADDING_RIGHT)
+                    .gap(TOOLBAR_WIDGET_ICON_TEXT_GAP)
+                    .rounded(COMPONENT_CORNER_RADII.toolbar_widget)
+                    .border_1()
+                    .border_color(colors.border)
+                    .bg(colors.rest)
+                    .cursor_pointer()
+                    .hover(move |style| style.bg(colors.hover).border_color(colors.hover_border))
+                    .focus_visible(move |style| style.border_color(focused_border))
+                    .active(move |style| style.bg(colors.open))
                     .tooltip(Tooltip::for_action_title("Search Everywhere", &action))
                     .child(
-                        h_flex()
-                            .w_full()
-                            .gap_1()
-                            .child(
-                                Icon::new(IconName::MagnifyingGlass)
-                                    .size(ui::chrome_icon_size(region, IconSize::Small, cx))
-                                    .color(Color::Muted),
-                            )
-                            .child(
-                                Label::new("Search Everywhere")
-                                    .size(LabelSize::Small)
-                                    .color(Color::Muted),
-                            )
-                            .child(
-                                h_flex()
-                                    .flex_1()
-                                    .justify_end()
-                                    .child(KeyBinding::for_action(&action, cx)),
-                            ),
+                        Icon::new(IconName::MagnifyingGlass)
+                            .size(ui::chrome_icon_size(region, IconSize::Medium, cx))
+                            .color(Color::Muted),
                     )
+                    .child(Label::new("Search Everywhere").color(Color::Muted))
+                    .child(
+                        h_flex()
+                            .flex_1()
+                            .justify_end()
+                            .child(KeyBinding::for_action(&action, cx)),
+                    )
+                    .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
                     .on_click(move |_, window, cx| {
+                        cx.stop_propagation();
                         window.dispatch_action(Box::new(action.clone()), cx)
                     }),
             )
@@ -690,27 +597,22 @@ impl TitleBar {
                         WorktreePicker::new(project.clone(), workspace_handle.clone(), window, cx)
                     }))
                 })
-                .trigger_with_tooltip(
-                    Button::new("worktree_picker_trigger", display_label)
-                        .selected_style(ButtonStyle::Tinted(TintColor::Accent))
-                        .label_size(LabelSize::Small)
-                        .chrome_region(ui::ChromeRegion::TitleBar)
-                        .color(Color::Muted)
-                        .tab_index(0isize)
-                        .loading(is_creating)
-                        .start_icon(
-                            Icon::new(IconName::GitWorktree)
-                                .size(IconSize::XSmall)
-                                .color(Color::Muted),
-                        ),
-                    move |_window, cx| {
+                .trigger(
+                    ToolbarWidget::new(
+                        "worktree_picker_trigger",
+                        Icon::new(IconName::GitWorktree).color(Color::Muted),
+                        display_label,
+                    )
+                    .tab_index(0)
+                    .loading(is_creating)
+                    .tooltip(move |_window, cx| {
                         Tooltip::with_meta(
                             "Worktree",
                             Some(&zed_actions::git::Worktree),
                             format!("Currently In Use: {}", worktree_label),
                             cx,
                         )
-                    },
+                    }),
                 )
                 .anchor(gpui::Anchor::TopLeft)
         });
@@ -724,40 +626,32 @@ impl TitleBar {
                     (IconName::GitBranch, Color::Muted)
                 };
 
-                let chevron = Icon::new(IconName::ChevronDown)
-                    .size(IconSize::XSmall)
-                    .color(Color::Muted);
-
                 let trigger = if is_detached_head {
-                    Button::new("project_branch_trigger", "Create Branch")
-                        .selected_style(ButtonStyle::Tinted(TintColor::Accent))
-                        .label_size(LabelSize::Small)
-                        .chrome_region(ui::ChromeRegion::TitleBar)
-                        .tab_index(0isize)
-                        .start_icon(
-                            Icon::new(IconName::GitBranchPlus)
-                                .size(IconSize::XSmall)
-                                .color(Color::Muted),
-                        )
-                        .end_icon(chevron)
+                    ToolbarWidget::new(
+                        "project_branch_trigger",
+                        Icon::new(IconName::GitBranchPlus).color(Color::Muted),
+                        "Create Branch",
+                    )
                 } else {
                     let branch_label: SharedString = match &upstream_label {
                         Some(upstream) => format!("{branch_name}  {upstream}").into(),
                         None => branch_name.into(),
                     };
-                    Button::new("project_branch_trigger", branch_label)
-                        .selected_style(ButtonStyle::Tinted(TintColor::Accent))
-                        .label_size(LabelSize::Small)
-                        .chrome_region(ui::ChromeRegion::TitleBar)
-                        .color(Color::Muted)
-                        .tab_index(0isize)
-                        .start_icon(
-                            Icon::new(branch_icon)
-                                .size(IconSize::XSmall)
-                                .color(branch_icon_color),
-                        )
-                        .end_icon(chevron)
-                };
+                    ToolbarWidget::new(
+                        "project_branch_trigger",
+                        Icon::new(branch_icon).color(branch_icon_color),
+                        branch_label,
+                    )
+                }
+                .tab_index(0)
+                .tooltip(move |_window, cx| {
+                    let meta = if is_detached_head {
+                        format!("Detached HEAD: {}", branch_tooltip_label)
+                    } else {
+                        format!("Currently Checked Out: {}", branch_tooltip_label)
+                    };
+                    Tooltip::with_meta("Git Branches", Some(&zed_actions::git::Branch), meta, cx)
+                });
 
                 PopoverMenu::new("branch-menu")
                     .menu(move |window, cx| {
@@ -768,19 +662,7 @@ impl TitleBar {
                             cx,
                         )
                     })
-                    .trigger_with_tooltip(trigger, move |_window, cx| {
-                        let meta = if is_detached_head {
-                            format!("Detached HEAD: {}", branch_tooltip_label)
-                        } else {
-                            format!("Currently Checked Out: {}", branch_tooltip_label)
-                        };
-                        Tooltip::with_meta(
-                            "Git Branches",
-                            Some(&zed_actions::git::Branch),
-                            meta,
-                            cx,
-                        )
-                    })
+                    .trigger(trigger)
                     .anchor(gpui::Anchor::TopLeft)
             })
         });
@@ -794,7 +676,7 @@ impl TitleBar {
         Some(
             h_flex()
                 .debug_selector(|| WORKTREE_AND_BRANCH_DEBUG_SELECTOR.into())
-                .gap_px()
+                .gap_1()
                 .children(worktree_button)
                 .when(show_separator, |this| {
                     this.child(
@@ -949,7 +831,7 @@ mod tests {
                     .frame_content_opacity(false),
             )
         });
-        let search_field_border = cx.update(|_, cx| cx.theme().colors().border_variant);
+        let search_field_border = cx.update(|_, cx| ToolbarWidgetColors::current(cx).border);
         let scale_factor = cx.update(|window, _| window.scale_factor());
         let search_field = cx
             .debug_bounds(SEARCH_FIELD_DEBUG_SELECTOR)

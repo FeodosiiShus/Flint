@@ -65,21 +65,6 @@ static CURRENT_DATA_DIR: OnceLock<PathBuf> = OnceLock::new();
 /// On Windows, this is `%APPDATA%\Zed`.
 static CONFIG_DIR: OnceLock<PathBuf> = OnceLock::new();
 
-/// Returns the relative path to the zed_server directory on the ssh host.
-pub fn remote_server_dir_relative() -> &'static RelPath {
-    static CACHED: LazyLock<&'static RelPath> =
-        LazyLock::new(|| RelPath::from_unix_str(".zed_server").unwrap());
-    *CACHED
-}
-
-// Remove this once 223 goes stable
-/// Returns the relative path to the zed_wsl_server directory on the wsl host.
-pub fn remote_wsl_server_dir_relative() -> &'static RelPath {
-    static CACHED: LazyLock<&'static RelPath> =
-        LazyLock::new(|| RelPath::from_unix_str(".zed_wsl_server").unwrap());
-    *CACHED
-}
-
 /// Sets a custom directory for all user data, overriding the default data directory.
 /// This function must be called before any other path operations that depend on the data directory.
 /// The directory's path will be canonicalized to an absolute path by a blocking FS operation.
@@ -236,12 +221,6 @@ pub fn logs_dir() -> &'static PathBuf {
     })
 }
 
-/// Returns the path to the Zed server directory on this SSH host.
-pub fn remote_server_state_dir() -> &'static PathBuf {
-    static REMOTE_SERVER_STATE: OnceLock<PathBuf> = OnceLock::new();
-    REMOTE_SERVER_STATE.get_or_init(|| data_dir().join("server_state"))
-}
-
 /// Returns the path to the `Zed.log` file.
 pub fn log_file() -> &'static PathBuf {
     static LOG_FILE: OnceLock<PathBuf> = OnceLock::new();
@@ -322,22 +301,6 @@ pub const GLOBAL_AGENTS_FILE_DISPLAY: &str =
 pub fn extensions_dir() -> &'static PathBuf {
     static EXTENSIONS_DIR: OnceLock<PathBuf> = OnceLock::new();
     EXTENSIONS_DIR.get_or_init(|| data_dir().join("extensions"))
-}
-
-/// Returns the path to the extensions directory.
-///
-/// This is where installed extensions are stored on a remote.
-pub fn remote_extensions_dir() -> &'static PathBuf {
-    static EXTENSIONS_DIR: OnceLock<PathBuf> = OnceLock::new();
-    EXTENSIONS_DIR.get_or_init(|| data_dir().join("remote_extensions"))
-}
-
-/// Returns the path to the extensions directory.
-///
-/// This is where installed extensions are stored on a remote.
-pub fn remote_extensions_uploads_dir() -> &'static PathBuf {
-    static UPLOAD_DIR: OnceLock<PathBuf> = OnceLock::new();
-    UPLOAD_DIR.get_or_init(|| remote_extensions_dir().join("uploads"))
 }
 
 /// Returns the path to the themes directory.
@@ -439,18 +402,6 @@ pub fn default_prettier_dir() -> &'static PathBuf {
     DEFAULT_PRETTIER_DIR.get_or_init(|| data_dir().join("prettier"))
 }
 
-/// Returns the path to the remote server binaries directory.
-pub fn remote_servers_dir() -> &'static PathBuf {
-    static REMOTE_SERVERS_DIR: OnceLock<PathBuf> = OnceLock::new();
-    REMOTE_SERVERS_DIR.get_or_init(|| data_dir().join("remote_servers"))
-}
-
-/// Returns the path to the directory where the devcontainer CLI is installed.
-pub fn devcontainer_dir() -> &'static PathBuf {
-    static DEVCONTAINER_DIR: OnceLock<PathBuf> = OnceLock::new();
-    DEVCONTAINER_DIR.get_or_init(|| data_dir().join("devcontainer"))
-}
-
 /// Returns the relative path to a `.zed` folder within a project.
 pub fn local_settings_folder_name() -> &'static str {
     ".zed"
@@ -466,18 +417,6 @@ pub fn local_settings_file_relative_path() -> &'static RelPath {
     static CACHED: LazyLock<&'static RelPath> =
         LazyLock::new(|| RelPath::from_unix_str(".zed/settings.json").unwrap());
     *CACHED
-}
-
-pub fn user_ssh_config_file() -> PathBuf {
-    home_dir().join(".ssh/config")
-}
-
-pub fn global_ssh_config_file() -> Option<&'static Path> {
-    if cfg!(windows) {
-        None
-    } else {
-        Some(Path::new("/etc/ssh/ssh_config"))
-    }
 }
 
 /// Returns candidate paths for the vscode user settings file

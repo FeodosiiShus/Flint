@@ -1,8 +1,3 @@
-pub mod disconnected_overlay;
-mod remote_connections;
-mod remote_servers;
-mod ssh_config;
-
 use std::{
     path::{Path, PathBuf},
     sync::Arc,
@@ -12,11 +7,6 @@ use chrono::{DateTime, Utc};
 
 use fs::Fs;
 
-use remote::{RemoteConnectionOptions, same_remote_connection_identity};
-pub use remote_connection::{RemoteConnectionModal, connect, connect_with_modal};
-pub use remote_connections::{navigate_to_positions, open_remote_project};
-
-use disconnected_overlay::DisconnectedOverlay;
 use fuzzy_nucleo::{StringMatch, StringMatchCandidate, match_strings};
 use gpui::{
     Action, AnyElement, App, Context, DismissEvent, Entity, EventEmitter, FocusHandle, Focusable,
@@ -28,8 +18,6 @@ use picker::{
     highlighted_match_with_paths::{HighlightedMatch, HighlightedMatchWithPaths},
 };
 use project::{Worktree, git_store::Repository};
-pub use remote_connections::RemoteSettings;
-pub use remote_servers::RemoteServerProjects;
 use settings::{DefaultOpenBehavior, Settings, WorktreeId};
 use workspace::ProjectGroupKey;
 
@@ -40,10 +28,10 @@ use ui::{
 use util::{ResultExt, paths::PathExt};
 use workspace::{
     HistoryManager, ModalView, MultiWorkspace, OpenMode, OpenOptions, OpenVisible, RecentWorkspace,
-    SerializedWorkspaceLocation, Workspace, WorkspaceDb, WorkspaceId,
-    notifications::DetachAndPromptErr, with_active_or_new_workspace,
+    Workspace, WorkspaceDb, WorkspaceId, notifications::DetachAndPromptErr,
+    with_active_or_new_workspace,
 };
-use zed_actions::{OpenRecent, OpenRemote};
+use zed_actions::OpenRecent;
 
 actions!(
     recent_projects,
@@ -66,7 +54,6 @@ struct OpenFolderEntry {
     path: PathBuf,
     branch: Option<SharedString>,
     is_active: bool,
-    connection_options: Option<RemoteConnectionOptions>,
 }
 
 #[derive(Clone, Debug)]
@@ -120,7 +107,6 @@ pub async fn get_recent_projects(
     let filtered: Vec<_> = workspaces
         .into_iter()
         .filter(|workspace| Some(workspace.workspace_id) != current_workspace_id)
-        .filter(|workspace| matches!(workspace.location, SerializedWorkspaceLocation::Local))
         .collect();
 
     let mut all_paths: Vec<PathBuf> = filtered
@@ -180,7 +166,6 @@ pub async fn delete_recent_project(workspace_id: WorkspaceId, db: &WorkspaceDb) 
 
 fn get_open_folders(workspace: &Workspace, cx: &App) -> Vec<OpenFolderEntry> {
     let project = workspace.project().read(cx);
-    let connection_options = project.remote_connection_options(cx);
     let visible_worktrees: Vec<_> = project.visible_worktrees(cx).collect();
 
     if visible_worktrees.len() <= 1 {
@@ -234,7 +219,6 @@ fn get_open_folders(workspace: &Workspace, cx: &App) -> Vec<OpenFolderEntry> {
                 path,
                 branch,
                 is_active,
-                connection_options: connection_options.clone(),
             }
         })
         .collect();
@@ -337,25 +321,6 @@ pub fn init(cx: &mut App) {
             }
         }
     });
-    cx.on_action(|open_remote: &OpenRemote, cx| {
-        let from_existing_connection = open_remote.from_existing_connection;
-        let create_new_window = open_remote
-            .create_new_window
-            .unwrap_or_else(|| default_open_in_new_window(cx));
-        with_active_or_new_workspace(cx, move |workspace, window, cx| {
-            if from_existing_connection {
-                cx.propagate();
-                return;
-            }
-            let handle = cx.entity().downgrade();
-            let fs = workspace.project().read(cx).fs().clone();
-            workspace.toggle_modal(window, cx, |window, cx| {
-                RemoteServerProjects::new(create_new_window, fs, window, handle, cx)
-            })
-        });
-    });
-
-    cx.observe_new(DisconnectedOverlay::register).detach();
 }
 
 pub struct RecentProjects {
@@ -517,12 +482,10 @@ impl RecentProjects {
                 picker.delegate.filtered_entries.get(ix)
             {
                 if let Some(workspace) = picker.delegate.workspaces.get(hit.candidate_id) {
-                    if matches!(workspace.location, SerializedWorkspaceLocation::Local) {
-                        let paths_to_add = workspace.paths.paths().to_vec();
-                        picker
-                            .delegate
-                            .add_paths_to_project(paths_to_add, window, cx);
-                    }
+                    let paths_to_add = workspace.paths.paths().to_vec();
+                    picker
+                        .delegate
+                        .add_paths_to_project(paths_to_add, window, cx);
                 }
             }
         });
@@ -585,32 +548,6 @@ impl RecentProjectsDelegate {
 
     pub fn set_workspaces(&mut self, workspaces: Vec<RecentWorkspace>) {
         self.workspaces = workspaces;
-    }
-
-    fn filtered_entries_include_remote_project(&self) -> bool {
-        self.filtered_entries
-            .iter()
-            .any(|entry| self.entry_is_remote_project(entry))
-    }
-
-    fn entry_is_remote_project(&self, entry: &ProjectPickerEntry) -> bool {
-        match entry {
-            ProjectPickerEntry::Header(_) => false,
-            ProjectPickerEntry::OpenFolder { index, .. } => self
-                .open_folders
-                .get(*index)
-                .is_some_and(|folder| folder.connection_options.is_some()),
-            ProjectPickerEntry::ProjectGroup(hit) => self
-                .window_project_groups
-                .get(hit.candidate_id)
-                .is_some_and(|key| key.host().is_some()),
-            ProjectPickerEntry::RecentProject(hit) => self
-                .workspaces
-                .get(hit.candidate_id)
-                .is_some_and(|workspace| {
-                    matches!(workspace.location, SerializedWorkspaceLocation::Remote(_))
-                }),
-        }
     }
 }
 impl EventEmitter<DismissEvent> for RecentProjectsDelegate {}
@@ -839,7 +776,7 @@ impl PickerDelegate for RecentProjectsDelegate {
                     return;
                 };
 
-                if secondary && key.host().is_none() && self.window_project_groups.len() >= 2 {
+                if secondary && self.window_project_groups.len() >= 2 {
                     move_project_group_to_new_window(key, window, cx);
                     cx.emit(DismissEvent);
                     return;
@@ -865,22 +802,11 @@ impl PickerDelegate for RecentProjectsDelegate {
                                 .log_err();
                         } else {
                             let path_list = key.path_list().clone();
-                            let host = key.host();
                             if let Some(task) = handle
                                 .update(cx, |multi_workspace, window, cx| {
-                                    let modal_workspace = multi_workspace.workspace().clone();
                                     multi_workspace.find_or_create_workspace(
                                         path_list,
-                                        host,
                                         Some(key.clone()),
-                                        move |options, window, cx| {
-                                            connect_with_modal(
-                                                &modal_workspace,
-                                                options,
-                                                window,
-                                                cx,
-                                            )
-                                        },
                                         None,
                                         OpenMode::Activate,
                                         None,
@@ -968,9 +894,6 @@ impl PickerDelegate for RecentProjectsDelegate {
                     )
                     .into_any_element();
 
-                let icon = icon_for_remote_connection(folder.connection_options.as_ref());
-                let show_icon = self.filtered_entries_include_remote_project();
-
                 Some(
                     ListItem::new(ix)
                         .toggle_state(selected)
@@ -982,9 +905,6 @@ impl PickerDelegate for RecentProjectsDelegate {
                                 .w_full()
                                 .min_w_0()
                                 .gap_2p5()
-                                .when(show_icon, |this| {
-                                    this.child(Icon::new(icon).color(Color::Muted))
-                                })
                                 .child(
                                     v_flex()
                                         .min_w_0()
@@ -1031,8 +951,6 @@ impl PickerDelegate for RecentProjectsDelegate {
                     .map(|p| p.compact().to_string_lossy().to_string())
                     .collect();
                 let tooltip_path: SharedString = ordered_paths.join("\n").into();
-                let icon = icon_for_project_group(key);
-                let show_icon = self.filtered_entries_include_remote_project();
 
                 let mut path_start_offset = 0;
                 let (match_labels, path_highlights): (Vec<_>, Vec<_>) = paths
@@ -1054,11 +972,10 @@ impl PickerDelegate for RecentProjectsDelegate {
                 };
 
                 let project_group_key = key.clone();
-                let is_local = key.host().is_none();
                 let has_multiple_groups = self.window_project_groups.len() >= 2;
                 let secondary_actions = h_flex()
                     .gap_0p5()
-                    .when(is_local && has_multiple_groups, |this| {
+                    .when(has_multiple_groups, |this| {
                         this.child(
                             IconButton::new("move_to_new_window", IconName::ArrowUpRight)
                                 .icon_size(IconSize::Small)
@@ -1129,9 +1046,6 @@ impl PickerDelegate for RecentProjectsDelegate {
                                 .w_full()
                                 .min_w_0()
                                 .gap_2p5()
-                                .when(show_icon, |this| {
-                                    this.child(Icon::new(icon).color(Color::Muted))
-                                })
                                 .child(highlighted_match.render(window, cx))
                                 .tooltip(Tooltip::text(tooltip_path)),
                         )
@@ -1142,26 +1056,14 @@ impl PickerDelegate for RecentProjectsDelegate {
             }
             ProjectPickerEntry::RecentProject(hit) => {
                 let workspace = self.workspaces.get(hit.candidate_id)?;
-                let location = &workspace.location;
                 let raw_paths = &workspace.paths;
                 let identity_paths = &workspace.identity_paths;
-                let is_local = matches!(location, SerializedWorkspaceLocation::Local);
                 let paths_to_add = raw_paths.paths().to_vec();
                 let ordered_paths: Vec<_> = identity_paths
                     .ordered_paths()
                     .map(|p| p.compact().to_string_lossy().to_string())
                     .collect();
-                let tooltip_path: SharedString = match &location {
-                    SerializedWorkspaceLocation::Remote(options) => {
-                        let host = options.display_name();
-                        if ordered_paths.len() == 1 {
-                            format!("{} ({})", ordered_paths[0], host).into()
-                        } else {
-                            format!("{}\n({})", ordered_paths.join("\n"), host).into()
-                        }
-                    }
-                    _ => ordered_paths.join("\n").into(),
-                };
+                let tooltip_path: SharedString = ordered_paths.join("\n").into();
 
                 let mut path_start_offset = 0;
                 let (match_labels, paths): (Vec<_>, Vec<_>) = identity_paths
@@ -1181,15 +1083,8 @@ impl PickerDelegate for RecentProjectsDelegate {
                     "Add Folder to this Project"
                 };
 
-                let prefix = match &location {
-                    SerializedWorkspaceLocation::Remote(options) => {
-                        Some(SharedString::from(options.display_name()))
-                    }
-                    _ => None,
-                };
-
                 let highlighted_match = HighlightedMatchWithPaths {
-                    prefix,
+                    prefix: None,
                     match_label: HighlightedMatch::join(match_labels.into_iter().flatten(), ", "),
                     paths,
                     active: false,
@@ -1214,36 +1109,34 @@ impl PickerDelegate for RecentProjectsDelegate {
 
                 let secondary_actions = h_flex()
                     .gap_px()
-                    .when(is_local, |this| {
-                        this.child(
-                            IconButton::new("add_to_workspace", IconName::FolderInclude)
-                                .icon_size(IconSize::Small)
-                                .tooltip({
-                                    let focus_handle = self.focus_handle.clone();
-                                    move |_, cx| {
-                                        Tooltip::with_meta_in(
-                                            tooltip_title,
-                                            Some(&AddToWorkspace),
-                                            "As a multi-root folder",
-                                            &focus_handle,
-                                            cx,
-                                        )
-                                    }
+                    .child(
+                        IconButton::new("add_to_workspace", IconName::FolderInclude)
+                            .icon_size(IconSize::Small)
+                            .tooltip({
+                                let focus_handle = self.focus_handle.clone();
+                                move |_, cx| {
+                                    Tooltip::with_meta_in(
+                                        tooltip_title,
+                                        Some(&AddToWorkspace),
+                                        "As a multi-root folder",
+                                        &focus_handle,
+                                        cx,
+                                    )
+                                }
+                            })
+                            .on_click({
+                                let paths_to_add = paths_to_add.clone();
+                                cx.listener(move |picker, _event, window, cx| {
+                                    cx.stop_propagation();
+                                    window.prevent_default();
+                                    picker.delegate.add_paths_to_project(
+                                        paths_to_add.clone(),
+                                        window,
+                                        cx,
+                                    );
                                 })
-                                .on_click({
-                                    let paths_to_add = paths_to_add.clone();
-                                    cx.listener(move |picker, _event, window, cx| {
-                                        cx.stop_propagation();
-                                        window.prevent_default();
-                                        picker.delegate.add_paths_to_project(
-                                            paths_to_add.clone(),
-                                            window,
-                                            cx,
-                                        );
-                                    })
-                                }),
-                        )
-                    })
+                            }),
+                    )
                     .child(
                         IconButton::new("alternate_open", secondary_confirm_icon)
                             .icon_size(IconSize::Small)
@@ -1286,12 +1179,6 @@ impl PickerDelegate for RecentProjectsDelegate {
                     )
                     .into_any_element();
 
-                let icon = icon_for_remote_connection(match location {
-                    SerializedWorkspaceLocation::Local => None,
-                    SerializedWorkspaceLocation::Remote(options) => Some(options),
-                });
-                let show_icon = self.filtered_entries_include_remote_project();
-
                 Some(
                     ListItem::new(ix)
                         .toggle_state(selected)
@@ -1304,9 +1191,6 @@ impl PickerDelegate for RecentProjectsDelegate {
                                 .min_w_0()
                                 .gap_2p5()
                                 .flex_grow_1()
-                                .when(show_icon, |this| {
-                                    this.child(Icon::new(icon).color(Color::Muted))
-                                })
                                 .child(highlighted_match.render(window, cx))
                                 .tooltip(move |_, cx| {
                                     Tooltip::with_meta(
@@ -1336,10 +1220,7 @@ impl PickerDelegate for RecentProjectsDelegate {
         let show_move_to_new_window = match self.filtered_entries.get(self.selected_index) {
             Some(ProjectPickerEntry::ProjectGroup(hit)) => {
                 self.window_project_groups.len() >= 2
-                    && self
-                        .window_project_groups
-                        .get(hit.candidate_id)
-                        .is_some_and(|key| key.host().is_none())
+                    && self.window_project_groups.get(hit.candidate_id).is_some()
             }
             _ => false,
         };
@@ -1517,16 +1398,9 @@ impl PickerDelegate for RecentProjectsDelegate {
                                 create_new_window: Some(create_new_window),
                             };
                             let show_add_to_workspace = match selected_entry {
-                                Some(ProjectPickerEntry::RecentProject(hit)) => self
-                                    .workspaces
-                                    .get(hit.candidate_id)
-                                    .map(|workspace| {
-                                        matches!(
-                                            workspace.location,
-                                            SerializedWorkspaceLocation::Local
-                                        )
-                                    })
-                                    .unwrap_or(false),
+                                Some(ProjectPickerEntry::RecentProject(hit)) => {
+                                    self.workspaces.get(hit.candidate_id).is_some()
+                                }
                                 _ => false,
                             };
 
@@ -1559,14 +1433,6 @@ impl PickerDelegate for RecentProjectsDelegate {
                                                     }
                                                 },
                                             )
-                                            .action(
-                                                "Open Remote Folder",
-                                                OpenRemote {
-                                                    from_existing_connection: false,
-                                                    create_new_window: Some(create_new_window),
-                                                }
-                                                .boxed_clone(),
-                                            )
                                     }
                                 }))
                             }
@@ -1574,22 +1440,6 @@ impl PickerDelegate for RecentProjectsDelegate {
                 )
                 .into_any(),
         )
-    }
-}
-
-fn icon_for_project_group(key: &ProjectGroupKey) -> IconName {
-    let host = key.host();
-    icon_for_remote_connection(host.as_ref())
-}
-
-pub(crate) fn icon_for_remote_connection(options: Option<&RemoteConnectionOptions>) -> IconName {
-    match options {
-        None => IconName::Screen,
-        Some(options) => match options {
-            RemoteConnectionOptions::Ssh(_) => IconName::Server,
-            #[cfg(any(test, feature = "test-support"))]
-            RemoteConnectionOptions::Mock(_) => IconName::Server,
-        },
     }
 }
 
@@ -1734,75 +1584,30 @@ impl RecentProjectsDelegate {
 
         let replace_current_window = self.create_new_window == secondary;
         let candidate_workspace_id = candidate_workspace.workspace_id;
-        let candidate_workspace_location = candidate_workspace.location.clone();
         let candidate_workspace_paths = candidate_workspace.paths.clone();
 
         workspace.update(cx, |workspace, cx| {
             if workspace.database_id() == Some(candidate_workspace_id) {
                 return;
             }
-            match candidate_workspace_location {
-                SerializedWorkspaceLocation::Local => {
-                    let paths = candidate_workspace_paths.paths().to_vec();
-                    if replace_current_window {
-                        if let Some(handle) = window.window_handle().downcast::<MultiWorkspace>() {
-                            cx.defer(move |cx| {
-                                if let Some(task) = handle
-                                    .update(cx, |multi_workspace, window, cx| {
-                                        multi_workspace.open_project(
-                                            paths,
-                                            OpenMode::Activate,
-                                            window,
-                                            cx,
-                                        )
-                                    })
-                                    .log_err()
-                                {
-                                    task.detach_and_log_err(cx);
-                                }
-                            });
+            let paths = candidate_workspace_paths.paths().to_vec();
+            if replace_current_window {
+                if let Some(handle) = window.window_handle().downcast::<MultiWorkspace>() {
+                    cx.defer(move |cx| {
+                        if let Some(task) = handle
+                            .update(cx, |multi_workspace, window, cx| {
+                                multi_workspace.open_project(paths, OpenMode::Activate, window, cx)
+                            })
+                            .log_err()
+                        {
+                            task.detach_and_log_err(cx);
                         }
-                        return;
-                    } else {
-                        workspace
-                            .open_workspace_for_paths(OpenMode::NewWindow, paths, window, cx)
-                            .detach_and_prompt_err(
-                                "Failed to open project",
-                                window,
-                                cx,
-                                |_, _, _| None,
-                            );
-                    }
+                    });
                 }
-                SerializedWorkspaceLocation::Remote(mut connection) => {
-                    let app_state = workspace.app_state().clone();
-                    let replace_window = if replace_current_window {
-                        window.window_handle().downcast::<MultiWorkspace>()
-                    } else {
-                        None
-                    };
-                    let open_options = OpenOptions {
-                        requesting_window: replace_window,
-                        ..Default::default()
-                    };
-                    match &mut connection {
-                        RemoteConnectionOptions::Ssh(connection) => RemoteSettings::get_global(cx)
-                            .fill_connection_options_from_settings(connection),
-                        #[cfg(any(test, feature = "test-support"))]
-                        RemoteConnectionOptions::Mock(_) => {}
-                    }
-                    let paths = candidate_workspace_paths.paths().to_vec();
-                    cx.spawn_in(window, async move |_, cx| {
-                        open_remote_project(connection.clone(), paths, app_state, open_options, cx)
-                            .await
-                    })
-                    .detach_and_prompt_err(
-                        "Failed to open project",
-                        window,
-                        cx,
-                        |_, _, _| None,
-                    );
-                }
+            } else {
+                workspace
+                    .open_workspace_for_paths(OpenMode::NewWindow, paths, window, cx)
+                    .detach_and_prompt_err("Failed to open project", window, cx, |_, _, _| None);
             }
         });
         cx.emit(DismissEvent);
@@ -2045,25 +1850,11 @@ impl RecentProjectsDelegate {
             return false;
         }
 
-        let workspace_host = match &workspace.location {
-            SerializedWorkspaceLocation::Local => None,
-            SerializedWorkspaceLocation::Remote(options) => Some(options),
-        };
-
-        for workspace_path in workspace.paths.paths() {
-            for open_folder in &self.open_folders {
-                if workspace_path == &open_folder.path
-                    && same_remote_connection_identity(
-                        workspace_host,
-                        open_folder.connection_options.as_ref(),
-                    )
-                {
-                    return true;
-                }
-            }
-        }
-
-        false
+        workspace.paths.paths().iter().any(|workspace_path| {
+            self.open_folders
+                .iter()
+                .any(|open_folder| workspace_path == &open_folder.path)
+        })
     }
 
     fn is_valid_recent_candidate(
@@ -2084,7 +1875,7 @@ mod tests {
     use serde_json::json;
     use settings::SettingsStore;
     use util::path;
-    use workspace::{AppState, PathList, open_paths};
+    use workspace::{AppState, PathList, SerializedWorkspaceLocation, open_paths};
 
     use super::*;
 
@@ -2110,26 +1901,13 @@ mod tests {
             path: PathBuf::from(format!("/current/project-folder-{index}")),
             branch: None,
             is_active: false,
-            connection_options: None,
         }
     }
 
     fn project_group(index: usize) -> ProjectGroupKey {
-        ProjectGroupKey::new(
-            None,
-            PathList::new(&[PathBuf::from(format!("/this-window/project-{index}"))]),
-        )
-    }
-
-    fn remote_project_group(index: usize) -> ProjectGroupKey {
-        ProjectGroupKey::new(
-            Some(RemoteConnectionOptions::Mock(
-                remote::MockConnectionOptions { id: index as u64 },
-            )),
-            PathList::new(&[PathBuf::from(format!(
-                "/this-window/remote-project-{index}"
-            ))]),
-        )
+        ProjectGroupKey::new(PathList::new(&[PathBuf::from(format!(
+            "/this-window/project-{index}"
+        ))]))
     }
 
     fn recent_workspace(index: usize) -> RecentWorkspace {
@@ -2253,91 +2031,6 @@ mod tests {
                 .get(picker.delegate.selected_index),
             Some(ProjectPickerEntry::RecentProject(_))
         ));
-    }
-
-    #[gpui::test]
-    fn this_window_project_icons_use_each_project_group_host(cx: &mut TestAppContext) {
-        init_test(cx);
-
-        let mut delegate = RecentProjectsDelegate::new(
-            WeakEntity::new_invalid(),
-            false,
-            cx.update(|cx| cx.focus_handle()),
-            Vec::new(),
-            vec![project_group(0), remote_project_group(1)],
-        );
-        delegate.filtered_entries = vec![
-            ProjectPickerEntry::ProjectGroup(StringMatch {
-                candidate_id: 0,
-                score: 0.0,
-                positions: Vec::new(),
-                string: Default::default(),
-            }),
-            ProjectPickerEntry::ProjectGroup(StringMatch {
-                candidate_id: 1,
-                score: 0.0,
-                positions: Vec::new(),
-                string: Default::default(),
-            }),
-        ];
-
-        assert!(!delegate.entry_is_remote_project(&delegate.filtered_entries[0]));
-        assert!(delegate.entry_is_remote_project(&delegate.filtered_entries[1]));
-        assert!(delegate.filtered_entries_include_remote_project());
-        assert_eq!(
-            icon_for_project_group(&delegate.window_project_groups[0]),
-            IconName::Screen
-        );
-        assert_eq!(
-            icon_for_project_group(&delegate.window_project_groups[1]),
-            IconName::Server
-        );
-    }
-
-    #[gpui::test]
-    fn is_open_folder_distinguishes_local_and_remote(cx: &mut TestAppContext) {
-        init_test(cx);
-
-        let shared_path = PathBuf::from("/repo");
-        let local_open_folder = OpenFolderEntry {
-            worktree_id: WorktreeId::from_usize(0),
-            name: "repo".into(),
-            path: shared_path.clone(),
-            branch: None,
-            is_active: false,
-            connection_options: None,
-        };
-
-        let delegate = RecentProjectsDelegate::new(
-            WeakEntity::new_invalid(),
-            false,
-            cx.update(|cx| cx.focus_handle()),
-            vec![local_open_folder],
-            Vec::new(),
-        );
-
-        let paths = PathList::new(&[shared_path]);
-        let local_workspace = RecentWorkspace {
-            workspace_id: WorkspaceId::from_i64(1),
-            location: SerializedWorkspaceLocation::Local,
-            paths: paths.clone(),
-            identity_paths: paths.clone(),
-            timestamp: Utc::now(),
-        };
-        let remote_workspace = RecentWorkspace {
-            workspace_id: WorkspaceId::from_i64(2),
-            location: SerializedWorkspaceLocation::Remote(RemoteConnectionOptions::Mock(
-                remote::MockConnectionOptions { id: 0 },
-            )),
-            paths: paths.clone(),
-            identity_paths: paths,
-            timestamp: Utc::now(),
-        };
-
-        // A local open folder should hide only the matching local recent
-        // project, not a remote checkout that shares the same path.
-        assert!(delegate.is_open_folder(&local_workspace));
-        assert!(!delegate.is_open_folder(&remote_workspace));
     }
 
     #[gpui::test]
@@ -2557,117 +2250,6 @@ mod tests {
             editor::init(cx);
             state
         })
-    }
-
-    #[gpui::test]
-    async fn test_remote_project_group_confirm_does_not_create_local_workspace(
-        cx: &mut TestAppContext,
-    ) {
-        // Regression test: confirming a ProjectGroup entry with a remote host
-        // should call find_or_create_workspace with the host, not
-        // find_or_create_local_workspace.
-        let app_state = init_test(cx);
-        app_state
-            .fs
-            .as_fake()
-            .insert_tree("/local", json!({}))
-            .await;
-
-        cx.update(|cx| {
-            open_paths(
-                &[PathBuf::from("/local")],
-                app_state,
-                workspace::OpenOptions::default(),
-                cx,
-            )
-        })
-        .await
-        .unwrap();
-
-        cx.run_until_parked();
-
-        let mw = cx.update(|cx| cx.windows()[0].downcast::<MultiWorkspace>().unwrap());
-        let remote_key = remote_project_group(1);
-
-        // Get workspace info via WindowHandle::read_with (returns Result)
-        let (workspace, groups, fh) = mw
-            .read_with(cx, |mw, _cx| {
-                let ws = mw.workspace().clone();
-                (
-                    ws.clone(),
-                    mw.project_group_keys(),
-                    ws.read(_cx).focus_handle(_cx),
-                )
-            })
-            .unwrap();
-
-        let mut augmented_groups = groups.clone();
-        augmented_groups.push(remote_key.clone());
-
-        let recent_projects: Entity<RecentProjects> = cx.update(|cx| {
-            let window = cx.windows()[0];
-            window
-                .update(cx, |_, window, cx| {
-                    workspace.update(cx, |workspace, cx| {
-                        RecentProjects::open(
-                            workspace,
-                            Some(false),
-                            augmented_groups,
-                            window,
-                            fh,
-                            cx,
-                        );
-                        workspace.active_modal::<RecentProjects>(cx)
-                    })
-                })
-                .unwrap()
-                .expect("the recent projects modal should open")
-        });
-
-        cx.run_until_parked();
-
-        let picker: Entity<Picker<RecentProjectsDelegate>> = cx.update(|cx| {
-            let window = cx.windows()[0];
-            window
-                .update(cx, |_, _window, cx| recent_projects.read(cx).picker.clone())
-                .unwrap()
-        });
-
-        cx.run_until_parked();
-
-        // Find the remote project group entry index via Entity::read_with (no unwrap)
-        let filtered = picker.read_with(cx, |p, _| p.delegate.filtered_entries.clone());
-        let remote_idx = filtered
-            .iter()
-            .position(|entry| {
-                matches!(entry, ProjectPickerEntry::ProjectGroup(m) if m.candidate_id == groups.len())
-            })
-            .expect("remote project group entry should exist");
-
-        // Select and confirm the remote entry via Entity::update
-        let _ = cx.update(|cx| {
-            let window = cx.windows()[0];
-            window.update(cx, |_, window, cx| {
-                picker.update(cx, |picker, cx| {
-                    picker.delegate.set_selected_index(remote_idx, window, cx);
-                    picker.delegate.confirm(false, window, cx);
-                });
-            })
-        });
-
-        cx.run_until_parked();
-
-        // Verify no local workspace was created for the remote paths
-        let has_local = mw
-            .read_with(cx, |mw, cx| {
-                mw.workspace_for_paths(remote_key.path_list(), None, cx)
-                    .is_some()
-            })
-            .unwrap();
-        assert!(
-            !has_local,
-            "remote project group confirm should not create a local workspace"
-        );
     }
 
     #[gpui::test]

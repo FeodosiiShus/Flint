@@ -6,7 +6,7 @@ use gpui::{
 };
 use smallvec::SmallVec;
 
-use crate::{DynamicSpacing, ElevationIndex, prelude::*};
+use crate::{COMPONENT_CORNER_RADII, DynamicSpacing, ElevationIndex, prelude::*};
 
 /// A trait for buttons that can be Selected. Enables setting the [`ButtonStyle`] of a button when it is selected.
 pub trait SelectableButton: Toggleable {
@@ -819,10 +819,18 @@ impl RenderOnce for ButtonLike {
             })
             .when(is_outlined, |this| this.border_1())
             .when_some(self.rounding, |this, rounding| {
-                this.when(rounding.top_left, |this| this.rounded_tl_sm())
-                    .when(rounding.top_right, |this| this.rounded_tr_sm())
-                    .when(rounding.bottom_right, |this| this.rounded_br_sm())
-                    .when(rounding.bottom_left, |this| this.rounded_bl_sm())
+                this.when(rounding.top_left, |this| {
+                    this.rounded_tl(COMPONENT_CORNER_RADII.button)
+                })
+                .when(rounding.top_right, |this| {
+                    this.rounded_tr(COMPONENT_CORNER_RADII.button)
+                })
+                .when(rounding.bottom_right, |this| {
+                    this.rounded_br(COMPONENT_CORNER_RADII.button)
+                })
+                .when(rounding.bottom_left, |this| {
+                    this.rounded_bl(COMPONENT_CORNER_RADII.button)
+                })
             })
             .gap(DynamicSpacing::Base04.rems(cx))
             .map(|this| match self.size {

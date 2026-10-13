@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use gpui::{AnyElement, AnyView, ClickEvent, MouseButton, MouseDownEvent, Role};
 
-use crate::{Disclosure, prelude::*};
+use crate::{COMPONENT_CORNER_RADII, Disclosure, prelude::*};
 
 #[derive(IntoElement, RegisterComponent)]
 pub struct TreeViewItem {
@@ -178,7 +178,7 @@ impl RenderOnce for TreeViewItem {
                     .pl_0p5()
                     .pr_1()
                     .gap_2()
-                    .rounded_sm()
+                    .rounded(COMPONENT_CORNER_RADII.selection)
                     .border_1()
                     .border_color(transparent_border)
                     .focus_visible(|s| s.border_color(focused_border))

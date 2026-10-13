@@ -1,6 +1,6 @@
 use gpui::{BorderStyle, ClickEvent, Corners, Edges, Hsla, Role, Toggled, canvas, quad};
 
-use crate::{Checkbox, ToggleState, prelude::*};
+use crate::{COMPONENT_CORNER_RADII, Checkbox, ToggleState, prelude::*};
 
 enum ChoiceCardKind {
     Radio,
@@ -196,7 +196,7 @@ impl RenderOnce for ChoiceCard {
             .min_h(rems_from_px(28_f32))
             .items_start()
             .gap_1p5()
-            .rounded_sm()
+            .rounded(COMPONENT_CORNER_RADII.button)
             .border_1()
             .border_color(border_color.opacity(0.5))
             .bg(background)

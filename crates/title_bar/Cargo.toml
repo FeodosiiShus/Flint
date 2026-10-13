@@ -19,10 +19,8 @@ test-support = [
     "gpui/test-support",
 
     "project/test-support",
-    "remote/test-support",
     "util/test-support",
     "workspace/test-support",
-    "recent_projects/test-support",
 ]
 
 [dependencies]
@@ -31,8 +29,6 @@ platform_title_bar.workspace = true
 git_ui_core.workspace = true
 gpui.workspace = true
 project.workspace = true
-recent_projects.workspace = true
-remote.workspace = true
 schemars.workspace = true
 serde.workspace = true
 settings.workspace = true
@@ -46,8 +42,6 @@ zed_actions.workspace = true
 [dev-dependencies]
 gpui = { workspace = true, features = ["test-support"] }
 project = { workspace = true, features = ["test-support"] }
-recent_projects = { workspace = true, features = ["test-support"] }
-remote = { workspace = true, features = ["test-support"] }
 settings = { workspace = true, features = ["test-support"] }
 theme_settings.workspace = true
 util = { workspace = true, features = ["test-support"] }

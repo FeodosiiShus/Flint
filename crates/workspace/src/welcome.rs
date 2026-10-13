@@ -333,28 +333,21 @@ impl WelcomePage {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if let Some(recent_workspaces) = &self.recent_workspaces {
-            if let Some(workspace) = recent_workspaces.get(action.index) {
-                let is_local = matches!(workspace.location, SerializedWorkspaceLocation::Local);
-
-                if is_local {
-                    let paths = workspace.paths.paths().to_vec();
-                    let open_mode = match WorkspaceSettings::get_global(cx).default_open_behavior {
-                        DefaultOpenBehavior::ExistingWindow => OpenMode::Activate,
-                        DefaultOpenBehavior::NewWindow => OpenMode::NewWindow,
-                    };
-                    self.workspace
-                        .update(cx, |workspace, cx| {
-                            workspace
-                                .open_workspace_for_paths(open_mode, paths, window, cx)
-                                .detach_and_log_err(cx);
-                        })
-                        .log_err();
-                } else {
-                    use zed_actions::OpenRecent;
-                    window.dispatch_action(OpenRecent::default().boxed_clone(), cx);
-                }
-            }
+        if let Some(recent_workspaces) = &self.recent_workspaces
+            && let Some(workspace) = recent_workspaces.get(action.index)
+        {
+            let paths = workspace.paths.paths().to_vec();
+            let open_mode = match WorkspaceSettings::get_global(cx).default_open_behavior {
+                DefaultOpenBehavior::ExistingWindow => OpenMode::Activate,
+                DefaultOpenBehavior::NewWindow => OpenMode::NewWindow,
+            };
+            self.workspace
+                .update(cx, |workspace, cx| {
+                    workspace
+                        .open_workspace_for_paths(open_mode, paths, window, cx)
+                        .detach_and_log_err(cx);
+                })
+                .log_err();
         }
     }
 
@@ -379,7 +372,6 @@ impl WelcomePage {
 
         let (icon, title) = match location {
             SerializedWorkspaceLocation::Local => (IconName::Folder, name),
-            SerializedWorkspaceLocation::Remote(_) => (IconName::Server, name),
         };
 
         SectionButton::new(

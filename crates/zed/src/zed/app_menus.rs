@@ -68,18 +68,13 @@ pub fn app_menus() -> Vec<Menu> {
                     MenuItem::action("Open Default Key Bindings", zed_actions::OpenDefaultKeymap),
                 ])),
                 MenuItem::separator(),
-                #[cfg(target_os = "macos")]
                 MenuItem::os_submenu("Services", gpui::SystemMenuType::Services),
                 MenuItem::separator(),
                 MenuItem::action("Extensions", zed_actions::Extensions::default()),
-                #[cfg(not(target_os = "windows"))]
                 MenuItem::action("Install CLI", install_cli::InstallCliBinary),
                 MenuItem::separator(),
-                #[cfg(target_os = "macos")]
                 MenuItem::action("Hide Flint", super::Hide),
-                #[cfg(target_os = "macos")]
                 MenuItem::action("Hide Others", super::HideOthers),
-                #[cfg(target_os = "macos")]
                 MenuItem::action("Show All", super::ShowAll),
                 MenuItem::separator(),
                 MenuItem::action("Quit Flint", Quit),
@@ -92,18 +87,8 @@ pub fn app_menus() -> Vec<Menu> {
                 MenuItem::action("New", workspace::NewFile),
                 MenuItem::action("New Window", workspace::NewWindow),
                 MenuItem::separator(),
-                #[cfg(not(target_os = "macos"))]
-                MenuItem::action("Open File...", workspace::OpenFiles),
-                MenuItem::action(
-                    if cfg!(not(target_os = "macos")) {
-                        "Open Folder..."
-                    } else {
-                        "Open…"
-                    },
-                    workspace::Open::default(),
-                ),
+                MenuItem::action("Open…", workspace::Open::default()),
                 MenuItem::action("Open Recent…", zed_actions::OpenRecent::default()),
-                MenuItem::action("Open Remote…", zed_actions::OpenRemote::default()),
                 MenuItem::separator(),
                 MenuItem::action("Add Folder to Project…", workspace::AddFolderToProject),
                 MenuItem::separator(),
@@ -188,7 +173,10 @@ pub fn app_menus() -> Vec<Menu> {
                 MenuItem::separator(),
                 MenuItem::action("Move Line Up", editor::actions::MoveLineUp),
                 MenuItem::action("Move Line Down", editor::actions::MoveLineDown),
-                MenuItem::action("Duplicate Selection", editor::actions::DuplicateLineDown),
+                MenuItem::action(
+                    "Duplicate Line or Selection",
+                    editor::actions::DuplicateSelection,
+                ),
             ],
         },
         Menu {
@@ -206,7 +194,7 @@ pub fn app_menus() -> Vec<Menu> {
                 MenuItem::action("Command Palette...", zed_actions::command_palette::Toggle),
                 MenuItem::separator(),
                 MenuItem::action("Go to File...", workspace::ToggleFileFinder::default()),
-                // MenuItem::action("Go to Symbol in Project", project_symbols::Toggle),
+                MenuItem::action("Go to Symbol in Project…", workspace::ToggleProjectSymbols),
                 MenuItem::action(
                     "Go to Symbol in Editor...",
                     zed_actions::outline::ToggleOutline,

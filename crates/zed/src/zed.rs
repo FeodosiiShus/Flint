@@ -7,7 +7,6 @@ pub(crate) mod move_to_applications;
 mod open_listener;
 mod open_url_modal;
 mod quick_action_bar;
-pub mod remote_debug;
 #[cfg(target_os = "windows")]
 pub(crate) mod windows_only_instance;
 
@@ -45,10 +44,8 @@ use migrate::{MigrationBanner, MigrationEvent, MigrationNotification, MigrationT
 use migrator::migrate_keymap;
 pub use open_listener::*;
 use paths::local_settings_file_relative_path;
-use project::{DirectoryLister, ProjectItem};
 use project_panel::ProjectPanel;
 use quick_action_bar::QuickActionBar;
-use recent_projects::open_remote_project;
 use release_channel::{AppCommitSha, AppVersion, ReleaseChannel};
 use rope::Rope;
 use search::project_search::ProjectSearchBar;
@@ -84,7 +81,7 @@ use workspace::{
 };
 use workspace::{CloseProject, CloseWindow, with_active_or_new_workspace};
 use workspace::{Pane, notifications::DetachAndPromptErr};
-use zed_actions::{About, OpenBrowser, OpenServerSettings, OpenSettingsFile, Quit};
+use zed_actions::{About, OpenBrowser, OpenSettingsFile, Quit};
 
 actions!(
     zed,
@@ -726,53 +723,6 @@ fn register_actions(
                 cx,
             );
         })
-        .register_action(|workspace, action: &zed_actions::OpenRemote, window, cx| {
-            if !action.from_existing_connection {
-                cx.propagate();
-                return;
-            }
-            // You need existing remote connection to open it this way
-            if workspace.project().read(cx).is_local() {
-                return;
-            }
-            let create_new_window = action.create_new_window.unwrap_or_else(|| {
-                matches!(
-                    WorkspaceSettings::get_global(cx).default_open_behavior,
-                    DefaultOpenBehavior::NewWindow
-                )
-            });
-            let paths = workspace.prompt_for_open_path(
-                PathPromptOptions {
-                    files: true,
-                    directories: true,
-                    multiple: true,
-                    prompt: None,
-                },
-                DirectoryLister::Project(workspace.project().clone()),
-                window,
-                cx,
-            );
-            cx.spawn_in(window, async move |this, cx| {
-                let Some(paths) = paths.await.log_err().flatten() else {
-                    return;
-                };
-                if let Some(task) = this
-                    .update_in(cx, |this, window, cx| {
-                        open_new_ssh_project_from_project(
-                            this,
-                            paths,
-                            create_new_window,
-                            window,
-                            cx,
-                        )
-                    })
-                    .log_err()
-                {
-                    task.await.log_err();
-                }
-            })
-            .detach()
-        })
         .register_action({
             let fs = app_state.fs.clone();
             move |_, action: &zed_actions::IncreaseUiFontSize, _window, cx| {
@@ -968,38 +918,6 @@ fn register_actions(
 
     #[cfg(not(target_os = "windows"))]
     workspace.register_action(install_cli);
-
-    if workspace.project().read(cx).is_via_remote_server() {
-        workspace.register_action({
-            move |workspace, _: &OpenServerSettings, window, cx| {
-                let open_server_settings = workspace
-                    .project()
-                    .update(cx, |project, cx| project.open_server_settings(cx));
-
-                cx.spawn_in(window, async move |workspace, cx| {
-                    let buffer = open_server_settings.await?;
-
-                    workspace
-                        .update_in(cx, |workspace, window, cx| {
-                            workspace.open_path(
-                                buffer
-                                    .read(cx)
-                                    .project_path(cx)
-                                    .expect("Settings file must have a location"),
-                                None,
-                                true,
-                                window,
-                                cx,
-                            )
-                        })?
-                        .await?;
-
-                    anyhow::Ok(())
-                })
-                .detach_and_log_err(cx);
-            }
-        });
-    }
 
     #[cfg(debug_assertions)]
     workspace.register_action(|workspace, _: &ShowWorkspaceError, _, cx| {
@@ -1873,40 +1791,6 @@ fn initialize_new_window(
     });
     let editor = cx.new(|cx| Editor::for_buffer(buffer, Some(project), window, cx));
     workspace.add_item_to_active_pane(Box::new(editor), None, true, window, cx);
-}
-
-pub fn open_new_ssh_project_from_project(
-    workspace: &mut Workspace,
-    paths: Vec<PathBuf>,
-    create_new_window: bool,
-    window: &mut Window,
-    cx: &mut Context<Workspace>,
-) -> Task<anyhow::Result<()>> {
-    let app_state = workspace.app_state().clone();
-    let Some(ssh_client) = workspace.project().read(cx).remote_client() else {
-        return Task::ready(Err(anyhow::anyhow!("Not an ssh project")));
-    };
-    let connection_options = ssh_client.read(cx).connection_options();
-    let requesting_window = if create_new_window {
-        None
-    } else {
-        window.window_handle().downcast::<MultiWorkspace>()
-    };
-    cx.spawn_in(window, async move |_, cx| {
-        open_remote_project(
-            connection_options,
-            paths,
-            app_state,
-            workspace::OpenOptions {
-                workspace_matching: workspace::WorkspaceMatching::None,
-                requesting_window,
-                ..Default::default()
-            },
-            cx,
-        )
-        .await
-        .map(|_| ())
-    })
 }
 
 fn open_project_settings_file(
@@ -5056,7 +4940,6 @@ mod tests {
                 "project_symbols",
                 "projects",
                 "recent_projects",
-                "remote_debug",
                 "search",
                 "search_everywhere",
                 "search_panel",
@@ -6424,8 +6307,8 @@ mod tests {
                 assert_eq!(
                     mw.project_group_keys(),
                     vec![
-                        ProjectGroupKey::new(None, PathList::new(&[dir2])),
-                        ProjectGroupKey::new(None, PathList::new(&[dir1])),
+                        ProjectGroupKey::new(PathList::new(&[dir2])),
+                        ProjectGroupKey::new(PathList::new(&[dir1])),
                     ]
                 );
                 assert_eq!(mw.workspaces().count(), 1);
@@ -6437,7 +6320,7 @@ mod tests {
             .read_with(cx, |mw, _| {
                 assert_eq!(
                     mw.project_group_keys(),
-                    vec![ProjectGroupKey::new(None, PathList::new(&[dir3]))]
+                    vec![ProjectGroupKey::new(PathList::new(&[dir3]))]
                 );
                 assert_eq!(mw.workspaces().count(), 1);
             })
@@ -6774,8 +6657,8 @@ mod tests {
             .expect("failed to add root_c");
         cx.run_until_parked();
 
-        let key_b = ProjectGroupKey::new(None, PathList::new(&[path!("/root_b")]));
-        let key_c = ProjectGroupKey::new(None, PathList::new(&[path!("/root_c")]));
+        let key_b = ProjectGroupKey::new(PathList::new(&[path!("/root_b")]));
+        let key_c = ProjectGroupKey::new(PathList::new(&[path!("/root_c")]));
 
         // Make root_a the active workspace so it's the one eagerly restored.
         window
@@ -6900,7 +6783,7 @@ mod tests {
         window.update(cx, |mw, _, cx| mw.open_sidebar(cx)).unwrap();
         cx.background_executor.run_until_parked();
 
-        let project_key = ProjectGroupKey::new(None, PathList::new(&[path!("/my-project")]));
+        let project_key = ProjectGroupKey::new(PathList::new(&[path!("/my-project")]));
         let keys = window
             .read_with(cx, |mw, _| mw.project_group_keys())
             .unwrap();

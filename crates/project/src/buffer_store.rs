@@ -48,8 +48,6 @@ pub struct BufferStore {
 struct RemoteProjectSearchState {
     // List of ongoing project search chunks from our remote host. Used by the side issuing a search RPC request.
     chunks: HashMap<u64, async_channel::Sender<BufferId>>,
-    // Monotonously-increasing handle to hand out to remote host in order to identify the project search result chunk.
-    next_id: u64,
     // Used by the side running the actual search for match candidates to potentially cancel the search prematurely.
     searches_in_progress: HashMap<(PeerId, u64), Task<Result<()>>>,
 }
@@ -1794,16 +1792,6 @@ impl BufferStore {
                 .push(language::proto::serialize_transaction(&transaction));
         }
         serialized_transaction
-    }
-
-    pub(crate) fn register_project_search_result_handle(
-        &mut self,
-    ) -> (u64, async_channel::Receiver<BufferId>) {
-        let (tx, rx) = async_channel::unbounded();
-        let handle = util::post_inc(&mut self.project_search.next_id);
-        let _old_entry = self.project_search.chunks.insert(handle, tx);
-        debug_assert!(_old_entry.is_none());
-        (handle, rx)
     }
 
     pub fn register_ongoing_project_search(

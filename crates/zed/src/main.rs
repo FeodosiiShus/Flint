@@ -33,14 +33,12 @@ use gpui_platform;
 use gpui_tokio::Tokio;
 use language::LanguageRegistry;
 use project_panel::ProjectPanel;
-use remote::RemoteConnectionOptions;
 use reqwest_client::ReqwestClient;
 
 use assets::Assets;
 use node_runtime::{NodeBinaryOptions, NodeRuntime};
 use parking_lot::Mutex;
 use project::{project_settings::ProjectSettings, trusted_worktrees};
-use recent_projects::{RemoteSettings, open_remote_project};
 use release_channel::{AppCommitSha, AppVersion, ReleaseChannel};
 use session::{AppSession, Session};
 use settings::{Settings, SettingsStore, watch_config_file};
@@ -59,8 +57,8 @@ use theme_settings::load_user_theme;
 use util::ResultExt;
 use uuid::Uuid;
 use workspace::{
-    AppState, MultiWorkspace, SerializedWorkspaceLocation, SessionWorkspace, Toast,
-    WorkspaceSettings, WorkspaceStore, notifications::NotificationId, restore_multiworkspace,
+    AppState, MultiWorkspace, SessionWorkspace, Toast, WorkspaceSettings, WorkspaceStore,
+    notifications::NotificationId, restore_multiworkspace,
 };
 use zed::{
     OpenListener, OpenRequest, RawOpenRequest, app_menus, build_window_options,
@@ -536,7 +534,6 @@ fn main() {
             cx.background_executor().clone(),
         );
         command_palette::init(cx);
-        zed::remote_debug::init(cx);
         snippet_provider::init(cx);
         recent_projects::init(cx);
 
@@ -666,7 +663,7 @@ fn main() {
         let restore_task = match open_rx
             .try_recv()
             .ok()
-            .and_then(|request| OpenRequest::parse(request, cx).log_err())
+            .and_then(|request| OpenRequest::parse(request).log_err())
         {
             Some(request) if request.is_focus_app_only() => cx.spawn({
                 let app_state = app_state.clone();
@@ -730,7 +727,7 @@ fn main() {
                     _ = first_window_placed.clone() => {}
                 }
                 cx.update(|cx| {
-                    if let Some(request) = OpenRequest::parse(urls, cx).log_err() {
+                    if let Some(request) = OpenRequest::parse(urls).log_err() {
                         handle_open_request(request, app_state.clone(), cx);
                     }
                 });
@@ -945,18 +942,6 @@ fn handle_open_request(request: OpenRequest, app_state: Arc<AppState>, cx: &mut 
         return;
     }
 
-    if let Some(connection_options) = request.remote_connection {
-        let open_behavior = request.open_behavior;
-        let location = workspace::SerializedWorkspaceLocation::Remote(connection_options.clone());
-        let base_open_options = zed::open_options_for_request(open_behavior, &location, cx);
-        cx.spawn(async move |cx| {
-            let paths: Vec<PathBuf> = request.open_paths.into_iter().map(PathBuf::from).collect();
-            open_remote_project(connection_options, paths, app_state, base_open_options, cx).await
-        })
-        .detach_and_log_err(cx);
-        return;
-    }
-
     let mut task = None;
     if !request.open_paths.is_empty() || !request.diff_paths.is_empty() {
         let app_state = app_state.clone();
@@ -1025,54 +1010,9 @@ pub(crate) async fn restore_or_create_workspace(
     if let Some(multi_workspaces) = restorable_workspaces(cx, &app_state).await {
         let mut error_count = 0;
         for multi_workspace in multi_workspaces {
-            let result = match &multi_workspace.active_workspace.location {
-                SerializedWorkspaceLocation::Local => {
-                    restore_multiworkspace(multi_workspace, app_state.clone(), cx)
-                        .await
-                        .map(|_| ())
-                }
-                SerializedWorkspaceLocation::Remote(connection_options) => {
-                    let mut connection_options = connection_options.clone();
-                    match &mut connection_options {
-                        RemoteConnectionOptions::Ssh(options) => {
-                            cx.update(|cx| {
-                                RemoteSettings::get_global(cx)
-                                    .fill_connection_options_from_settings(options)
-                            });
-                        }
-                        #[cfg(any(test, feature = "test-support"))]
-                        RemoteConnectionOptions::Mock(_) => {}
-                    }
-
-                    let paths = multi_workspace
-                        .active_workspace
-                        .paths
-                        .paths()
-                        .iter()
-                        .map(PathBuf::from)
-                        .collect::<Vec<_>>();
-                    let state = multi_workspace.state.clone();
-                    async {
-                        let window = open_remote_project(
-                            connection_options,
-                            paths,
-                            app_state.clone(),
-                            workspace::OpenOptions::default(),
-                            cx,
-                        )
-                        .await?;
-                        workspace::apply_restored_multiworkspace_state(
-                            window,
-                            &state,
-                            app_state.fs.clone(),
-                            cx,
-                        )
-                        .await;
-                        Ok::<(), anyhow::Error>(())
-                    }
-                    .await
-                }
-            };
+            let result = restore_multiworkspace(multi_workspace, app_state.clone(), cx)
+                .await
+                .map(|_| ());
 
             if let Err(error) = result {
                 log::error!("Failed to restore workspace: {error:#}");
@@ -1131,10 +1071,6 @@ pub(crate) async fn restore_or_create_workspace(
             }
         }
 
-        // If the user cancelled a failed remote connection at startup,
-        // open_remote_project returns Ok but removes the window, so error_count
-        // stays 0 and the toast fallback above does not trigger. Without this
-        // check, Zed would exit silently.
         if cx.update(|cx| cx.windows().is_empty()) {
             cx.update(|cx| {
                 workspace::open_new(
@@ -1312,10 +1248,6 @@ struct Args {
     #[arg(long, value_name = "DIR", verbatim_doc_comment)]
     user_data_dir: Option<String>,
 
-    /// Instructs zed to run as a dev server on this machine. (not implemented)
-    #[arg(long)]
-    dev_server_token: Option<String>,
-
     /// Run zed in the foreground, only used on Windows, to match the behavior on macOS.
     #[arg(long)]
     #[cfg(target_os = "windows")]
@@ -1350,7 +1282,6 @@ fn parse_url_arg(arg: &str) -> String {
             if arg.starts_with("file://")
                 || arg.starts_with("zed://")
                 || arg.starts_with("zed-cli://")
-                || arg.starts_with("ssh://")
             {
                 arg.into()
             } else {

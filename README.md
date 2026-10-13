@@ -56,7 +56,7 @@ xattr -dr com.apple.quarantine "/Applications/Flint.app"
 
 The app is built on the `dev` release channel and is named "Flint". It has no auto-update, Zed account sign-in or onboarding flow.
 
-Flint ships none of Zed's built-in AI: no agent panel, threads sidebar, inline assist, language model providers, MCP servers, external agents or commit message generation. It also drops the debugger panel, notebooks (REPL), dev containers, the headless remote server, vim mode, the image viewer, the theme, tab, toolchain and settings profile pickers, call hierarchy, the Outline panel (the symbol outline popup of `outline: toggle` stays), the editor minimap, the journal, the SVG preview, the snippets picker, the syntax tree, highlights tree and key context views, the language servers for Tailwind CSS, CSS, Bash, Go, Python, C and C++, Vue, the task runner (`tasks.json` and `debug.json`, the Run menu, gutter run buttons, `task: spawn`), the status bar, and every non-macOS platform backend. Use the terminal panel to run AI command-line tools.
+Flint ships none of Zed's built-in AI: no agent panel, threads sidebar, inline assist, language model providers, MCP servers, external agents or commit message generation. It also drops the debugger panel, notebooks (REPL), dev containers, remote development (the headless remote server, SSH connections, File → Open Remote…, `ssh://` links, the remote host indicator in the title bar and remote projects in Open Recent), vim mode, the image viewer, the theme, tab, toolchain and settings profile pickers, call hierarchy, the Outline panel (the symbol outline popup of `outline: toggle` stays), the editor minimap, the journal, the SVG preview, the snippets picker, the syntax tree, highlights tree and key context views, the language servers for Tailwind CSS, CSS, Bash, Go, Python, C and C++, Vue, the task runner (`tasks.json` and `debug.json`, the Run menu, gutter run buttons, `task: spawn`), the status bar, and every non-macOS platform backend. Use the terminal panel to run AI command-line tools. Remote projects saved by older builds are dropped from the workspace database and from Open Recent on the first start; `ssh_connections` and `read_ssh_config` in an existing `settings.json` are ignored.
 
 ## Background image
 
@@ -68,7 +68,7 @@ Flint can draw a picture behind the editor and the tool windows, like WebStorm's
 ### Choosing an image
 
 - Command palette: `workspace: select background image`, `workspace: select empty frame background image`, `workspace: clear background image`. The pickers write the path into your user `settings.json`; clearing empties both paths.
-- Settings window: Appearance → Background Image. Every field can be set for the user or for one project: switch between "User" and the project at the top of the Settings window. The "Choose Image…" and "Clear" buttons there run the same commands as the command palette.
+- Settings window: Appearance → Background Image. Every field can be set for the user or for one project: pick "User" or the project in the scope drop-down at the top right of the Settings window. The "Choose Image…" and "Clear" buttons there run the same commands as the command palette.
 - `settings.json`:
 
 ```json
@@ -238,7 +238,7 @@ Flint uses WebStorm's [Islands](https://plugins.jetbrains.com/docs/intellij/supp
 - The right margin uses `editor.wrap_guide` (`#454963`); IntelliJ draws the right margin in the scheme's `RIGHT_MARGIN_COLOR` (`#21252b` in Eva Dark) and code-style visual guides in `#454963`.
 - IntelliJ's `Island.borderWidth` is 6; the Flint gap default of 4 is left as is.
 - Split dividers between editor panes use `border` (`#40434a`), not IntelliJ's `#26282c`, which is invisible on Eva's editor background.
-- Filled buttons that sit on the modal layer (the Restricted Mode and disconnected-project dialogs) have the same colour as the dialog, because IntelliJ's popup colour `#26282c` equals the frame colour; only their label and their pressed state are visible.
+- Filled buttons that sit on the modal layer (the Restricted Mode dialog) have the same colour as the dialog, because IntelliJ's popup colour `#26282c` equals the frame colour; only their label and their pressed state are visible.
 - Hover highlights use IntelliJ's translucent white, so they are fainter than Eva's solid blue; the sticky excerpt header keeps an opaque fill while hovered.
 
 ## Popups and menus
@@ -261,6 +261,23 @@ Popups use the metrics of IntelliJ's New UI on macOS (see [docs/webstorm-ui-rese
 | Tooltips | `element.background` over the popup colour (`#33353b`), no border, 4 px radius, padding 8 px top, 12 px sides, 9 px bottom, text at most 250 px wide | `ToolTip.background`, `ToolTip.borderCornerRadius`, `HelpTooltip.maxWidth` |
 
 Not implemented: the lighter shortcut colour of the selected row (`#bbbbbb`, no theme key), the larger insets of multi-line tooltips, the native macOS shadow of IntelliJ's popup windows (Flint keeps its own shadow) and IntelliJ's group header insets in pickers.
+
+## Control corners and checkboxes
+
+Controls use the corner radii of IntelliJ's New UI everywhere in Flint, in pixels, so they no longer shrink with `ui_font_size` like Zed's rem-based radii. IntelliJ's `arc` values are diameters, so the radius is half the arc:
+
+| Control | Radius | IntelliJ key |
+|---|---|---|
+| Buttons, icon buttons, split and toggle buttons, dialog buttons, chips, key caps | 4 px | `Button.arc` 8 |
+| Text fields and drop-downs | 4 px | `Component.arc` 8 |
+| List, tree and picker rows (hover and selection) | 4 px | `Popup.Selection.arc`, `Tree.Selection.arc` 8 |
+| Checkboxes | 3 px | New UI `checkBox.svg` (`rx` 2.5 plus the 1 px stroke) |
+| Title bar widgets | 6 px | `MainToolbar.Dropdown.arc` 12 |
+| Banners and modal sections | 6 px | `Banner.arc` 12 |
+
+Checkboxes look like IntelliJ's New UI checkbox: a 16 px box with a 1 px border; unchecked it has the `editor.background` fill and the `border` outline, checked or indeterminate it is filled with `text.accent` (`#3871e1`) and shows a white check or dash. The label starts 4 px after the box (`CheckBox.textIconGap`). There is no hover state; keyboard focus draws a 2 px `border.focused` ring.
+
+Unchanged: popups (8 px), tooltips (4 px), editor tabs, switches, avatars and other fully round shapes.
 
 ## Editor tabs, project panel and scrollbar
 
@@ -360,8 +377,14 @@ Language server inlay hints are drawn like WebStorm's: a rounded pill with the h
 The title bar works like WebStorm's [main toolbar](https://www.jetbrains.com/help/webstorm/new-ui.html), left to right:
 
 - Window buttons (close, minimize, zoom), described below.
-- VCS widget: the branch name, then `↓N ↑M` when the branch is behind or ahead of its upstream (only the non-zero directions are shown), and a ˅. Click it to open the [Git Branches popup](#git-branches-popup). The worktree button is hidden by default. In a remote project, the remote host indicator comes before it.
+- VCS widget: the branch status icon, the branch name, then `↓N ↑M` when the branch is behind or ahead of its upstream (only the non-zero directions are shown), and a ˅. Click it to open the [Git Branches popup](#git-branches-popup). The worktree button is hidden by default.
 - Search Everywhere field: a field labelled "Search Everywhere" with the shortcut of `search everywhere: toggle` from your current keymap (`Shift` `Shift` with the JetBrains keymap). Click it to open Search Everywhere on its default tab.
+
+Widget look, from IntelliJ's main toolbar combo widget (`ToolbarComboButton`, `MainToolbar.Dropdown.*`):
+
+- The VCS widget and the worktree button are 28 px pills with a 6 px radius (`MainToolbar.Dropdown.arc` 12), 10 px padding on the left and 6 px on the right, a 6 px gap between the icon and the text and 2 px before the ˅. The text is in the normal text colour at the UI font size; the icon is 16 px, scaled by `title_bar.icon_size`.
+- Unlike IntelliJ, where the widget is transparent until hovered, the pill always has a fill so it reads as a button on the project gradient: white at 7% in dark themes (10% hovered, the `MainToolbar.Dropdown.transparentHoverBackground` `#FFFFFF1A`; 16% while its popup is open, Islands' pressed `#FFFFFF29`) and black at 5%, 7% and 11% in light themes.
+- The Search Everywhere field is 280 × 28 px with the same radius and fills plus a 1 px outline (white or black at 10%, 16% hovered); its label is muted, at the UI font size. IntelliJ shows Search Everywhere as an icon button; Flint keeps the labelled field.
 
 Project gradient: like WebStorm's colored project headers, the title bar is tinted with a project color, fading out from the left edge to the middle. The color is always IntelliJ's violet project color `#955ae0` (`RecentProject.Color7` `Avatar.Start`), whatever the project. It appears only when a project is open.
 
@@ -379,6 +402,16 @@ Window buttons, like WebStorm on macOS:
 
 - Every project window has this title bar, and the window buttons (close, minimize, zoom) sit at its left end, vertically centered. The widgets start after the buttons; in full screen, where macOS hides the buttons, they start at the left edge.
 - The Settings, About, Conflicts and Merge Revisions windows use the standard macOS title bar with the window title, like WebStorm dialogs, so the buttons never cover their content.
+
+## Settings window
+
+The Settings window looks like IntelliJ's Settings dialog (`SettingsDialog`, `SettingsEditor`, `SettingsTreeView`, `ConfigurableEditorBanner`, `TitledSeparator` and the Kotlin UI DSL spacing of intellij-community):
+
+- The window is titled "Settings", is at least 900 × 700 px (IntelliJ's minimum) and has the standard macOS title bar. Both columns use `panel.background` and are separated by a 1 px `border.variant` line, like IntelliJ's one-pixel splitter.
+- Left column, 20% of the window width, between 200 and 300 px: a 28 px search field with a 4 px radius and a magnifier and no placeholder, as in IntelliJ; below it the tree. Pages are bold with a ˃ / ˅ chevron, their sections are indented by 16 px, and the selected row is a flat full-width `ghost_element.selected` band, like IntelliJ's wide tree selection. The row with keyboard focus gets a 1 px `border.focused` outline. The "Focus Navbar" hint at the bottom is gone; its key binding still works.
+- Header: the path of the page as bold breadcrumbs separated by chevrons; clicking a parent goes back to it. On the right, a drop-down picks the scope ("User" or a project's settings file) and the "Edit in settings.json" link opens the file of that scope.
+- Content: group titles are IntelliJ titled separators, the title in the UI font followed by a 1 px `border.variant` line, with 20 px between groups and no lines between rows. On/off settings are checkboxes with the title as their label; other settings read "Title:" followed by the control; descriptions are smaller muted text below. Drop-downs and pickers are 28 px combo boxes with a ˅, text and number fields are 28 px fields, all with a 4 px radius and a 1 px `border`; buttons are dialog buttons and "Edit in settings.json" entries are links.
+- Differences from IntelliJ: there are no Cancel, Apply and OK buttons, because every change is still written to `settings.json` at once; the header has no back and forward buttons and no Reset link (each changed setting keeps its own reset button); the tree is not resizable.
 
 ## Git Branches popup
 
@@ -561,7 +594,7 @@ The Language Services tool window sits in the bottom dock, with the title "Langu
 
 ## Merge conflicts
 
-Flint resolves merge conflicts like WebStorm 2026.2.3's [Resolve conflicts](https://www.jetbrains.com/help/webstorm/resolve-conflicts.html) with the iterative flow: a "Conflicts" dialog lists every conflicted file, and each file opens in a three-pane "Merge Revisions" window. Both are separate native windows with their own saved position and size, not editor tabs. They exist only for local repositories and are hidden in remote projects.
+Flint resolves merge conflicts like WebStorm 2026.2.3's [Resolve conflicts](https://www.jetbrains.com/help/webstorm/resolve-conflicts.html) with the iterative flow: a "Conflicts" dialog lists every conflicted file, and each file opens in a three-pane "Merge Revisions" window. Both are separate native windows with their own saved position and size, not editor tabs.
 
 ### Opening the Conflicts dialog
 

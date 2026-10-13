@@ -1,12 +1,17 @@
 use gpui::{
     AnyElement, AnyView, ClickEvent, ElementId, Hsla, IntoElement, KeybindingKeystroke, Keystroke,
-    Role, Styled, Toggled, Window, div, hsla, prelude::*,
+    Role, Styled, Toggled, Window, div, hsla, prelude::*, white,
 };
 use std::{rc::Rc, sync::Arc};
 
 use crate::utils::is_light;
-use crate::{Color, Icon, IconName, ToggleState, Tooltip};
+use crate::{COMPONENT_CORNER_RADII, Color, Icon, IconName, ToggleState, Tooltip};
 use crate::{ElevationIndex, KeyBinding, prelude::*};
+
+const CHECKBOX_BOX_SIZE: Pixels = px(16.);
+const CHECKBOX_FOCUS_RING_WIDTH: Pixels = px(2.);
+const CHECKBOX_LABEL_GAP: Pixels = px(4.);
+const CHECKBOX_PLACEHOLDER_DOT_SIZE: Pixels = px(4.);
 
 // TODO: Checkbox, CheckboxWithLabel, and Switch could all be
 // restructured to use a ToggleLike, similar to Button/Buttonlike, Label/Labellike
@@ -53,6 +58,7 @@ pub struct Checkbox {
     label_color: Color,
     tooltip: Option<Box<dyn Fn(&mut Window, &mut App) -> AnyView>>,
     on_click: Option<Box<dyn Fn(&ToggleState, &ClickEvent, &mut Window, &mut App) + 'static>>,
+    tab_index: Option<isize>,
 }
 
 impl Checkbox {
@@ -71,6 +77,7 @@ impl Checkbox {
             label_color: Color::Muted,
             tooltip: None,
             on_click: None,
+            tab_index: None,
         }
     }
 
@@ -151,30 +158,65 @@ impl Checkbox {
         self.label_color = color;
         self
     }
+
+    pub fn tab_index(mut self, tab_index: impl Into<isize>) -> Self {
+        self.tab_index = Some(tab_index.into());
+        self
+    }
+}
+
+struct CheckboxColors {
+    background: Hsla,
+    border: Hsla,
+    mark: Color,
 }
 
 impl Checkbox {
-    fn bg_color(&self, cx: &App) -> Hsla {
-        let style = self.style.clone();
-        match (style, self.filled) {
-            (ToggleStyle::Ghost, false) => cx.theme().colors().ghost_element_background,
+    fn unchecked_background(&self, cx: &App) -> Hsla {
+        match (self.style.clone(), self.filled) {
             (ToggleStyle::Ghost, true) => cx.theme().colors().element_background,
-            (ToggleStyle::ElevationBased(_), false) => gpui::transparent_black(),
             (ToggleStyle::ElevationBased(elevation), true) => elevation.darker_bg(cx),
-            (ToggleStyle::Custom(_), false) => gpui::transparent_black(),
             (ToggleStyle::Custom(color), true) => color.opacity(0.2),
+            (_, false) => cx.theme().colors().editor_background,
         }
     }
 
-    fn border_color(&self, cx: &App) -> Hsla {
-        if self.disabled {
-            return cx.theme().colors().border_variant;
-        }
-
+    fn accent_color(&self, cx: &App) -> Hsla {
         match self.style.clone() {
-            ToggleStyle::Ghost => cx.theme().colors().border,
-            ToggleStyle::ElevationBased(_) => cx.theme().colors().border,
-            ToggleStyle::Custom(color) => color.opacity(0.3),
+            ToggleStyle::Custom(color) => color,
+            ToggleStyle::Ghost | ToggleStyle::ElevationBased(_) => cx.theme().colors().text_accent,
+        }
+    }
+
+    fn is_checked(&self) -> bool {
+        match self.toggle_state {
+            ToggleState::Selected => !self.placeholder,
+            ToggleState::Indeterminate => true,
+            ToggleState::Unselected => false,
+        }
+    }
+
+    fn colors(&self, cx: &App) -> CheckboxColors {
+        let theme_colors = cx.theme().colors();
+        if self.disabled {
+            CheckboxColors {
+                background: theme_colors.element_disabled,
+                border: theme_colors.border_disabled,
+                mark: Color::Disabled,
+            }
+        } else if self.is_checked() {
+            let accent = self.accent_color(cx);
+            CheckboxColors {
+                background: accent,
+                border: accent,
+                mark: Color::Custom(white()),
+            }
+        } else {
+            CheckboxColors {
+                background: self.unchecked_background(cx),
+                border: theme_colors.border,
+                mark: Color::Default,
+            }
         }
     }
 
@@ -185,71 +227,78 @@ impl Checkbox {
 
 impl RenderOnce for Checkbox {
     fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
-        let group_id = format!("checkbox_group_{:?}", self.id);
-        let color = if self.disabled {
+        let colors = self.colors(cx);
+        let is_interactive = !self.disabled && !self.visualization;
+        let next_state = self.toggle_state.inverse();
+        let placeholder_color = if self.disabled {
             Color::Disabled
         } else {
             Color::Selected
-        };
+        }
+        .color(cx)
+        .alpha(0.5);
+        let focus_ring_color = cx.theme().colors().border_focused;
 
-        let icon = match self.toggle_state {
-            ToggleState::Selected => {
-                if self.placeholder {
-                    None
-                } else {
-                    Some(
-                        Icon::new(IconName::Check)
-                            .size(IconSize::Small)
-                            .color(color),
-                    )
-                }
-            }
-            ToggleState::Indeterminate => {
-                Some(Icon::new(IconName::Dash).size(IconSize::Small).color(color))
-            }
-            ToggleState::Unselected => None,
-        };
+        let mark = match self.toggle_state {
+            ToggleState::Selected if !self.placeholder => Some(IconName::Check),
+            ToggleState::Indeterminate => Some(IconName::Dash),
+            ToggleState::Selected | ToggleState::Unselected => None,
+        }
+        .map(|icon_name| {
+            Icon::new(icon_name)
+                .size(IconSize::Small)
+                .color(colors.mark)
+        });
 
-        let bg_color = self.bg_color(cx);
-        let border_color = self.border_color(cx);
-        let hover_border_color = border_color.alpha(0.7);
-
-        let size = Self::container_size();
+        let on_click: Option<Rc<dyn Fn(&ToggleState, &ClickEvent, &mut Window, &mut App)>> =
+            self.on_click.filter(|_| !self.disabled).map(Rc::from);
 
         let checkbox = h_flex()
-            .group(group_id.clone())
             .id(self.id.clone())
-            .size(size)
+            .flex_none()
+            .size(Self::container_size())
             .justify_center()
+            .items_center()
+            .rounded(COMPONENT_CORNER_RADII.checkbox + CHECKBOX_FOCUS_RING_WIDTH)
+            .border(CHECKBOX_FOCUS_RING_WIDTH)
+            .border_color(cx.theme().colors().border_transparent)
+            .when_some(
+                self.tab_index.filter(|_| is_interactive),
+                |this, tab_index| {
+                    this.tab_index(tab_index)
+                        .focus_visible(move |mut style| {
+                            style.border_color = Some(focus_ring_color);
+                            style
+                        })
+                        .when_some(on_click.clone(), |this, on_click| {
+                            this.on_click(move |click, window, cx| {
+                                cx.stop_propagation();
+                                on_click(&next_state, click, window, cx)
+                            })
+                        })
+                },
+            )
             .child(
                 div()
                     .flex()
                     .flex_none()
                     .justify_center()
                     .items_center()
-                    .m_1()
-                    .size_4()
-                    .rounded_xs()
-                    .bg(bg_color)
+                    .size(CHECKBOX_BOX_SIZE)
+                    .rounded(COMPONENT_CORNER_RADII.checkbox)
+                    .bg(colors.background)
                     .border_1()
-                    .border_color(border_color)
-                    .when(self.disabled, |this| this.cursor_not_allowed())
-                    .when(self.disabled, |this| {
-                        this.bg(cx.theme().colors().element_disabled.opacity(0.6))
-                    })
-                    .when(!self.disabled && !self.visualization, |this| {
-                        this.group_hover(group_id.clone(), |el| el.border_color(hover_border_color))
-                    })
+                    .border_color(colors.border)
                     .when(self.placeholder, |this| {
                         this.child(
                             div()
                                 .flex_none()
                                 .rounded_full()
-                                .bg(color.color(cx).alpha(0.5))
-                                .size(px(4.)),
+                                .bg(placeholder_color)
+                                .size(CHECKBOX_PLACEHOLDER_DOT_SIZE),
                         )
                     })
-                    .children(icon),
+                    .children(mark),
             );
 
         h_flex()
@@ -263,7 +312,7 @@ impl RenderOnce for Checkbox {
                     this.cursor_pointer()
                 }
             })
-            .gap(DynamicSpacing::Base06.rems(cx))
+            .gap(CHECKBOX_LABEL_GAP)
             .child(checkbox)
             .when_some(self.label, |this, label| {
                 this.child(
@@ -275,14 +324,9 @@ impl RenderOnce for Checkbox {
             .when_some(self.tooltip, |this, tooltip| {
                 this.tooltip(move |window, cx| tooltip(window, cx))
             })
-            .when_some(
-                self.on_click.filter(|_| !self.disabled),
-                |this, on_click| {
-                    this.on_click(move |click, window, cx| {
-                        on_click(&self.toggle_state.inverse(), click, window, cx)
-                    })
-                },
-            )
+            .when_some(on_click, |this, on_click| {
+                this.on_click(move |click, window, cx| on_click(&next_state, click, window, cx))
+            })
     }
 }
 

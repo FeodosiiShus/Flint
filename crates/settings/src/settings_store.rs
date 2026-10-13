@@ -149,7 +149,6 @@ pub struct SettingsStore {
     global_settings: Option<Box<SettingsContent>>,
 
     extension_settings: Option<Box<SettingsContent>>,
-    server_settings: Option<Box<SettingsContent>>,
 
     language_semantic_token_rules: HashMap<SharedString, SemanticTokenRules>,
 
@@ -172,8 +171,6 @@ pub enum SettingsFile {
     Default,
     Global,
     User,
-    Server,
-    /// Represents project settings in ssh projects as well as local projects
     Project((WorktreeId, Arc<RelPath>)),
 }
 
@@ -190,15 +187,12 @@ impl Ord for SettingsFile {
         use std::cmp::Ordering;
         match (self, other) {
             (User, User) => Ordering::Equal,
-            (Server, Server) => Ordering::Equal,
             (Default, Default) => Ordering::Equal,
             (Project((id1, rel_path1)), Project((id2, rel_path2))) => id1
                 .cmp(id2)
                 .then_with(|| rel_path1.cmp(rel_path2).reverse()),
             (Project(_), _) => Ordering::Less,
             (_, Project(_)) => Ordering::Greater,
-            (Server, _) => Ordering::Less,
-            (_, Server) => Ordering::Greater,
             (User, _) => Ordering::Less,
             (_, User) => Ordering::Greater,
             (Global, _) => Ordering::Less,
@@ -308,7 +302,6 @@ impl SettingsStore {
             setting_values: Default::default(),
             default_settings: default_settings.clone(),
             global_settings: None,
-            server_settings: None,
             user_settings: None,
             extension_settings: None,
             language_semantic_token_rules: HashMap::default(),
@@ -647,9 +640,6 @@ impl SettingsStore {
                 .map(SettingsFile::Project),
         );
 
-        if self.server_settings.is_some() {
-            files.push(SettingsFile::Server);
-        }
         // ignoring profiles
         // ignoring os profiles
         // ignoring release channel profiles
@@ -670,7 +660,6 @@ impl SettingsStore {
                 .as_ref()
                 .map(|settings| settings.content.as_ref()),
             SettingsFile::Default => Some(self.default_settings.as_ref()),
-            SettingsFile::Server => self.server_settings.as_deref(),
             SettingsFile::Project(ref key) => self.local_settings.get(key),
             SettingsFile::Global => self.global_settings.as_deref(),
         }
@@ -989,24 +978,6 @@ impl SettingsStore {
             self.recompute_values(None, cx);
         }
         return parse_result;
-    }
-
-    pub fn set_server_settings(
-        &mut self,
-        server_settings_content: &str,
-        cx: &mut App,
-    ) -> Result<()> {
-        let settings = if server_settings_content.is_empty() {
-            None
-        } else {
-            Option::<SettingsContent>::parse_json_with_comments(server_settings_content)?
-        };
-
-        // Rewrite the server settings into a content type
-        self.server_settings = settings.map(|settings| Box::new(settings));
-
-        self.recompute_values(None, cx);
-        Ok(())
     }
 
     /// Sets language-specific semantic token rules.
@@ -1344,7 +1315,6 @@ impl SettingsStore {
                 merged.merge_from_option(user_settings.for_release_channel());
                 merged.merge_from_option(user_settings.for_os());
             }
-            merged.merge_from_option(self.server_settings.as_deref());
 
             self.merged_settings = Rc::new(merged);
 
@@ -2976,7 +2946,6 @@ mod tests {
             &wt0_root,
             &wt1_subdir,
             &wt0_child2,
-            &SettingsFile::Server,
             &wt0_child1,
             &SettingsFile::User,
         ];
@@ -2990,7 +2959,6 @@ mod tests {
                 &wt0_root,
                 &wt1_subdir,
                 &wt1_root,
-                &SettingsFile::Server,
                 &SettingsFile::User,
                 &SettingsFile::Default,
             ]

@@ -44,7 +44,6 @@ use collections::{HashMap, HashSet};
 use gpui::{
     App, AppContext as _, Context, Entity, EventEmitter, Global, SharedString, Task, WeakEntity,
 };
-use remote::RemoteConnectionOptions;
 use rpc::{AnyProtoClient, proto};
 use settings::{Settings as _, WorktreeId};
 use std::{
@@ -154,25 +153,6 @@ struct StoreData {
 pub struct RemoteHostLocation {
     pub user_name: Option<SharedString>,
     pub host_identifier: SharedString,
-}
-
-impl From<RemoteConnectionOptions> for RemoteHostLocation {
-    fn from(options: RemoteConnectionOptions) -> Self {
-        let (user_name, host_name) = match options {
-            RemoteConnectionOptions::Ssh(ssh) => (
-                ssh.username.map(SharedString::new),
-                SharedString::new(ssh.host.to_string()),
-            ),
-            #[cfg(feature = "test-support")]
-            RemoteConnectionOptions::Mock(mock) => {
-                (None, SharedString::new(format!("mock-{}", mock.id)))
-            }
-        };
-        Self {
-            user_name,
-            host_identifier: host_name,
-        }
-    }
 }
 
 /// A unit of trust consideration inside a particular host:

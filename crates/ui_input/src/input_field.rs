@@ -3,8 +3,8 @@ use component::{example_group, single_example};
 use gpui::{App, FocusHandle, Focusable, Hsla, Length};
 use std::sync::Arc;
 
-use ui::Tooltip;
 use ui::prelude::*;
+use ui::{COMPONENT_CORNER_RADII, Tooltip};
 
 use crate::ErasedEditor;
 
@@ -189,7 +189,7 @@ impl Render for InputField {
                     .py_1p5()
                     .flex_grow_1()
                     .text_color(style.text_color)
-                    .rounded_md()
+                    .rounded(COMPONENT_CORNER_RADII.input)
                     .bg(style.background_color)
                     .border_1()
                     .border_color(style.border_color)

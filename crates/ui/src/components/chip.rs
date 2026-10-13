@@ -1,4 +1,4 @@
-use crate::prelude::*;
+use crate::{COMPONENT_CORNER_RADII, prelude::*};
 use gpui::{AnyElement, AnyView, Hsla, IntoElement, ParentElement, Styled};
 
 /// Chips provide a container for an informative label.
@@ -110,7 +110,7 @@ impl RenderOnce for Chip {
             .gap_0p5()
             .px_1()
             .border_1()
-            .rounded_sm()
+            .rounded(COMPONENT_CORNER_RADII.button)
             .border_color(border_color)
             .bg(bg_color)
             .overflow_hidden()

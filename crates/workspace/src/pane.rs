@@ -3986,10 +3986,6 @@ impl Pane {
                     workspace.show_error("Cannot drop files on a remote project", cx);
                     return true;
                 }
-                if project.is_via_remote_server() {
-                    workspace.show_error("Cannot drop local files on a remote SSH project", cx);
-                    return true;
-                }
                 false
             })
             .unwrap_or(true);

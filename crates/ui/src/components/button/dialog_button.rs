@@ -1,11 +1,10 @@
 use gpui::{AnyElement, AnyView, ClickEvent, Hsla, Role, transparent_black, white};
 use theme::UiDensity;
 
-use crate::{prelude::*, ui_density};
+use crate::{COMPONENT_CORNER_RADII, prelude::*, ui_density};
 
 const HEIGHT: Pixels = px(28.);
 const COMPACT_HEIGHT: Pixels = px(24.);
-const CORNER_RADIUS: Pixels = px(4.);
 const COMPACT_CORNER_RADIUS: Pixels = px(3.);
 const MINIMUM_WIDTH: Pixels = px(72.);
 const HORIZONTAL_PADDING: Pixels = px(14.);
@@ -121,7 +120,7 @@ impl RenderOnce for DialogButton {
         let (height, corner_radius) = if compact {
             (COMPACT_HEIGHT, COMPACT_CORNER_RADIUS)
         } else {
-            (HEIGHT, CORNER_RADIUS)
+            (HEIGHT, COMPONENT_CORNER_RADII.button)
         };
 
         h_flex()

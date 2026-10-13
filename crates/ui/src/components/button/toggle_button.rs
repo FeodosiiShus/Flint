@@ -2,7 +2,9 @@ use std::rc::Rc;
 
 use gpui::{AnyView, ClickEvent, relative};
 
-use crate::{ButtonLike, ButtonLikeRounding, TintColor, Tooltip, prelude::*};
+use crate::{
+    ButtonLike, ButtonLikeRounding, COMPONENT_CORNER_RADII, TintColor, Tooltip, prelude::*,
+};
 
 /// The position of a [`ToggleButton`] within a group of buttons.
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
@@ -371,7 +373,7 @@ impl<T: ButtonBuilder, const COLS: usize, const ROWS: usize> RenderOnce
                     this.w_full()
                 }
             })
-            .rounded_md()
+            .rounded(COMPONENT_CORNER_RADII.button)
             .overflow_hidden()
             .map(|this| {
                 if is_transparent {

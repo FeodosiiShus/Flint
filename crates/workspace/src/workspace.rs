@@ -39,9 +39,6 @@ pub use multi_workspace::{
     Sidebar, SidebarEvent, SidebarHandle, SidebarRenderState, SidebarSide, ToggleWorkspaceSidebar,
 };
 pub use path_list::{PathList, SerializedPathList};
-pub use remote::{
-    RemoteConnectionIdentity, remote_connection_identity, same_remote_connection_identity,
-};
 pub use toast_layer::{ToastAction, ToastLayer, ToastView};
 
 use anyhow::{Context as _, Result, anyhow};
@@ -106,10 +103,6 @@ use project::{
     trusted_worktrees::{RemoteHostLocation, TrustedWorktrees, TrustedWorktreesEvent},
 };
 use release_channel::ReleaseChannel;
-use remote::{
-    RemoteClientDelegate, RemoteConnection, RemoteConnectionOptions,
-    remote_client::ConnectionIdentifier,
-};
 use schemars::JsonSchema;
 use serde::Deserialize;
 use session::AppSession;
@@ -181,7 +174,6 @@ struct WindowTitleNeeds {
     file_path: bool,
     relative_path: bool,
     file_stem: bool,
-    remote: bool,
     app_name: bool,
     branch: bool,
 }
@@ -192,7 +184,6 @@ impl WindowTitleNeeds {
             file_path: template.contains("${filePath}"),
             relative_path: template.contains("${relativePath}"),
             file_stem: template.contains("${fileStem}"),
-            remote: template.contains("${remoteName}") || template.contains("${remoteHost}"),
             app_name: template.contains("${appName}"),
             branch: template.contains("${branch}"),
         }
@@ -206,8 +197,6 @@ struct WindowTitleContext {
     file_path: Option<String>,
     relative_path: Option<String>,
     file_stem: Option<String>,
-    remote_name: Option<String>,
-    remote_host: Option<String>,
     app_name: &'static str,
     branch: Option<String>,
 }
@@ -226,8 +215,6 @@ impl WindowTitleContext {
             "filePath" => self.file_path.as_deref(),
             "relativePath" => self.relative_path.as_deref(),
             "fileStem" => self.file_stem.as_deref(),
-            "remoteName" => self.remote_name.as_deref(),
-            "remoteHost" => self.remote_host.as_deref(),
             "appName" => Some(self.app_name),
             "branch" => self.branch.as_deref(),
             // Unknown placeholders collapse like missing values so imported and
@@ -1504,7 +1491,6 @@ pub enum OpenVisible {
 }
 
 enum WorkspaceLocation {
-    // Valid local paths or SSH project to serialize
     Location(SerializedWorkspaceLocation, PathList),
     // No valid location found to serialize
     None,
@@ -1583,7 +1569,6 @@ pub struct Workspace {
     _observe_current_user: Task<Result<()>>,
     _schedule_serialize_workspace: Option<Task<()>>,
     _serialize_workspace_task: Option<Task<()>>,
-    _schedule_serialize_ssh_paths: Option<Task<()>>,
     pane_history_timestamp: Arc<AtomicUsize>,
     bounds: Bounds<Pixels>,
     pub centered_layout: bool,
@@ -1732,18 +1717,12 @@ impl Workspace {
                 }
 
                 project::Event::DisconnectedFromHost => {
-                    this.update_window_edited(window, cx);
+                    this.update_window_edited(window);
                     let leaders_to_unfollow =
                         this.follower_states.keys().copied().collect::<Vec<_>>();
                     for leader_id in leaders_to_unfollow {
                         this.unfollow(leader_id, window, cx);
                     }
-                }
-
-                project::Event::DisconnectedFromRemote {
-                    server_not_running: _,
-                } => {
-                    this.update_window_edited(window, cx);
                 }
 
                 project::Event::Closed => {
@@ -2058,7 +2037,6 @@ impl Workspace {
             _observe_current_user,
             _schedule_serialize_workspace: None,
             _serialize_workspace_task: None,
-            _schedule_serialize_ssh_paths: None,
             _subscriptions: subscriptions,
             pane_history_timestamp,
             workspace_actions: Default::default(),
@@ -3305,7 +3283,6 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) -> oneshot::Receiver<Option<Vec<PathBuf>>> {
         if self.project.read(cx).is_via_collab()
-            || self.project.read(cx).is_via_remote_server()
             || !WorkspaceSettings::get_global(cx).use_system_path_prompts
         {
             let prompt = self.on_prompt_for_new_path.take().unwrap();
@@ -3655,9 +3632,6 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Task<Result<bool>> {
-        if self.project.read(cx).is_disconnected(cx) {
-            return Task::ready(Ok(true));
-        }
         let dirty_items = self
             .panes
             .iter()
@@ -5814,7 +5788,7 @@ impl Workspace {
             }
             pane::Event::RemovedItem { item } => {
                 cx.emit(Event::ActiveItemChanged);
-                self.update_window_edited(window, cx);
+                self.update_window_edited(window);
                 if let hash_map::Entry::Occupied(entry) = self.panes_by_item.entry(item.item_id())
                     && entry.get().entity_id() == pane.entity_id()
                 {
@@ -6285,8 +6259,8 @@ impl Workspace {
         self.last_window_title = Some(title);
     }
 
-    fn is_window_edited(&self, cx: &App) -> bool {
-        !self.project.read(cx).is_disconnected(cx) && !self.dirty_items.is_empty()
+    fn is_window_edited(&self) -> bool {
+        !self.dirty_items.is_empty()
     }
 
     fn window_title_context(
@@ -6335,16 +6309,6 @@ impl Workspace {
             })
             .unwrap_or((None, None, None, None));
 
-        let remote_options = if needs.remote {
-            project.remote_connection_options(cx)
-        } else {
-            None
-        };
-        let remote_name = remote_options
-            .as_ref()
-            .map(RemoteConnectionOptions::display_name);
-        let remote_host = remote_options.as_ref().map(RemoteConnectionOptions::host);
-
         let branch = if needs.branch {
             project
                 .active_repository(cx)
@@ -6359,8 +6323,6 @@ impl Workspace {
             file_path,
             relative_path,
             file_stem,
-            remote_name,
-            remote_host,
             app_name: if needs.app_name {
                 ReleaseChannel::try_global(cx)
                     .unwrap_or(ReleaseChannel::Stable)
@@ -6372,11 +6334,11 @@ impl Workspace {
         }
     }
 
-    fn update_window_edited(&mut self, window: &mut Window, cx: &mut App) {
+    fn update_window_edited(&mut self, window: &mut Window) {
         if !self.owns_window_chrome() {
             return;
         }
-        let is_edited = self.is_window_edited(cx);
+        let is_edited = self.is_window_edited();
         if is_edited != self.window_edited {
             self.window_edited = is_edited;
             window.set_window_edited(self.window_edited);
@@ -6403,7 +6365,7 @@ impl Workspace {
         self.last_window_title = None;
         self.apply_window_title(window, cx);
 
-        self.window_edited = self.is_window_edited(cx);
+        self.window_edited = self.is_window_edited();
         window.set_window_edited(self.window_edited);
     }
 
@@ -6421,7 +6383,7 @@ impl Workspace {
         }
         if was_dirty {
             self.dirty_items.remove(&item_id);
-            self.update_window_edited(window, cx);
+            self.update_window_edited(window);
             return;
         }
 
@@ -6433,9 +6395,9 @@ impl Workspace {
             window_handle
                 .update(cx, |_, window, cx| {
                     workspace
-                        .update(cx, |workspace, cx| {
+                        .update(cx, |workspace, _| {
                             workspace.dirty_items.remove(&item_id);
-                            workspace.update_window_edited(window, cx)
+                            workspace.update_window_edited(window)
                         })
                         .ok();
                 })
@@ -6444,7 +6406,7 @@ impl Workspace {
 
         let s = item.on_release(cx, on_release_callback);
         self.dirty_items.insert(item_id, s);
-        self.update_window_edited(window, cx);
+        self.update_window_edited(window);
     }
 
     fn render_notifications(&self, _window: &mut Window, _cx: &mut Context<Self>) -> Option<Div> {
@@ -6891,9 +6853,7 @@ impl Workspace {
 
     fn workspace_location(&self, cx: &App) -> WorkspaceLocation {
         let paths = PathList::new(&self.root_paths(cx));
-        if let Some(connection) = self.project.read(cx).remote_connection_options(cx) {
-            WorkspaceLocation::Location(SerializedWorkspaceLocation::Remote(connection), paths)
-        } else if self.project.read(cx).is_local() {
+        if self.project.read(cx).is_local() {
             WorkspaceLocation::Location(SerializedWorkspaceLocation::Local, paths)
         } else {
             WorkspaceLocation::None
@@ -7100,7 +7060,7 @@ impl Workspace {
                     workspace.serialize_workspace_internal(window, cx).detach();
 
                     // Ensure that we mark the window as edited if we did load dirty items
-                    workspace.update_window_edited(window, cx);
+                    workspace.update_window_edited(window);
                 })
                 .ok();
 
@@ -8203,13 +8163,9 @@ impl Workspace {
                 cx,
             );
             if has_restricted_worktrees {
-                let project = self.project().read(cx);
-                let remote_host = project
-                    .remote_connection_options(cx)
-                    .map(RemoteHostLocation::from);
-                let worktree_store = project.worktree_store().downgrade();
+                let worktree_store = self.project().read(cx).worktree_store().downgrade();
                 self.toggle_modal(window, cx, |window, cx| {
-                    SecurityModal::new(worktree_store, remote_host, window, cx)
+                    SecurityModal::new(worktree_store, None::<RemoteHostLocation>, window, cx)
                 });
             }
         }
@@ -9268,9 +9224,8 @@ pub async fn apply_restored_multiworkspace_state(
             }
             let mut resolved_paths = Vec::new();
             for path in key.path_list().paths() {
-                if key.host().is_none()
-                    && let Some(common_dir) =
-                        project::discover_root_repo_common_dir(path, fs.as_ref()).await
+                if let Some(common_dir) =
+                    project::discover_root_repo_common_dir(path, fs.as_ref()).await
                     && !project::is_submodule_git_dir(&common_dir)
                 {
                     let main_path = project::repo_identity_path(&common_dir, PathStyle::local());
@@ -9279,7 +9234,7 @@ pub async fn apply_restored_multiworkspace_state(
                     resolved_paths.push(path.to_path_buf());
                 }
             }
-            let resolved = ProjectGroupKey::new(key.host(), PathList::new(&resolved_paths));
+            let resolved = ProjectGroupKey::new(PathList::new(&resolved_paths));
             if !resolved_groups.iter().any(|g| g.key == resolved) {
                 resolved_groups.push(SerializedProjectGroupState {
                     key: resolved,
@@ -9448,36 +9403,18 @@ pub fn workspace_windows_for_location(
         .into_iter()
         .filter_map(|window| window.downcast::<MultiWorkspace>())
         .filter(|multi_workspace| {
-            let same_host = |left: &RemoteConnectionOptions, right: &RemoteConnectionOptions| match (left, right) {
-                (RemoteConnectionOptions::Ssh(a), RemoteConnectionOptions::Ssh(b)) => {
-                    (&a.host, &a.username, &a.port) == (&b.host, &b.username, &b.port)
-                }
-                #[cfg(any(test, feature = "test-support"))]
-                (RemoteConnectionOptions::Mock(a), RemoteConnectionOptions::Mock(b)) => {
-                    a.id == b.id
-                }
-                #[cfg(any(test, feature = "test-support"))]
-                _ => false,
-            };
-
             multi_workspace.read(cx).is_ok_and(|multi_workspace| {
                 multi_workspace.workspaces().any(|workspace| {
-                    match workspace.read(cx).workspace_location(cx) {
-                        WorkspaceLocation::Location(location, _) => {
-                            match (&location, serialized_location) {
-                                (
-                                    SerializedWorkspaceLocation::Local,
-                                    SerializedWorkspaceLocation::Local,
-                                ) => true,
-                                (
-                                    SerializedWorkspaceLocation::Remote(a),
-                                    SerializedWorkspaceLocation::Remote(b),
-                                ) => same_host(a, b),
-                                _ => false,
-                            }
-                        }
-                        _ => false,
-                    }
+                    matches!(
+                        (
+                            workspace.read(cx).workspace_location(cx),
+                            serialized_location
+                        ),
+                        (
+                            WorkspaceLocation::Location(SerializedWorkspaceLocation::Local, _),
+                            SerializedWorkspaceLocation::Local
+                        )
+                    )
                 })
             })
         })
@@ -9973,234 +9910,6 @@ pub fn create_and_open_local_file(
             })?
             .await?
             .await
-    })
-}
-
-pub fn open_remote_project_with_new_connection(
-    window: WindowHandle<MultiWorkspace>,
-    remote_connection: Arc<dyn RemoteConnection>,
-    cancel_rx: oneshot::Receiver<()>,
-    delegate: Arc<dyn RemoteClientDelegate>,
-    app_state: Arc<AppState>,
-    paths: Vec<PathBuf>,
-    cx: &mut App,
-) -> Task<Result<(Option<Entity<Workspace>>, Vec<Option<Box<dyn ItemHandle>>>)>> {
-    cx.spawn(async move |cx| {
-        let (workspace_id, serialized_workspace) =
-            deserialize_remote_project(remote_connection.connection_options(), paths.clone(), cx)
-                .await?;
-
-        let session = match cx
-            .update(|cx| {
-                remote::RemoteClient::new(
-                    ConnectionIdentifier::Workspace(workspace_id.0),
-                    remote_connection,
-                    cancel_rx,
-                    delegate,
-                    cx,
-                )
-            })
-            .await?
-        {
-            Some(result) => result,
-            None => return Ok((None, Vec::new())),
-        };
-
-        let project = cx.update(|cx| {
-            project::Project::remote(
-                session,
-                app_state.client.clone(),
-                app_state.node_runtime.clone(),
-                app_state.user_store.clone(),
-                app_state.languages.clone(),
-                app_state.fs.clone(),
-                true,
-                cx,
-            )
-        });
-
-        let (workspace, items) = open_remote_project_inner(
-            project,
-            paths,
-            workspace_id,
-            serialized_workspace,
-            app_state,
-            window,
-            None,
-            None,
-            cx,
-        )
-        .await?;
-        Ok((Some(workspace), items))
-    })
-}
-
-pub fn open_remote_project_with_existing_connection(
-    connection_options: RemoteConnectionOptions,
-    project: Entity<Project>,
-    paths: Vec<PathBuf>,
-    app_state: Arc<AppState>,
-    window: WindowHandle<MultiWorkspace>,
-    provisional_project_group_key: Option<ProjectGroupKey>,
-    source_workspace: Option<WeakEntity<Workspace>>,
-    cx: &mut AsyncApp,
-) -> Task<Result<(Entity<Workspace>, Vec<Option<Box<dyn ItemHandle>>>)>> {
-    cx.spawn(async move |cx| {
-        let (workspace_id, serialized_workspace) =
-            deserialize_remote_project(connection_options.clone(), paths.clone(), cx).await?;
-
-        open_remote_project_inner(
-            project,
-            paths,
-            workspace_id,
-            serialized_workspace,
-            app_state,
-            window,
-            provisional_project_group_key,
-            source_workspace,
-            cx,
-        )
-        .await
-    })
-}
-
-async fn open_remote_project_inner(
-    project: Entity<Project>,
-    paths: Vec<PathBuf>,
-    workspace_id: WorkspaceId,
-    serialized_workspace: Option<SerializedWorkspace>,
-    app_state: Arc<AppState>,
-    window: WindowHandle<MultiWorkspace>,
-    provisional_project_group_key: Option<ProjectGroupKey>,
-    source_workspace: Option<WeakEntity<Workspace>>,
-    cx: &mut AsyncApp,
-) -> Result<(Entity<Workspace>, Vec<Option<Box<dyn ItemHandle>>>)> {
-    let mut project_paths_to_open = vec![];
-    let mut project_path_errors = vec![];
-
-    for path in paths {
-        let result = cx
-            .update(|cx| {
-                Workspace::project_path_for_path(project.clone(), path.as_path(), true, cx)
-            })
-            .await;
-        match result {
-            Ok((_, project_path)) => {
-                project_paths_to_open.push((path, Some(project_path)));
-            }
-            Err(error) => {
-                project_path_errors.push(error);
-            }
-        };
-    }
-
-    if project_paths_to_open.is_empty() {
-        return Err(project_path_errors.pop().context("no paths given")?);
-    }
-
-    let workspace = window.update(cx, |multi_workspace, window, cx| {
-        let new_workspace = cx.new(|cx| {
-            let mut workspace = Workspace::new(
-                Some(workspace_id),
-                project.clone(),
-                app_state.clone(),
-                window,
-                cx,
-            );
-            workspace.update_history(cx);
-
-            if let Some(ref serialized) = serialized_workspace {
-                workspace.centered_layout = serialized.centered_layout;
-            }
-
-            workspace
-        });
-
-        if let Some(project_group_key) = provisional_project_group_key.clone() {
-            multi_workspace.activate_provisional_workspace(
-                new_workspace.clone(),
-                project_group_key,
-                window,
-                cx,
-            );
-        } else {
-            multi_workspace.activate(new_workspace.clone(), source_workspace, window, cx);
-        }
-        new_workspace
-    })?;
-
-    let db = cx.update(|cx| WorkspaceDb::global(cx));
-    let toolchains = db.toolchains(workspace_id).await?;
-    for (toolchain, worktree_path, path) in toolchains {
-        project
-            .update(cx, |this, cx| {
-                let Some(worktree_id) =
-                    this.find_worktree(&worktree_path, cx)
-                        .and_then(|(worktree, rel_path)| {
-                            if rel_path.is_empty() {
-                                Some(worktree.read(cx).id())
-                            } else {
-                                None
-                            }
-                        })
-                else {
-                    return Task::ready(None);
-                };
-
-                this.activate_toolchain(ProjectPath { worktree_id, path }, toolchain, cx)
-            })
-            .await;
-    }
-
-    let items = window
-        .update(cx, |_, window, cx| {
-            window.activate_window();
-            workspace.update(cx, |_workspace, cx| {
-                open_items(serialized_workspace, project_paths_to_open, window, cx)
-            })
-        })?
-        .await?;
-
-    workspace.update(cx, |workspace, cx| {
-        for error in project_path_errors {
-            if error.error_code() == proto::ErrorCode::DevServerProjectPathDoesNotExist {
-                if let Some(path) = error.error_tag("path") {
-                    workspace.show_error(format!("'{path}' does not exist"), cx)
-                }
-            } else {
-                workspace.show_error(format!("{error}"), cx)
-            }
-        }
-    });
-
-    Ok((
-        workspace,
-        items.into_iter().map(|item| item?.ok()).collect(),
-    ))
-}
-
-fn deserialize_remote_project(
-    connection_options: RemoteConnectionOptions,
-    paths: Vec<PathBuf>,
-    cx: &AsyncApp,
-) -> Task<Result<(WorkspaceId, Option<SerializedWorkspace>)>> {
-    let db = cx.update(|cx| WorkspaceDb::global(cx));
-    cx.background_spawn(async move {
-        let remote_connection_id = db
-            .get_or_create_remote_connection(connection_options)
-            .await?;
-
-        let serialized_workspace = db.remote_workspace_for_roots(&paths, remote_connection_id);
-
-        let workspace_id = if let Some(workspace_id) =
-            serialized_workspace.as_ref().map(|workspace| workspace.id)
-        {
-            workspace_id
-        } else {
-            db.next_id().await?
-        };
-
-        Ok((workspace_id, serialized_workspace))
     })
 }
 
@@ -10790,59 +10499,6 @@ pub fn clone_active_item(
         .detach();
 }
 
-#[derive(Debug)]
-pub struct WorkspacePosition {
-    pub window_bounds: Option<WindowBounds>,
-    pub display: Option<Uuid>,
-    pub centered_layout: bool,
-}
-
-pub fn remote_workspace_position_from_db(
-    connection_options: RemoteConnectionOptions,
-    paths_to_open: &[PathBuf],
-    cx: &App,
-) -> Task<Result<WorkspacePosition>> {
-    let paths = paths_to_open.to_vec();
-    let db = WorkspaceDb::global(cx);
-    let kvp = db::kvp::KeyValueStore::global(cx);
-
-    cx.background_spawn(async move {
-        let remote_connection_id = db
-            .get_or_create_remote_connection(connection_options)
-            .await
-            .context("fetching serialized ssh project")?;
-        let serialized_workspace = db.remote_workspace_for_roots(&paths, remote_connection_id);
-
-        let (window_bounds, display) = if let Some(bounds) = window_bounds_env_override() {
-            (Some(WindowBounds::Windowed(bounds)), None)
-        } else {
-            let restorable_bounds = serialized_workspace
-                .as_ref()
-                .and_then(|workspace| {
-                    Some((workspace.display?, workspace.window_bounds.map(|b| b.0)?))
-                })
-                .or_else(|| persistence::read_default_window_bounds(&kvp));
-
-            if let Some((serialized_display, serialized_bounds)) = restorable_bounds {
-                (Some(serialized_bounds), Some(serialized_display))
-            } else {
-                (None, None)
-            }
-        };
-
-        let centered_layout = serialized_workspace
-            .as_ref()
-            .map(|w| w.centered_layout)
-            .unwrap_or(false);
-
-        Ok(WorkspacePosition {
-            window_bounds,
-            display,
-            centered_layout,
-        })
-    })
-}
-
 pub fn with_active_or_new_workspace(
     cx: &mut App,
     f: impl FnOnce(&mut Workspace, &mut Window, &mut Context<Workspace>) + Send + 'static,
@@ -10960,43 +10616,41 @@ mod tests {
             file_path: Some("/tmp/project/src/main.rs".to_string()),
             relative_path: Some("src/main.rs".to_string()),
             file_stem: Some("main".to_string()),
-            remote_name: Some("nickname".to_string()),
-            remote_host: Some("example.com".to_string()),
             app_name: "Zed",
             branch: Some("main".to_string()),
         };
 
         assert_eq!(
             render_window_title_format(
-                "${projectName}${separator}${fileName}${separator}${remoteHost}",
+                "${projectName}${separator}${fileName}${separator}${branch}",
                 " — ",
                 &context,
             ),
-            "project — example.com"
+            "project — main"
         );
         assert_eq!(
             render_window_title_format(
-                "${fileName}${separator}${projectName}${separator}${remoteName}",
+                "${fileName}${separator}${projectName}${separator}${fileStem}",
                 " — ",
                 &context,
             ),
-            "project — nickname"
+            "project — main"
         );
         assert_eq!(
             render_window_title_format(
-                "${projectName}${separator}${relativePath}${separator}${remoteName}${separator}${remoteHost}",
+                "${projectName}${separator}${relativePath}${separator}${fileStem}${separator}${branch}",
                 " — ",
                 &context,
             ),
-            "project — src/main.rs — nickname — example.com"
+            "project — src/main.rs — main — main"
         );
         assert_eq!(
             render_window_title_format(
-                "${projectName}${separator}${remoteHost}${separator}${fileName}",
+                "${projectName}${separator}${branch}${separator}${fileName}",
                 " | ",
                 &context,
             ),
-            "project | example.com"
+            "project | main"
         );
         assert_eq!(
             render_window_title_format("${projectName}${separator}", " — ", &context),
@@ -11016,8 +10670,6 @@ mod tests {
             file_path: Some("/tmp/project/src/main.rs".to_string()),
             relative_path: Some("src/main.rs".to_string()),
             file_stem: Some("main".to_string()),
-            remote_name: None,
-            remote_host: None,
             app_name: "Zed",
             branch: None,
         };
@@ -11061,31 +10713,22 @@ mod tests {
         assert!(!default.file_path);
         assert!(!default.relative_path);
         assert!(!default.file_stem);
-        assert!(!default.remote);
         assert!(!default.app_name);
         assert!(!default.branch);
 
         let all = WindowTitleNeeds::from_template(
-            "${filePath} ${relativePath} ${fileStem} ${remoteName} ${remoteHost} ${appName} ${branch}",
+            "${filePath} ${relativePath} ${fileStem} ${appName} ${branch}",
         );
         assert!(all.file_path);
         assert!(all.relative_path);
         assert!(all.file_stem);
-        assert!(all.remote);
         assert!(all.app_name);
         assert!(all.branch);
-
-        // `remote` is shared between the two remote-* placeholders; either one
-        // flips the flag on its own.
-        assert!(WindowTitleNeeds::from_template("${remoteName}").remote);
-        assert!(WindowTitleNeeds::from_template("${remoteHost}").remote);
-        assert!(!WindowTitleNeeds::from_template("${projectName}").remote);
 
         // Substrings and unrelated text must not trigger the expensive path.
         let noise = WindowTitleNeeds::from_template("filePath relativePath remote ${projectName}");
         assert!(!noise.file_path);
         assert!(!noise.relative_path);
-        assert!(!noise.remote);
         assert!(!noise.branch);
     }
 
@@ -11380,7 +11023,7 @@ mod tests {
             SettingsStore::update_global(cx, |settings, cx| {
                 settings.update_user_settings(cx, |settings| {
                     settings.workspace.window_title_format =
-                        Some("${projectName}${separator}${remoteHost}".to_string());
+                        Some("${projectName}${separator}${branch}".to_string());
                 })
             });
         });
@@ -11410,7 +11053,7 @@ mod tests {
         cx.update(|_, cx| {
             SettingsStore::update_global(cx, |settings, cx| {
                 settings.update_user_settings(cx, |settings| {
-                    settings.workspace.window_title_format = Some(" ${remoteHost}".to_string());
+                    settings.workspace.window_title_format = Some(" ${branch}".to_string());
                 })
             });
         });

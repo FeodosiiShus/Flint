@@ -1,3 +1,6 @@
+mod action_link;
+mod combo_box;
+mod control_metrics;
 mod dropdown;
 mod font_picker;
 mod icon_theme_picker;
@@ -6,6 +9,9 @@ mod number_field;
 mod section_items;
 mod theme_picker;
 
+pub use action_link::*;
+pub use combo_box::*;
+pub use control_metrics::*;
 pub use dropdown::*;
 pub use font_picker::font_picker;
 pub use icon_theme_picker::icon_theme_picker;

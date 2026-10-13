@@ -4,7 +4,7 @@ use component::{Component, ComponentScope, example_group_with_title, single_exam
 use gpui::{AnyElement, AnyView, ClickEvent, MouseButton, MouseDownEvent, Pixels, Role, px};
 use smallvec::SmallVec;
 
-use crate::{Disclosure, PopupRowMetrics, PopupRowStyle, prelude::*};
+use crate::{COMPONENT_CORNER_RADII, Disclosure, PopupRowMetrics, PopupRowStyle, prelude::*};
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Clone, Copy, Default)]
 pub enum ListItemSpacing {
@@ -339,13 +339,17 @@ impl RenderOnce for ListItem {
                 .when(self.selectable && !self.disabled, |this| {
                     this.hover(|style| style.bg(cx.theme().colors().ghost_element_hover))
                         .active(|style| style.bg(cx.theme().colors().ghost_element_active))
-                        .when(self.outlined, |this| this.rounded_sm())
+                        .when(self.outlined, |this| {
+                            this.rounded(COMPONENT_CORNER_RADII.selection)
+                        })
                         .when(self.selected, |this| {
                             this.bg(cx.theme().colors().ghost_element_selected)
                         })
                 })
             })
-            .when(self.rounded, |this| this.rounded_sm())
+            .when(self.rounded, |this| {
+                this.rounded(COMPONENT_CORNER_RADII.selection)
+            })
             .when_some(self.on_hover, |this, on_hover| this.on_hover(on_hover))
             .child(
                 h_flex()
@@ -415,7 +419,7 @@ impl RenderOnce for ListItem {
                     .when(self.outlined, |this| {
                         this.border_1()
                             .border_color(cx.theme().colors().border)
-                            .rounded_sm()
+                            .rounded(COMPONENT_CORNER_RADII.selection)
                             .overflow_hidden()
                     })
                     .when_some(self.on_secondary_mouse_down, |this, on_mouse_down| {

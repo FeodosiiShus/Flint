@@ -73,16 +73,6 @@ impl EncodingSelector {
             );
             return Some(());
         }
-        if project.is_via_remote_server() {
-            workspace.show_toast(
-                Toast::new(
-                    NotificationId::unique::<EncodingSelector>(),
-                    "Cannot change encoding of remote server file",
-                ),
-                cx,
-            );
-            return Some(());
-        }
 
         workspace.toggle_modal(window, cx, move |window, cx| {
             EncodingSelector::new(buffer, window, cx)

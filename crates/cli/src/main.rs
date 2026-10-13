@@ -31,7 +31,7 @@ use walkdir::WalkDir;
 
 use std::io::IsTerminal;
 
-const URL_PREFIX: [&'static str; 5] = ["zed://", "http://", "https://", "file://", "ssh://"];
+const URL_PREFIX: [&'static str; 4] = ["zed://", "http://", "https://", "file://"];
 
 struct Detect;
 
@@ -108,9 +108,6 @@ struct Args {
     /// Custom path to Flint.app or the zed binary
     #[arg(long)]
     zed: Option<PathBuf>,
-    /// Run Flint in dev-server mode
-    #[arg(long)]
-    dev_server_token: Option<String>,
     /// Pairs of file paths to diff. Can be specified multiple times.
     /// When directories are provided, recurses into them and shows all changed files in a single multi-diff view.
     #[arg(long, action = clap::ArgAction::Append, num_args = 2, value_names = ["OLD_PATH", "NEW_PATH"], value_hint = clap::ValueHint::AnyPath)]
@@ -588,11 +585,6 @@ fn run() -> Result<()> {
             paths.push(parse_path_with_position(path)?);
         }
     }
-
-    anyhow::ensure!(
-        args.dev_server_token.is_none(),
-        "Dev servers were removed in v0.157.x please upgrade to SSH remoting: https://zed.dev/docs/remote-development"
-    );
 
     rayon::ThreadPoolBuilder::new()
         .num_threads(4)

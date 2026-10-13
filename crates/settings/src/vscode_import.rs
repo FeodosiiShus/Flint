@@ -212,7 +212,6 @@ impl VsCodeSettings {
                 "off" => Some(ReduceMotionMode::Off),
                 _ => None,
             }),
-            remote: RemoteSettingsContent::default(),
             search_panel: None,
             project_diagnostics_panel: None,
             language_services_panel: None,
@@ -1051,8 +1050,8 @@ fn translate_vscode_window_title_format(template: &str) -> String {
         let content_end = content_start + content_end_offset;
         let variable = &template[content_start..content_end];
         match variable {
-            "projectName" | "fileName" | "filePath" | "relativePath" | "fileStem"
-            | "remoteHost" | "appName" | "branch" | "separator" => {
+            "projectName" | "fileName" | "filePath" | "relativePath" | "fileStem" | "appName"
+            | "branch" | "separator" => {
                 translated.push_str(&template[variable_start..=content_end]);
             }
             // Keep VS Code alias support in the importer so native Zed settings
@@ -1062,10 +1061,6 @@ fn translate_vscode_window_title_format(template: &str) -> String {
             "activeEditorMedium" => translated.push_str("${relativePath}"),
             "activeEditorLong" => translated.push_str("${filePath}"),
             "activeRepositoryBranchName" => translated.push_str("${branch}"),
-            // VS Code's `${remoteName}` is a provider label such as `SSH`, while
-            // Zed's `${remoteName}` resolves to the connection's name or host,
-            // so the token is dropped rather than imported with mismatched
-            // semantics.
             _ => {}
         }
 
@@ -1363,13 +1358,6 @@ mod tests {
         assert_eq!(
             imported_title(r#"{ "window.title": "${projectName}${separator}${filePath}" }"#),
             Some("${projectName}${separator}${filePath}".to_string())
-        );
-
-        // VS Code's `${remoteName}` is a provider label such as `SSH`, which
-        // doesn't match Zed's connection-name semantics, so it is dropped.
-        assert_eq!(
-            imported_title(r#"{ "window.title": "${remoteName}: ${rootName}" }"#),
-            Some(": ${projectName}".to_string())
         );
 
         // Templates that translate to nothing but whitespace fall back to

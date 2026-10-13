@@ -1,10 +1,10 @@
 use std::rc::Rc;
 
-use gpui::{App, ElementId, IntoElement, RenderOnce, SharedString};
+use gpui::{Anchor, App, ElementId, IntoElement, RenderOnce, SharedString};
 use heck::ToTitleCase as _;
-use ui::{
-    ButtonSize, ContextMenu, DropdownMenu, DropdownStyle, FluentBuilder as _, IconPosition, px,
-};
+use ui::{ContextMenu, FluentBuilder as _, IconPosition, PopoverMenu, PopoverMenuHandle, px};
+
+use crate::components::ComboBoxTrigger;
 
 #[derive(IntoElement)]
 pub struct EnumVariantDropdown {
@@ -107,26 +107,38 @@ impl RenderOnce for EnumVariantDropdown {
             })
         });
 
-        DropdownMenu::new(
-            self.id,
-            if self.should_do_title_case {
-                current_value_label.to_title_case()
-            } else {
-                current_value_label.to_string()
-            },
-            context_menu,
-        )
-        .when_some(self.aria_label, |this, label| this.aria_label(label))
-        .when_some(self.aria_description, |this, description| {
-            this.aria_description(description)
-        })
-        .when_some(self.tab_index, |elem, tab_index| elem.tab_index(tab_index))
-        .trigger_size(ButtonSize::Medium)
-        .style(DropdownStyle::Outlined)
-        .offset(gpui::Point {
-            x: px(0.0),
-            y: px(2.0),
-        })
-        .into_any_element()
+        let current_label = if self.should_do_title_case {
+            current_value_label.to_title_case()
+        } else {
+            current_value_label.to_string()
+        };
+
+        let handle = PopoverMenuHandle::default();
+        let menu_for_open = context_menu.clone();
+
+        PopoverMenu::new((self.id.clone(), "popover"))
+            .with_handle(handle.clone())
+            .on_open(Rc::new(move |window, cx| {
+                menu_for_open.update(cx, |menu, cx| {
+                    menu.select_toggled_or_first(window, cx);
+                });
+            }))
+            .menu(move |_window, _cx| Some(context_menu.clone()))
+            .trigger(
+                ComboBoxTrigger::new(self.id, current_label)
+                    .popover_handle(&handle)
+                    .when_some(self.aria_label, |this, label| this.aria_label(label))
+                    .when_some(self.aria_description, |this, description| {
+                        this.aria_description(description)
+                    })
+                    .when_some(self.tab_index, |this, tab_index| this.tab_index(tab_index)),
+            )
+            .anchor(Anchor::TopLeft)
+            .attach(Anchor::BottomLeft)
+            .offset(gpui::Point {
+                x: px(0.0),
+                y: px(2.0),
+            })
+            .into_any_element()
     }
 }

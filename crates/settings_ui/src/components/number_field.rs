@@ -15,7 +15,13 @@ use settings::{
     BackgroundImageOpacity, CenteredPaddingSettings, CodeFade, DelayMs, FontSize,
     FontWeightContent, InactiveOpacity, MinimumContrast, PixelSetting,
 };
-use ui::prelude::*;
+use ui::{COMPONENT_CORNER_RADII, prelude::*};
+
+use crate::components::{
+    CONTROL_HEIGHT, CONTROL_TEXT_MARGIN_BOTTOM, CONTROL_TEXT_MARGIN_LEFT,
+    CONTROL_TEXT_MARGIN_RIGHT, CONTROL_TEXT_MARGIN_TOP, NUMBER_FIELD_ARROW_AREA_WIDTH,
+    NUMBER_FIELD_MIN_WIDTH,
+};
 use zed_actions::editor::{MoveDown, MoveUp};
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
@@ -506,25 +512,28 @@ impl<T: NumberFieldType> RenderOnce for NumberField<T> {
             }
         };
 
-        let bg_color = cx.theme().colors().surface_background;
-        let hover_bg_color = cx.theme().colors().element_hover;
+        let field_background = cx.theme().colors().panel_background;
+        let hover_background = cx.theme().colors().element_hover;
 
-        let border_color = cx.theme().colors().border_variant;
+        let border_color = cx.theme().colors().border;
         let focus_border_color = cx.theme().colors().border_focused;
+        let editor_focused = self
+            .edit_editor
+            .read(cx)
+            .as_ref()
+            .and_then(|weak| weak.upgrade())
+            .is_some_and(|editor| editor.focus_handle(cx).is_focused(window));
 
-        let base_button = |icon: IconName| {
+        let arrow_button = |icon: IconName| {
             h_flex()
                 .cursor_pointer()
-                .p_1p5()
-                .size_full()
+                .flex_1()
+                .w_full()
                 .justify_center()
                 .overflow_hidden()
-                .border_1()
-                .border_color(border_color)
-                .bg(bg_color)
-                .hover(|s| s.bg(hover_bg_color))
-                .focus_visible(|s| s.border_color(focus_border_color).bg(hover_bg_color))
-                .child(Icon::new(icon).size(IconSize::Small))
+                .hover(|style| style.bg(hover_background))
+                .focus_visible(|style| style.bg(hover_background))
+                .child(Icon::new(icon).size(IconSize::XSmall).color(Color::Muted))
         };
 
         h_flex()
@@ -593,44 +602,27 @@ impl<T: NumberFieldType> RenderOnce for NumberField<T> {
             })
             .child({
                 h_flex()
-                    .map(|decrement| {
-                        let decrement_handler = {
-                            let step_value = step_value.clone();
-
-                            move |click: &ClickEvent, window: &mut Window, cx: &mut App| {
-                                step_value(
-                                    ValueChangeDirection::Decrement,
-                                    click.modifiers(),
-                                    window,
-                                    cx,
-                                );
-                            }
-                        };
-
-                        decrement.child(
-                            base_button(IconName::Dash)
-                                .id((self.id.clone(), "decrement_button"))
-                                .role(Role::Button)
-                                .aria_label("Decrement")
-                                .rounded_tl_sm()
-                                .rounded_bl_sm()
-                                .when_some(self.tab_index, |this, _| this.tab_index(0isize))
-                                .on_click(decrement_handler),
-                        )
-                    })
+                    .h(CONTROL_HEIGHT)
+                    .min_w(NUMBER_FIELD_MIN_WIDTH)
+                    .rounded(COMPONENT_CORNER_RADII.input)
+                    .border_1()
+                    .border_color(border_color)
+                    .bg(field_background)
+                    .overflow_hidden()
+                    .when(editor_focused, |this| this.border_color(focus_border_color))
                     .child({
                         h_flex()
-                            .min_w_16()
-                            .size_full()
-                            .border_y_1()
-                            .border_color(border_color)
-                            .bg(bg_color)
-                            .in_focus(|this| this.border_color(focus_border_color))
+                            .flex_1()
+                            .min_w_0()
+                            .h_full()
                             .child(match *self.mode.read(cx) {
                                 NumberFieldMode::Read => h_flex()
-                                    .px_1()
                                     .flex_1()
-                                    .justify_center()
+                                    .h_full()
+                                    .pt(CONTROL_TEXT_MARGIN_TOP)
+                                    .pl(CONTROL_TEXT_MARGIN_LEFT)
+                                    .pb(CONTROL_TEXT_MARGIN_BOTTOM)
+                                    .pr(CONTROL_TEXT_MARGIN_RIGHT)
                                     .child(
                                         Label::new((self.format)(&self.value)).color(Color::Muted),
                                     )
@@ -646,7 +638,7 @@ impl<T: NumberFieldType> RenderOnce for NumberField<T> {
 
                                             editor.set_text_style_refinement(TextStyleRefinement {
                                                 color: Some(cx.theme().colors().text),
-                                                text_align: Some(TextAlign::Center),
+                                                text_align: Some(TextAlign::Left),
                                                 ..Default::default()
                                             });
 
@@ -794,11 +786,11 @@ impl<T: NumberFieldType> RenderOnce for NumberField<T> {
                                         )
                                         .flex_1()
                                         .h_full()
+                                        .pt(CONTROL_TEXT_MARGIN_TOP)
+                                        .pl(CONTROL_TEXT_MARGIN_LEFT)
+                                        .pb(CONTROL_TEXT_MARGIN_BOTTOM)
+                                        .pr(CONTROL_TEXT_MARGIN_RIGHT)
                                         .track_focus(&focus_handle)
-                                        .when(is_focused, |this| {
-                                            this.border_1()
-                                                .border_color(cx.theme().colors().border_focused)
-                                        })
                                         .child(editor)
                                         .on_action::<menu::Confirm>({
                                             move |_, window, cx| {
@@ -809,31 +801,62 @@ impl<T: NumberFieldType> RenderOnce for NumberField<T> {
                                 }
                             })
                     })
-                    .map(|increment| {
-                        let increment_handler = {
-                            let step_value = step_value.clone();
+                    .child(
+                        v_flex()
+                            .flex_none()
+                            .w(NUMBER_FIELD_ARROW_AREA_WIDTH)
+                            .h_full()
+                            .border_l_1()
+                            .border_color(border_color)
+                            .map(|increment| {
+                                let increment_handler = {
+                                    let step_value = step_value.clone();
 
-                            move |click: &ClickEvent, window: &mut Window, cx: &mut App| {
-                                step_value(
-                                    ValueChangeDirection::Increment,
-                                    click.modifiers(),
-                                    window,
-                                    cx,
-                                );
-                            }
-                        };
+                                    move |click: &ClickEvent, window: &mut Window, cx: &mut App| {
+                                        step_value(
+                                            ValueChangeDirection::Increment,
+                                            click.modifiers(),
+                                            window,
+                                            cx,
+                                        );
+                                    }
+                                };
 
-                        increment.child(
-                            base_button(IconName::Plus)
-                                .id((self.id.clone(), "increment_button"))
-                                .role(Role::Button)
-                                .aria_label("Increment")
-                                .rounded_tr_sm()
-                                .rounded_br_sm()
-                                .when_some(self.tab_index, |this, _| this.tab_index(0isize))
-                                .on_click(increment_handler),
-                        )
-                    })
+                                increment.child(
+                                    arrow_button(IconName::ChevronUp)
+                                        .id((self.id.clone(), "increment_button"))
+                                        .role(Role::Button)
+                                        .aria_label("Increment")
+                                        .when_some(self.tab_index, |this, _| this.tab_index(0isize))
+                                        .on_click(increment_handler),
+                                )
+                            })
+                            .map(|decrement| {
+                                let decrement_handler = {
+                                    let step_value = step_value.clone();
+
+                                    move |click: &ClickEvent, window: &mut Window, cx: &mut App| {
+                                        step_value(
+                                            ValueChangeDirection::Decrement,
+                                            click.modifiers(),
+                                            window,
+                                            cx,
+                                        );
+                                    }
+                                };
+
+                                decrement.child(
+                                    arrow_button(IconName::ChevronDown)
+                                        .id((self.id.clone(), "decrement_button"))
+                                        .role(Role::Button)
+                                        .aria_label("Decrement")
+                                        .border_t_1()
+                                        .border_color(border_color)
+                                        .when_some(self.tab_index, |this, _| this.tab_index(0isize))
+                                        .on_click(decrement_handler),
+                                )
+                            }),
+                    )
             })
     }
 }

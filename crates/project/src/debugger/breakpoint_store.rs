@@ -6,9 +6,7 @@ pub use breakpoints_in_file::{BreakpointSessionState, BreakpointWithPosition};
 use breakpoints_in_file::{BreakpointsInFile, StatefulBreakpoint};
 use collections::{BTreeMap, HashMap};
 use dap::{StackFrameId, client::SessionId};
-use gpui::{
-    App, AppContext, AsyncApp, Context, Entity, EntityId, EventEmitter, Subscription, Task,
-};
+use gpui::{App, AsyncApp, Context, Entity, EntityId, EventEmitter, Subscription, Task};
 use itertools::Itertools;
 use language::{Buffer, BufferSnapshot, proto::serialize_anchor as serialize_text_anchor};
 use rpc::{
@@ -129,18 +127,6 @@ mod breakpoints_in_file {
     }
 }
 
-#[derive(Clone)]
-struct RemoteBreakpointStore {
-    upstream_client: AnyProtoClient,
-    upstream_project_id: u64,
-}
-
-#[derive(Clone)]
-enum BreakpointStoreMode {
-    Local,
-    Remote(RemoteBreakpointStore),
-}
-
 #[derive(Clone, PartialEq)]
 pub struct ActiveStackFrame {
     pub session_id: SessionId,
@@ -157,8 +143,6 @@ pub struct BreakpointStore {
     downstream_client: Option<(AnyProtoClient, u64)>,
     active_stack_frame: Option<ActiveStackFrame>,
     active_debug_line_pane_id: Option<EntityId>,
-    // E.g ssh
-    mode: BreakpointStoreMode,
 }
 
 impl BreakpointStore {
@@ -169,27 +153,6 @@ impl BreakpointStore {
     pub fn local(worktree_store: Entity<WorktreeStore>, buffer_store: Entity<BufferStore>) -> Self {
         BreakpointStore {
             breakpoints: BTreeMap::new(),
-            mode: BreakpointStoreMode::Local,
-            buffer_store,
-            worktree_store,
-            downstream_client: None,
-            active_stack_frame: Default::default(),
-            active_debug_line_pane_id: None,
-        }
-    }
-
-    pub(crate) fn remote(
-        upstream_project_id: u64,
-        upstream_client: AnyProtoClient,
-        buffer_store: Entity<BufferStore>,
-        worktree_store: Entity<WorktreeStore>,
-    ) -> Self {
-        BreakpointStore {
-            breakpoints: BTreeMap::new(),
-            mode: BreakpointStoreMode::Remote(RemoteBreakpointStore {
-                upstream_client,
-                upstream_project_id,
-            }),
             buffer_store,
             worktree_store,
             downstream_client: None,
@@ -541,20 +504,7 @@ impl BreakpointStore {
         if breakpoint_set.breakpoints.is_empty() {
             self.breakpoints.remove(&abs_path);
         }
-        if let BreakpointStoreMode::Remote(remote) = &self.mode {
-            if let Some(breakpoint) =
-                breakpoint
-                    .bp
-                    .to_proto(&abs_path, &breakpoint.position, &HashMap::default())
-            {
-                cx.background_spawn(remote.upstream_client.request(proto::ToggleBreakpoint {
-                    project_id: remote.upstream_project_id,
-                    path: abs_path.to_string_lossy().into_owned(),
-                    breakpoint: Some(breakpoint),
-                }))
-                .detach();
-            }
-        } else if let Some((client, project_id)) = &self.downstream_client {
+        if let Some((client, project_id)) = &self.downstream_client {
             let breakpoints = self
                 .breakpoints
                 .get(&abs_path)
@@ -794,82 +744,78 @@ impl BreakpointStore {
         breakpoints: BTreeMap<Arc<Path>, Vec<SourceBreakpoint>>,
         cx: &mut Context<BreakpointStore>,
     ) -> Task<Result<()>> {
-        if let BreakpointStoreMode::Local = &self.mode {
-            let worktree_store = self.worktree_store.downgrade();
-            let buffer_store = self.buffer_store.downgrade();
-            cx.spawn(async move |this, cx| {
-                let mut new_breakpoints = BTreeMap::default();
-                for (path, bps) in breakpoints {
-                    if bps.is_empty() {
-                        continue;
-                    }
-                    let (worktree, relative_path) = worktree_store
-                        .update(cx, |this, cx| {
-                            this.find_or_create_worktree(&path, false, cx)
-                        })?
-                        .await?;
-                    let buffer = buffer_store
-                        .update(cx, |this, cx| {
-                            let path = ProjectPath {
-                                worktree_id: worktree.read(cx).id(),
-                                path: relative_path,
-                            };
-                            this.open_buffer(path, cx)
-                        })?
-                        .await;
-                    let Ok(buffer) = buffer else {
-                        log::error!("Todo: Serialized breakpoints which do not have buffer (yet)");
-                        continue;
-                    };
-                    let snapshot = buffer.read_with(cx, |buffer, _| buffer.snapshot());
-
-                    let mut breakpoints_for_file =
-                        this.update(cx, |_, cx| BreakpointsInFile::new(buffer, cx))?;
-
-                    for bp in bps {
-                        let max_point = snapshot.max_point_utf16();
-                        let point = PointUtf16::new(bp.row, 0);
-                        if point > max_point {
-                            log::error!("skipping a deserialized breakpoint that's out of range");
-                            continue;
-                        }
-                        let position = snapshot.anchor_after(point);
-                        breakpoints_for_file
-                            .breakpoints
-                            .push(StatefulBreakpoint::new(BreakpointWithPosition {
-                                position,
-                                bp: Breakpoint {
-                                    message: bp.message,
-                                    state: bp.state,
-                                    condition: bp.condition,
-                                    hit_condition: bp.hit_condition,
-                                },
-                            }))
-                    }
-                    new_breakpoints.insert(path, breakpoints_for_file);
+        let worktree_store = self.worktree_store.downgrade();
+        let buffer_store = self.buffer_store.downgrade();
+        cx.spawn(async move |this, cx| {
+            let mut new_breakpoints = BTreeMap::default();
+            for (path, bps) in breakpoints {
+                if bps.is_empty() {
+                    continue;
                 }
-                this.update(cx, |this, cx| {
-                    for (path, count) in new_breakpoints.iter().map(|(path, bp_in_file)| {
-                        (path.to_string_lossy(), bp_in_file.breakpoints.len())
-                    }) {
-                        let breakpoint_str = if count > 1 {
-                            "breakpoints"
-                        } else {
-                            "breakpoint"
+                let (worktree, relative_path) = worktree_store
+                    .update(cx, |this, cx| {
+                        this.find_or_create_worktree(&path, false, cx)
+                    })?
+                    .await?;
+                let buffer = buffer_store
+                    .update(cx, |this, cx| {
+                        let path = ProjectPath {
+                            worktree_id: worktree.read(cx).id(),
+                            path: relative_path,
                         };
-                        log::debug!("Deserialized {count} {breakpoint_str} at path: {path}");
+                        this.open_buffer(path, cx)
+                    })?
+                    .await;
+                let Ok(buffer) = buffer else {
+                    log::error!("Todo: Serialized breakpoints which do not have buffer (yet)");
+                    continue;
+                };
+                let snapshot = buffer.read_with(cx, |buffer, _| buffer.snapshot());
+
+                let mut breakpoints_for_file =
+                    this.update(cx, |_, cx| BreakpointsInFile::new(buffer, cx))?;
+
+                for bp in bps {
+                    let max_point = snapshot.max_point_utf16();
+                    let point = PointUtf16::new(bp.row, 0);
+                    if point > max_point {
+                        log::error!("skipping a deserialized breakpoint that's out of range");
+                        continue;
                     }
+                    let position = snapshot.anchor_after(point);
+                    breakpoints_for_file
+                        .breakpoints
+                        .push(StatefulBreakpoint::new(BreakpointWithPosition {
+                            position,
+                            bp: Breakpoint {
+                                message: bp.message,
+                                state: bp.state,
+                                condition: bp.condition,
+                                hit_condition: bp.hit_condition,
+                            },
+                        }))
+                }
+                new_breakpoints.insert(path, breakpoints_for_file);
+            }
+            this.update(cx, |this, cx| {
+                for (path, count) in new_breakpoints.iter().map(|(path, bp_in_file)| {
+                    (path.to_string_lossy(), bp_in_file.breakpoints.len())
+                }) {
+                    let breakpoint_str = if count > 1 {
+                        "breakpoints"
+                    } else {
+                        "breakpoint"
+                    };
+                    log::debug!("Deserialized {count} {breakpoint_str} at path: {path}");
+                }
 
-                    this.breakpoints = new_breakpoints;
+                this.breakpoints = new_breakpoints;
 
-                    cx.notify();
-                })?;
+                cx.notify();
+            })?;
 
-                Ok(())
-            })
-        } else {
-            Task::ready(Ok(()))
-        }
+            Ok(())
+        })
     }
 
     #[cfg(any(test, feature = "test-support"))]
