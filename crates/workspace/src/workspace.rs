@@ -17519,6 +17519,75 @@ mod tests {
     }
 
     #[gpui::test]
+    async fn test_restoring_pinned_tabs_respects_max_tabs(cx: &mut TestAppContext) {
+        init_test(cx);
+        cx.update(|cx| {
+            register_serializable_item::<TestItem>(cx);
+        });
+
+        let fs = FakeFs::new(cx.executor());
+        fs.insert_tree("/root", json!({ "test.txt": "" })).await;
+        let project = Project::test(fs, ["root".as_ref()], cx).await;
+        let (workspace, cx) =
+            cx.add_window_view(|window, cx| Workspace::test_new(project, window, cx));
+
+        cx.update(|_, cx| {
+            SettingsStore::update_global(cx, |store, cx| {
+                store.update_user_settings(cx, |settings| {
+                    settings.workspace.max_tabs = std::num::NonZeroUsize::new(3);
+                });
+            });
+        });
+        let pane = restore_pane(
+            &workspace,
+            SerializedPane::new(
+                vec![
+                    SerializedItem::new("TestItem", 1, false, false),
+                    SerializedItem::new("TestItem", 2, false, false),
+                    SerializedItem::new("TestItem", 3, false, false),
+                    SerializedItem::new("TestItem", 4, true, false),
+                ],
+                true,
+                3,
+            ),
+            cx,
+        )
+        .await;
+        let (items_len, pinned_count) =
+            pane.read_with(cx, |pane, _| (pane.items_len(), pane.pinned_count()));
+        assert_eq!(items_len, 4, "no pinned tab should be evicted by max_tabs");
+        assert_eq!(pinned_count, 3);
+
+        cx.update(|_, cx| {
+            SettingsStore::update_global(cx, |store, cx| {
+                store.update_user_settings(cx, |settings| {
+                    settings.workspace.max_tabs = std::num::NonZeroUsize::new(1);
+                });
+            });
+        });
+        let pane = restore_pane(
+            &workspace,
+            SerializedPane::new(
+                vec![
+                    SerializedItem::new("TestItem", 1, false, false),
+                    SerializedItem::new("TestItem", 2, true, false),
+                ],
+                true,
+                1,
+            ),
+            cx,
+        )
+        .await;
+        let (items_len, pinned_count) =
+            pane.read_with(cx, |pane, _| (pane.items_len(), pane.pinned_count()));
+        assert_eq!(
+            items_len, 2,
+            "the pinned tab should survive max_tabs of one"
+        );
+        assert_eq!(pinned_count, 1);
+    }
+
+    #[gpui::test]
     async fn test_restoring_active_and_preview_tabs_when_items_fail_to_deserialize(
         cx: &mut TestAppContext,
     ) {

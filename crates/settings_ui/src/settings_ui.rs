@@ -240,12 +240,21 @@ impl<T: PartialEq + Clone + Send + Sync + 'static> AnySettingField for SettingFi
         let this = *self;
         let store = SettingsStore::global(cx);
         let default_value = (this.pick)(store.raw_default_settings());
-        let is_default = store
-            .get_content_for_file(file_set_in.clone())
-            .map_or(None, this.pick)
-            == default_value;
-        if is_default {
+        let current_content = store.get_content_for_file(file_set_in.clone());
+        let current_value = current_content.and_then(this.pick);
+        if current_value == default_value {
             return None;
+        }
+        let reset_clears_the_field = store
+            .get_value_up_to_file(current_file.to_settings(), this.pick)
+            .0
+            == settings::SettingsFile::Default;
+        if reset_clears_the_field && let Some(content) = current_content {
+            let mut cleared = content.clone();
+            (this.write)(&mut cleared, None, cx);
+            if (this.pick)(&cleared) == current_value {
+                return None;
+            }
         }
         let current_file = current_file.clone();
 

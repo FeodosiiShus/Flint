@@ -567,18 +567,28 @@ fn apply_checkbox_toggle_to_editor(
     let expected_existing_marker = if checked { "[ ]" } else { "[x]" };
 
     editor.update(cx, |editor, cx| {
-        let marker_range =
-            MultiBufferOffset(source_range.start)..MultiBufferOffset(source_range.end);
-        let existing_marker: String = editor
-            .buffer()
-            .read(cx)
-            .snapshot(cx)
-            .text_for_range(marker_range.clone())
+        let multi_buffer_snapshot = editor.buffer().read(cx).snapshot(cx);
+        let Some(buffer_snapshot) = multi_buffer_snapshot.as_singleton() else {
+            return;
+        };
+        if source_range.start > source_range.end || source_range.end > buffer_snapshot.len() {
+            return;
+        }
+        let existing_marker: String = buffer_snapshot
+            .text_for_range(source_range.clone())
             .collect();
 
         if !existing_marker.eq_ignore_ascii_case(expected_existing_marker) {
             return;
         }
+
+        let buffer_marker_range = buffer_snapshot.anchor_before(source_range.start)
+            ..buffer_snapshot.anchor_after(source_range.end);
+        let Some(marker_range) =
+            multi_buffer_snapshot.buffer_anchor_range_to_anchor_range(buffer_marker_range)
+        else {
+            return;
+        };
 
         editor.edit([(marker_range, task_marker)], cx);
     });
@@ -1265,6 +1275,47 @@ mod tests {
         cx.run_until_parked();
 
         assert_eq!(preview_source(cx, &preview), "new\nmore\n");
+    }
+
+    #[gpui::test]
+    async fn toggling_a_checkbox_below_an_expanded_deleted_hunk_edits_the_clicked_task(
+        cx: &mut TestAppContext,
+    ) {
+        let (project, _, multi_workspace) =
+            markdown_workspace(cx, json!({ "note.md": "- [ ] b\n- [ ] c\n" })).await;
+        let editor = open_project_editor(cx, &project, &multi_workspace, "note.md").await;
+
+        editor.update(cx, |editor, cx| {
+            let buffer = editor.buffer().read(cx).as_singleton().unwrap();
+            let diff = cx.new(|cx| {
+                BufferDiff::new_with_base_text(
+                    "- [ ] a\n- [ ] b\n- [ ] c\n",
+                    &buffer.read(cx).text_snapshot(),
+                    cx,
+                )
+            });
+            editor.buffer().update(cx, |multibuffer, cx| {
+                multibuffer.add_diff(diff, cx);
+                multibuffer.set_all_diff_hunks_expanded(cx);
+            });
+        });
+        let diff_text = editor.read_with(cx, |editor, cx| {
+            editor.buffer().read(cx).snapshot(cx).text()
+        });
+        assert!(diff_text.starts_with("- [ ] a\n"));
+
+        cx.update(|cx| apply_checkbox_toggle_to_editor(&editor, 10..13, true, cx));
+
+        let buffer_text = editor.read_with(cx, |editor, cx| {
+            editor
+                .buffer()
+                .read(cx)
+                .as_singleton()
+                .unwrap()
+                .read(cx)
+                .text()
+        });
+        assert_eq!(buffer_text, "- [ ] b\n- [x] c\n");
     }
 
     #[gpui::test]

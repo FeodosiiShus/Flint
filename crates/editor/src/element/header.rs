@@ -49,6 +49,7 @@ pub(super) struct StickyHeaders {
     gutter_background: Hsla,
     content_background: Hsla,
     gutter_right_padding: Pixels,
+    pub(super) whitespace_setting: ShowWhitespaceSetting,
 }
 
 pub(super) struct StickyHeaderLine {
@@ -316,6 +317,7 @@ impl EditorElement {
             gutter_background: cx.theme().colors().editor_gutter_background,
             content_background: self.style.background,
             gutter_right_padding: gutter_dimensions.right_padding,
+            whitespace_setting: self.editor.read(cx).show_whitespaces_setting(cx),
         })
     }
 
@@ -334,13 +336,7 @@ impl EditorElement {
             return;
         };
 
-        let whitespace_setting = self
-            .editor
-            .read(cx)
-            .buffer
-            .read(cx)
-            .language_settings(cx)
-            .show_whitespaces;
+        let whitespace_setting = sticky_headers.whitespace_setting;
         sticky_headers.paint(layout, whitespace_setting, window, cx);
 
         let sticky_header_hitboxes: Vec<Hitbox> = sticky_headers

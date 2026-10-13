@@ -415,13 +415,9 @@ impl MergeGutter {
         }
         let (font, font_size) = editor_font(cx);
         let mut numbers = Vec::new();
-        let mut previous_line = None;
-        for row in geometry.visible_display_rows() {
-            let line = geometry.buffer_line_of_display_row(row);
-            if previous_line == Some(line) {
-                continue;
-            }
-            previous_line = Some(line);
+        for (row, line) in first_rows_of_lines(geometry.visible_display_rows(), |row| {
+            geometry.buffer_line_of_display_row(row)
+        }) {
             let text = SharedString::from((line + 1).to_string());
             let color = if line == geometry.caret_line {
                 colors.caret_row
@@ -777,9 +773,36 @@ impl Element for MergeGutter {
     }
 }
 
+fn first_rows_of_lines(
+    rows: std::ops::Range<u32>,
+    line_of_row: impl Fn(u32) -> u32,
+) -> Vec<(u32, u32)> {
+    let mut previous_line = rows.start.checked_sub(1).map(&line_of_row);
+    let mut firsts = Vec::new();
+    for row in rows {
+        let line = line_of_row(row);
+        if previous_line != Some(line) {
+            firsts.push((row, line));
+        }
+        previous_line = Some(line);
+    }
+    firsts
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn line_numbers_skip_wrapped_continuation_rows_at_the_top_of_the_viewport() {
+        let lines: [u32; 9] = [0, 1, 1, 1, 2, 3, 3, 4, 5];
+        let line_of_row = |row: u32| lines[row as usize];
+        assert_eq!(
+            first_rows_of_lines(2..9, line_of_row),
+            vec![(4, 2), (5, 3), (7, 4), (8, 5)]
+        );
+        assert_eq!(first_rows_of_lines(0..4, line_of_row), vec![(0, 0), (1, 1)]);
+    }
 
     fn spec(line: u32, enabled: bool) -> GutterIconSpec {
         GutterIconSpec {

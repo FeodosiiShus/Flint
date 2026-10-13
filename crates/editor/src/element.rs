@@ -11625,6 +11625,79 @@ mod tests {
     }
 
     #[gpui::test]
+    async fn test_sticky_header_whitespace_follows_editor_override(cx: &mut TestAppContext) {
+        init_test(cx, |_| {});
+        cx.update(|cx| {
+            settings::SettingsStore::update_global(cx, |store, cx| {
+                store.update_user_settings(cx, |settings| {
+                    settings.editor.sticky_scroll = Some(settings::StickyScrollContent {
+                        enabled: Some(true),
+                    });
+                });
+            });
+        });
+
+        let buffer = cx.new(|cx| {
+            let mut buffer = Buffer::local(
+                indoc::indoc! {"
+                    fn foo() {
+                        let one = 1;
+                        let two = 2;
+                        let three = 3;
+                    }
+                "},
+                cx,
+            );
+            buffer.set_language(Some(languages::rust_lang()), cx);
+            buffer
+        });
+        let multi_buffer = cx.new(|cx| MultiBuffer::singleton(buffer, cx));
+        let (window, editor) = point_diagnostic_editor(multi_buffer, cx);
+        cx.simulate_window_resize(window.into(), size(px(500.), px(50.)));
+        let style = window
+            .read_with(cx, |view, _| view.style.clone())
+            .expect("test editor style");
+        let cx = &mut VisualTestContext::from_window(*window, cx);
+        cx.cx.run_until_parked();
+        editor.update_in(cx, |editor, window, cx| {
+            let snapshot = editor.snapshot(window, cx);
+            editor.refresh_sticky_headers(&snapshot.display_snapshot, cx);
+        });
+        cx.cx.run_until_parked();
+        editor.update_in(cx, |editor, window, cx| {
+            editor.scroll(point(0., 1.), window, cx)
+        });
+        cx.cx.run_until_parked();
+        editor.update_in(cx, |editor, window, cx| {
+            let snapshot = editor.snapshot(window, cx);
+            assert_eq!(EditorElement::sticky_headers(editor, &snapshot).len(), 1);
+            assert_ne!(
+                editor
+                    .buffer
+                    .read(cx)
+                    .language_settings(cx)
+                    .show_whitespaces,
+                ShowWhitespaceSetting::All
+            );
+            editor.set_show_whitespaces_override(Some(ShowWhitespaceSetting::All), cx);
+        });
+
+        let (_, state) = cx.draw(point(px(0.), px(0.)), size(px(500.), px(50.)), |_, _| {
+            EditorElement::new(&editor, style)
+        });
+
+        let sticky_headers = state
+            .sticky_headers
+            .as_ref()
+            .expect("sticky header laid out after scrolling past `fn foo`");
+        assert_eq!(sticky_headers.lines.len(), 1);
+        assert_eq!(
+            sticky_headers.whitespace_setting,
+            ShowWhitespaceSetting::All
+        );
+    }
+
+    #[gpui::test]
     async fn test_soft_wrap_editor_width_full_editor(cx: &mut TestAppContext) {
         init_test(cx, |_| {});
         let window = cx.add_window(|window, cx| {

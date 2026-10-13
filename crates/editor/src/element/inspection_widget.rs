@@ -1012,4 +1012,81 @@ mod tests {
             assert_eq!(editor.diagnostic_counts(cx), counts(2, 1, 1));
         });
     }
+
+    #[gpui::test]
+    async fn inspection_widget_level_none_dismisses_the_expanded_diagnostic(
+        cx: &mut TestAppContext,
+    ) {
+        let mut cx = editor_with_every_severity(cx).await;
+
+        cx.update_editor(|editor, window, cx| {
+            editor.go_to_diagnostic(&GoToDiagnostic::default(), window, cx);
+        });
+        cx.update_editor(|editor, _, _| {
+            assert_eq!(
+                editor.active_diagnostic_message(),
+                Some("first error"),
+                "going to a diagnostic expands the one under the cursor"
+            );
+        });
+
+        cx.update_editor(|editor, window, cx| {
+            editor.set_highlight_level(HighlightLevel::None, window, cx);
+        });
+        cx.update_editor(|editor, _, _| {
+            assert_eq!(
+                editor.active_diagnostic_message(),
+                None,
+                "disabling highlighting must not leave the expanded diagnostic on screen"
+            );
+        });
+    }
+
+    #[gpui::test]
+    async fn inspection_widget_chosen_all_problems_survives_settings_changes_when_diagnostics_are_off(
+        cx: &mut TestAppContext,
+    ) {
+        let mut cx = editor_with_every_severity(cx).await;
+
+        cx.update(|_, cx| {
+            SettingsStore::update_global(cx, |store, cx| {
+                store.update_user_settings(cx, |settings| {
+                    settings.editor.diagnostics_max_severity = Some(DiagnosticSeverityContent::Off);
+                });
+            });
+        });
+        cx.run_until_parked();
+        cx.update_editor(|editor, _, _| {
+            assert_eq!(
+                editor.highlight_level(),
+                HighlightLevel::None,
+                "an editor without a chosen level follows the configured maximum severity"
+            );
+        });
+
+        cx.update_editor(|editor, window, cx| {
+            editor.set_highlight_level(HighlightLevel::AllProblems, window, cx);
+        });
+        cx.update_editor(|editor, _, _| {
+            assert_eq!(editor.highlight_level(), HighlightLevel::AllProblems);
+            assert_eq!(editor.diagnostics_max_severity, DiagnosticSeverity::Hint);
+        });
+
+        cx.update(|_, cx| {
+            SettingsStore::update_global(cx, |store, cx| {
+                store.update_user_settings(cx, |settings| {
+                    settings.editor.cursor_blink = Some(false);
+                });
+            });
+        });
+        cx.run_until_parked();
+        cx.update_editor(|editor, _, _| {
+            assert_eq!(
+                editor.highlight_level(),
+                HighlightLevel::AllProblems,
+                "an unrelated settings change keeps the explicitly chosen All Problems level"
+            );
+            assert_eq!(editor.diagnostics_max_severity, DiagnosticSeverity::Hint);
+        });
+    }
 }

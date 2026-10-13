@@ -406,14 +406,13 @@ impl Editor {
         cx: &mut Context<Editor>,
     ) {
         self.highlight_level = level;
+        self.highlight_level_chosen = true;
         self.diagnostics_enabled = level != HighlightLevel::None;
         let new_severity = match level {
             HighlightLevel::None => DiagnosticSeverity::Off,
-            HighlightLevel::Syntax => DiagnosticSeverity::Error,
-            HighlightLevel::AllProblems => EditorSettings::get_global(cx)
-                .diagnostics_max_severity
-                .filter(|severity| severity != &DiagnosticSeverity::Off)
-                .unwrap_or(DiagnosticSeverity::Hint),
+            HighlightLevel::Syntax | HighlightLevel::AllProblems => {
+                self.highlight_level_max_severity(cx)
+            }
         };
         self.set_max_diagnostics_severity(new_severity, cx);
         if self.diagnostics_enabled {
@@ -421,6 +420,7 @@ impl Editor {
             self.active_diagnostics = ActiveDiagnostic::None;
             self.refresh_inline_diagnostics(false, window, cx);
         } else {
+            self.dismiss_diagnostics(cx);
             self.inline_diagnostics_update = Task::ready(());
             self.inline_diagnostics.clear();
         }
@@ -428,11 +428,15 @@ impl Editor {
     }
 
     pub(super) fn highlight_level_max_severity(&self, cx: &App) -> DiagnosticSeverity {
+        let configured_severity = EditorSettings::get_global(cx).diagnostics_max_severity;
         match self.highlight_level {
             HighlightLevel::Syntax => DiagnosticSeverity::Error,
-            HighlightLevel::None | HighlightLevel::AllProblems => EditorSettings::get_global(cx)
-                .diagnostics_max_severity
+            HighlightLevel::AllProblems if self.highlight_level_chosen => configured_severity
+                .filter(|severity| severity != &DiagnosticSeverity::Off)
                 .unwrap_or(DiagnosticSeverity::Hint),
+            HighlightLevel::None | HighlightLevel::AllProblems => {
+                configured_severity.unwrap_or(DiagnosticSeverity::Hint)
+            }
         }
     }
 

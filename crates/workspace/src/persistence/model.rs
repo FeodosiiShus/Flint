@@ -360,13 +360,21 @@ impl SerializedPane {
         }
 
         let mut items = Vec::new();
-        for item_handle in futures::future::join_all(item_tasks).await {
+        for (index, item_handle) in futures::future::join_all(item_tasks)
+            .await
+            .into_iter()
+            .enumerate()
+        {
             let item_handle = item_handle.log_err();
             items.push(item_handle.clone());
 
             if let Some(item_handle) = item_handle {
+                let pinned = index < self.pinned_count;
                 pane.update_in(cx, |pane, window, cx| {
                     pane.add_item(item_handle.clone(), true, true, None, window, cx);
+                    if pinned {
+                        pane.set_pinned_count((pane.pinned_count() + 1).min(pane.items_len()));
+                    }
                 })?;
             }
         }
@@ -384,18 +392,6 @@ impl SerializedPane {
                 pane.set_preview_item_id(Some(preview_item.item_id()), cx);
             })?;
         }
-
-        // `items` keeps a `None` for every item that failed to deserialize, and those
-        // were never added to the pane. Counting them would leave the pinned count
-        // pointing past the pinned tabs and pin unpinned ones in their place.
-        let pinned_count = items
-            .iter()
-            .take(self.pinned_count)
-            .filter(|item| item.is_some())
-            .count();
-        pane.update(cx, |pane, _| {
-            pane.set_pinned_count(pinned_count);
-        })?;
 
         anyhow::Ok(items)
     }

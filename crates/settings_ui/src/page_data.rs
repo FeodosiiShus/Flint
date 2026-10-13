@@ -9558,4 +9558,62 @@ mod tests {
             );
         });
     }
+
+    #[gpui::test]
+    fn test_reset_is_hidden_when_only_the_fallback_setting_is_set(cx: &mut gpui::TestAppContext) {
+        use crate::{AnySettingField as _, SettingsUiFile};
+        use gpui::BorrowAppContext as _;
+
+        cx.update(|cx| {
+            let store = settings::SettingsStore::test(cx);
+            cx.set_global(store);
+
+            let page = terminal_page();
+            let field = page
+                .items
+                .iter()
+                .find_map(|item| match item {
+                    SettingsPageItem::SettingItem(item)
+                        if item.field.json_path() == Some("terminal.font_size") =>
+                    {
+                        Some(&item.field)
+                    }
+                    _ => None,
+                })
+                .expect("the terminal font size setting should be listed");
+
+            cx.update_global::<settings::SettingsStore, _>(|store, cx| {
+                store
+                    .set_user_settings(r#"{"buffer_font_size": 15}"#, cx)
+                    .expect("user settings with only buffer_font_size should parse");
+            });
+            let (found_file, found) = field.file_set_in(SettingsUiFile::User, cx);
+            assert!(found, "the terminal font size falls back to buffer_font_size");
+            assert_eq!(found_file, settings::SettingsFile::User);
+            assert!(
+                field
+                    .reset_to_default_fn(&SettingsUiFile::User, &found_file, cx)
+                    .is_none(),
+                "reset must be hidden when terminal.font_size is unset and resetting it would change nothing"
+            );
+
+            cx.update_global::<settings::SettingsStore, _>(|store, cx| {
+                store
+                    .set_user_settings(
+                        r#"{"buffer_font_size": 15, "terminal": {"font_size": 16}}"#,
+                        cx,
+                    )
+                    .expect("user settings with terminal.font_size should parse");
+            });
+            let (found_file, found) = field.file_set_in(SettingsUiFile::User, cx);
+            assert!(found, "terminal.font_size is set in the user file");
+            assert_eq!(found_file, settings::SettingsFile::User);
+            assert!(
+                field
+                    .reset_to_default_fn(&SettingsUiFile::User, &found_file, cx)
+                    .is_some(),
+                "reset must be shown when terminal.font_size itself is set in the user file"
+            );
+        });
+    }
 }
