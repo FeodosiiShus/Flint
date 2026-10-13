@@ -140,7 +140,7 @@ fn send_args_to_instance(args: &Args) -> anyhow::Result<()> {
             }
         }
 
-        for path in args.diff.chunks(2) {
+        for path in args.diff.chunks_exact(2) {
             let old = std::fs::canonicalize(&path[0]).log_err();
             let new = std::fs::canonicalize(&path[1]).log_err();
             if let Some((old, new)) = old.zip(new) {

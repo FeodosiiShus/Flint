@@ -634,12 +634,12 @@ fn main() {
         // Check if any diff paths are directories to determine diff_all mode
         let diff_all_mode = args
             .diff
-            .chunks(2)
+            .chunks_exact(2)
             .any(|pair| Path::new(&pair[0]).is_dir() || Path::new(&pair[1]).is_dir());
 
         let diff_paths: Vec<[String; 2]> = args
             .diff
-            .chunks(2)
+            .chunks_exact(2)
             .map(|chunk| [chunk[0].clone(), chunk[1].clone()])
             .collect();
 

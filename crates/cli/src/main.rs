@@ -543,10 +543,10 @@ fn run() -> Result<()> {
     // Check if any diff paths are directories to determine diff_all mode
     let diff_all_mode = args
         .diff
-        .chunks(2)
+        .chunks_exact(2)
         .any(|pair| Path::new(&pair[0]).is_dir() || Path::new(&pair[1]).is_dir());
-
-    for path in args.diff.chunks(2) {
+    anyhow::ensure!(args.diff.len() % 2 == 0, "--diff requires paths in pairs");
+    for path in args.diff.chunks_exact(2) {
         let left = parse_path_with_position(&path[0])?;
         let right = parse_path_with_position(&path[1])?;
         for diff_path in [&left, &right] {
