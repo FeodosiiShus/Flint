@@ -337,6 +337,7 @@ pub fn build_window_options(display_uuid: Option<Uuid>, cx: &mut App) -> WindowO
 }
 
 pub fn initialize_workspace(app_state: Arc<AppState>, cx: &mut App) {
+    title_bar::init(cx);
     let mut _on_close_subscription = bind_on_window_closed(cx);
     cx.observe_global::<SettingsStore>(move |cx| {
         // A 1.92 regression causes unused-assignment to trigger on this variable.
@@ -3025,6 +3026,97 @@ mod tests {
                 .collect::<Vec<_>>();
             assert_eq!(pane_entries, &[file1, file2, file3]);
         });
+    }
+
+    #[gpui::test]
+    async fn test_project_window_options_keep_the_native_titlebar_transparent(
+        cx: &mut TestAppContext,
+    ) {
+        init_test(cx);
+        let options = cx.update(|cx| build_window_options(None, cx));
+        let titlebar = options
+            .titlebar
+            .expect("project windows must configure the native titlebar");
+        assert!(
+            titlebar.appears_transparent,
+            "project windows must keep the native titlebar transparent, otherwise macOS draws its own titlebar over Flint's title bar"
+        );
+        assert_eq!(
+            titlebar.title, None,
+            "project windows must not show native title text over Flint's title bar"
+        );
+        assert!(
+            titlebar.traffic_light_position.is_some(),
+            "project windows must place the window buttons inside Flint's title bar"
+        );
+    }
+
+    #[gpui::test]
+    async fn test_project_window_shows_the_title_bar_widgets(cx: &mut TestAppContext) {
+        let app_state = init_test(cx);
+        app_state
+            .fs
+            .as_fake()
+            .insert_tree(path!("/project"), json!({ "file.txt": "" }))
+            .await;
+
+        cx.update(|cx| {
+            open_paths(
+                &[PathBuf::from(path!("/project"))],
+                app_state,
+                workspace::OpenOptions::default(),
+                cx,
+            )
+        })
+        .await
+        .expect("the project window should open");
+        cx.run_until_parked();
+
+        let window = cx.update(|cx| {
+            cx.windows()[0]
+                .downcast::<MultiWorkspace>()
+                .expect("the opened window should be a project window")
+        });
+        let has_flint_title_bar = window
+            .read_with(cx, |multi_workspace, cx| {
+                multi_workspace
+                    .workspace()
+                    .read(cx)
+                    .titlebar_item()
+                    .is_some_and(|item| item.downcast::<title_bar::TitleBar>().is_ok())
+            })
+            .expect("the project window should be readable");
+        assert!(
+            has_flint_title_bar,
+            "project windows must get Flint's title bar, as it was lost once when title_bar::init disappeared from main"
+        );
+
+        let cx = &mut VisualTestContext::from_window(window.into(), cx);
+        cx.update(|window, _| window.refresh());
+        cx.run_until_parked();
+
+        let search_field = cx
+            .debug_bounds(title_bar::SEARCH_FIELD_DEBUG_SELECTOR)
+            .expect("project windows must paint the Search Everywhere field in the title bar");
+        let title_bar_height =
+            cx.update(|window, cx| ui::utils::platform_title_bar_height(window, cx));
+        assert!(
+            search_field.size.width > px(0.) && search_field.size.height > px(0.),
+            "the Search Everywhere field must be visible, not collapsed to zero size"
+        );
+        assert!(
+            search_field.top() >= px(0.),
+            "the Search Everywhere field must not start above the title bar"
+        );
+        assert!(
+            search_field.bottom() <= title_bar_height,
+            "the Search Everywhere field must sit inside the title bar strip"
+        );
+        #[cfg(target_os = "macos")]
+        assert!(
+            search_field.left() >= px(ui::utils::TRAFFIC_LIGHT_PADDING),
+            "the Search Everywhere field must start after the traffic lights"
+        );
     }
 
     #[gpui::test]

@@ -447,22 +447,12 @@ unsafe fn build_window_class(name: &'static str, superclass: &Class) -> *const C
             sel!(windowDidChangeOcclusionState:),
             window_did_change_occlusion_state as extern "C" fn(&Object, Sel, id),
         );
-        decl.add_method(
-            sel!(windowWillEnterFullScreen:),
-            window_will_enter_fullscreen as extern "C" fn(&Object, Sel, id),
-        );
-        decl.add_method(
-            sel!(windowWillExitFullScreen:),
-            window_will_exit_fullscreen as extern "C" fn(&Object, Sel, id),
-        );
-        decl.add_method(
-            sel!(windowDidFailToExitFullScreen:),
-            window_did_fail_to_exit_fullscreen as extern "C" fn(&Object, Sel, id),
-        );
-        decl.add_method(
-            sel!(windowDidExitFullScreen:),
-            window_did_exit_fullscreen as extern "C" fn(&Object, Sel, id),
-        );
+        for transition in FullscreenTransition::ALL {
+            decl.add_method(
+                transition.selector(),
+                window_fullscreen_transition as extern "C" fn(&Object, Sel, id),
+            );
+        }
         decl.add_method(
             sel!(windowDidMove:),
             window_did_move as extern "C" fn(&Object, Sel, id),
@@ -564,6 +554,56 @@ struct TrafficLightButtons {
     close: Retained<Objc2NSButton>,
     minimize: Retained<Objc2NSButton>,
     zoom: Retained<Objc2NSButton>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FullscreenTransition {
+    WillEnter,
+    DidEnter,
+    DidFailToEnter,
+    WillExit,
+    DidExit,
+    DidFailToExit,
+}
+
+impl FullscreenTransition {
+    const ALL: [Self; 6] = [
+        Self::WillEnter,
+        Self::DidEnter,
+        Self::DidFailToEnter,
+        Self::WillExit,
+        Self::DidExit,
+        Self::DidFailToExit,
+    ];
+
+    fn selector(self) -> Sel {
+        match self {
+            Self::WillEnter => sel!(windowWillEnterFullScreen:),
+            Self::DidEnter => sel!(windowDidEnterFullScreen:),
+            Self::DidFailToEnter => sel!(windowDidFailToEnterFullScreen:),
+            Self::WillExit => sel!(windowWillExitFullScreen:),
+            Self::DidExit => sel!(windowDidExitFullScreen:),
+            Self::DidFailToExit => sel!(windowDidFailToExitFullScreen:),
+        }
+    }
+
+    fn from_selector(selector: Sel) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|transition| transition.selector() == selector)
+    }
+
+    fn leaves_window_fullscreen(self) -> bool {
+        matches!(self, Self::WillEnter | Self::DidEnter | Self::DidFailToExit)
+    }
+
+    fn titlebar_appears_transparent(
+        self,
+        transparent_titlebar: bool,
+        opaque_fullscreen_titlebar: bool,
+    ) -> bool {
+        transparent_titlebar && !(self.leaves_window_fullscreen() && opaque_fullscreen_titlebar)
+    }
 }
 
 // `NSApplicationPresentationOptions` bits (see `NSApplication.PresentationOptions`).
@@ -828,6 +868,53 @@ impl MacWindowState {
             buttons.close.updateTrackingAreas();
             buttons.minimize.updateTrackingAreas();
             buttons.zoom.updateTrackingAreas();
+        }
+    }
+
+    fn apply_fullscreen_titlebar(&self, transition: FullscreenTransition) {
+        let opaque_fullscreen_titlebar =
+            is_macos_version_at_least(NSOperatingSystemVersion::new(15, 3, 0));
+        let titlebar_appears_transparent = transition
+            .titlebar_appears_transparent(self.transparent_titlebar, opaque_fullscreen_titlebar);
+        unsafe {
+            self.native_window
+                .setTitlebarAppearsTransparent_(titlebar_appears_transparent.to_objc());
+        }
+    }
+
+    fn apply_fullscreen_transition(&mut self, transition: FullscreenTransition) {
+        match transition {
+            FullscreenTransition::WillEnter => {
+                self.fullscreen_restore_bounds = self.bounds();
+                self.is_exiting_fullscreen = false;
+                self.pre_fullscreen_traffic_light_frames = self.traffic_light_frames;
+                self.restore_traffic_light();
+                self.apply_fullscreen_titlebar(transition);
+            }
+            FullscreenTransition::DidEnter => {
+                self.apply_fullscreen_titlebar(transition);
+            }
+            FullscreenTransition::DidFailToEnter => {
+                self.apply_fullscreen_titlebar(transition);
+                self.traffic_light_frames = self.pre_fullscreen_traffic_light_frames.take();
+                self.move_traffic_light();
+            }
+            FullscreenTransition::WillExit => {
+                self.is_exiting_fullscreen = true;
+                self.apply_fullscreen_titlebar(transition);
+                self.move_traffic_light();
+            }
+            FullscreenTransition::DidExit => {
+                self.is_exiting_fullscreen = false;
+                self.apply_fullscreen_titlebar(transition);
+                self.traffic_light_frames = self.pre_fullscreen_traffic_light_frames.take();
+                self.move_traffic_light();
+            }
+            FullscreenTransition::DidFailToExit => {
+                self.is_exiting_fullscreen = false;
+                self.apply_fullscreen_titlebar(transition);
+                self.restore_traffic_light();
+            }
         }
     }
 
@@ -3005,56 +3092,16 @@ extern "C" fn window_did_resize(this: &Object, _: Sel, _: id) {
     window_state.as_ref().lock().move_traffic_light();
 }
 
-extern "C" fn window_will_enter_fullscreen(this: &Object, _: Sel, _: id) {
+extern "C" fn window_fullscreen_transition(this: &Object, selector: Sel, _: id) {
+    let Some(transition) = FullscreenTransition::from_selector(selector) else {
+        log::error!("no full screen transition handles {selector:?}");
+        return;
+    };
     let window_state = unsafe { get_window_state(this) };
-    let mut lock = window_state.as_ref().lock();
-    lock.fullscreen_restore_bounds = lock.bounds();
-    lock.is_exiting_fullscreen = false;
-    lock.pre_fullscreen_traffic_light_frames = lock.traffic_light_frames;
-    lock.restore_traffic_light();
-
-    let min_version = NSOperatingSystemVersion::new(15, 3, 0);
-
-    if is_macos_version_at_least(min_version) {
-        unsafe {
-            lock.native_window.setTitlebarAppearsTransparent_(NO);
-        }
-    }
-}
-
-extern "C" fn window_will_exit_fullscreen(this: &Object, _: Sel, _: id) {
-    let window_state = unsafe { get_window_state(this) };
-    let mut lock = window_state.as_ref().lock();
-    lock.is_exiting_fullscreen = true;
-
-    let min_version = NSOperatingSystemVersion::new(15, 3, 0);
-
-    if is_macos_version_at_least(min_version) && lock.transparent_titlebar {
-        unsafe {
-            lock.native_window.setTitlebarAppearsTransparent_(YES);
-        }
-    }
-
-    lock.move_traffic_light();
-}
-
-extern "C" fn window_did_fail_to_exit_fullscreen(this: &Object, _: Sel, _: id) {
-    let window_state = unsafe { get_window_state(this) };
-    let mut lock = window_state.as_ref().lock();
-    lock.is_exiting_fullscreen = false;
-    lock.restore_traffic_light();
-}
-
-extern "C" fn window_did_exit_fullscreen(this: &Object, _: Sel, _: id) {
-    // SAFETY: This method is registered only on GPUI window classes, which initialize
-    // WINDOW_STATE_IVAR with an Arc<Mutex<MacWindowState>> during window creation.
-    let window_state = unsafe { get_window_state(this) };
-    let mut lock = window_state.as_ref().lock();
-    lock.is_exiting_fullscreen = false;
-    // Moving the buttons during the transition captures their fullscreen frames.
-    // Keep using the native windowed frames when restoring them on the next entry.
-    lock.traffic_light_frames = lock.pre_fullscreen_traffic_light_frames.take();
-    lock.move_traffic_light();
+    window_state
+        .as_ref()
+        .lock()
+        .apply_fullscreen_transition(transition);
 }
 
 pub(crate) fn is_macos_version_at_least(version: NSOperatingSystemVersion) -> bool {
@@ -3929,5 +3976,107 @@ mod tests {
     #[test]
     fn display_id_for_screen_returns_none_for_null_screen() {
         assert_eq!(display_id_for_screen(nil), None);
+    }
+
+    fn fullscreen_delegate_selectors() -> [Sel; 6] {
+        [
+            sel!(windowWillEnterFullScreen:),
+            sel!(windowDidEnterFullScreen:),
+            sel!(windowDidFailToEnterFullScreen:),
+            sel!(windowWillExitFullScreen:),
+            sel!(windowDidExitFullScreen:),
+            sel!(windowDidFailToExitFullScreen:),
+        ]
+    }
+
+    fn titlebar_transparent_after(
+        selector: Sel,
+        transparent_titlebar: bool,
+        opaque_fullscreen_titlebar: bool,
+    ) -> bool {
+        FullscreenTransition::from_selector(selector)
+            .expect("every full screen delegate callback maps to a full screen transition")
+            .titlebar_appears_transparent(transparent_titlebar, opaque_fullscreen_titlebar)
+    }
+
+    #[test]
+    fn fullscreen_titlebar_window_delegate_handles_every_fullscreen_callback() {
+        let fullscreen_handler =
+            window_fullscreen_transition as extern "C" fn(&Object, Sel, id) as usize;
+        for (class_name, class_pointer) in [
+            ("GPUIWindow", unsafe { WINDOW_CLASS }),
+            ("GPUIPanel", unsafe { PANEL_CLASS }),
+        ] {
+            assert!(
+                !class_pointer.is_null(),
+                "{class_name} is not registered, and a missing handler leaves the macOS titlebar opaque over the title bar outside full screen"
+            );
+            let class = unsafe { &*class_pointer };
+            for selector in fullscreen_delegate_selectors() {
+                let method = class.instance_method(selector).unwrap_or_else(|| {
+                    panic!(
+                        "{class_name} has no {selector:?} handler, and a missing handler leaves the macOS titlebar opaque over the title bar outside full screen"
+                    )
+                });
+                assert_eq!(
+                    method.implementation() as usize,
+                    fullscreen_handler,
+                    "{class_name} handles {selector:?} without window_fullscreen_transition, and a missing handler leaves the macOS titlebar opaque over the title bar outside full screen"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn fullscreen_titlebar_turns_transparent_whenever_the_window_ends_up_windowed() {
+        for opaque_fullscreen_titlebar in [false, true] {
+            assert!(
+                titlebar_transparent_after(
+                    sel!(windowDidFailToEnterFullScreen:),
+                    true,
+                    opaque_fullscreen_titlebar,
+                ),
+                "an aborted full screen entry left the native titlebar opaque over the title bar widgets (opaque_fullscreen_titlebar: {opaque_fullscreen_titlebar})"
+            );
+            for selector in [
+                sel!(windowWillExitFullScreen:),
+                sel!(windowDidExitFullScreen:),
+            ] {
+                assert!(
+                    titlebar_transparent_after(selector, true, opaque_fullscreen_titlebar),
+                    "after {selector:?} the windowed window kept an opaque native titlebar over the title bar widgets (opaque_fullscreen_titlebar: {opaque_fullscreen_titlebar})"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn fullscreen_titlebar_is_opaque_only_while_fullscreen_on_macos_15_3_and_later() {
+        for selector in [
+            sel!(windowWillEnterFullScreen:),
+            sel!(windowDidEnterFullScreen:),
+            sel!(windowDidFailToExitFullScreen:),
+        ] {
+            assert!(
+                !titlebar_transparent_after(selector, true, true),
+                "after {selector:?} the window is in full screen, where macOS 15.3 and later need an opaque native titlebar"
+            );
+            assert!(
+                titlebar_transparent_after(selector, true, false),
+                "after {selector:?} the window is in full screen, where macOS before 15.3 keeps the transparent titlebar it asked for"
+            );
+        }
+    }
+
+    #[test]
+    fn fullscreen_titlebar_never_makes_a_native_titlebar_transparent() {
+        for selector in fullscreen_delegate_selectors() {
+            for opaque_fullscreen_titlebar in [false, true] {
+                assert!(
+                    !titlebar_transparent_after(selector, false, opaque_fullscreen_titlebar),
+                    "{selector:?} made the native titlebar of a window that did not ask for a transparent one transparent (opaque_fullscreen_titlebar: {opaque_fullscreen_titlebar})"
+                );
+            }
+        }
     }
 }

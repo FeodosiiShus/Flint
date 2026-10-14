@@ -44,7 +44,7 @@ use workspace::{
 const MAX_BRANCH_NAME_LENGTH: usize = 40;
 const MAX_SHORT_SHA_LENGTH: usize = 8;
 const SEARCH_FIELD_WIDTH: f32 = 280.;
-const SEARCH_FIELD_DEBUG_SELECTOR: &str = "title_bar_search_field";
+pub const SEARCH_FIELD_DEBUG_SELECTOR: &str = "title_bar_search_field";
 const WORKTREE_AND_BRANCH_DEBUG_SELECTOR: &str = "title_bar_worktree_and_branch";
 const PROJECT_GRADIENT_COLOR: u32 = 0x955AE0;
 
@@ -921,6 +921,119 @@ mod tests {
         assert!(
             search_field.right() <= window_width * 0.5,
             "the search field stays in the left half of the title bar"
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    fn assert_visible_inside_title_bar(
+        widget: gpui::Bounds<Pixels>,
+        title_bar_height: Pixels,
+        label: &str,
+    ) {
+        assert!(
+            widget.size.width > px(0.) && widget.size.height > px(0.),
+            "the {label} is drawn with a visible size, got {widget:?}"
+        );
+        assert!(
+            widget.top() >= px(0.) && widget.bottom() <= title_bar_height,
+            "the {label} sits inside the {title_bar_height:?} title bar strip, got {widget:?}"
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[gpui::test]
+    async fn title_bar_widgets_stay_visible_beside_the_traffic_lights_outside_full_screen(
+        cx: &mut TestAppContext,
+    ) {
+        let (_workspace, _title_bar, cx) = open_project_title_bar(cx, Some("main")).await;
+        let title_bar_height = cx.update(|window, cx| platform_title_bar_height(window, cx));
+        let traffic_light_padding = px(ui::utils::TRAFFIC_LIGHT_PADDING);
+
+        assert!(
+            !cx.update(|window, _| window.is_fullscreen()),
+            "a new project window opens outside full screen"
+        );
+        let branch_picker = cx
+            .debug_bounds(WORKTREE_AND_BRANCH_DEBUG_SELECTOR)
+            .expect("outside full screen the branch picker is shown in the title bar");
+        let search_field = cx
+            .debug_bounds(SEARCH_FIELD_DEBUG_SELECTOR)
+            .expect("outside full screen the search field is shown in the title bar");
+        assert_visible_inside_title_bar(
+            branch_picker,
+            title_bar_height,
+            "branch picker outside full screen",
+        );
+        assert_visible_inside_title_bar(
+            search_field,
+            title_bar_height,
+            "search field outside full screen",
+        );
+        assert!(
+            branch_picker.left() >= traffic_light_padding,
+            "outside full screen the branch picker starts after the macOS window buttons, got {branch_picker:?}"
+        );
+
+        cx.update(|window, _| {
+            window.toggle_fullscreen();
+            window.refresh();
+        });
+        cx.run_until_parked();
+
+        assert!(
+            cx.update(|window, _| window.is_fullscreen()),
+            "toggling full screen puts the window in full screen"
+        );
+        let branch_picker = cx
+            .debug_bounds(WORKTREE_AND_BRANCH_DEBUG_SELECTOR)
+            .expect("in full screen the branch picker is shown in the title bar");
+        let search_field = cx
+            .debug_bounds(SEARCH_FIELD_DEBUG_SELECTOR)
+            .expect("in full screen the search field is shown in the title bar");
+        assert_visible_inside_title_bar(
+            branch_picker,
+            title_bar_height,
+            "branch picker in full screen",
+        );
+        assert_visible_inside_title_bar(
+            search_field,
+            title_bar_height,
+            "search field in full screen",
+        );
+        assert!(
+            branch_picker.left() < traffic_light_padding,
+            "in full screen the branch picker moves into the space of the hidden macOS window buttons, got {branch_picker:?}"
+        );
+
+        cx.update(|window, _| {
+            window.toggle_fullscreen();
+            window.refresh();
+        });
+        cx.run_until_parked();
+
+        assert!(
+            !cx.update(|window, _| window.is_fullscreen()),
+            "toggling full screen again returns the window to windowed mode"
+        );
+        let branch_picker = cx
+            .debug_bounds(WORKTREE_AND_BRANCH_DEBUG_SELECTOR)
+            .expect("after leaving full screen the branch picker is shown in the title bar");
+        let search_field = cx
+            .debug_bounds(SEARCH_FIELD_DEBUG_SELECTOR)
+            .expect("after leaving full screen the search field is shown in the title bar");
+        assert_visible_inside_title_bar(
+            branch_picker,
+            title_bar_height,
+            "branch picker after leaving full screen",
+        );
+        assert_visible_inside_title_bar(
+            search_field,
+            title_bar_height,
+            "search field after leaving full screen",
+        );
+        assert!(
+            branch_picker.left() >= traffic_light_padding,
+            "after leaving full screen the branch picker starts after the macOS window buttons again, got {branch_picker:?}"
         );
     }
 

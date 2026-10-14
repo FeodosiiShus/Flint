@@ -76,7 +76,7 @@ jobs:
         run: |
           cargo nextest run --locked --profile ci --tests \
             --package settings --package release_channel --package cli --package theme_settings \
-            --package ui --package workspace --package title_bar \
+            --package ui --package workspace --package title_bar --package gpui_macos \
             --package search_everywhere --package file_finder --package project_symbols --package command_palette --package picker \
             --package search --package merge_diff --package diagnostics --package language_tools \
             --package git --package fs --package project --package git_ui --package icons --package project_panel \
@@ -89,6 +89,7 @@ jobs:
             -E 'package(=ui) & kind(lib) & (test(~chrome_size) | test(~keybinding) | test(~icon_column))' \
             -E 'binary_id(=ui::islands_chrome_pixels) | binary_id(=ui::popup_pixels)' \
             -E 'package(=title_bar)' \
+            -E 'package(=gpui_macos) & kind(lib) & test(~fullscreen_titlebar)' \
             -E 'package(=search_everywhere) | package(=file_finder) | package(=project_symbols) | package(=command_palette) | package(=picker)' \
             -E 'package(=search) & kind(lib) & (test(~test_new_project_search_in_directory) | test(~test_deploy_search_with_multiple_panes) | test(~test_search_dismisses_modal))' \
             -E 'package(=merge_diff)' \
@@ -152,8 +153,8 @@ jobs:
       - name: Run gpui tests
         run: cargo test --locked --package gpui
 
-      - name: Run zed action and keymap tests
-        run: cargo test --locked --package zed --bin zed -- test_action_namespaces test_base_keymap test_open_paths test_bundled_languages
+      - name: Run zed action, keymap and project window tests
+        run: cargo test --locked --package zed --bin zed -- test_action_namespaces test_base_keymap test_open_paths test_bundled_languages test_project_window_
 
       - name: Check tests of crates changed by Flint compile
         run: cargo check --locked --tests --package editor --package workspace --package client --package settings_ui --package settings_content --package terminal_view --package language_tools --package diagnostics --package extension_host --package markdown --package markdown_preview

@@ -401,6 +401,7 @@ The gradient, the search field and the worktree button can be turned on or off i
 Window buttons, like WebStorm on macOS:
 
 - Every project window has this title bar, and the window buttons (close, minimize, zoom) sit at its left end, vertically centered. The widgets start after the buttons; in full screen, where macOS hides the buttons, they start at the left edge.
+- Outside full screen the standard macOS title bar is never drawn over this one. When the window leaves full screen, or when macOS cancels a switch to full screen because it is busy with another animation or gesture, the window gets its transparent title bar and its window button positions back, so the branch picker and Search Everywhere stay visible.
 - The Settings, About, Conflicts and Merge Revisions windows use the standard macOS title bar with the window title, like WebStorm dialogs, so the buttons never cover their content.
 
 ## Settings window

@@ -571,7 +571,6 @@ fn main() {
         language_tools::init(cx);
         git_ui::init(cx);
         markdown_preview::init(cx);
-        title_bar::init(cx);
         settings_ui::init(cx);
         keymap_editor::init(cx);
         extensions_ui::init(cx);
