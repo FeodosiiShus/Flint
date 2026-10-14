@@ -100,6 +100,7 @@ session.workspace = true
 settings.workspace = true
 settings_ui.workspace = true
 shellexpand.workspace = true
+show_usages.workspace = true
 smol.workspace = true
 snippet_provider.workspace = true
 sysinfo.workspace = true

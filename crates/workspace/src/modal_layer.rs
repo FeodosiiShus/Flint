@@ -1,6 +1,6 @@
 use gpui::{
     AnyView, App, DismissEvent, Entity, EventEmitter, FocusHandle, Global, ManagedView,
-    MouseButton, Subscription, WeakFocusHandle,
+    MouseButton, Point, Subscription, WeakFocusHandle, anchored,
 };
 use ui::prelude::*;
 
@@ -62,6 +62,10 @@ pub trait ModalView: ManagedView {
     fn render_bare(&self) -> bool {
         false
     }
+
+    fn anchor_position(&self) -> Option<Point<Pixels>> {
+        None
+    }
 }
 
 trait ModalViewHandle {
@@ -71,6 +75,7 @@ trait ModalViewHandle {
     fn subscribe_dismiss(&self, window: &mut Window, cx: &mut Context<ModalLayer>) -> Subscription;
     fn fade_out_background(&self, cx: &mut App) -> bool;
     fn render_bare(&self, cx: &mut App) -> bool;
+    fn anchor_position(&self, cx: &App) -> Option<Point<Pixels>>;
 }
 
 impl<V: ModalView> ModalViewHandle for Entity<V> {
@@ -98,6 +103,10 @@ impl<V: ModalView> ModalViewHandle for Entity<V> {
 
     fn render_bare(&self, cx: &mut App) -> bool {
         self.read(cx).render_bare()
+    }
+
+    fn anchor_position(&self, cx: &App) -> Option<Point<Pixels>> {
+        self.read(cx).anchor_position()
     }
 }
 
@@ -295,6 +304,13 @@ impl Render for ModalLayer {
             return active_modal.modal.view().into_any_element();
         }
 
+        let modal_content = h_flex()
+            .occlude()
+            .child(active_modal.modal.view())
+            .on_mouse_down(MouseButton::Left, |_, _, cx| {
+                cx.stop_propagation();
+            });
+
         div()
             .absolute()
             .size_full()
@@ -311,21 +327,115 @@ impl Render for ModalLayer {
                     this.hide_modal(window, cx);
                 }),
             )
-            .child(
-                v_flex()
-                    .h(px(0.0))
-                    .top_20()
-                    .items_center()
-                    .track_focus(&active_modal.focus_handle)
-                    .child(
-                        h_flex()
-                            .occlude()
-                            .child(active_modal.modal.view())
-                            .on_mouse_down(MouseButton::Left, |_, _, cx| {
-                                cx.stop_propagation();
-                            }),
-                    ),
-            )
+            .map(|this| match active_modal.modal.anchor_position(cx) {
+                Some(position) => this.child(
+                    anchored()
+                        .position(position)
+                        .anchor(gpui::Anchor::TopLeft)
+                        .snap_to_window_with_margin(px(8.))
+                        .child(
+                            div()
+                                .track_focus(&active_modal.focus_handle)
+                                .child(modal_content),
+                        ),
+                ),
+                None => this.child(
+                    v_flex()
+                        .h(px(0.0))
+                        .top_20()
+                        .items_center()
+                        .track_focus(&active_modal.focus_handle)
+                        .child(modal_content),
+                ),
+            })
             .into_any_element()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gpui::{Focusable, Modifiers, TestAppContext, point};
+
+    const MODAL_SELECTOR: &str = "anchored_test_modal";
+
+    struct AnchoredTestModal {
+        focus_handle: FocusHandle,
+        anchor_position: Option<Point<Pixels>>,
+    }
+
+    impl EventEmitter<DismissEvent> for AnchoredTestModal {}
+
+    impl Focusable for AnchoredTestModal {
+        fn focus_handle(&self, _cx: &App) -> FocusHandle {
+            self.focus_handle.clone()
+        }
+    }
+
+    impl ModalView for AnchoredTestModal {
+        fn anchor_position(&self) -> Option<Point<Pixels>> {
+            self.anchor_position
+        }
+    }
+
+    impl Render for AnchoredTestModal {
+        fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .debug_selector(|| MODAL_SELECTOR.to_string())
+                .track_focus(&self.focus_handle)
+                .w(px(120.))
+                .h(px(60.))
+        }
+    }
+
+    struct ModalHost {
+        modal_layer: Entity<ModalLayer>,
+    }
+
+    impl Render for ModalHost {
+        fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+            div().relative().size_full().child(self.modal_layer.clone())
+        }
+    }
+
+    #[gpui::test]
+    async fn test_modal_anchor_position_places_modal_and_outside_click_dismisses(
+        cx: &mut TestAppContext,
+    ) {
+        let (host, cx) = cx.add_window_view(|_, cx| ModalHost {
+            modal_layer: cx.new(|_| ModalLayer::new()),
+        });
+        let modal_layer = host.read_with(cx, |host, _| host.modal_layer.clone());
+        let anchor = point(px(150.), px(90.));
+
+        modal_layer.update_in(cx, |modal_layer, window, cx| {
+            modal_layer.toggle_modal(window, cx, |_, cx| AnchoredTestModal {
+                focus_handle: cx.focus_handle(),
+                anchor_position: Some(anchor),
+            });
+        });
+        cx.run_until_parked();
+
+        let modal_bounds = cx
+            .debug_bounds(MODAL_SELECTOR)
+            .expect("the anchored modal should be rendered");
+        assert_eq!(
+            modal_bounds.origin, anchor,
+            "an anchored modal should put its top-left corner at its anchor position"
+        );
+
+        cx.simulate_click(modal_bounds.center(), Modifiers::none());
+        cx.run_until_parked();
+        assert!(
+            modal_layer.read_with(cx, |modal_layer, _| modal_layer.has_active_modal()),
+            "a click inside an anchored modal should keep it open"
+        );
+
+        cx.simulate_click(point(px(10.), px(10.)), Modifiers::none());
+        cx.run_until_parked();
+        assert!(
+            !modal_layer.read_with(cx, |modal_layer, _| modal_layer.has_active_modal()),
+            "a click outside an anchored modal should dismiss it"
+        );
     }
 }

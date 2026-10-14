@@ -1052,6 +1052,19 @@ impl Editor {
             match fallback_strategy {
                 GoToDefinitionFallback::None => Ok(Navigated::No),
                 GoToDefinitionFallback::FindAllReferences => {
+                    let focus_handle =
+                        editor.read_with(cx, |editor, cx| editor.focus_handle(cx))?;
+                    let showed_usages = cx.update(|window, cx| {
+                        let show_usages = ShowUsages::default();
+                        let available = window.is_action_available_in(&show_usages, &focus_handle);
+                        if available {
+                            focus_handle.dispatch_action(&show_usages, window, cx);
+                        }
+                        available
+                    })?;
+                    if showed_usages {
+                        return Ok(Navigated::No);
+                    }
                     match editor.update_in(cx, |editor, window, cx| {
                         editor.find_all_references(&FindAllReferences::default(), window, cx)
                     })? {
@@ -2172,7 +2185,7 @@ impl Editor {
     }
 
     /// Opens a multibuffer with the given project locations in it.
-    pub(super) fn open_locations_in_multibuffer(
+    pub fn open_locations_in_multibuffer(
         workspace: &mut Workspace,
         locations: std::collections::HashMap<Entity<Buffer>, Vec<Range<Point>>>,
         title: String,

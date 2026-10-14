@@ -997,3 +997,11 @@ impl Default for FindAllReferences {
         }
     }
 }
+
+#[derive(PartialEq, Clone, Default, Deserialize, JsonSchema, Action)]
+#[action(namespace = editor)]
+#[serde(deny_unknown_fields)]
+pub struct ShowUsages {
+    #[serde(skip)]
+    pub at_mouse_position: bool,
+}

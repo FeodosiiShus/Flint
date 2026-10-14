@@ -2687,6 +2687,19 @@ impl Editor {
         })
     }
 
+    pub fn popup_origin_below_cursor(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<gpui::Point<Pixels>> {
+        let cursor_center = self.pixel_position_of_newest_cursor?;
+        let line_height = self.style(cx).text.line_height_in_pixels(window.rem_size());
+        Some(gpui::point(
+            cursor_center.x,
+            cursor_center.y + line_height / 2.,
+        ))
+    }
+
     pub(crate) fn last_right_margin(&self) -> Pixels {
         self.last_right_margin
     }

@@ -1242,6 +1242,22 @@
     },
   },
   {
+    "context": "ShowUsagesPopup",
+    "use_key_equivalents": true,
+    "bindings": {
+      "pageup": "show_usages::SelectPageUp",
+      "pagedown": "show_usages::SelectPageDown",
+      "alt-up": "menu::SelectFirst",
+      "alt-down": "menu::SelectLast",
+      "ctrl-r": "show_usages::ToggleReadAccess",
+      "ctrl-w": "show_usages::ToggleWriteAccess",
+      "ctrl-i": "show_usages::ToggleImports",
+      "alt-f7": "show_usages::OpenInFindWindow",
+      "cmd-alt-shift-f7": "show_usages::ShowSettings",
+      "cmd-alt-f7": "editor::ShowUsages",
+    },
+  },
+  {
     "context": "Terminal",
     "use_key_equivalents": true,
     "bindings": {

@@ -1,6 +1,6 @@
 use crate::{
     Anchor, Editor, EditorSettings, EditorSnapshot, FindAllReferences, GotoDefinitionKind,
-    HighlightKey, Navigated, PointForPosition, SelectPhase,
+    HighlightKey, Navigated, PointForPosition, SelectPhase, ShowUsages,
     editor_settings::GoToDefinitionFallback, scroll::ScrollAmount,
 };
 use gpui::{
@@ -38,6 +38,31 @@ pub struct DefinitionLocations {
 }
 
 impl PartialEq for OpenDefinitionLocations {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+#[derive(Clone, Action)]
+#[action(no_json, no_register)]
+pub struct ShowUsagesOfLocations(pub Arc<UsageLocations>);
+
+pub struct UsageLocations {
+    pub editor: WeakEntity<Editor>,
+    pub kind: UsageLocationsKind,
+    pub symbol_position: Anchor,
+    pub server_id: LanguageServerId,
+    pub locations: Vec<lsp::Location>,
+    pub popup_position: gpui::Point<Pixels>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UsageLocationsKind {
+    References,
+    Implementations,
+}
+
+impl PartialEq for ShowUsagesOfLocations {
     fn eq(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.0, &other.0)
     }
@@ -463,7 +488,14 @@ impl Editor {
                     if EditorSettings::get_global(cx).go_to_definition_fallback
                         == GoToDefinitionFallback::FindAllReferences
                     {
-                        focus_handle.dispatch_action(&FindAllReferences::default(), window, cx);
+                        let show_usages = ShowUsages {
+                            at_mouse_position: true,
+                        };
+                        if window.is_action_available_in(&show_usages, &focus_handle) {
+                            focus_handle.dispatch_action(&show_usages, window, cx);
+                        } else {
+                            focus_handle.dispatch_action(&FindAllReferences::default(), window, cx);
+                        }
                     }
                 })
                 .ok();
@@ -1469,6 +1501,78 @@ mod tests {
             references_count.load(Ordering::SeqCst),
             1,
             "cmd-click on a symbol named after its file should fall back to find-all-references"
+        );
+    }
+
+    #[gpui::test]
+    async fn test_cmd_click_on_declaration_dispatches_show_usages(cx: &mut gpui::TestAppContext) {
+        init_test(cx, |_| {});
+
+        let mut cx = EditorLspTestContext::new_rust(
+            lsp::ServerCapabilities {
+                references_provider: Some(lsp::OneOf::Left(true)),
+                definition_provider: Some(lsp::OneOf::Left(true)),
+                ..Default::default()
+            },
+            cx,
+        )
+        .await;
+
+        cx.set_state(indoc! {"
+            fn helperˇ() {}
+            fn main() { helper(); }
+        "});
+
+        let declaration_range = cx.lsp_range(indoc! {"
+            fn «helper»() {}
+            fn main() { helper(); }
+        "});
+        let _definitions =
+            cx.set_request_handler::<GotoDefinition, _, _>(move |url, _, _| async move {
+                Ok(Some(lsp::GotoDefinitionResponse::Scalar(lsp::Location {
+                    uri: url,
+                    range: declaration_range,
+                })))
+            });
+        let references_count = Arc::new(AtomicUsize::new(0));
+        let _references = cx.set_request_handler::<References, _, _>({
+            let references_count = references_count.clone();
+            move |_, _, _| {
+                references_count.fetch_add(1, Ordering::SeqCst);
+                async move { Ok(Some(Vec::new())) }
+            }
+        });
+
+        let show_usages_requests: Arc<parking_lot::Mutex<Vec<bool>>> = Arc::default();
+        cx.update_editor(|editor, _, cx| {
+            let show_usages_requests = show_usages_requests.clone();
+            editor
+                .register_action(move |action: &ShowUsages, _, _| {
+                    show_usages_requests.lock().push(action.at_mouse_position);
+                })
+                .detach();
+            cx.notify();
+        });
+        cx.run_until_parked();
+
+        let screen_coord = cx.pixel_position(indoc! {"
+            fn helˇper() {}
+            fn main() { helper(); }
+        "});
+        cx.simulate_mouse_move(screen_coord, None, Modifiers::secondary_key());
+        cx.run_until_parked();
+        cx.simulate_click(screen_coord, Modifiers::secondary_key());
+        cx.run_until_parked();
+
+        assert_eq!(
+            *show_usages_requests.lock(),
+            vec![true],
+            "cmd-click on a declaration should open Show Usages at the mouse position"
+        );
+        assert_eq!(
+            references_count.load(Ordering::SeqCst),
+            0,
+            "Show Usages should replace the find-all-references fallback"
         );
     }
 

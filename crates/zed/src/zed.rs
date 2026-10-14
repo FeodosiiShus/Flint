@@ -5036,6 +5036,7 @@ mod tests {
                 "search_everywhere",
                 "search_panel",
                 "settings_editor",
+                "show_usages",
                 "stash_picker",
                 "terminal",
                 "terminal_panel",
@@ -5242,6 +5243,7 @@ mod tests {
             initialize_workspace(app_state.clone(), cx);
             search::init(cx);
             lsp_locations::init(cx);
+            show_usages::init(cx);
             cx.set_global(workspace::PaneSearchBarCallbacks {
                 setup_search_bar: |languages, toolbar, window, cx| {
                     let search_bar =

@@ -100,6 +100,7 @@ members = [
     "crates/settings_json",
     "crates/settings_macros",
     "crates/settings_ui",
+    "crates/show_usages",
     "crates/snippet",
     "crates/snippet_provider",
     "crates/sqlez",
@@ -245,6 +246,7 @@ settings_content = { path = "crates/settings_content" }
 settings_json = { path = "crates/settings_json", default-features = false }
 settings_macros = { path = "crates/settings_macros" }
 settings_ui = { path = "crates/settings_ui" }
+show_usages = { path = "crates/show_usages" }
 snippet = { path = "crates/snippet" }
 snippet_provider = { path = "crates/snippet_provider" }
 sqlez = { path = "crates/sqlez" }

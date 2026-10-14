@@ -37,7 +37,8 @@
       "cmd-[": "pane::GoBack",
       "cmd-]": "pane::GoForward",
       "alt-f7": "editor::FindAllReferences",
-      "cmd-alt-f7": "editor::FindAllReferences",
+      "cmd-alt-f7": "editor::ShowUsages",
+      "cmd-alt-shift-f7": "show_usages::ShowSettings",
       "cmd-b": "editor::GoToDefinition", // Conflicts with workspace::ToggleLeftDock
       "cmd-alt-b": "editor::GoToImplementation",
       "cmd-shift-b": "editor::GoToTypeDefinition",

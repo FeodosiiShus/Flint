@@ -555,6 +555,7 @@ fn main() {
         project_panel::init(cx);
         search::init(cx);
         lsp_locations::init(cx);
+        show_usages::init(cx);
         cx.set_global(workspace::PaneSearchBarCallbacks {
             setup_search_bar: |languages, toolbar, window, cx| {
                 let search_bar = cx.new(|cx| search::BufferSearchBar::new(languages, window, cx));

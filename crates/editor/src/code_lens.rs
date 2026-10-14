@@ -2,12 +2,13 @@ use std::sync::Arc;
 
 use collections::{HashMap, HashSet};
 use futures::{StreamExt as _, future::join_all, stream::FuturesUnordered};
-use gpui::{MouseButton, SharedString, Task, TaskExt, WeakEntity};
+use gpui::{Focusable as _, MouseButton, SharedString, Task, TaskExt, WeakEntity};
 use itertools::Itertools;
-use language::{BufferId, ClientCommand};
+use language::{BufferId, ClientCommand, point_from_lsp};
 use multi_buffer::{Anchor, MultiBufferRow, MultiBufferSnapshot, ToPoint as _};
 use project::{CodeAction, lsp_store::code_lens::CodeLensActions};
-use text::ToOffset as _;
+use serde::Deserialize;
+use text::{Bias, ToOffset as _};
 
 use ui::{Context, Window, div, prelude::*};
 
@@ -15,11 +16,12 @@ use crate::{
     Editor, LSP_REQUEST_DEBOUNCE_TIMEOUT, SelectionEffects,
     actions::ToggleCodeLens,
     display_map::{BlockPlacement, BlockProperties, BlockStyle, CustomBlockId, RenderBlock},
-    hover_links::HoverLink,
+    hover_links::{HoverLink, ShowUsagesOfLocations, UsageLocations, UsageLocationsKind},
 };
 
 static EMPTY_LENS_FALLBACK_TITLE: SharedString = SharedString::new_static("0 references");
 const CODE_LENS_SEPARATOR: &str = " | ";
+const IMPLEMENTATIONS_TITLE_MARKER: &[u8] = b"implementation";
 
 #[derive(Clone, Debug)]
 struct CodeLensLine {
@@ -63,6 +65,17 @@ pub(super) fn try_handle_client_command(
     window: &mut Window,
     cx: &mut Context<Editor>,
 ) -> bool {
+    try_handle_client_command_at(action, None, editor, workspace, window, cx)
+}
+
+fn try_handle_client_command_at(
+    action: &CodeAction,
+    click_position: Option<gpui::Point<Pixels>>,
+    editor: &mut Editor,
+    workspace: &gpui::Entity<workspace::Workspace>,
+    window: &mut Window,
+    cx: &mut Context<Editor>,
+) -> bool {
     let Some(command) = action.lsp_action.command() else {
         return false;
     };
@@ -83,16 +96,24 @@ pub(super) fn try_handle_client_command(
         });
 
     match client_command {
-        Some(ClientCommand::ShowLocations) => {
-            try_show_references(arguments, action, editor, window, cx)
-        }
+        Some(ClientCommand::ShowLocations) => try_show_references(
+            &command.title,
+            arguments,
+            action,
+            click_position,
+            editor,
+            window,
+            cx,
+        ),
         None => false,
     }
 }
 
 fn try_show_references(
+    title: &str,
     arguments: &[serde_json::Value],
     action: &CodeAction,
+    click_position: Option<gpui::Point<Pixels>>,
     editor: &mut Editor,
     window: &mut Window,
     cx: &mut Context<Editor>,
@@ -102,6 +123,28 @@ fn try_show_references(
     }
     let Ok(locations) = serde_json::from_value::<Vec<lsp::Location>>(arguments[2].clone()) else {
         return false;
+    };
+
+    let show_usages = ShowUsagesOfLocations(Arc::new(UsageLocations {
+        editor: cx.weak_entity(),
+        kind: usage_locations_kind(title),
+        symbol_position: lens_symbol_position(arguments, action, editor, cx),
+        server_id: action.server_id,
+        locations,
+        popup_position: click_position
+            .or_else(|| editor.popup_origin_below_cursor(window, cx))
+            .unwrap_or_else(|| window.mouse_position()),
+    }));
+    let focus_handle = editor.focus_handle(cx);
+    if window.is_action_available_in(&show_usages, &focus_handle) {
+        window.defer(cx, move |window, cx| {
+            focus_handle.dispatch_action(&show_usages, window, cx);
+        });
+        return true;
+    }
+    let locations = match Arc::try_unwrap(show_usages.0) {
+        Ok(usage_locations) => usage_locations.locations,
+        Err(usage_locations) => usage_locations.locations.clone(),
     };
     if locations.is_empty() {
         return false;
@@ -118,6 +161,41 @@ fn try_show_references(
         .detach_and_log_err(cx);
 
     true
+}
+
+fn usage_locations_kind(title: &str) -> UsageLocationsKind {
+    let mentions_implementations = title
+        .as_bytes()
+        .windows(IMPLEMENTATIONS_TITLE_MARKER.len())
+        .any(|candidate| candidate.eq_ignore_ascii_case(IMPLEMENTATIONS_TITLE_MARKER));
+    if mentions_implementations {
+        UsageLocationsKind::Implementations
+    } else {
+        UsageLocationsKind::References
+    }
+}
+
+fn lens_symbol_position(
+    arguments: &[serde_json::Value],
+    action: &CodeAction,
+    editor: &Editor,
+    cx: &App,
+) -> Anchor {
+    let multi_buffer = editor.buffer().read(cx);
+    let snapshot = multi_buffer.snapshot(cx);
+    arguments
+        .get(1)
+        .and_then(|argument| lsp::Position::deserialize(argument).ok())
+        .and_then(|position| {
+            let buffer_snapshot = multi_buffer
+                .buffer(action.range.start.buffer_id)?
+                .read(cx)
+                .snapshot();
+            let point = buffer_snapshot.clip_point_utf16(point_from_lsp(position), Bias::Left);
+            snapshot.anchor_in_excerpt(buffer_snapshot.anchor_before(point))
+        })
+        .or_else(|| snapshot.anchor_in_excerpt(action.range.start))
+        .unwrap_or_else(|| editor.selections.newest_anchor().head())
 }
 
 impl Editor {
@@ -569,7 +647,8 @@ fn build_code_lens_renderer(line: CodeLensLine, editor: WeakEntity<Editor>) -> R
                                 cx.stop_propagation();
                             })
                             .on_click({
-                                move |_event, window, cx| {
+                                move |event, window, cx| {
+                                    let click_position = event.position();
                                     if let Some(editor) = editor_handle.upgrade() {
                                         editor.update(cx, |editor, cx| {
                                             editor.change_selections(
@@ -583,8 +662,13 @@ fn build_code_lens_renderer(line: CodeLensLine, editor: WeakEntity<Editor>) -> R
 
                                             let action = action.clone();
                                             if let Some(workspace) = editor.workspace() {
-                                                if try_handle_client_command(
-                                                    &action, editor, &workspace, window, cx,
+                                                if try_handle_client_command_at(
+                                                    &action,
+                                                    Some(click_position),
+                                                    editor,
+                                                    &workspace,
+                                                    window,
+                                                    cx,
                                                 ) {
                                                     return;
                                                 }
@@ -634,7 +718,7 @@ mod tests {
 
     use collections::HashSet;
     use futures::StreamExt;
-    use gpui::TestAppContext;
+    use gpui::{Modifiers, Pixels, TestAppContext};
     use indoc::indoc;
     use settings::CodeLens;
     use util::path;
@@ -646,8 +730,187 @@ mod tests {
     use crate::{
         Editor, LSP_REQUEST_DEBOUNCE_TIMEOUT,
         editor_tests::{init_test, update_test_editor_settings},
+        hover_links::{ShowUsagesOfLocations, UsageLocations, UsageLocationsKind},
         test::editor_lsp_test_context::EditorLspTestContext,
     };
+
+    const SHOW_USAGES_LENS_SOURCE: &str = indoc! {"
+        ˇfunction hello() {}
+        const first = 1;
+        const second = 2;
+        const third = 3;
+        const fourth = 4;
+        const fifth = 5;
+        const sixth = 6;
+        const seventh = 7;
+        const eighth = 8;
+        const ninth = 9;
+        hello();
+    "};
+
+    async fn show_usages_lens_context(
+        cx: &mut TestAppContext,
+    ) -> (EditorLspTestContext, Vec<lsp::Location>) {
+        init_test(cx, |_| {});
+        update_test_editor_settings(cx, &|settings| {
+            settings.code_lens = Some(CodeLens::On);
+        });
+
+        let mut cx = EditorLspTestContext::new_typescript(
+            lsp::ServerCapabilities {
+                code_lens_provider: Some(lsp::CodeLensOptions {
+                    resolve_provider: None,
+                }),
+                ..lsp::ServerCapabilities::default()
+            },
+            cx,
+        )
+        .await;
+
+        let uri = cx.buffer_lsp_url.clone();
+        let usage_locations = vec![
+            lsp::Location {
+                uri: uri.clone(),
+                range: lsp::Range::new(lsp::Position::new(0, 9), lsp::Position::new(0, 14)),
+            },
+            lsp::Location {
+                uri: uri.clone(),
+                range: lsp::Range::new(lsp::Position::new(10, 0), lsp::Position::new(10, 5)),
+            },
+        ];
+        let lens_arguments = vec![
+            serde_json::to_value(&uri).unwrap(),
+            serde_json::to_value(lsp::Position::new(0, 9)).unwrap(),
+            serde_json::to_value(&usage_locations).unwrap(),
+        ];
+        let mut code_lens_request =
+            cx.set_request_handler::<lsp::request::CodeLensRequest, _, _>(move |_, _, _| {
+                let lens_arguments = lens_arguments.clone();
+                async move {
+                    Ok(Some(vec![lsp::CodeLens {
+                        range: lsp::Range::new(lsp::Position::new(0, 9), lsp::Position::new(0, 14)),
+                        command: Some(lsp::Command {
+                            title: "2 references".to_owned(),
+                            command: "editor.action.showReferences".to_owned(),
+                            arguments: Some(lens_arguments),
+                        }),
+                        data: None,
+                    }]))
+                }
+            });
+
+        cx.set_state(SHOW_USAGES_LENS_SOURCE);
+        assert!(
+            code_lens_request.next().await.is_some(),
+            "should have received a code lens request"
+        );
+        cx.run_until_parked();
+        cx.editor(|editor, _, cx| {
+            assert_eq!(
+                code_lens_assertion_text(editor, cx),
+                indoc! {r#"
+                    Lenses: 2 references
+                    Line 1: function hello() {}
+                "#},
+                "the references lens should render above the declaration"
+            );
+        });
+        (cx, usage_locations)
+    }
+
+    fn lens_click_position(cx: &mut EditorLspTestContext) -> gpui::Point<Pixels> {
+        let declaration_text_position =
+            cx.pixel_position(&SHOW_USAGES_LENS_SOURCE.replace("ˇfunction", "funcˇtion"));
+        let line_height = cx.update_editor(|editor, window, cx| {
+            editor
+                .style(cx)
+                .text
+                .line_height_in_pixels(window.rem_size())
+        });
+        gpui::point(
+            declaration_text_position.x,
+            declaration_text_position.y - line_height * 0.75,
+        )
+    }
+
+    #[gpui::test]
+    async fn test_show_usages_code_lens_click_dispatches_lens_locations(cx: &mut TestAppContext) {
+        let (mut cx, usage_locations) = show_usages_lens_context(cx).await;
+        let dispatched: Arc<parking_lot::Mutex<Vec<Arc<UsageLocations>>>> = Arc::default();
+        cx.update_editor(|editor, _, cx| {
+            let dispatched = dispatched.clone();
+            editor
+                .register_action(move |action: &ShowUsagesOfLocations, _, _| {
+                    dispatched.lock().push(action.0.clone());
+                })
+                .detach();
+            cx.notify();
+        });
+        cx.run_until_parked();
+
+        let click_position = lens_click_position(&mut cx);
+        cx.simulate_mouse_move(click_position, None, Modifiers::none());
+        cx.simulate_click(click_position, Modifiers::none());
+        cx.run_until_parked();
+
+        let dispatched = dispatched.lock().drain(..).collect::<Vec<_>>();
+        assert_eq!(
+            dispatched.len(),
+            1,
+            "clicking a references lens should hand its locations to Show Usages exactly once"
+        );
+        let usages = &dispatched[0];
+        assert_eq!(usages.locations, usage_locations);
+        assert_eq!(usages.kind, UsageLocationsKind::References);
+        assert_eq!(
+            usages.popup_position, click_position,
+            "the popup should open where the lens was clicked"
+        );
+        assert_eq!(usages.server_id, cx.lsp.server.server_id());
+        assert_eq!(usages.editor, cx.editor.downgrade());
+        let symbol_point = cx.editor(|editor, _, cx| {
+            usages
+                .symbol_position
+                .to_point(&editor.buffer().read(cx).snapshot(cx))
+        });
+        assert_eq!(
+            symbol_point,
+            Point::new(0, 9),
+            "the symbol position should come from the lens command's position argument"
+        );
+        let editor_count =
+            cx.update_workspace(|workspace, _, cx| workspace.items_of_type::<Editor>(cx).count());
+        assert_eq!(
+            editor_count, 1,
+            "the references multibuffer must not open when Show Usages handles the lens"
+        );
+    }
+
+    #[gpui::test]
+    async fn test_show_usages_code_lens_click_without_handler_opens_multibuffer(
+        cx: &mut TestAppContext,
+    ) {
+        let (mut cx, _) = show_usages_lens_context(cx).await;
+
+        let click_position = lens_click_position(&mut cx);
+        cx.simulate_mouse_move(click_position, None, Modifiers::none());
+        cx.simulate_click(click_position, Modifiers::none());
+        cx.run_until_parked();
+
+        let original_editor = cx.editor.clone();
+        let opened_titles = cx.update_workspace(|workspace, _, cx| {
+            workspace
+                .items_of_type::<Editor>(cx)
+                .filter(|editor| *editor != original_editor)
+                .map(|editor| editor.read(cx).buffer().read(cx).title(cx).into_owned())
+                .collect::<Vec<_>>()
+        });
+        assert_eq!(
+            opened_titles,
+            vec!["Definitions for hello".to_string()],
+            "without a Show Usages handler the lens should keep opening the locations multibuffer"
+        );
+    }
 
     #[gpui::test]
     async fn test_code_lens_blocks(cx: &mut TestAppContext) {

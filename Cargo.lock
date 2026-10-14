@@ -8761,6 +8761,38 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f8fadd59c855ef2080decdef8ff161eb6661b86933c9d82e5ba29dc602a55aba"
 
 [[package]]
+name = "show_usages"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "collections",
+ "db",
+ "editor",
+ "file_icons",
+ "fs",
+ "futures",
+ "gpui",
+ "indoc",
+ "language",
+ "log",
+ "lsp",
+ "menu",
+ "picker",
+ "picker_preview",
+ "pretty_assertions",
+ "project",
+ "serde",
+ "serde_json",
+ "settings",
+ "text",
+ "theme",
+ "theme_settings",
+ "ui",
+ "util",
+ "workspace",
+]
+
+[[package]]
 name = "signal-hook"
 version = "0.4.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -12235,6 +12267,7 @@ dependencies = [
  "settings",
  "settings_ui",
  "shellexpand",
+ "show_usages",
  "smol",
  "snippet_provider",
  "sysinfo",
