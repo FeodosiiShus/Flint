@@ -3,6 +3,7 @@ pub mod commit;
 pub mod console;
 mod hosting_provider;
 mod remote;
+pub mod remote_progress;
 pub mod repository;
 pub mod stash;
 pub mod status;

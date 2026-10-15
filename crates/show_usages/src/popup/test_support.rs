@@ -1,4 +1,4 @@
-use gpui::{Context, SharedString, Window};
+use gpui::{App, Context, SharedString, Window};
 use project::Location;
 
 use crate::model::{DisplayRow, UsageFilters, UsageRow, UsageScope};
@@ -30,6 +30,10 @@ impl ShowUsagesPopup {
         self.model
             .as_ref()
             .map(|model| model.status_text(self.is_searching()))
+    }
+
+    pub(crate) fn footer_for_test(&self, cx: &App) -> Option<SharedString> {
+        self.footer_text(cx)
     }
 
     pub(crate) fn query_for_test(&self) -> &str {

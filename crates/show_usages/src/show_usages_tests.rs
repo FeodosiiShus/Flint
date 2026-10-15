@@ -1,4 +1,5 @@
 use std::{
+    ops::Range,
     sync::{
         Arc,
         atomic::{AtomicUsize, Ordering},
@@ -9,14 +10,19 @@ use std::{
 use editor::{
     Editor,
     actions::ShowUsages,
+    hover_links::{ShowUsagesOfLocations, UsageLocations, UsageLocationsKind},
     test::{editor_lsp_test_context::EditorLspTestContext, editor_test_context::EditorTestContext},
 };
-use futures::{StreamExt as _, channel::oneshot};
+use futures::{
+    StreamExt as _,
+    channel::{mpsc, oneshot},
+};
 use gpui::{
     BorrowAppContext as _, Entity, Focusable as _, KeyBinding, Modifiers, Pixels, Point,
-    SharedString, TestAppContext, point,
+    SharedString, TestAppContext, point, px,
 };
 use indoc::indoc;
+use lsp::LanguageServerId;
 use pretty_assertions::assert_eq;
 use project::Location;
 use serde_json::json;
@@ -32,6 +38,7 @@ use crate::{
         UsageScope,
     },
     popup::ShowUsagesPopup,
+    symbol,
 };
 
 const POPUP_DELAY: Duration = Duration::from_millis(300);
@@ -116,6 +123,63 @@ const LENS_SOURCE: &str = indoc! {"
     hello();
 "};
 
+const CODE_VISION_CLICK_OFFSET: Pixels = px(11.);
+
+const QASE_REPORTER_SOURCE: &str = indoc! {"
+    interface QaseReporterOptions {
+        readonly qaseCode: string;
+    }
+
+    function reˇport(options: QaseReporterOptions) {
+        console.log(options.qaseCode);
+        return options.qaseCode;
+    }
+"};
+
+const TYPESCRIPT_DECLARATIONS: &str = indoc! {"
+    interface QaseReporterOptions {
+        readonly qaseCode: string;
+        report(code: string): void;
+    }
+    class QaseReporter {
+        private readonly limit = 5;
+        constructor(private readonly options: QaseReporterOptions) {}
+        send(): void {}
+    }
+    enum Status { Passed, Failed = 2 }
+    const DEFAULT_CODE = 'RAH';
+    let counter = 0;
+    type Code = string;
+    function publish() {}
+    publish();
+"};
+
+const RUST_DECLARATIONS: &str = indoc! {"
+    struct Point {
+        x: i32,
+    }
+    impl Point {
+        fn new(x: i32) -> Self {
+            let doubled = x * 2;
+            Point { x: doubled }
+        }
+    }
+    trait Shape {
+        fn area(&self) -> f64;
+    }
+    enum Color {
+        Red,
+    }
+    const LIMIT: u32 = 1;
+    static NAME: u8 = 1;
+    type Alias = u32;
+    mod inner {}
+    macro_rules! noop {
+        () => {};
+    }
+    fn main() {}
+"};
+
 struct PopupState {
     title: SharedString,
     kind: UsagesKind,
@@ -128,6 +192,7 @@ struct PopupState {
     query: String,
     filters: UsageFilters,
     anchor: Option<Point<Pixels>>,
+    footer: Option<SharedString>,
 }
 
 struct HintState {
@@ -135,6 +200,7 @@ struct HintState {
     warning: bool,
     second_invocation: Option<SharedString>,
     scope: UsageScope,
+    position: Point<Pixels>,
 }
 
 fn init_show_usages(cx: &mut TestAppContext) {
@@ -255,7 +321,7 @@ fn popup_state(popup: &Entity<ShowUsagesPopup>, cx: &mut EditorLspTestContext) -
         let popup = popup.read(cx);
         let session = popup.session();
         PopupState {
-            title: session.title(),
+            title: session.title().text(),
             kind: session.kind,
             scope: session.scope,
             searching: popup.is_searching(),
@@ -266,6 +332,7 @@ fn popup_state(popup: &Entity<ShowUsagesPopup>, cx: &mut EditorLspTestContext) -
             query: popup.query_for_test().to_string(),
             filters: popup.filters_for_test(),
             anchor: popup.anchor_position(),
+            footer: popup.footer_for_test(cx),
         }
     })
 }
@@ -278,6 +345,7 @@ fn hint_state(hint: &Entity<UsagesHint>, cx: &mut EditorLspTestContext) -> HintS
             warning: hint.is_warning_for_test(),
             second_invocation: hint.second_invocation_for_test(),
             scope: hint.session().scope,
+            position: hint.position_for_test(),
         }
     })
 }
@@ -296,18 +364,45 @@ fn usage_display_rows(count: usize) -> Vec<DisplayRow> {
     (0..count).map(DisplayRow::Usage).collect()
 }
 
-fn lens_click_position(cx: &mut EditorLspTestContext) -> Point<Pixels> {
-    let declaration_position = cx.pixel_position(&LENS_SOURCE.replace("ˇfunction", "funcˇtion"));
-    let line_height = cx.update_editor(|editor, window, cx| {
-        editor
-            .style(cx)
-            .text
-            .line_height_in_pixels(window.rem_size())
-    });
-    point(
-        declaration_position.x,
-        declaration_position.y - line_height * 0.75,
-    )
+fn code_vision_click_position(cx: &mut EditorLspTestContext) -> Point<Pixels> {
+    let line_end =
+        cx.pixel_position(&LENS_SOURCE.replace("ˇfunction hello() {}", "function hello() {}ˇ"));
+    point(line_end.x + CODE_VISION_CLICK_OFFSET, line_end.y)
+}
+
+fn range_of(source: &str, context: &str, name: &str) -> Range<usize> {
+    let context_start = source
+        .find(context)
+        .unwrap_or_else(|| panic!("{context:?} should be in the source"));
+    let name_offset = context
+        .find(name)
+        .unwrap_or_else(|| panic!("{name:?} should be in {context:?}"));
+    let start = context_start + name_offset;
+    start..start + name.len()
+}
+
+fn declaration_titles(
+    cx: &mut EditorLspTestContext,
+    source: &str,
+    path: &str,
+    declarations: &[(&str, &str)],
+) -> Vec<String> {
+    cx.set_state(&format!("ˇ{source}"));
+    cx.run_until_parked();
+    let snapshot = cx.buffer_snapshot();
+    declarations
+        .iter()
+        .map(|(context, name)| {
+            symbol::describe_declaration(
+                &snapshot,
+                range_of(source, context, name),
+                SharedString::from(path.to_string()),
+            )
+            .title()
+            .text()
+            .to_string()
+        })
+        .collect()
 }
 
 #[gpui::test]
@@ -350,7 +445,11 @@ async fn test_show_usages_lists_sorted_merged_usages_below_the_caret(cx: &mut Te
     let popup = active_popup(&mut cx).expect("a slow search should show the popup after the delay");
     let searching = popup_state(&popup, &mut cx);
     assert!(searching.searching, "the popup should still be searching");
-    assert_eq!(searching.title, "Usages of 'helper'");
+    assert_eq!(
+        searching.title, "Function helper (dir/file.rs)",
+        "the declaration found by go to definition should title the popup while usages load"
+    );
+    assert_eq!(searching.footer, None);
     assert_eq!(searching.status, None);
     assert_eq!(
         searching.anchor,
@@ -372,7 +471,7 @@ async fn test_show_usages_lists_sorted_merged_usages_below_the_caret(cx: &mut Te
     );
     let state = popup_state(&popup, &mut cx);
     assert!(!state.searching);
-    assert_eq!(state.title, "Usages of 'helper'");
+    assert_eq!(state.title, "Function helper (dir/file.rs)");
     assert_eq!(
         row_positions(&state.rows),
         vec![
@@ -415,6 +514,20 @@ async fn test_show_usages_lists_sorted_merged_usages_below_the_caret(cx: &mut Te
         "the origin row should not be selected initially"
     );
     assert_eq!(state.status.as_deref(), Some("4 usages"));
+    assert_eq!(
+        state
+            .rows
+            .iter()
+            .map(|row| row.line_number_label())
+            .collect::<Vec<_>>(),
+        vec!["6", "7", "2", "6"],
+        "the line column should show the plain one-based line number"
+    );
+    assert_eq!(
+        state.footer.as_deref(),
+        Some(path!("/root/dir/file.rs")),
+        "the footer should show the path of the selected usage"
+    );
 }
 
 #[gpui::test]
@@ -709,10 +822,17 @@ async fn test_show_usages_scopes_hide_and_reveal_usages(cx: &mut TestAppContext)
         ]
     );
     assert_eq!(state.status.as_deref(), Some("3+ usages"));
+    assert_eq!(state.selected, Some(1));
+    assert_eq!(state.footer.as_deref(), Some(path!("/root/dir/file.rs")));
 
     cx.dispatch_action(menu::SelectLast);
     cx.run_until_parked();
-    assert_eq!(popup_state(&project_files, &mut cx).selected, Some(3));
+    let state = popup_state(&project_files, &mut cx);
+    assert_eq!(state.selected, Some(3));
+    assert_eq!(
+        state.footer, None,
+        "the footer should be hidden while the out-of-scope row is selected"
+    );
     cx.dispatch_action(menu::Confirm);
     cx.run_until_parked();
 
@@ -730,6 +850,14 @@ async fn test_show_usages_scopes_hide_and_reveal_usages(cx: &mut TestAppContext)
     assert_eq!(outside_row.row, 1);
     assert!(!outside_row.in_project);
     assert_eq!(state.status.as_deref(), Some("4 usages"));
+
+    cx.dispatch_action(menu::SelectLast);
+    cx.run_until_parked();
+    assert_eq!(
+        popup_state(&all_places, &mut cx).footer.as_deref(),
+        Some(path!("/outside/lib.rs")),
+        "the footer should follow the selection to a file outside the project"
+    );
 
     cx.update(|window, cx| {
         all_places.update(cx, |popup, cx| {
@@ -763,7 +891,7 @@ async fn test_show_usages_scopes_hide_and_reveal_usages(cx: &mut TestAppContext)
 }
 
 #[gpui::test]
-async fn test_show_usages_code_lens_click_opens_lens_locations(cx: &mut TestAppContext) {
+async fn test_show_usages_code_vision_hint_click_opens_lens_locations(cx: &mut TestAppContext) {
     init_show_usages(cx);
     let mut cx = EditorLspTestContext::new_typescript(
         lsp::ServerCapabilities {
@@ -814,19 +942,20 @@ async fn test_show_usages_code_lens_click_opens_lens_locations(cx: &mut TestAppC
     );
     cx.run_until_parked();
 
-    let click_position = lens_click_position(&mut cx);
+    let click_position = code_vision_click_position(&mut cx);
     cx.simulate_mouse_move(click_position, None, Modifiers::none());
     cx.simulate_click(click_position, Modifiers::none());
     cx.run_until_parked();
 
-    let popup = active_popup(&mut cx).expect("clicking a references lens should open the popup");
+    let popup =
+        active_popup(&mut cx).expect("clicking the end-of-line usages hint should open the popup");
     let state = popup_state(&popup, &mut cx);
-    assert_eq!(state.title, "Usages of 'hello'");
+    assert_eq!(state.title, "Function hello (dir/file.ts)");
     assert_eq!(state.kind, UsagesKind::References);
     assert_eq!(
         state.anchor,
         Some(click_position),
-        "the popup should open where the lens was clicked"
+        "the popup should open where the hint was clicked"
     );
     assert_eq!(
         row_positions(&state.rows),
@@ -884,7 +1013,7 @@ async fn test_show_usages_cmd_click_on_declaration_opens_popup(cx: &mut TestAppC
     let popup = active_popup(&mut cx)
         .expect("cmd-click on a declaration should open the Show Usages popup");
     let state = popup_state(&popup, &mut cx);
-    assert_eq!(state.title, "Usages of 'helper'");
+    assert_eq!(state.title, "Function helper (dir/file.rs)");
     assert_eq!(
         state.anchor,
         Some(click_position),
@@ -903,6 +1032,226 @@ async fn test_show_usages_cmd_click_on_declaration_opens_popup(cx: &mut TestAppC
     assert_eq!(
         editor_count, 1,
         "no references multibuffer should open when Show Usages handles the click"
+    );
+}
+
+#[gpui::test]
+async fn test_show_usages_cmd_click_with_caret_elsewhere_opens_the_clicked_property(
+    cx: &mut TestAppContext,
+) {
+    init_show_usages(cx);
+    let mut cx =
+        EditorLspTestContext::new_typescript(references_and_definition_capabilities(), cx).await;
+    cx.set_state(QASE_REPORTER_SOURCE);
+    let uri = cx.buffer_lsp_url.clone();
+    handle_definition(&cx, location(&uri, 1, 13, 21));
+    let (reference_position_sender, mut reference_positions) = mpsc::unbounded();
+    cx.lsp
+        .set_request_handler::<lsp::request::References, _, _>({
+            let uri = uri.clone();
+            move |params, _| {
+                reference_position_sender
+                    .unbounded_send(params.text_document_position.position)
+                    .unwrap();
+                let locations = vec![
+                    location(&uri, 1, 13, 21),
+                    location(&uri, 5, 24, 32),
+                    location(&uri, 6, 19, 27),
+                ];
+                async move { Ok(Some(locations)) }
+            }
+        });
+    cx.run_until_parked();
+
+    let click_position = cx.pixel_position(
+        &QASE_REPORTER_SOURCE
+            .replace("reˇport", "report")
+            .replace("qaseCode: string", "qaseˇCode: string"),
+    );
+    cx.simulate_mouse_move(click_position, None, Modifiers::secondary_key());
+    cx.run_until_parked();
+    cx.simulate_click(click_position, Modifiers::secondary_key());
+    cx.run_until_parked();
+
+    assert_eq!(
+        reference_positions.try_recv().ok(),
+        Some(lsp::Position::new(1, 17)),
+        "usages should be searched for the clicked property, not the symbol under the old caret"
+    );
+    assert!(
+        reference_positions.try_recv().is_err(),
+        "only the clicked property should be searched"
+    );
+    let popup = active_popup(&mut cx)
+        .expect("cmd-click on a property declaration should open the Show Usages popup");
+    let state = popup_state(&popup, &mut cx);
+    assert_eq!(
+        state.title,
+        "Property qaseCode (QaseReporterOptions, dir/file.ts)"
+    );
+    assert_eq!(state.status.as_deref(), Some("2 usages"));
+    assert_eq!(
+        state.anchor,
+        Some(click_position),
+        "the popup should open at the mouse position"
+    );
+    assert_eq!(
+        state
+            .rows
+            .iter()
+            .map(|row| (row.file_name.to_string(), row.line_number_label()))
+            .collect::<Vec<_>>(),
+        vec![
+            ("file.ts".to_string(), SharedString::from("6")),
+            ("file.ts".to_string(), SharedString::from("7")),
+        ]
+    );
+    assert_eq!(state.selected, Some(0));
+    assert_eq!(state.footer.as_deref(), Some(path!("/root/dir/file.ts")));
+}
+
+#[gpui::test]
+async fn test_show_usages_of_empty_locations_shows_the_no_usages_hint(cx: &mut TestAppContext) {
+    let mut cx = show_usages_context(references_capabilities(), cx).await;
+    cx.set_state(indoc! {"
+        fn heˇlper() -> u32 {
+            1
+        }
+    "});
+    let reference_requests = handle_references(&cx, Vec::new());
+    let symbol_position = cx.update_editor(|editor, _, _| editor.selections.newest_anchor().head());
+    let popup_position = point(px(140.), px(60.));
+    let editor = cx.editor.downgrade();
+
+    cx.dispatch_action(ShowUsagesOfLocations(Arc::new(UsageLocations {
+        editor,
+        kind: UsageLocationsKind::References,
+        symbol_position,
+        server_id: LanguageServerId(0),
+        locations: Vec::new(),
+        popup_position,
+    })));
+    cx.run_until_parked();
+
+    assert!(
+        active_popup(&mut cx).is_none(),
+        "a symbol without usages should not open the popup"
+    );
+    let hint = active_hint(&mut cx).expect("a symbol without usages should show a hint");
+    let state = hint_state(&hint, &mut cx);
+    assert_eq!(state.message, "No usages found in Project Files");
+    assert!(!state.warning);
+    assert_eq!(state.scope, UsageScope::ProjectFiles);
+    assert_eq!(
+        state.position, popup_position,
+        "the hint should appear where the usages were requested"
+    );
+    assert_eq!(reference_requests.load(Ordering::SeqCst), 0);
+    let editor_count =
+        cx.update_workspace(|workspace, _, cx| workspace.items_of_type::<Editor>(cx).count());
+    assert_eq!(editor_count, 1, "no references multibuffer should open");
+}
+
+#[gpui::test]
+async fn test_show_usages_titles_typescript_declarations_like_intellij(cx: &mut TestAppContext) {
+    init_show_usages(cx);
+    let mut cx = EditorLspTestContext::new_typescript(lsp::ServerCapabilities::default(), cx).await;
+
+    let titles = declaration_titles(
+        &mut cx,
+        TYPESCRIPT_DECLARATIONS,
+        "dir/file.ts",
+        &[
+            ("interface QaseReporterOptions", "QaseReporterOptions"),
+            ("readonly qaseCode", "qaseCode"),
+            ("report(code", "report"),
+            ("report(code", "code"),
+            ("class QaseReporter ", "QaseReporter"),
+            ("readonly limit", "limit"),
+            ("constructor(", "constructor"),
+            ("readonly options", "options"),
+            ("send()", "send"),
+            ("enum Status", "Status"),
+            ("Passed,", "Passed"),
+            ("Failed =", "Failed"),
+            ("const DEFAULT_CODE", "DEFAULT_CODE"),
+            ("let counter", "counter"),
+            ("type Code", "Code"),
+            ("function publish", "publish"),
+            ("publish();", "publish"),
+        ],
+    );
+
+    assert_eq!(
+        titles,
+        vec![
+            "Interface QaseReporterOptions (dir/file.ts)",
+            "Property qaseCode (QaseReporterOptions, dir/file.ts)",
+            "Method report (QaseReporterOptions, dir/file.ts)",
+            "Parameter code (report, dir/file.ts)",
+            "Class QaseReporter (dir/file.ts)",
+            "Field limit (QaseReporter, dir/file.ts)",
+            "Constructor QaseReporter (QaseReporter, dir/file.ts)",
+            "Parameter options (constructor, dir/file.ts)",
+            "Method send (QaseReporter, dir/file.ts)",
+            "Enum Status (dir/file.ts)",
+            "Enum constant Passed (Status, dir/file.ts)",
+            "Enum constant Failed (Status, dir/file.ts)",
+            "Constant DEFAULT_CODE (dir/file.ts)",
+            "Variable counter (dir/file.ts)",
+            "Type alias Code (dir/file.ts)",
+            "Function publish (dir/file.ts)",
+            "publish (dir/file.ts)",
+        ]
+    );
+}
+
+#[gpui::test]
+async fn test_show_usages_titles_rust_declarations_like_intellij(cx: &mut TestAppContext) {
+    let mut cx = show_usages_context(lsp::ServerCapabilities::default(), cx).await;
+
+    let titles = declaration_titles(
+        &mut cx,
+        RUST_DECLARATIONS,
+        "dir/file.rs",
+        &[
+            ("struct Point", "Point"),
+            ("x: i32,", "x"),
+            ("fn new", "new"),
+            ("new(x", "x"),
+            ("let doubled", "doubled"),
+            ("trait Shape", "Shape"),
+            ("fn area", "area"),
+            ("enum Color", "Color"),
+            ("Red,", "Red"),
+            ("const LIMIT", "LIMIT"),
+            ("static NAME", "NAME"),
+            ("type Alias", "Alias"),
+            ("mod inner", "inner"),
+            ("macro_rules! noop", "noop"),
+            ("fn main", "main"),
+        ],
+    );
+
+    assert_eq!(
+        titles,
+        vec![
+            "Struct Point (dir/file.rs)",
+            "Field x (Point, dir/file.rs)",
+            "Method new (Point, dir/file.rs)",
+            "Parameter x (new, dir/file.rs)",
+            "Variable doubled (new, dir/file.rs)",
+            "Trait Shape (dir/file.rs)",
+            "Method area (Shape, dir/file.rs)",
+            "Enum Color (dir/file.rs)",
+            "Enum variant Red (Color, dir/file.rs)",
+            "Constant LIMIT (dir/file.rs)",
+            "Static NAME (dir/file.rs)",
+            "Type alias Alias (dir/file.rs)",
+            "Module inner (dir/file.rs)",
+            "Macro noop (dir/file.rs)",
+            "Function main (dir/file.rs)",
+        ]
     );
 }
 

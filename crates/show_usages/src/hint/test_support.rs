@@ -1,4 +1,4 @@
-use gpui::SharedString;
+use gpui::{Pixels, Point, SharedString};
 
 use super::UsagesHint;
 
@@ -13,5 +13,9 @@ impl UsagesHint {
 
     pub(crate) fn second_invocation_for_test(&self) -> Option<SharedString> {
         self.content.second_invocation.clone()
+    }
+
+    pub(crate) fn position_for_test(&self) -> Point<Pixels> {
+        self.position
     }
 }

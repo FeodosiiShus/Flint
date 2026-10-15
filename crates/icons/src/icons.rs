@@ -395,6 +395,7 @@ pub enum IconName {
     UserCheck,
     UserGroup,
     UserRoundPen,
+    VcsAuthor,
     VcsChanges,
     VcsDiff,
     VcsRemove,

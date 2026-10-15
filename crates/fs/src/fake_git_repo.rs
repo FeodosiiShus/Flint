@@ -18,9 +18,10 @@ use git::{
         FileHistoryChangedFileSets, GRAPH_CHUNK_SIZE, GitFailure, GitFailureKind, GitRepository,
         GitRepositoryCheckpoint, GitUser, InitialGraphCommitData, LogFilter, LogOrder, LogSource,
         MergeOutcome, PushOptions, RebaseAction, RebaseOutcome, RefEdit, Remote,
-        RemoteCommandOutput, RepoPath, RepositoryOperation, ResetMode, RevertOutcome,
-        SearchCommitArgs, Tag, UnmergedEntry, UnmergedStagePresence, Upstream, UpstreamTracking,
-        UpstreamTrackingStatus, Worktree, commit_hash_search_query, visible_graph_commits,
+        RemoteCommandOutput, RemoteProgressSender, RepoPath, RepositoryOperation, ResetMode,
+        RevertOutcome, SearchCommitArgs, Tag, UnmergedEntry, UnmergedStagePresence, Upstream,
+        UpstreamTracking, UpstreamTrackingStatus, Worktree, commit_hash_search_query,
+        visible_graph_commits,
     },
     stash::GitStash,
     status::{
@@ -3330,6 +3331,7 @@ impl GitRepository for FakeGitRepository {
         _remote: String,
         _options: Option<PushOptions>,
         _askpass: AskPassDelegate,
+        _progress: Option<RemoteProgressSender>,
         _env: Arc<HashMap<String, String>>,
         _cx: AsyncApp,
     ) -> BoxFuture<'_, Result<git::repository::RemoteCommandOutput>> {

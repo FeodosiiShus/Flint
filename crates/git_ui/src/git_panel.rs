@@ -1,7 +1,12 @@
 use git_ui_core::askpass_modal::AskPassModal;
 pub(crate) use git_ui_core::notifications::{open_output, show_error_toast};
 
+use crate::branch_operations::push_result::{
+    PushTarget, push_failed_notice, push_not_started_notice, push_succeeded_notice,
+    upstream_ahead_count,
+};
 use crate::branch_operations::smart_operation::stash_pop_left_conflicts;
+use crate::branch_operations::{BranchContext, PushProgress};
 use crate::commit_modal::CommitModal;
 use crate::git_panel_settings::GitPanelSettings;
 use crate::git_tool_window::GitToolWindow;
@@ -1513,29 +1518,27 @@ impl GitPanel {
             }
         };
         let remote = self.get_remote(select_remote, true, window, cx);
+        let context = BranchContext::new(self.workspace.clone(), repo.clone());
 
         cx.spawn_in(window, async move |this, cx| {
             let _clear_pending_remote_operation = cx.on_drop(&this, |this, cx| {
                 this.clear_remote_operation(cx);
             });
 
-            let remote = match remote.await {
-                Ok(Some(remote)) => remote,
-                Ok(None) => {
-                    this.update(cx, |this, cx| {
-                        this.show_error_toast(
-                            "push",
-                            anyhow::anyhow!("No remote available to push to. Add a remote to be able to publish changes."),
-                            cx,
-                        )
-                    })
-                    .ok();
-                    return Ok(());
-                }
-                Err(e) => {
-                    log::error!("Failed to get current remote: {}", e);
-                    this.update(cx, |this, cx| this.show_error_toast("push", e, cx))
-                        .ok();
+            let remote = remote.await.and_then(|remote| {
+                remote.context(
+                    "No remote available to push to. Add a remote to be able to publish changes.",
+                )
+            });
+            let remote = match remote {
+                Ok(remote) => remote,
+                Err(error) => {
+                    log::error!("Failed to get current remote: {}", error);
+                    cx.update(|_, cx| {
+                        if let Some(notice) = push_not_started_notice(&error) {
+                            context.notify(notice, cx);
+                        }
+                    })?;
                     return Ok(());
                 }
             };
@@ -1544,38 +1547,67 @@ impl GitPanel {
                 this.askpass_delegate(format!("git push {}", remote.name), window, cx)
             })?;
 
+            let target = PushTarget {
+                branch: branch.name().to_owned().into(),
+                remote: remote.name,
+                remote_branch: branch
+                    .upstream
+                    .as_ref()
+                    .filter(|u| matches!(u.tracking, UpstreamTracking::Tracked(_)))
+                    .and_then(|u| u.branch_name())
+                    .unwrap_or_else(|| branch.name())
+                    .to_owned()
+                    .into(),
+            };
+            let pushed_commits = upstream_ahead_count(&branch, &target);
+            let (progress, progress_sender) =
+                cx.update(|_, cx| PushProgress::start(&context.workspace, cx))?;
+
             let push = repo.update(cx, |repo, cx| {
                 repo.push(
-                    branch.name().to_owned().into(),
-                    branch
-                        .upstream
-                        .as_ref()
-                        .filter(|u| matches!(u.tracking, UpstreamTracking::Tracked(_)))
-                        .and_then(|u| u.branch_name())
-                        .unwrap_or_else(|| branch.name())
-                        .to_owned()
-                        .into(),
-                    remote.name.clone(),
+                    target.branch.clone(),
+                    target.remote_branch.clone(),
+                    target.remote.clone(),
                     options,
                     askpass_delegate,
+                    Some(progress_sender),
                     cx,
                 )
             });
 
             let remote_output = push.await?;
+            drop(progress);
 
-            let action = RemoteAction::Push(branch.name().to_owned().into(), remote);
-            this.update(cx, |this, cx| match remote_output {
-                Ok(remote_message) => this.show_remote_output(action, remote_message, cx),
-                Err(e) => {
-                    log::error!("Error while pushing {:?}", e);
-                    this.show_error_toast(action.name(), e, cx)
+            cx.update(|_, cx| {
+                let notice = match remote_output {
+                    Ok(output) => Some(push_succeeded_notice(&target, pushed_commits, &output)),
+                    Err(error) => {
+                        log::error!("Error while pushing {:?}", error);
+                        push_failed_notice(&target, &error, context.workspace.clone())
+                    }
+                };
+                if let Some(notice) = notice {
+                    context.notify(notice, cx);
                 }
             })?;
 
             anyhow::Ok(())
         })
         .detach_and_log_err(cx);
+    }
+
+    pub(crate) fn show_console(
+        workspace: &mut Workspace,
+        window: &mut Window,
+        cx: &mut Context<Workspace>,
+    ) {
+        let Some(panel) = workspace.focus_panel::<Self>(window, cx) else {
+            return;
+        };
+        let tool_window = panel.read(cx).tool_window.clone();
+        tool_window.update(cx, |tool_window, cx| {
+            tool_window.show_console_tab(window, cx)
+        });
     }
 
     pub fn create_pull_request(&self, window: &mut Window, cx: &mut Context<Self>) {
@@ -2159,9 +2191,6 @@ impl GitPanel {
         let Some(workspace) = self.workspace.upgrade() else {
             return;
         };
-
-        let is_push = matches!(action, RemoteAction::Push(_, _));
-
         workspace.update(cx, |workspace, cx| {
             let SuccessMessage { message, style } = remote_output::format_output(&action, info);
             let workspace_weak = cx.weak_entity();
@@ -2174,33 +2203,18 @@ impl GitPanel {
                         .size(IconSize::Small)
                         .color(Color::Muted),
                 );
-                match (style, is_push) {
-                    (PushPrLink { label, url }, _) => {
-                        this.action(label, move |_window, cx| cx.open_url(&url))
-                    }
-                    (Toast | ToastWithLog { .. }, true) => {
-                        // If we were not able to parse a valid URL from the
-                        // output of a push command, we'll simply dispatch the
-                        // generic `CreatePullRequest` action when the toast
-                        // button is pressed.
-                        this.action("Create Pull Request", move |window, cx| {
-                            window
-                                .dispatch_action(Box::new(zed_actions::git::CreatePullRequest), cx);
-                        })
-                    }
-                    (Toast, false) => this,
-                    (ToastWithLog { output }, false) => {
-                        this.action("View Log", move |window, cx| {
-                            let output = output.clone();
-                            let output =
-                                format!("stdout:\n{}\nstderr:\n{}", output.stdout, output.stderr);
-                            workspace_weak
-                                .update(cx, move |workspace, cx| {
-                                    open_output(operation, workspace, &output, window, cx)
-                                })
-                                .ok();
-                        })
-                    }
+                match style {
+                    Toast => this,
+                    ToastWithLog { output } => this.action("View Log", move |window, cx| {
+                        let output = output.clone();
+                        let output =
+                            format!("stdout:\n{}\nstderr:\n{}", output.stdout, output.stderr);
+                        workspace_weak
+                            .update(cx, move |workspace, cx| {
+                                open_output(operation, workspace, &output, window, cx)
+                            })
+                            .ok();
+                    }),
                 }
                 .dismiss_button(true)
             });

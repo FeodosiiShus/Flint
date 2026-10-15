@@ -5,6 +5,7 @@ mod model;
 mod popup;
 #[cfg(test)]
 mod show_usages_tests;
+mod symbol;
 
 use std::{any::TypeId, future::Future, ops::Range, pin::pin, time::Duration};
 
@@ -20,7 +21,7 @@ use gpui::{
     Focusable, Global, KeyBinding, Modifiers, Pixels, Point, SharedString, Task, TaskExt as _,
     WeakEntity, Window, actions,
 };
-use language::{Bias, Buffer, BufferSnapshot};
+use language::{Bias, Buffer};
 use lsp::LanguageServerId;
 use project::{Location, Project};
 use settings::Settings as _;
@@ -37,6 +38,7 @@ use crate::{
         second_invocation_hint,
     },
     popup::ShowUsagesPopup,
+    symbol::{SymbolDescription, SymbolTitle},
 };
 
 actions!(
@@ -82,20 +84,33 @@ pub(crate) struct UsagesSession {
     pub(crate) origin_editor: WeakEntity<Editor>,
     pub(crate) target: UsagesTarget,
     pub(crate) kind: UsagesKind,
-    pub(crate) symbol_name: SharedString,
+    pub(crate) symbol: SymbolDescription,
     pub(crate) scope: UsageScope,
     pub(crate) popup_position: Point<Pixels>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum UsagesTitle {
+    Symbol(SymbolTitle),
+    Implementations(SharedString),
+}
+
+impl UsagesTitle {
+    pub(crate) fn text(&self) -> SharedString {
+        match self {
+            UsagesTitle::Symbol(title) => title.text(),
+            UsagesTitle::Implementations(text) => text.clone(),
+        }
+    }
+}
+
 impl UsagesSession {
-    pub(crate) fn title(&self) -> SharedString {
+    pub(crate) fn title(&self) -> UsagesTitle {
         match self.kind {
-            UsagesKind::References => {
-                SharedString::from(format!("Usages of '{}'", self.symbol_name))
-            }
-            UsagesKind::Implementations => {
-                SharedString::from(format!("Implementations of '{}'", self.symbol_name))
-            }
+            UsagesKind::References => UsagesTitle::Symbol(self.symbol.title()),
+            UsagesKind::Implementations => UsagesTitle::Implementations(SharedString::from(
+                format!("Implementations of '{}'", self.symbol.name),
+            )),
         }
     }
 }
@@ -109,10 +124,9 @@ struct CachedState(ShowUsagesState);
 
 impl Global for CachedState {}
 
-struct QueryResult {
-    references: Vec<Location>,
-    declarations: Vec<Location>,
-    declarations_error: Option<anyhow::Error>,
+struct PendingQuery {
+    references: Task<anyhow::Result<Vec<Location>>>,
+    declarations: Task<(Vec<Location>, Option<anyhow::Error>)>,
 }
 
 enum Finish {
@@ -221,7 +235,8 @@ fn caret_session(
     cx: &mut App,
 ) -> Option<UsagesSession> {
     let (buffer, position) = caret_position(editor, cx)?;
-    let symbol_name = word_at(&buffer.read(cx).snapshot(), position);
+    let project = workspace.read(cx).project().clone();
+    let symbol = symbol_at(&buffer, position, &project, cx);
     let popup_position = if at_mouse_position {
         window.mouse_position()
     } else {
@@ -229,11 +244,11 @@ fn caret_session(
     };
     Some(UsagesSession {
         workspace: workspace.downgrade(),
-        project: workspace.read(cx).project().clone(),
+        project,
         origin_editor: editor.downgrade(),
         target: UsagesTarget::Symbol { buffer, position },
         kind: UsagesKind::References,
-        symbol_name,
+        symbol,
         scope: cached_state(cx).scope,
         popup_position,
     })
@@ -246,17 +261,18 @@ fn show_usages_of_locations(usage_locations: &UsageLocations, window: &mut Windo
     let Some(workspace) = editor.read(cx).workspace() else {
         return;
     };
+    let project = workspace.read(cx).project().clone();
     let multi_buffer = editor.read(cx).buffer().read(cx);
-    let symbol_name = if multi_buffer
+    let symbol = if multi_buffer
         .snapshot(cx)
         .can_resolve(&usage_locations.symbol_position)
     {
         multi_buffer
             .text_anchor_for_position(usage_locations.symbol_position, cx)
-            .map(|(buffer, position)| word_at(&buffer.read(cx).snapshot(), position))
+            .map(|(buffer, position)| declaration_at(&buffer, position, &project, cx))
             .unwrap_or_default()
     } else {
-        SharedString::default()
+        SymbolDescription::default()
     };
     let kind = match usage_locations.kind {
         UsageLocationsKind::References => UsagesKind::References,
@@ -264,7 +280,6 @@ fn show_usages_of_locations(usage_locations: &UsageLocations, window: &mut Windo
     };
     let workspace_id = workspace.entity_id();
     let workspace_handle = workspace.downgrade();
-    let project = workspace.read(cx).project().clone();
     let origin_editor = editor.downgrade();
     let scope = cached_state(cx).scope;
     let popup_position = usage_locations.popup_position;
@@ -282,7 +297,7 @@ fn show_usages_of_locations(usage_locations: &UsageLocations, window: &mut Windo
             origin_editor,
             target: UsagesTarget::Locations { locations },
             kind,
-            symbol_name,
+            symbol,
             scope,
             popup_position,
         };
@@ -339,7 +354,7 @@ pub(crate) fn open_in_find_window(
     if ranges_by_buffer.is_empty() {
         return;
     }
-    let title = format!("References to {}", session.symbol_name);
+    let title = format!("References to {}", session.symbol.name);
     workspace.update(cx, |workspace, cx| {
         let allow_preview =
             PreviewTabsSettings::get_global(cx).enable_preview_multibuffer_from_code_navigation;
@@ -442,13 +457,39 @@ async fn search(mut session: UsagesSession, cx: &mut AsyncWindowContext) {
     let mut popup: Option<WeakEntity<ShowUsagesPopup>> = None;
     let mut popup_timer = cx.background_executor().timer(POPUP_DELAY).fuse();
 
-    let query = start_query(&session, cx);
-    let query_result = wait_with_popup(query, &session, &mut popup_timer, &mut popup, cx).await;
+    let PendingQuery {
+        references,
+        declarations,
+    } = start_query(&session, cx);
+    let (declarations, declarations_error) =
+        wait_with_popup(declarations, &session, &mut popup_timer, &mut popup, cx).await;
     if popup_dismissed(&session, popup.as_ref(), cx) {
         return;
     }
-    let query_result = match query_result {
-        Ok(query_result) => query_result,
+    if let Some(declaration) = declarations.first() {
+        let Ok(parsing) =
+            cx.update(|_, cx| collect::parsing_settled(std::slice::from_ref(declaration), cx))
+        else {
+            return;
+        };
+        wait_with_popup(parsing, &session, &mut popup_timer, &mut popup, cx).await;
+        if popup_dismissed(&session, popup.as_ref(), cx) {
+            return;
+        }
+        if let Ok(Some(symbol)) =
+            cx.update(|_, cx| describe_location(declaration, &session.project, cx))
+        {
+            session.symbol = symbol;
+            publish_symbol(&session, popup.as_ref(), cx);
+        }
+    }
+
+    let references = wait_with_popup(references, &session, &mut popup_timer, &mut popup, cx).await;
+    if popup_dismissed(&session, popup.as_ref(), cx) {
+        return;
+    }
+    let references = match references {
+        Ok(references) => references,
         Err(error) => {
             cx.update(|window, cx| close_popup(&session, popup.as_ref(), window, cx))
                 .log_err();
@@ -456,20 +497,21 @@ async fn search(mut session: UsagesSession, cx: &mut AsyncWindowContext) {
             return;
         }
     };
-    if let Some(error) = query_result.declarations_error {
+    if let Some(error) = declarations_error {
         report_error(&session.workspace, error, cx);
     }
 
-    let Ok(locations) = cx.update(|_, cx| {
-        collect::exclude_declarations(query_result.references, &query_result.declarations, cx)
-    }) else {
+    let Ok(locations) =
+        cx.update(|_, cx| collect::exclude_declarations(references, &declarations, cx))
+    else {
         return;
     };
-    if session.symbol_name.is_empty()
+    if session.symbol.name.is_empty()
         && let Ok(Some(symbol_name)) =
             cx.update(|_, cx| fallback_symbol_name(&session, &locations, cx))
     {
-        session.symbol_name = symbol_name;
+        session.symbol.name = symbol_name;
+        publish_symbol(&session, popup.as_ref(), cx);
     }
 
     let Ok(parsing) = cx.update(|_, cx| collect::parsing_settled(&locations, cx)) else {
@@ -593,17 +635,13 @@ async fn wait_with_popup<T>(
     }
 }
 
-fn start_query(
-    session: &UsagesSession,
-    cx: &mut AsyncWindowContext,
-) -> Task<anyhow::Result<QueryResult>> {
+fn start_query(session: &UsagesSession, cx: &mut AsyncWindowContext) -> PendingQuery {
     let (buffer, position) = match &session.target {
         UsagesTarget::Locations { locations } => {
-            return Task::ready(Ok(QueryResult {
-                references: locations.clone(),
-                declarations: Vec::new(),
-                declarations_error: None,
-            }));
+            return PendingQuery {
+                references: Task::ready(Ok(locations.clone())),
+                declarations: Task::ready((Vec::new(), None)),
+            };
         }
         UsagesTarget::Symbol { buffer, position } => (buffer, *position),
     };
@@ -615,9 +653,10 @@ fn start_query(
             let definitions = session
                 .project
                 .update(cx, |project, cx| project.definitions(buffer, position, cx));
-            cx.spawn(async move |_| {
-                let references = references.await?.unwrap_or_default();
-                let (declarations, declarations_error) = match definitions.await {
+            PendingQuery {
+                references: cx
+                    .spawn(async move |_| anyhow::Ok(references.await?.unwrap_or_default())),
+                declarations: cx.spawn(async move |_| match definitions.await {
                     Ok(links) => (
                         links
                             .unwrap_or_default()
@@ -627,26 +666,20 @@ fn start_query(
                         None,
                     ),
                     Err(error) => (Vec::new(), Some(error)),
-                };
-                Ok(QueryResult {
-                    references,
-                    declarations,
-                    declarations_error,
-                })
-            })
+                }),
+            }
         }
         UsagesKind::Implementations => {
             let implementations = session.project.update(cx, |project, cx| {
                 project.implementations(buffer, position, cx)
             });
-            cx.spawn(async move |_| {
-                let links = implementations.await?.unwrap_or_default();
-                Ok(QueryResult {
-                    references: links.into_iter().map(|link| link.target).collect(),
-                    declarations: Vec::new(),
-                    declarations_error: None,
-                })
-            })
+            PendingQuery {
+                references: cx.spawn(async move |_| {
+                    let links = implementations.await?.unwrap_or_default();
+                    anyhow::Ok(links.into_iter().map(|link| link.target).collect())
+                }),
+                declarations: Task::ready((Vec::new(), None)),
+            }
         }
     }
 }
@@ -1031,10 +1064,60 @@ fn popup_position_below_caret(
         .unwrap_or_else(|| window.viewport_size().center())
 }
 
-fn word_at(snapshot: &BufferSnapshot, position: text::Anchor) -> SharedString {
-    let (range, _) = snapshot.surrounding_word(position, None);
-    let word = snapshot.text_for_range(range).collect::<String>();
-    SharedString::from(word.trim())
+fn symbol_at(
+    buffer: &Entity<Buffer>,
+    position: text::Anchor,
+    project: &Entity<Project>,
+    cx: &App,
+) -> SymbolDescription {
+    let buffer = buffer.read(cx);
+    let snapshot = buffer.snapshot();
+    let offset = snapshot.summary_for_anchor::<usize>(&position);
+    let path = collect::display_path(buffer, project.read(cx), cx);
+    symbol::describe_symbol_at(&snapshot, offset, path)
+}
+
+fn declaration_at(
+    buffer: &Entity<Buffer>,
+    position: text::Anchor,
+    project: &Entity<Project>,
+    cx: &App,
+) -> SymbolDescription {
+    let buffer = buffer.read(cx);
+    let snapshot = buffer.snapshot();
+    let offset = snapshot.summary_for_anchor::<usize>(&position);
+    match collect::display_path(buffer, project.read(cx), cx) {
+        Some(path) => symbol::describe_declaration(&snapshot, offset..offset, path),
+        None => symbol::describe_symbol_at(&snapshot, offset, None),
+    }
+}
+
+fn describe_location(
+    location: &Location,
+    project: &Entity<Project>,
+    cx: &App,
+) -> Option<SymbolDescription> {
+    let buffer = location.buffer.read(cx);
+    let path = collect::display_path(buffer, project.read(cx), cx)?;
+    let snapshot = buffer.snapshot();
+    let start = snapshot.summary_for_anchor::<usize>(&location.range.start);
+    let end = snapshot.summary_for_anchor::<usize>(&location.range.end);
+    Some(symbol::describe_declaration(
+        &snapshot,
+        start.min(end)..start.max(end),
+        path,
+    ))
+}
+
+fn publish_symbol(
+    session: &UsagesSession,
+    popup: Option<&WeakEntity<ShowUsagesPopup>>,
+    cx: &mut AsyncWindowContext,
+) {
+    if let Some(popup) = popup.and_then(WeakEntity::upgrade) {
+        let symbol = session.symbol.clone();
+        popup.update(cx, |popup, cx| popup.set_symbol(symbol, cx));
+    }
 }
 
 fn binding_text(binding: &KeyBinding) -> SharedString {

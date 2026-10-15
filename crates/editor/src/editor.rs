@@ -9674,6 +9674,7 @@ impl Editor {
                         display_map.clear_lsp_folding_ranges(*buffer_id, cx);
                     });
                 }
+                self.remove_code_lenses_for_buffers(removed_buffer_ids, cx);
 
                 self.display_map.update(cx, |display_map, cx| {
                     display_map.unfold_buffers(removed_buffer_ids.iter().copied(), cx);

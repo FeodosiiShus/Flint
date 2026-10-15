@@ -1,4 +1,4 @@
-use std::{future::Future, ops::Range, time::Duration};
+use std::{future::Future, ops::Range, path::PathBuf, time::Duration};
 
 use collections::{HashMap, HashSet};
 use futures::FutureExt as _;
@@ -368,15 +368,7 @@ fn buffer_facts(
                     .map(|entry| !entry.is_ignored && !entry.is_external)
             })
             .unwrap_or(false);
-    let file_path = if is_visible && !relative_path.is_empty() {
-        SharedString::from(relative_path.as_unix_str())
-    } else {
-        let absolute_path = match file.as_local() {
-            Some(local_file) => local_file.abs_path(cx),
-            None => file.full_path(cx),
-        };
-        SharedString::from(absolute_path.to_string_lossy())
-    };
+    let file_path = file_display_path(file.as_ref(), is_visible, cx);
     let snapshot = buffer_state.snapshot();
     let origin_offset = context
         .origin
@@ -397,6 +389,34 @@ fn buffer_facts(
         origin_offset,
         snapshot,
     })
+}
+
+pub(crate) fn display_path(buffer: &Buffer, project: &Project, cx: &App) -> Option<SharedString> {
+    let file = buffer.file()?;
+    let in_visible_worktree = project
+        .worktree_for_id(file.worktree_id(cx), cx)
+        .is_some_and(|worktree| worktree.read(cx).is_visible());
+    Some(file_display_path(file.as_ref(), in_visible_worktree, cx))
+}
+
+pub(crate) fn absolute_path(file: &dyn language::File, cx: &App) -> PathBuf {
+    match file.as_local() {
+        Some(local_file) => local_file.abs_path(cx),
+        None => file.full_path(cx),
+    }
+}
+
+fn file_display_path(
+    file: &dyn language::File,
+    in_visible_worktree: bool,
+    cx: &App,
+) -> SharedString {
+    let relative_path = file.path();
+    if in_visible_worktree && !relative_path.is_empty() {
+        SharedString::from(relative_path.as_unix_str())
+    } else {
+        SharedString::from(absolute_path(file, cx).to_string_lossy())
+    }
 }
 
 fn line_facts(snapshot: &BufferSnapshot, row: u32, first_usage: Range<usize>) -> LineFacts {

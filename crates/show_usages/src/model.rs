@@ -1,4 +1,5 @@
 use std::ops::Range;
+use std::path::Path;
 
 use collections::{HashMap, HashSet};
 use gpui::SharedString;
@@ -10,6 +11,9 @@ pub const MAX_LINE_LENGTH_TO_SHOW: usize = 200;
 
 const CHARS_BEFORE_FIRST_MATCH: usize = 40;
 const ELLIPSIS: &str = "…";
+const FOOTER_PATH_MAX_LENGTH: usize = 80;
+const FOOTER_PATH_TRUNCATION: &str = "...";
+const HOME_PREFIX: &str = "~/";
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum UsageScope {
@@ -169,6 +173,7 @@ pub struct UsageRow<L> {
     pub file_name: SharedString,
     pub structure: Vec<SharedString>,
     pub row: u32,
+    #[cfg(test)]
     pub column: u32,
     pub display_text: SharedString,
     pub match_ranges: Vec<Range<usize>>,
@@ -183,12 +188,8 @@ pub struct UsageRow<L> {
 }
 
 impl<L> UsageRow<L> {
-    pub fn line_column_label(&self) -> SharedString {
-        SharedString::from(format!(
-            "({}: {})",
-            u64::from(self.row) + 1,
-            u64::from(self.column) + 1
-        ))
+    pub fn line_number_label(&self) -> SharedString {
+        SharedString::from((u64::from(self.row) + 1).to_string())
     }
 }
 
@@ -542,6 +543,26 @@ pub fn second_invocation_hint(shortcut: &str, scope: UsageScope) -> Option<Strin
     }
 }
 
+pub fn footer_path(path: &Path, home_dir: &Path) -> String {
+    let display_path = match path.strip_prefix(home_dir) {
+        Ok(relative_path) if !relative_path.as_os_str().is_empty() => {
+            format!("{HOME_PREFIX}{}", relative_path.display())
+        }
+        _ => path.display().to_string(),
+    };
+    shorten_with_trailing_dots(display_path, FOOTER_PATH_MAX_LENGTH)
+}
+
+fn shorten_with_trailing_dots(text: String, max_length: usize) -> String {
+    if text.chars().count() <= max_length {
+        return text;
+    }
+    let kept_length = max_length.saturating_sub(FOOTER_PATH_TRUNCATION.chars().count());
+    let mut shortened = text.chars().take(kept_length).collect::<String>();
+    shortened.push_str(FOOTER_PATH_TRUNCATION);
+    shortened
+}
+
 fn group_usages<L>(raw_usages: &[RawUsage<L>]) -> Vec<Vec<usize>> {
     let mut ordered: Vec<(usize, &RawUsage<L>)> = raw_usages.iter().enumerate().collect();
     ordered.sort_by(|(_, left), (_, right)| {
@@ -602,6 +623,7 @@ fn build_row<L: Clone>(raw_usages: &[RawUsage<L>], group: Vec<usize>) -> Option<
         file_name: first.file_name.clone(),
         structure: first.structure.clone(),
         row: first.row,
+        #[cfg(test)]
         column: first.column,
         display_text: excerpt.text,
         match_ranges,
@@ -862,18 +884,62 @@ mod tests {
 
         assert_eq!(model.visible_locations(), vec![4, 2, 3, 1, 0]);
         assert_eq!(model.display_rows().len(), 5);
-        assert_eq!(model.usage_row_at(0).unwrap().line_column_label(), "(2: 1)");
+        assert_eq!(model.usage_row_at(0).unwrap().line_number_label(), "2");
     }
 
     #[test]
-    fn line_column_label_is_one_based() {
+    fn line_number_label_is_the_one_based_line_without_column() {
         let model = model(vec![RawUsage {
-            row: 45,
+            row: 39,
             column: 11,
-            ..usage(0, "a.ts", 45, "foo", "foo")
+            ..usage(0, "a.ts", 39, "foo", "foo")
         }]);
 
-        assert_eq!(only_row(&model).line_column_label(), "(46: 12)");
+        assert_eq!(only_row(&model).line_number_label(), "40");
+    }
+
+    #[test]
+    fn footer_path_replaces_the_home_directory_with_a_tilde() {
+        assert_eq!(
+            footer_path(
+                Path::new(
+                    "/Users/zed/WebstormProjects/vq-automation/automation/reporters/qase-reporter.ts"
+                ),
+                Path::new("/Users/zed"),
+            ),
+            "~/WebstormProjects/vq-automation/automation/reporters/qase-reporter.ts"
+        );
+    }
+
+    #[test]
+    fn footer_path_keeps_paths_outside_the_home_directory_absolute() {
+        let home_dir = Path::new("/Users/zed");
+
+        assert_eq!(
+            footer_path(Path::new("/root/dir/file.ts"), home_dir),
+            "/root/dir/file.ts"
+        );
+        assert_eq!(
+            footer_path(Path::new("/Users/zedd/file.ts"), home_dir),
+            "/Users/zedd/file.ts",
+            "a sibling directory sharing the home prefix is not inside the home directory"
+        );
+    }
+
+    #[test]
+    fn footer_path_is_shortened_to_eighty_characters_with_trailing_dots() {
+        let path = format!("/Users/zed/{}/file.ts", "nested".repeat(20));
+
+        let footer = footer_path(Path::new(&path), Path::new("/Users/zed"));
+
+        assert_eq!(footer.chars().count(), 80);
+        assert!(footer.starts_with("~/nestednested"));
+        assert!(footer.ends_with("nes..."), "got {footer:?}");
+        assert_eq!(
+            footer_path(Path::new("/Users/zed/short.ts"), Path::new("/Users/zed")),
+            "~/short.ts",
+            "paths within the limit are not shortened"
+        );
     }
 
     #[test]

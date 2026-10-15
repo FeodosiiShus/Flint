@@ -95,7 +95,7 @@ impl Render for FindUsagesDialog {
             )
             .child(
                 div().w_full().px_3().pb_2().child(
-                    Label::new(self.session.title())
+                    Label::new(self.session.title().text())
                         .color(Color::Muted)
                         .single_line()
                         .truncate(),

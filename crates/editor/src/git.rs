@@ -1263,10 +1263,23 @@ impl Editor {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.blame_subscription = Some(cx.observe_in(&blame, window, |_, _, _, cx| cx.notify()));
+        self.blame_subscription = Some(cx.observe_in(&blame, window, |editor, _, _, cx| {
+            editor.invalidate_code_vision_authors();
+            cx.notify();
+        }));
         self.blame = Some(blame);
         self.show_git_blame_gutter = true;
         cx.notify();
+    }
+
+    pub(super) fn ensure_git_blame_for_code_vision(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.blame.is_none() {
+            self.start_git_blame(false, window, cx);
+        }
     }
 
     fn start_git_blame(
@@ -1296,8 +1309,10 @@ impl Editor {
             let project = project.clone();
             let blame = cx
                 .new(|cx| GitBlame::new(self.buffer.clone(), project, user_triggered, focused, cx));
-            self.blame_subscription =
-                Some(cx.observe_in(&blame, window, |_, _, _, cx| cx.notify()));
+            self.blame_subscription = Some(cx.observe_in(&blame, window, |editor, _, _, cx| {
+                editor.invalidate_code_vision_authors();
+                cx.notify();
+            }));
             self.blame = Some(blame);
         }
     }

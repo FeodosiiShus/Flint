@@ -46,10 +46,10 @@ use git::{
         DiffStatType, DiffType, FetchOptions, FileHistoryChangedFileSets, GitCommitTemplate,
         GitRepository, GitRepositoryCheckpoint, GitUser, InitialGraphCommitData, LogFilter,
         LogOrder, LogSource, LogTextFilter, MergeOutcome, PushOptions, RebaseAction, RebaseOutcome,
-        Remote, RemoteCommandOutput, RepoPath, RepositoryOperation, ResetMode, RevertOutcome,
-        SearchCommitArgs, Tag, UnmergedEntry, UnmergedStagePresence, UpstreamTrackingStatus,
-        Worktree as GitWorktree, conflicts_with_side, delete_branch_flag, is_binary_content,
-        split_conflicts_for_resolution,
+        Remote, RemoteCommandOutput, RemoteProgressSender, RepoPath, RepositoryOperation,
+        ResetMode, RevertOutcome, SearchCommitArgs, Tag, UnmergedEntry, UnmergedStagePresence,
+        UpstreamTrackingStatus, Worktree as GitWorktree, conflicts_with_side, delete_branch_flag,
+        is_binary_content, split_conflicts_for_resolution,
     },
     stash::{GitStash, StashEntry},
     status::{
@@ -3663,6 +3663,7 @@ impl GitStore {
                     remote_name,
                     options,
                     askpass,
+                    None,
                     cx,
                 )
             })
@@ -9278,6 +9279,7 @@ impl Repository {
         remote: SharedString,
         options: Option<PushOptions>,
         askpass: AskPassDelegate,
+        progress: Option<RemoteProgressSender>,
         cx: &mut Context<Self>,
     ) -> oneshot::Receiver<Result<RemoteCommandOutput>> {
         let askpass_delegates = self.askpass_delegates.clone();
@@ -9318,6 +9320,7 @@ impl Repository {
                                 remote.to_string(),
                                 options,
                                 askpass,
+                                progress,
                                 environment.clone(),
                                 cx.clone(),
                             )

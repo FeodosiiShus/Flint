@@ -1,4 +1,5 @@
 use futures::AsyncRead;
+use git::remote_progress::ProgressLineSplitter;
 use smol::io::AsyncReadExt;
 use std::io;
 
@@ -34,44 +35,43 @@ pub(crate) fn failure_message(stderr: &[u8]) -> String {
 }
 
 struct GitCloneProgress {
-    pending: Vec<u8>,
+    lines: ProgressLineSplitter,
     last_message: Option<String>,
 }
 
 impl GitCloneProgress {
     fn new() -> Self {
         Self {
-            pending: Vec::new(),
+            lines: ProgressLineSplitter::default(),
             last_message: None,
         }
     }
 
     fn push(&mut self, bytes: &[u8], mut on_progress: impl FnMut(String)) {
-        for byte in bytes {
-            if matches!(*byte, b'\r' | b'\n') {
-                self.flush(&mut on_progress);
-            } else {
-                self.pending.push(*byte);
-            }
-        }
+        let last_message = &mut self.last_message;
+        self.lines.push(bytes, |line| {
+            report_message(line, last_message, &mut on_progress)
+        });
     }
 
     fn finish(&mut self, mut on_progress: impl FnMut(String)) {
-        self.flush(&mut on_progress);
+        let last_message = &mut self.last_message;
+        self.lines
+            .finish(|line| report_message(line, last_message, &mut on_progress));
     }
+}
 
-    fn flush(&mut self, on_progress: &mut impl FnMut(String)) {
-        if self.pending.is_empty() {
-            return;
-        }
-
-        let message = String::from_utf8_lossy(&self.pending).trim().to_owned();
-        if !message.is_empty() && self.last_message.as_ref() != Some(&message) {
-            self.last_message = Some(message.clone());
-            on_progress(message);
-        }
-        self.pending.clear();
+fn report_message(
+    line: &str,
+    last_message: &mut Option<String>,
+    on_progress: &mut impl FnMut(String),
+) {
+    let message = line.trim();
+    if message.is_empty() || last_message.as_deref() == Some(message) {
+        return;
     }
+    *last_message = Some(message.to_owned());
+    on_progress(message.to_owned());
 }
 
 #[cfg(test)]

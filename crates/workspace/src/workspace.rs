@@ -1,4 +1,5 @@
 mod background_image;
+mod background_tasks;
 pub mod dock;
 pub mod history_manager;
 pub mod invalid_item_view;
@@ -31,6 +32,8 @@ mod workspace_settings;
 pub use background_image::{
     ClearBackgroundImage, SelectBackgroundImage, SelectEmptyFrameBackgroundImage,
 };
+pub use background_tasks::BackgroundTaskProgress;
+use background_tasks::BackgroundTasks;
 pub use dock::{Panel, PanelHeaderAction};
 pub use multi_workspace::{
     CloseWorkspaceSidebar, DraggedSidebar, FocusWorkspaceSidebar, MoveProjectDown,
@@ -1552,6 +1555,7 @@ pub struct Workspace {
     region_focus_handles: RegionFocusHandles,
     notifications: Notifications,
     suppressed_notifications: HashSet<NotificationId>,
+    background_tasks: BackgroundTasks,
     project: Entity<Project>,
     follower_states: HashMap<CollaboratorId, FollowerState>,
     last_leaders_by_pane: HashMap<WeakEntity<Pane>, CollaboratorId>,
@@ -2020,6 +2024,7 @@ impl Workspace {
             region_focus_handles: RegionFocusHandles::new(cx),
             notifications: Notifications::default(),
             suppressed_notifications: HashSet::default(),
+            background_tasks: BackgroundTasks::default(),
             left_dock,
             bottom_dock,
             right_dock,
@@ -6410,27 +6415,29 @@ impl Workspace {
     }
 
     fn render_notifications(&self, _window: &mut Window, _cx: &mut Context<Self>) -> Option<Div> {
-        if self.notifications.is_empty() {
-            None
-        } else {
-            Some(
-                div()
-                    .absolute()
-                    .right_3()
-                    .bottom_3()
-                    .w_112()
-                    .h_full()
-                    .flex()
-                    .flex_col()
-                    .justify_end()
-                    .gap_2()
-                    .children(
-                        self.notifications
-                            .iter()
-                            .map(|(_, notification)| notification.clone().into_any_element()),
-                    ),
-            )
+        let background_tasks = self.render_background_tasks();
+        if self.notifications.is_empty() && background_tasks.is_none() {
+            return None;
         }
+
+        Some(
+            div()
+                .absolute()
+                .right_3()
+                .bottom_3()
+                .w_112()
+                .h_full()
+                .flex()
+                .flex_col()
+                .justify_end()
+                .gap_2()
+                .children(
+                    self.notifications
+                        .iter()
+                        .map(|(_, notification)| notification.clone().into_any_element()),
+                )
+                .children(background_tasks),
+        )
     }
 
     fn handle_agent_location_changed(&mut self, window: &mut Window, cx: &mut Context<Self>) {

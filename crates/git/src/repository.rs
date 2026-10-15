@@ -1,5 +1,6 @@
 use crate::commit::{CommitDiffObject, CommitDiffObjectKind, parse_git_diff_raw};
 use crate::console::{GitConsoleRecorder, GitConsoleSink};
+use crate::remote_progress;
 use crate::stash::GitStash;
 use crate::status::{
     DiffTreeType, FileStatus, GitStatus, StatusCode, TrackedStatus, TreeDiff, TreeDiffStatus,
@@ -19,7 +20,7 @@ use rope::Rope;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use smallvec::SmallVec;
-use smol::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
+use smol::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, BufReader};
 use text::LineEnding;
 
 use std::borrow::Cow;
@@ -1279,6 +1280,14 @@ impl RemoteCommandOutput {
     }
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub struct RemoteProgress {
+    pub fraction: f32,
+    pub details: String,
+}
+
+pub type RemoteProgressSender = futures::channel::mpsc::UnboundedSender<RemoteProgress>;
+
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 pub struct UpstreamTrackingStatus {
     pub ahead: u32,
@@ -2213,6 +2222,7 @@ pub trait GitRepository: Send + Sync {
         upstream_name: String,
         options: Option<PushOptions>,
         askpass: AskPassDelegate,
+        progress: Option<RemoteProgressSender>,
         env: Arc<HashMap<String, String>>,
         // This method takes an AsyncApp to ensure it's invoked on the main thread,
         // otherwise git-credentials-manager won't work.
@@ -4609,6 +4619,7 @@ impl GitRepository for RealGitRepository {
         remote_name: String,
         options: Option<PushOptions>,
         ask_pass: AskPassDelegate,
+        progress: Option<RemoteProgressSender>,
         env: Arc<HashMap<String, String>>,
         cx: AsyncApp,
     ) -> BoxFuture<'_, Result<RemoteCommandOutput>> {
@@ -4630,7 +4641,7 @@ impl GitRepository for RealGitRepository {
                 is_trusted,
             )
             .with_console(console);
-            let mut command = git.build_command(&["push"]);
+            let mut command = git.build_command(&["push", "--progress"]);
             command
                 .envs(env.iter())
                 .args(options.map(|option| match option {
@@ -4643,7 +4654,7 @@ impl GitRepository for RealGitRepository {
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped());
 
-            run_git_command(env, ask_pass, command, executor).await
+            run_git_command_reporting_progress(env, ask_pass, command, executor, progress).await
         }
         .boxed()
     }
@@ -6294,6 +6305,27 @@ impl GitChild {
         }
         Ok(output)
     }
+
+    async fn output_reporting_progress(
+        self,
+        progress: Option<RemoteProgressSender>,
+    ) -> std::io::Result<Output> {
+        let GitChild { mut child, console } = self;
+        let status = child.status();
+        let stdout = read_pipe(child.stdout.take());
+        let stderr = read_stderr_reporting_progress(child.stderr.take(), progress);
+        let (stdout, stderr) = futures::future::try_join(stdout, stderr).await?;
+        let status = status.await?;
+        let stderr = remote_progress::without_progress_rewrites(&stderr);
+        if let Some(console) = console {
+            console.record_output(&stdout, &stderr);
+        }
+        Ok(Output {
+            status,
+            stdout,
+            stderr,
+        })
+    }
 }
 
 impl std::ops::Deref for GitChild {
@@ -6310,15 +6342,61 @@ impl std::ops::DerefMut for GitChild {
     }
 }
 
+async fn read_pipe(pipe: Option<impl AsyncRead + Unpin>) -> std::io::Result<Vec<u8>> {
+    let mut contents = Vec::new();
+    if let Some(mut pipe) = pipe {
+        pipe.read_to_end(&mut contents).await?;
+    }
+    Ok(contents)
+}
+
+async fn read_stderr_reporting_progress(
+    stderr: Option<impl AsyncRead + Unpin>,
+    progress: Option<RemoteProgressSender>,
+) -> std::io::Result<Vec<u8>> {
+    match (stderr, progress) {
+        (Some(stderr), Some(progress)) => {
+            remote_progress::read_reporting_progress(stderr, progress).await
+        }
+        (stderr, _) => read_pipe(stderr).await,
+    }
+}
+
 async fn run_git_command(
+    env: Arc<HashMap<String, String>>,
+    ask_pass: AskPassDelegate,
+    command: GitCommand,
+    executor: BackgroundExecutor,
+) -> Result<RemoteCommandOutput> {
+    run_git_command_collecting_output(env, ask_pass, command, executor, GitChild::output).await
+}
+
+async fn run_git_command_reporting_progress(
+    env: Arc<HashMap<String, String>>,
+    ask_pass: AskPassDelegate,
+    command: GitCommand,
+    executor: BackgroundExecutor,
+    progress: Option<RemoteProgressSender>,
+) -> Result<RemoteCommandOutput> {
+    run_git_command_collecting_output(env, ask_pass, command, executor, |git_process| {
+        git_process.output_reporting_progress(progress)
+    })
+    .await
+}
+
+async fn run_git_command_collecting_output<OutputFuture>(
     env: Arc<HashMap<String, String>>,
     ask_pass: AskPassDelegate,
     mut command: GitCommand,
     executor: BackgroundExecutor,
-) -> Result<RemoteCommandOutput> {
+    collect_output: impl FnOnce(GitChild) -> OutputFuture,
+) -> Result<RemoteCommandOutput>
+where
+    OutputFuture: Future<Output = std::io::Result<Output>>,
+{
     if env.contains_key("GIT_ASKPASS") {
         let git_process = command.spawn()?;
-        let output = git_process.output().await?;
+        let output = collect_output(git_process).await?;
         anyhow::ensure!(
             output.status.success(),
             "{}",
@@ -6348,13 +6426,13 @@ async fn run_git_command(
         command.env("ZED_ASKPASS_SOCKET", ask_pass.socket_path());
         let git_process = command.spawn()?;
 
-        run_askpass_command(ask_pass, git_process).await
+        run_askpass_command(ask_pass, collect_output(git_process)).await
     }
 }
 
 async fn run_askpass_command(
     mut ask_pass: AskPassSession,
-    git_process: GitChild,
+    git_output: impl Future<Output = std::io::Result<Output>>,
 ) -> anyhow::Result<RemoteCommandOutput> {
     select_biased! {
         // Git can legitimately run long without prompting (e.g. large fetches,
@@ -6370,7 +6448,7 @@ async fn run_askpass_command(
                 }
             }
         }
-        output = git_process.output().fuse() => {
+        output = git_output.fuse() => {
             let output = output?;
             anyhow::ensure!(
                 output.status.success(),
@@ -11314,6 +11392,151 @@ mod tests {
             .await
             .expect_err("pushing an unknown tag must fail");
         assert!(error.downcast_ref::<GitFailure>().is_some());
+    }
+
+    #[gpui::test]
+    async fn test_push_progress_reports_a_real_push(cx: &mut TestAppContext) {
+        use futures::StreamExt as _;
+
+        disable_git_global_config();
+        cx.executor().allow_parking();
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let (remote_directory, clone_directory) =
+            clone_remote_repository_with_main_and_feature(temp_dir.path());
+        commit_file(&clone_directory, "pushed.txt", "pushed\n", "pushed");
+        let repository = open_real_repository(&clone_directory, cx);
+        let mut env = test_commit_envs();
+        env.insert("LC_ALL".to_string(), "C".to_string());
+        let (progress_sender, progress_receiver) = futures::channel::mpsc::unbounded();
+
+        let output = repository
+            .push(
+                "main".to_string(),
+                "main".to_string(),
+                "origin".to_string(),
+                None,
+                noop_askpass(cx),
+                Some(progress_sender),
+                Arc::new(env),
+                cx.to_async(),
+            )
+            .await
+            .unwrap();
+        let updates = progress_receiver.collect::<Vec<_>>().await;
+
+        assert!(
+            updates
+                .windows(2)
+                .all(|pair| pair[0].fraction <= pair[1].fraction),
+            "{updates:?}"
+        );
+        assert!(
+            updates
+                .iter()
+                .any(|update| update.details.starts_with("Writing objects: 100%")),
+            "{updates:?}"
+        );
+        assert!(!output.stderr.contains('\r'), "{:?}", output.stderr);
+        assert!(
+            output.stderr.contains("Writing objects: 100%"),
+            "{}",
+            output.stderr
+        );
+        assert_eq!(
+            git_command_output(&remote_directory, ["rev-parse", "main"]),
+            git_command_output(&clone_directory, ["rev-parse", "HEAD"])
+        );
+    }
+
+    #[cfg(unix)]
+    #[gpui::test]
+    async fn test_push_progress_arrives_while_git_is_still_running(cx: &mut TestAppContext) {
+        use crate::console::GitConsoleContentType;
+        use futures::StreamExt as _;
+        use std::os::unix::fs::PermissionsExt as _;
+
+        const FAKE_GIT_PUSH: &str = r#"#!/bin/sh
+printf 'Writing objects:  50%% (1/2)\r' >&2
+attempts=0
+while [ ! -e "$RELEASE_FILE" ]; do
+    attempts=$((attempts + 1))
+    if [ "$attempts" -gt 1000 ]; then
+        echo 'fatal: no progress was reported while git was running' >&2
+        exit 1
+    fi
+    sleep 0.01
+done
+printf 'Writing objects: 100%% (2/2), done.\nTo origin\n   abc..def  main -> main\n' >&2
+"#;
+
+        cx.executor().allow_parking();
+        let temp_dir = tempfile::tempdir().unwrap();
+        let dot_git = temp_dir.path().join("repository").join(".git");
+        fs::create_dir_all(&dot_git).unwrap();
+        let fake_git = temp_dir.path().join("fake-git");
+        fs::write(&fake_git, FAKE_GIT_PUSH).unwrap();
+        fs::set_permissions(&fake_git, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let release_file = temp_dir.path().join("release");
+        let release_path = release_file.to_string_lossy().into_owned();
+        let mut env = test_commit_envs();
+        env.insert("RELEASE_FILE".to_string(), release_path);
+        let repository =
+            RealGitRepository::new(&dot_git, None, Some(fake_git), cx.executor()).unwrap();
+        let (console_sender, console_receiver) = async_channel::unbounded();
+        repository.set_console(GitConsoleSink::new(console_sender));
+        let (progress_sender, mut progress_receiver) = futures::channel::mpsc::unbounded();
+
+        let push = repository.push(
+            "main".to_string(),
+            "main".to_string(),
+            "origin".to_string(),
+            None,
+            noop_askpass(cx),
+            Some(progress_sender),
+            Arc::new(env),
+            cx.to_async(),
+        );
+        let first_update_then_release = async {
+            let first_update = progress_receiver.next().await;
+            fs::write(&release_file, "").unwrap();
+            first_update
+        };
+        let (output, first_update) = futures::join!(push, first_update_then_release);
+        let output = output.unwrap();
+        let first_update = first_update.unwrap();
+        let later_updates = progress_receiver.collect::<Vec<_>>().await;
+
+        assert_eq!(first_update.details, "Writing objects:  50% (1/2)");
+        assert!(
+            (first_update.fraction - 0.55).abs() < 1e-6,
+            "{first_update:?}"
+        );
+        let [final_update] = later_updates.as_slice() else {
+            panic!("expected exactly one more update, got {later_updates:?}");
+        };
+        assert_eq!(final_update.details, "Writing objects: 100% (2/2), done.");
+        assert!(
+            (final_update.fraction - 0.95).abs() < 1e-6,
+            "{final_update:?}"
+        );
+        assert_eq!(
+            output.stderr,
+            "Writing objects: 100% (2/2), done.\nTo origin\n   abc..def  main -> main\n"
+        );
+        let console_stderr = std::iter::from_fn(|| console_receiver.try_recv().ok())
+            .flat_map(|line| line.chunks)
+            .filter(|chunk| chunk.content_type == GitConsoleContentType::ErrorOutput)
+            .map(|chunk| chunk.text.to_string())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            console_stderr,
+            [
+                "Writing objects: 100% (2/2), done.",
+                "To origin",
+                "   abc..def  main -> main",
+            ]
+        );
     }
 
     fn write_bytes(directory: &Path, file: &str, contents: &[u8]) {

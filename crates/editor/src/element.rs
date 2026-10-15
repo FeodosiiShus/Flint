@@ -22,6 +22,7 @@ use crate::{
     InlayHintRefreshReason, LineDown, LineHighlight, LineUp, MAX_LINE_LEN, PageDown, PageUp, Point,
     RowExt, RowRangeExt, Selection, SelectionDragState, SizingBehavior, SoftWrap, ToPoint,
     code_context_menus::{CodeActionsMenu, MENU_ASIDE_MAX_WIDTH, MENU_ASIDE_MIN_WIDTH, MENU_GAP},
+    code_lens::{CODE_VISION_GAP, CodeVisionStyle, render_code_vision_line},
     column_pixels,
     cursor_animation::{CursorViewport, LogicalCursorPosition, animated_corners_overlap_target},
     display_map::{
@@ -161,6 +162,11 @@ struct InlineBlameLayout {
     bounds: Bounds<Pixels>,
     buffer_id: BufferId,
     entry: BlameEntry,
+}
+
+struct CodeVisionLayout {
+    element: AnyElement,
+    right: Pixels,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1675,6 +1681,7 @@ impl EditorElement {
         &self,
         line_layouts: &[LineWithInvisibles],
         crease_trailers: &[Option<CreaseTrailerLayout>],
+        code_vision: &HashMap<DisplayRow, CodeVisionLayout>,
         row_block_types: &HashMap<DisplayRow, bool>,
         content_origin: gpui::Point<Pixels>,
         scroll_position: gpui::Point<ScrollOffset>,
@@ -1780,14 +1787,15 @@ impl EditorElement {
                 let crease_trailer_layout = &crease_trailers[window_ix];
                 let line_layout = &line_layouts[window_ix];
 
-                let line_end = if let Some(crease_trailer) = crease_trailer_layout {
-                    crease_trailer.bounds.right()
-                } else {
-                    Pixels::from(
-                        ScrollPixelOffset::from(content_origin.x + line_layout.width)
-                            - scroll_pixel_position.x,
-                    )
-                };
+                let line_end = after_code_vision(
+                    line_end_x(
+                        line_layout,
+                        crease_trailer_layout.as_ref(),
+                        content_origin,
+                        scroll_pixel_position,
+                    ),
+                    code_vision.get(&row).map(|layout| layout.right),
+                );
 
                 let padded_line = line_end + padding;
                 let min_start = Pixels::from(
@@ -1818,6 +1826,68 @@ impl EditorElement {
         }
 
         elements
+    }
+
+    fn layout_code_vision(
+        &self,
+        snapshot: &EditorSnapshot,
+        line_layouts: &[LineWithInvisibles],
+        crease_trailers: &[Option<CreaseTrailerLayout>],
+        content_origin: gpui::Point<Pixels>,
+        scroll_position: gpui::Point<ScrollOffset>,
+        scroll_pixel_position: gpui::Point<ScrollPixelOffset>,
+        visible_rows: Range<DisplayRow>,
+        line_height: Pixels,
+        hit_area: Bounds<Pixels>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> HashMap<DisplayRow, CodeVisionLayout> {
+        let lines = self.editor.update(cx, |editor, cx| {
+            editor.code_vision_lines_in_rows(&snapshot.display_snapshot, visible_rows.clone(), cx)
+        });
+        if lines.is_empty() {
+            return HashMap::default();
+        }
+
+        let style = CodeVisionStyle::new(&self.style, line_height, window, cx);
+        let editor = self.editor.downgrade();
+        window.with_content_mask(
+            Some(ContentMask {
+                bounds: hit_area,
+                ..Default::default()
+            }),
+            |window| {
+                lines
+                    .into_iter()
+                    .filter_map(|(display_row, line)| {
+                        let row_index = display_row.minus(visible_rows.start) as usize;
+                        let line_layout = line_layouts.get(row_index)?;
+                        let crease_trailer = crease_trailers.get(row_index)?.as_ref();
+                        let origin = point(
+                            line_end_x(
+                                line_layout,
+                                crease_trailer,
+                                content_origin,
+                                scroll_pixel_position,
+                            ) + CODE_VISION_GAP,
+                            content_origin.y
+                                + line_height * ((display_row.as_f64() - scroll_position.y) as f32),
+                        );
+                        let mut element =
+                            render_code_vision_line(&line, display_row, &style, &editor);
+                        let size = element.layout_as_root(AvailableSpace::min_size(), window, cx);
+                        element.prepaint_at(origin, window, cx);
+                        Some((
+                            display_row,
+                            CodeVisionLayout {
+                                element,
+                                right: origin.x + size.width,
+                            },
+                        ))
+                    })
+                    .collect()
+            },
+        )
     }
 
     fn layout_inline_code_actions(
@@ -1895,6 +1965,7 @@ impl EditorElement {
         row_info: &RowInfo,
         line_layout: &LineWithInvisibles,
         crease_trailer: Option<&CreaseTrailerLayout>,
+        code_vision_right: Option<Pixels>,
         em_width: Pixels,
         content_origin: gpui::Point<Pixels>,
         scroll_position: gpui::Point<ScrollOffset>,
@@ -1929,14 +2000,15 @@ impl EditorElement {
             content_origin.y + line_height * ((display_row.as_f64() - scroll_position.y) as f32);
 
         let start_x = {
-            let line_end = if let Some(crease_trailer) = crease_trailer {
-                crease_trailer.bounds.right()
-            } else {
-                Pixels::from(
-                    ScrollPixelOffset::from(content_origin.x + line_layout.width)
-                        - scroll_pixel_position.x,
-                )
-            };
+            let line_end = after_code_vision(
+                line_end_x(
+                    line_layout,
+                    crease_trailer,
+                    content_origin,
+                    scroll_pixel_position,
+                ),
+                code_vision_right,
+            );
 
             let padded_line_end = line_end + padding;
 
@@ -5504,6 +5576,7 @@ impl EditorElement {
                 self.paint_cursors(layout, window, cx);
                 self.paint_inline_diagnostics(layout, window, cx);
                 self.paint_inline_blame(layout, window, cx);
+                self.paint_code_vision(layout, window, cx);
                 self.paint_inline_code_actions(layout, window, cx);
                 self.paint_diff_hunk_controls(layout, window, cx);
                 window.with_element_namespace("crease_trailers", |window| {
@@ -6228,6 +6301,17 @@ impl EditorElement {
                 blame_layout.element.paint(window, cx);
             })
         }
+    }
+
+    fn paint_code_vision(&mut self, layout: &mut EditorLayout, window: &mut Window, cx: &mut App) {
+        if layout.code_vision.is_empty() {
+            return;
+        }
+        window.paint_layer(layout.position_map.text_hitbox.bounds, |window| {
+            for (_, mut code_vision) in layout.code_vision.drain() {
+                code_vision.element.paint(window, cx);
+            }
+        });
     }
 
     fn paint_inline_code_actions(
@@ -9093,9 +9177,37 @@ impl Element for EditorElement {
                                 )
                             });
 
+                        let code_vision = self.layout_code_vision(
+                            &snapshot,
+                            &line_layouts,
+                            &crease_trailers,
+                            content_origin,
+                            scroll_position,
+                            scroll_pixel_position,
+                            start_row..end_row,
+                            line_height,
+                            code_vision_hit_area(
+                                &text_hitbox,
+                                [
+                                    sticky_headers
+                                        .as_ref()
+                                        .and_then(|sticky_headers| sticky_headers.lines.last())
+                                        .map(|last_line| {
+                                            text_hitbox.top() + last_line.offset + line_height
+                                        }),
+                                    sticky_buffer_header.as_ref().map(|_| {
+                                        hitbox.top() + FILE_HEADER_HEIGHT as f32 * line_height
+                                    }),
+                                ],
+                            ),
+                            window,
+                            cx,
+                        );
+
                         let mut inline_diagnostics = self.layout_inline_diagnostics(
                             &line_layouts,
                             &crease_trailers,
+                            &code_vision,
                             &row_block_types,
                             content_origin,
                             scroll_position,
@@ -9139,6 +9251,7 @@ impl Element for EditorElement {
                                         row_info,
                                         line_layout,
                                         crease_trailer_layout,
+                                        code_vision.get(&display_row).map(|layout| layout.right),
                                         em_width,
                                         content_origin,
                                         scroll_position,
@@ -9602,6 +9715,7 @@ impl Element for EditorElement {
                             line_numbers,
                             blamed_display_rows,
                             inline_diagnostics,
+                            code_vision,
                             point_diagnostic_underline_offset,
                             inline_blame_layout,
                             inline_code_actions,
@@ -9744,6 +9858,40 @@ impl Element for EditorElement {
     }
 }
 
+fn line_end_x(
+    line_layout: &LineWithInvisibles,
+    crease_trailer: Option<&CreaseTrailerLayout>,
+    content_origin: gpui::Point<Pixels>,
+    scroll_pixel_position: gpui::Point<ScrollPixelOffset>,
+) -> Pixels {
+    match crease_trailer {
+        Some(crease_trailer) => crease_trailer.bounds.right(),
+        None => Pixels::from(
+            ScrollPixelOffset::from(content_origin.x + line_layout.width) - scroll_pixel_position.x,
+        ),
+    }
+}
+
+fn after_code_vision(line_end: Pixels, code_vision_right: Option<Pixels>) -> Pixels {
+    code_vision_right.map_or(line_end, |code_vision_right| {
+        line_end.max(code_vision_right + CODE_VISION_GAP)
+    })
+}
+
+fn code_vision_hit_area(
+    text_hitbox: &Hitbox,
+    overlay_bottoms: impl IntoIterator<Item = Option<Pixels>>,
+) -> Bounds<Pixels> {
+    let top = overlay_bottoms
+        .into_iter()
+        .flatten()
+        .fold(text_hitbox.top(), |top, overlay_bottom| {
+            top.max(overlay_bottom)
+        })
+        .min(text_hitbox.bottom());
+    Bounds::from_corners(point(text_hitbox.left(), top), text_hitbox.bottom_right())
+}
+
 pub(super) fn gutter_bounds(
     editor_bounds: Bounds<Pixels>,
     gutter_dimensions: GutterDimensions,
@@ -9824,6 +9972,7 @@ pub struct EditorLayout {
     vcs_marker_placement: VcsMarkerPlacement,
     blamed_display_rows: Option<Vec<AnyElement>>,
     inline_diagnostics: HashMap<DisplayRow, AnyElement>,
+    code_vision: HashMap<DisplayRow, CodeVisionLayout>,
     point_diagnostic_underline_offset: Pixels,
     inline_blame_layout: Option<InlineBlameLayout>,
     inline_code_actions: Option<AnyElement>,

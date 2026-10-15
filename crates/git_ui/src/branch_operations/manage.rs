@@ -1,18 +1,15 @@
 use anyhow::{Result, anyhow};
 use futures::channel::oneshot;
-use git::repository::{Branch, GitFailure, GitFailureKind, Remote, RemoteCommandOutput};
-use git_ui_core::notifications::open_output;
-use gpui::{App, AsyncWindowContext, Entity, SharedString, WeakEntity, Window};
+use git::repository::{Branch, GitFailure, GitFailureKind, RemoteCommandOutput};
+use gpui::{App, AsyncWindowContext, Entity, SharedString, Window};
 use project::git_store::Repository;
 use util::ResultExt as _;
-use workspace::Workspace;
 
 use super::delete_dialogs::{DeleteRemoteBranchDialog, DeleteRemoteConfirm, UnmergedCommitsDialog};
 use super::push_dialog::PushDialog;
 use super::rename_dialog::RenameBranchDialog;
 use super::{BranchContext, BranchNotice, error_notice};
 use crate::branch_refs::{RefKind, RefTarget};
-use crate::remote_output::{RemoteAction, SuccessMessage, SuccessStyle, format_output};
 
 const UNMERGED_COMMIT_LIMIT: usize = 200;
 const REMOTE_TAG_REF_PREFIX: &str = "refs/tags/";
@@ -173,40 +170,6 @@ pub fn pushed_tag_notice(tag: &str, remote: &str, output: &RemoteCommandOutput) 
     } else {
         BranchNotice::info(format!("Pushed tag {tag} to {remote}"))
     }
-}
-
-pub fn push_result_notice(
-    workspace: WeakEntity<Workspace>,
-    branch: SharedString,
-    remote: Remote,
-    output: RemoteCommandOutput,
-) -> BranchNotice {
-    let action = RemoteAction::Push(branch, remote);
-    let SuccessMessage { message, style } = format_output(&action, output);
-    let notice = BranchNotice::info(message);
-    match style {
-        SuccessStyle::PushPrLink { label, url } => {
-            notice.action(label, move |_window, cx| cx.open_url(&url))
-        }
-        SuccessStyle::Toast => with_create_pull_request(notice),
-        SuccessStyle::ToastWithLog { output } => {
-            let log = format!("stdout:\n{}\nstderr:\n{}", output.stdout, output.stderr);
-            with_create_pull_request(notice).action("View Log", move |window, cx| {
-                let log = log.clone();
-                workspace
-                    .update(cx, move |workspace, cx| {
-                        open_output("push", workspace, &log, window, cx)
-                    })
-                    .log_err();
-            })
-        }
-    }
-}
-
-fn with_create_pull_request(notice: BranchNotice) -> BranchNotice {
-    notice.action("Create Pull Request", |window, cx| {
-        window.dispatch_action(Box::new(zed_actions::git::CreatePullRequest), cx);
-    })
 }
 
 pub fn delete_ref(context: BranchContext, target: RefTarget, window: &mut Window, cx: &mut App) {
@@ -893,14 +856,6 @@ mod tests {
         }
     }
 
-    fn labels(notice: &BranchNotice) -> Vec<String> {
-        notice
-            .actions
-            .iter()
-            .map(|action| action.label.to_string())
-            .collect()
-    }
-
     #[test]
     fn not_fully_merged_is_detected_from_the_git_failure_kind() {
         let error = anyhow::Error::new(GitFailure {
@@ -1087,60 +1042,5 @@ mod tests {
             &*pushed_tag_notice("v1", "origin", &pushed).message,
             "Pushed tag v1 to origin"
         );
-    }
-
-    #[test]
-    fn push_result_notice_offers_the_pull_request_link_from_the_remote() {
-        let output = RemoteCommandOutput {
-            stdout: String::new(),
-            stderr: "remote: Create a pull request for 'main' on GitHub by visiting:\nremote:      https://github.com/o/r/pull/new/main\n".to_string(),
-        };
-        let notice = push_result_notice(
-            WeakEntity::new_invalid(),
-            SharedString::from("main"),
-            Remote {
-                name: SharedString::from("origin"),
-            },
-            output,
-        );
-        assert_eq!(&*notice.message, "Pushed main to origin");
-        assert_eq!(labels(&notice), vec!["Create Pull Request".to_string()]);
-    }
-
-    #[test]
-    fn push_result_notice_offers_log_and_pull_request_for_plain_pushes() {
-        let output = RemoteCommandOutput {
-            stdout: String::new(),
-            stderr: "To origin\n   abc..def  main -> main\n".to_string(),
-        };
-        let notice = push_result_notice(
-            WeakEntity::new_invalid(),
-            SharedString::from("main"),
-            Remote {
-                name: SharedString::from("origin"),
-            },
-            output,
-        );
-        assert_eq!(
-            labels(&notice),
-            vec!["Create Pull Request".to_string(), "View Log".to_string()]
-        );
-    }
-
-    #[test]
-    fn push_result_notice_reports_up_to_date_pushes() {
-        let output = RemoteCommandOutput {
-            stdout: String::new(),
-            stderr: "Everything up-to-date\n".to_string(),
-        };
-        let notice = push_result_notice(
-            WeakEntity::new_invalid(),
-            SharedString::from("main"),
-            Remote {
-                name: SharedString::from("origin"),
-            },
-            output,
-        );
-        assert_eq!(&*notice.message, "Push: Everything is up-to-date");
     }
 }

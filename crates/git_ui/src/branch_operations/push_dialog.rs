@@ -11,9 +11,10 @@ use ui::{DialogButton, Modal, ModalFooter, ModalHeader, Section, prelude::*};
 use util::ResultExt as _;
 use workspace::ModalView;
 
-use super::BranchContext;
 use super::delete_dialogs::render_commit_list;
-use super::manage::{notify_failure, push_result_notice, settle};
+use super::manage::{notify_failure, settle};
+use super::push_result::{PushTarget, push_failed_notice, push_succeeded_notice};
+use super::{BranchContext, PushProgress};
 use crate::branch_refs::RefTarget;
 
 const DIALOG_WIDTH: f32 = 44.;
@@ -87,8 +88,22 @@ enum OutgoingCommits {
     Loaded {
         commits: Vec<CommitSummary>,
         truncated: bool,
+        relative_to_target: bool,
     },
     Failed(SharedString),
+}
+
+impl OutgoingCommits {
+    fn pushed_commit_count(&self) -> Option<usize> {
+        match self {
+            OutgoingCommits::Loaded {
+                commits,
+                truncated: false,
+                relative_to_target: true,
+            } => Some(commits.len()),
+            _ => None,
+        }
+    }
 }
 
 pub struct PushDialog {
@@ -230,7 +245,9 @@ impl PushDialog {
                 return;
             }
 
-            let base = match direct_outgoing_base(&remote, &remote_branch, &remote_branches) {
+            let direct_base = direct_outgoing_base(&remote, &remote_branch, &remote_branches);
+            let relative_to_target = direct_base.is_some();
+            let base = match direct_base {
                 Some(base) => Some(base),
                 None => {
                     let default_branch = settle(
@@ -253,7 +270,11 @@ impl PushDialog {
                         Ok(mut commits) => {
                             let truncated = commits.len() > PUSH_COMMIT_LIMIT;
                             commits.truncate(PUSH_COMMIT_LIMIT);
-                            OutgoingCommits::Loaded { commits, truncated }
+                            OutgoingCommits::Loaded {
+                                commits,
+                                truncated,
+                                relative_to_target,
+                            }
                         }
                         Err(error) => OutgoingCommits::Failed(format!("{error:#}").into()),
                     }
@@ -290,57 +311,65 @@ impl PushDialog {
         let Some(remote) = self.remote.clone() else {
             return;
         };
-        let remote_branch = SharedString::from(self.remote_branch(cx));
+        let target = PushTarget {
+            branch: self.branch.clone(),
+            remote,
+            remote_branch: SharedString::from(self.remote_branch(cx)),
+        };
+        let pushed_commits = self.outgoing.pushed_commit_count();
         let options = push_options(self.upstream.as_ref(), force);
         let upstream_to_set = (force && needs_upstream(self.upstream.as_ref()))
-            .then(|| format!("{remote}/{remote_branch}"));
+            .then(|| format!("{}/{}", target.remote, target.remote_branch));
         let context = self.context.clone();
-        let branch = self.branch.clone();
 
         window
             .spawn(cx, async move |cx| {
-                let askpass = cx
+                let started = cx
                     .update(|window, cx| {
-                        context.askpass_delegate(format!("git push {remote}"), window, cx)
+                        let askpass = context.askpass_delegate(
+                            format!("git push {}", target.remote),
+                            window,
+                            cx,
+                        );
+                        let (progress, progress_sender) =
+                            PushProgress::start(&context.workspace, cx);
+                        (askpass, progress, progress_sender)
                     })
                     .log_err();
-                let Some(askpass) = askpass else {
+                let Some((askpass, progress, progress_sender)) = started else {
                     return;
                 };
                 let receiver = context.repository.update(cx, |repository, cx| {
                     repository.push(
-                        branch.clone(),
-                        remote_branch,
-                        remote.clone(),
+                        target.branch.clone(),
+                        target.remote_branch.clone(),
+                        target.remote.clone(),
                         options,
                         askpass,
+                        Some(progress_sender),
                         cx,
                     )
                 });
                 let result = settle(receiver).await;
+                drop(progress);
                 let upstream_error = match (&result, upstream_to_set) {
                     (Ok(_), Some(upstream)) => {
                         let set_upstream = context.repository.update(cx, |repository, _| {
-                            repository.set_upstream(branch.to_string(), Some(upstream))
+                            repository.set_upstream(target.branch.to_string(), Some(upstream))
                         });
                         settle(set_upstream).await.err()
                     }
                     _ => None,
                 };
                 cx.update(|_window, cx| {
-                    match result {
-                        Ok(output) => {
-                            let notice = push_result_notice(
-                                context.workspace.clone(),
-                                branch.clone(),
-                                Remote {
-                                    name: remote.clone(),
-                                },
-                                output,
-                            );
-                            context.notify(notice, cx);
+                    let notice = match result {
+                        Ok(output) => Some(push_succeeded_notice(&target, pushed_commits, &output)),
+                        Err(error) => {
+                            push_failed_notice(&target, &error, context.workspace.clone())
                         }
-                        Err(error) => notify_failure(&context, "Push failed", error, cx),
+                    };
+                    if let Some(notice) = notice {
+                        context.notify(notice, cx);
                     }
                     if let Some(error) = upstream_error {
                         notify_failure(&context, "Could not set upstream", error, cx);
@@ -398,7 +427,9 @@ impl PushDialog {
                 .size(LabelSize::Small)
                 .color(Color::Error)
                 .into_any_element(),
-            OutgoingCommits::Loaded { commits, truncated } => v_flex()
+            OutgoingCommits::Loaded {
+                commits, truncated, ..
+            } => v_flex()
                 .gap_1()
                 .child(
                     Label::new(commits_to_push_label(commits.len(), *truncated))
@@ -535,6 +566,18 @@ mod tests {
         values.iter().map(|value| value.to_string()).collect()
     }
 
+    fn commits(count: usize) -> Vec<CommitSummary> {
+        (0..count)
+            .map(|index| CommitSummary {
+                sha: SharedString::from(format!("{index:040}")),
+                subject: SharedString::from("subject"),
+                commit_timestamp: 0,
+                author_name: SharedString::from("author"),
+                has_parent: true,
+            })
+            .collect()
+    }
+
     #[test]
     fn force_always_wins_over_set_upstream() {
         assert_eq!(push_options(None, true), Some(PushOptions::Force));
@@ -647,5 +690,38 @@ mod tests {
         assert_eq!(commits_to_push_label(0, false), "0 commits to push");
         assert_eq!(commits_to_push_label(3, false), "3 commits to push");
         assert_eq!(commits_to_push_label(100, true), "100+ commits to push");
+    }
+
+    #[test]
+    fn pushed_commit_count_is_known_only_for_a_complete_list_against_the_target_branch() {
+        let against_target = OutgoingCommits::Loaded {
+            commits: commits(3),
+            truncated: false,
+            relative_to_target: true,
+        };
+        assert_eq!(against_target.pushed_commit_count(), Some(3));
+
+        let truncated = OutgoingCommits::Loaded {
+            commits: commits(PUSH_COMMIT_LIMIT),
+            truncated: true,
+            relative_to_target: true,
+        };
+        assert_eq!(truncated.pushed_commit_count(), None);
+
+        let against_default_branch = OutgoingCommits::Loaded {
+            commits: commits(2),
+            truncated: false,
+            relative_to_target: false,
+        };
+        assert_eq!(against_default_branch.pushed_commit_count(), None);
+
+        for unknown in [
+            OutgoingCommits::Loading,
+            OutgoingCommits::NoRemote,
+            OutgoingCommits::UnknownBase,
+            OutgoingCommits::Failed(SharedString::from("fatal: bad revision")),
+        ] {
+            assert_eq!(unknown.pushed_commit_count(), None);
+        }
     }
 }

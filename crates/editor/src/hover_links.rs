@@ -280,7 +280,7 @@ impl Editor {
                     || (self.lsp_data_enabled() && matches!(link, HoverLink::LspLocation(..)))
             });
         }
-        if refresh && point.as_valid().is_some() {
+        if point.as_valid().is_some() {
             self.select(
                 SelectPhase::Begin {
                     position: point.next_valid,
@@ -1574,6 +1574,122 @@ mod tests {
             0,
             "Show Usages should replace the find-all-references fallback"
         );
+    }
+
+    #[gpui::test]
+    async fn test_show_usages_cmd_hover_on_declaration_shows_a_link(cx: &mut gpui::TestAppContext) {
+        init_test(cx, |_| {});
+
+        let mut cx = EditorLspTestContext::new_rust(
+            lsp::ServerCapabilities {
+                references_provider: Some(lsp::OneOf::Left(true)),
+                definition_provider: Some(lsp::OneOf::Left(true)),
+                ..Default::default()
+            },
+            cx,
+        )
+        .await;
+
+        cx.set_state(indoc! {"
+            fn main() { helper(); ˇ}
+            fn helper() {}
+        "});
+        let declaration_range = cx.lsp_range(indoc! {"
+            fn main() { helper(); }
+            fn «helper»() {}
+        "});
+        let mut definitions =
+            cx.set_request_handler::<GotoDefinition, _, _>(move |url, _, _| async move {
+                Ok(Some(lsp::GotoDefinitionResponse::Scalar(lsp::Location {
+                    uri: url,
+                    range: declaration_range,
+                })))
+            });
+        cx.run_until_parked();
+
+        let hover_point = cx.pixel_position(indoc! {"
+            fn main() { helper(); }
+            fn helˇper() {}
+        "});
+        cx.simulate_mouse_move(hover_point, None, Modifiers::secondary_key());
+        definitions.next().await;
+        cx.run_until_parked();
+
+        cx.assert_editor_text_highlights(
+            HighlightKey::HoveredLinkState,
+            indoc! {"
+                fn main() { helper(); }
+                fn «helper»() {}
+            "},
+        );
+        cx.editor(|editor, _, _| {
+            assert!(
+                editor
+                    .hovered_link_state
+                    .as_ref()
+                    .is_some_and(|state| !state.links.is_empty()),
+                "a declaration whose cmd-click opens Show Usages should keep its link, which shows the pointing hand"
+            );
+        });
+    }
+
+    #[gpui::test]
+    async fn test_show_usages_cmd_click_on_declaration_moves_the_caret_to_the_click(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        init_test(cx, |_| {});
+
+        let mut cx = EditorLspTestContext::new_rust(
+            lsp::ServerCapabilities {
+                references_provider: Some(lsp::OneOf::Left(true)),
+                definition_provider: Some(lsp::OneOf::Left(true)),
+                ..Default::default()
+            },
+            cx,
+        )
+        .await;
+
+        cx.set_state(indoc! {"
+            fn helper() {}
+            fn main() { helper(); ˇ}
+        "});
+        let declaration_range = cx.lsp_range(indoc! {"
+            fn «helper»() {}
+            fn main() { helper(); }
+        "});
+        let _definitions =
+            cx.set_request_handler::<GotoDefinition, _, _>(move |url, _, _| async move {
+                Ok(Some(lsp::GotoDefinitionResponse::Scalar(lsp::Location {
+                    uri: url,
+                    range: declaration_range,
+                })))
+            });
+        let show_usages_requests: Arc<parking_lot::Mutex<Vec<bool>>> = Arc::default();
+        cx.update_editor(|editor, _, cx| {
+            let show_usages_requests = show_usages_requests.clone();
+            editor
+                .register_action(move |action: &ShowUsages, _, _| {
+                    show_usages_requests.lock().push(action.at_mouse_position);
+                })
+                .detach();
+            cx.notify();
+        });
+        cx.run_until_parked();
+
+        let click_point = cx.pixel_position(indoc! {"
+            fn helˇper() {}
+            fn main() { helper(); }
+        "});
+        cx.simulate_mouse_move(click_point, None, Modifiers::secondary_key());
+        cx.run_until_parked();
+        cx.simulate_click(click_point, Modifiers::secondary_key());
+        cx.run_until_parked();
+
+        assert_eq!(*show_usages_requests.lock(), vec![true]);
+        cx.assert_editor_state(indoc! {"
+            fn helˇper() {}
+            fn main() { helper(); }
+        "});
     }
 
     #[gpui::test]

@@ -9,6 +9,7 @@ pub mod manage;
 pub mod new_branch_dialog;
 pub mod ongoing;
 pub mod push_dialog;
+pub mod push_result;
 pub mod ref_diff;
 pub mod ref_suggestions;
 pub mod rename_dialog;
@@ -19,12 +20,16 @@ use std::rc::Rc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use askpass::AskPassDelegate;
-use git::repository::{Branch, GitFailure, REMOTE_CANCELLED_BY_USER};
+use futures::StreamExt as _;
+use futures::channel::mpsc;
+use git::repository::{
+    Branch, GitFailure, REMOTE_CANCELLED_BY_USER, RemoteProgress, RemoteProgressSender,
+};
 use git_ui_core::askpass_modal::AskPassModal;
 use gpui::{App, AppContext as _, Context, Entity, SharedString, Task, WeakEntity, Window};
 use project::git_store::{Repository, RepositorySnapshot};
 use util::ResultExt as _;
-use workspace::{ModalView, Workspace, notifications::NotificationId};
+use workspace::{BackgroundTaskProgress, ModalView, Workspace, notifications::NotificationId};
 
 use self::branch_notification::BranchNotification;
 use crate::branch_refs::{RefKind, RefTarget};
@@ -36,6 +41,7 @@ use crate::merge_tool::conflict_resolution::{
 
 const MAX_QUOTED_REF_NAME_CHARS: usize = 40;
 const ELLIPSIS: char = '\u{2026}';
+const PUSH_PROGRESS_TITLE: &str = "Pushing\u{2026}";
 
 #[derive(Clone)]
 pub struct BranchContext {
@@ -181,6 +187,39 @@ fn next_notification_id() -> NotificationId {
     )
 }
 
+pub struct PushProgress {
+    _indicator: Entity<BackgroundTaskProgress>,
+    _forwarding: Task<()>,
+}
+
+impl PushProgress {
+    pub fn start(workspace: &WeakEntity<Workspace>, cx: &mut App) -> (Self, RemoteProgressSender) {
+        let indicator = cx.new(|_| BackgroundTaskProgress::new(PUSH_PROGRESS_TITLE));
+        workspace
+            .update(cx, |workspace, cx| {
+                workspace.show_background_task(&indicator, cx)
+            })
+            .log_err();
+        let (sender, mut receiver) = mpsc::unbounded::<RemoteProgress>();
+        let weak_indicator = indicator.downgrade();
+        let forwarding = cx.spawn(async move |cx| {
+            while let Some(update) = receiver.next().await {
+                let forwarded = weak_indicator.update(cx, |indicator, cx| {
+                    indicator.set_progress(update.fraction, update.details, cx)
+                });
+                if forwarded.is_err() {
+                    break;
+                }
+            }
+        });
+        let progress = Self {
+            _indicator: indicator,
+            _forwarding: forwarding,
+        };
+        (progress, sender)
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NoticeSeverity {
     Info,
@@ -251,17 +290,23 @@ pub fn quoted_ref_label(name: &str) -> String {
     }
 }
 
-pub fn error_notice(operation: &str, error: &anyhow::Error) -> Option<BranchNotice> {
-    if format!("{error:#}").contains(REMOTE_CANCELLED_BY_USER) {
+pub(crate) fn failure_text(error: &anyhow::Error) -> Option<String> {
+    let description = format!("{error:#}");
+    if description.contains(REMOTE_CANCELLED_BY_USER) {
         return None;
     }
-    let message = match error
+    let text = match error
         .chain()
         .find_map(|cause| cause.downcast_ref::<GitFailure>())
     {
-        Some(failure) => failure.message.trim().to_string(),
-        None => format!("{error:#}").trim().to_string(),
+        Some(failure) => failure.message.clone(),
+        None => description,
     };
+    Some(text)
+}
+
+pub fn error_notice(operation: &str, error: &anyhow::Error) -> Option<BranchNotice> {
+    let message = failure_text(error)?.trim().to_string();
     Some(BranchNotice::error(message).title(format!("git {operation} failed")))
 }
 
@@ -270,6 +315,7 @@ mod tests {
     use std::cell::Cell;
 
     use git::repository::GitFailureKind;
+    use gpui::TestAppContext;
 
     use super::*;
 
@@ -387,5 +433,63 @@ mod tests {
         let error = anyhow::anyhow!("connection reset").context("pushing branch");
         let notice = error_notice("push", &error).expect("a notice for a real failure");
         assert_eq!(notice.message.as_ref(), "pushing branch: connection reset");
+    }
+
+    #[test]
+    fn failure_text_keeps_the_raw_git_output_and_hides_cancellations() {
+        let failure = GitFailure {
+            kind: GitFailureKind::Other,
+            message: " ! [rejected]        main -> main (fetch first)\n".to_string(),
+        };
+        let error = anyhow::Error::new(failure).context("pushing main");
+        assert_eq!(
+            failure_text(&error).as_deref(),
+            Some(" ! [rejected]        main -> main (fetch first)\n")
+        );
+        assert_eq!(
+            failure_text(&anyhow::anyhow!("fatal: unable to access")).as_deref(),
+            Some("fatal: unable to access")
+        );
+        assert_eq!(
+            failure_text(&anyhow::anyhow!(REMOTE_CANCELLED_BY_USER)),
+            None
+        );
+    }
+
+    #[gpui::test]
+    fn push_progress_forwards_git_progress_until_the_push_ends(cx: &mut TestAppContext) {
+        let (progress, sender) =
+            cx.update(|cx| PushProgress::start(&WeakEntity::new_invalid(), cx));
+        let indicator = progress._indicator.downgrade();
+        indicator
+            .read_with(cx, |task, _| {
+                assert_eq!(task.title().as_ref(), PUSH_PROGRESS_TITLE);
+                assert_eq!(task.fraction(), None);
+            })
+            .expect("the indicator is alive while the push runs");
+
+        sender
+            .unbounded_send(RemoteProgress {
+                fraction: 0.5,
+                details: "Writing objects:  50% (1/2)".to_string(),
+            })
+            .expect("the progress receiver is alive while the push runs");
+        cx.run_until_parked();
+        indicator
+            .read_with(cx, |task, _| {
+                assert_eq!(task.fraction(), Some(0.5));
+                assert_eq!(
+                    task.details().map(|details| details.as_ref()),
+                    Some("Writing objects:  50% (1/2)")
+                );
+            })
+            .expect("the indicator is alive while the push runs");
+
+        drop(progress);
+        cx.run_until_parked();
+        assert!(
+            indicator.upgrade().is_none(),
+            "the progress indicator outlived the push"
+        );
     }
 }

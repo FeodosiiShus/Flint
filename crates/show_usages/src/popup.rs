@@ -7,9 +7,9 @@ use editor::actions::ShowUsages;
 use file_icons::FileIcons;
 use gpui::{
     Action, AnyElement, App, Bounds, ClickEvent, Context, CursorStyle, DismissEvent, Div,
-    DragMoveEvent, ElementId, EventEmitter, FocusHandle, Focusable, FontStyle, FontWeight,
-    HighlightStyle, Hsla, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
-    Pixels, Point, ScrollStrategy, SharedString, Size, StyledText, Task, TextRun, TextStyle,
+    DragMoveEvent, ElementId, EventEmitter, FocusHandle, Focusable, FontWeight, HighlightStyle,
+    Hsla, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point,
+    ScrollStrategy, SharedString, Size, StyledText, Task, TextRun, TextStyle,
     UniformListScrollHandle, Window, prelude::*, px, uniform_list,
 };
 use menu::{Cancel, Confirm, SelectFirst, SelectLast, SelectNext, SelectPrevious};
@@ -19,18 +19,22 @@ use settings::Settings as _;
 use text::ToOffset as _;
 use theme::SyntaxTheme;
 use theme_settings::ThemeSettings;
-use ui::{ButtonLike, CommonAnimationExt, ContextMenu, PopoverMenu, Tooltip, prelude::*};
+use ui::{
+    ButtonLike, CommonAnimationExt, ContextMenu, PopoverMenu, PopupRowMetrics, PopupRowStyle,
+    Tooltip, prelude::*,
+};
 use util::ResultExt as _;
 use workspace::ModalView;
 use workspace::item::ItemSettings;
 
 use crate::model::{
     DisplayRow, ShowUsagesState, SpeedSearchMatch, UsageAccess, UsageFilters, UsageRow, UsageScope,
-    UsagesModel, filtered_out_message, out_of_scope_message,
+    UsagesModel, filtered_out_message, footer_path, out_of_scope_message,
 };
+use crate::symbol::SymbolDescription;
 use crate::{
     OpenInFindWindow, SelectPageDown, SelectPageUp, ShowSettings, ToggleComments, ToggleImports,
-    TogglePreview, ToggleReadAccess, ToggleWriteAccess, UsagesSession,
+    TogglePreview, ToggleReadAccess, ToggleWriteAccess, UsagesSession, UsagesTitle,
 };
 
 const KEY_CONTEXT: &str = "ShowUsagesPopup";
@@ -56,13 +60,16 @@ const SCOPE_BUTTON_GAP: Pixels = px(4.);
 const SEPARATOR_WIDTH: Pixels = px(1.);
 const SEPARATOR_HEIGHT: Pixels = px(16.);
 const SEPARATOR_MARGIN: Pixels = px(4.);
+const USAGES_LABEL: &str = "Usages";
+const SETTINGS_BUTTON_GAP: Pixels = px(8.);
 
-const ROW_HEIGHT: Pixels = px(22.);
-const ROW_INSET: Pixels = px(6.);
-const ROW_PADDING: Pixels = px(8.);
-const SELECTION_RADIUS: Pixels = px(4.);
+const ROW_METRICS: PopupRowMetrics = PopupRowMetrics::for_style(PopupRowStyle::List);
+const ROW_HEIGHT: Pixels = ROW_METRICS.pill_height;
+const ROW_INSET: Pixels = ROW_METRICS.pill_inset_x;
+const ROW_PADDING: Pixels = ROW_METRICS.content_padding_x;
+const SELECTION_RADIUS: Pixels = ROW_METRICS.pill_radius;
 const FILE_ICON_GAP: Pixels = px(4.);
-const LINE_COLUMN_PADDING: Pixels = px(8.);
+const LINE_NUMBER_PADDING: Pixels = px(8.);
 const USAGE_ICON_SLOT: Pixels = px(16.);
 const USAGE_ICON_GAP: Pixels = px(5.);
 const ORIGIN_GAP: Pixels = px(8.);
@@ -78,6 +85,10 @@ const RESIZE_HANDLE_SIZE: Pixels = px(8.);
 const WINDOW_MARGIN: Pixels = px(8.);
 const BORDER_WIDTH: Pixels = px(1.);
 const MIN_POPUP_WIDTH: Pixels = px(240.);
+const FOOTER_PADDING_X: Pixels = px(20.);
+const FOOTER_PADDING_Y: Pixels = px(6.);
+const FOOTER_FONT_SIZE_OFFSET: Pixels = px(2.);
+const MIN_FOOTER_FONT_SIZE: Pixels = px(1.);
 
 const MAX_VISIBLE_ROWS: usize = 30;
 const MAX_VISIBLE_ROWS_WITH_PREVIEW: usize = 20;
@@ -356,6 +367,29 @@ impl ShowUsagesPopup {
         self.recompute_speed_search();
         self.layout_dirty = true;
         cx.notify();
+    }
+
+    pub(crate) fn set_symbol(&mut self, symbol: SymbolDescription, cx: &mut Context<Self>) {
+        self.session.symbol = symbol;
+        self.layout_dirty = true;
+        cx.notify();
+    }
+
+    fn footer_reserved(&self) -> bool {
+        self.model
+            .as_ref()
+            .is_some_and(|model| model.shown_count() > 0)
+    }
+
+    fn footer_text(&self, cx: &App) -> Option<SharedString> {
+        let model = self.model.as_ref()?;
+        let location = model.usage_row_at(self.selected?)?.locations.first()?;
+        let file = location.buffer.read(cx).file()?;
+        let path = crate::collect::absolute_path(file.as_ref(), cx);
+        Some(SharedString::from(footer_path(
+            &path,
+            util::paths::home_dir(),
+        )))
     }
 
     #[cfg(test)]
@@ -922,14 +956,23 @@ impl ShowUsagesPopup {
         } else {
             Pixels::ZERO
         };
-        chrome_height() + ROW_HEIGHT + preview
+        self.chrome_height(cx) + ROW_HEIGHT + preview
+    }
+
+    fn chrome_height(&self, cx: &App) -> Pixels {
+        let footer = if self.footer_reserved() {
+            footer_height(cx)
+        } else {
+            Pixels::ZERO
+        };
+        HEADER_HEIGHT + TOOLBAR_HEIGHT + BORDER_WIDTH * 2. + footer
     }
 
     fn compute_geometry(&self, window: &Window, cx: &App) -> Geometry {
         let viewport = window.viewport_size();
         let maximum_width = (viewport.width - WINDOW_MARGIN * 2.).max(MIN_POPUP_WIDTH);
         let maximum_height = (viewport.height - WINDOW_MARGIN * 2.).max(ROW_HEIGHT);
-        let chrome = chrome_height();
+        let chrome = self.chrome_height(cx);
         let preview_shown = self.preview_shown();
         let divider = if preview_shown {
             DIVIDER_HEIGHT
@@ -1048,7 +1091,7 @@ impl ShowUsagesPopup {
                         continue;
                     };
                     let file_label = file_label_line(model, row, &self.state, style, &[]);
-                    let line_column = line_column_line(row, style);
+                    let line_number = line_number_line(row, style);
                     let code = code_line(row, style, syntax, &[]);
                     let origin = if row.is_origin {
                         origin_width
@@ -1059,8 +1102,8 @@ impl ShowUsagesPopup {
                         .file
                         .max(file_icon_width + line_width(window, &file_label, style.font_size));
                     columns.line = columns.line.max(
-                        LINE_COLUMN_PADDING * 2.
-                            + line_width(window, &line_column, style.font_size),
+                        LINE_NUMBER_PADDING * 2.
+                            + line_width(window, &line_number, style.font_size),
                     );
                     columns.code = columns.code.max(
                         USAGE_ICON_SLOT
@@ -1084,16 +1127,7 @@ impl ShowUsagesPopup {
     }
 
     fn measure_header(&self, style: &RowStyle, window: &Window) -> Pixels {
-        let title_style = TextStyle {
-            font_weight: FontWeight::MEDIUM,
-            ..style.base.clone()
-        };
-        let title = label_width(
-            window,
-            &self.session.title(),
-            style.label_font_size,
-            &title_style,
-        );
+        let title = line_width(window, &self.title_line(style), style.label_font_size);
         let status = self.model.as_ref().map_or(Pixels::ZERO, |model| {
             label_width(
                 window,
@@ -1134,16 +1168,44 @@ impl ShowUsagesPopup {
         let scope =
             BUTTON_EDGE * 2. + SCOPE_BUTTON_PADDING * 2. + scope_label + SCOPE_BUTTON_GAP + chevron;
         let separator = SEPARATOR_WIDTH + SEPARATOR_MARGIN * 2.;
+        let usages_label = label_width(window, USAGES_LABEL, style.label_font_size, &style.base);
         TOOLBAR_PADDING * 2.
             + TOOLBAR_BUTTON_SIZE * TOOLBAR_ICON_BUTTONS
             + options
             + separator
             + scope
             + TOOLBAR_SPACER
+            + usages_label
+            + SETTINGS_BUTTON_GAP
             + TOOLBAR_GAP * TOOLBAR_GAPS
     }
 
-    fn render_header(&self, border_color: Hsla, cx: &Context<Self>) -> impl IntoElement {
+    fn title_line(&self, style: &RowStyle) -> StyledLine {
+        match self.session.title() {
+            UsagesTitle::Symbol(title) => {
+                let mut text = title.emphasized.to_string();
+                let mut highlights = vec![(0..text.len(), bold())];
+                if let Some(location) = title.location {
+                    text.push(' ');
+                    let location_start = text.len();
+                    text.push_str(&location);
+                    highlights.push((location_start..text.len(), foreground(style.muted)));
+                }
+                styled_line(text.into(), &style.base, highlights)
+            }
+            UsagesTitle::Implementations(text) => {
+                let length = text.len();
+                styled_line(text, &style.base, vec![(0..length, medium())])
+            }
+        }
+    }
+
+    fn render_header(
+        &self,
+        style: &RowStyle,
+        border_color: Hsla,
+        cx: &Context<Self>,
+    ) -> impl IntoElement {
         let status = self
             .model
             .as_ref()
@@ -1164,12 +1226,11 @@ impl ShowUsagesPopup {
             )
             .on_drag(DragHandle, |_, _, _, cx| cx.new(|_| gpui::Empty))
             .child(
-                div().min_w_0().child(
-                    Label::new(self.session.title())
-                        .weight(FontWeight::MEDIUM)
-                        .single_line()
-                        .truncate(),
-                ),
+                div()
+                    .min_w_0()
+                    .truncate()
+                    .text_size(style.label_font_size)
+                    .child(self.title_line(style).into_styled_text()),
             )
             .when(self.is_searching(), |this| {
                 this.child(
@@ -1242,18 +1303,26 @@ impl ShowUsagesPopup {
             .child(self.render_scope_chooser(cx))
             .child(div().flex_1().min_w(TOOLBAR_SPACER))
             .child(
-                toolbar_button(
-                    "show-usages-settings",
-                    ToolbarIcon::Single(IconName::GeneralSettings),
-                )
-                .tooltip(Tooltip::for_action_title_in(
-                    "Settings…",
-                    &ShowSettings,
-                    &self.focus_handle,
-                ))
-                .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
-                    this.show_settings(&ShowSettings, window, cx)
-                })),
+                h_flex()
+                    .flex_none()
+                    .gap(SETTINGS_BUTTON_GAP)
+                    .child(Label::new(USAGES_LABEL).color(Color::Muted).single_line())
+                    .child(
+                        toolbar_button(
+                            "show-usages-settings",
+                            ToolbarIcon::Single(IconName::GeneralSettings),
+                        )
+                        .tooltip(Tooltip::for_action_title_in(
+                            "Settings…",
+                            &ShowSettings,
+                            &self.focus_handle,
+                        ))
+                        .on_click(cx.listener(
+                            |this, _: &ClickEvent, window, cx| {
+                                this.show_settings(&ShowSettings, window, cx)
+                            },
+                        )),
+                    ),
             )
     }
 
@@ -1513,7 +1582,7 @@ impl ShowUsagesPopup {
             speed_search_match.text_ranges.as_slice()
         });
         let file_label = file_label_line(model, row, &self.state, style, file_label_ranges);
-        let line_column = line_column_line(row, style);
+        let line_number = line_number_line(row, style);
         let code = code_line(row, style, syntax, text_ranges);
         h_flex()
             .size_full()
@@ -1537,10 +1606,10 @@ impl ShowUsagesPopup {
                 div()
                     .flex_none()
                     .w(self.columns.line)
-                    .pl(LINE_COLUMN_PADDING)
+                    .pl(LINE_NUMBER_PADDING)
                     .overflow_hidden()
                     .whitespace_nowrap()
-                    .child(line_column.into_styled_text()),
+                    .child(line_number.into_styled_text()),
             )
             .child(
                 h_flex()
@@ -1558,6 +1627,32 @@ impl ShowUsagesPopup {
                     .when(row.is_origin, |this| this.child(origin_pill(style))),
             )
             .into_any_element()
+    }
+
+    fn render_footer(&self, border_color: Hsla, cx: &App) -> Option<impl IntoElement> {
+        if !self.footer_reserved() {
+            return None;
+        }
+        let font_size = footer_font_size(cx);
+        let muted = cx.theme().colors().text_muted;
+        Some(div().flex_none().w_full().h(footer_height(cx)).when_some(
+            self.footer_text(cx),
+            |this, path| {
+                this.border_t_1()
+                    .border_color(border_color)
+                    .px(FOOTER_PADDING_X)
+                    .py(FOOTER_PADDING_Y)
+                    .child(
+                        div()
+                            .min_w_0()
+                            .truncate()
+                            .text_size(font_size)
+                            .line_height(font_size)
+                            .text_color(muted)
+                            .child(path),
+                    )
+            },
+        ))
     }
 
     fn render_divider(&self, border_color: Hsla, cx: &Context<Self>) -> impl IntoElement {
@@ -1629,6 +1724,7 @@ impl Render for ShowUsagesPopup {
         let geometry = self.compute_geometry(window, cx);
         self.geometry = geometry;
         let border_color = cx.theme().colors().border_variant;
+        let style = RowStyle::new(window, cx);
         let preview_element = self
             .preview
             .clone()
@@ -1663,7 +1759,7 @@ impl Render for ShowUsagesPopup {
             .h(geometry.height)
             .elevation_2(cx)
             .overflow_hidden()
-            .child(self.render_header(border_color, cx))
+            .child(self.render_header(&style, border_color, cx))
             .child(self.render_toolbar(border_color, cx))
             .child(self.render_list(geometry, cx))
             .when_some(preview_element, |this, preview_element| {
@@ -1676,12 +1772,18 @@ impl Render for ShowUsagesPopup {
                         .child(preview_element),
                 )
             })
+            .children(self.render_footer(border_color, cx))
             .child(self.render_resize_handle(cx))
     }
 }
 
-fn chrome_height() -> Pixels {
-    HEADER_HEIGHT + TOOLBAR_HEIGHT + BORDER_WIDTH * 2.
+fn footer_font_size(cx: &App) -> Pixels {
+    (ThemeSettings::get_global(cx).ui_font_size(cx) - FOOTER_FONT_SIZE_OFFSET)
+        .max(MIN_FOOTER_FONT_SIZE)
+}
+
+fn footer_height(cx: &App) -> Pixels {
+    BORDER_WIDTH + FOOTER_PADDING_Y * 2. + footer_font_size(cx)
 }
 
 fn min_preview_height(cx: &App) -> Pixels {
@@ -1803,6 +1905,13 @@ fn bold() -> HighlightStyle {
     }
 }
 
+fn medium() -> HighlightStyle {
+    HighlightStyle {
+        font_weight: Some(FontWeight::MEDIUM),
+        ..HighlightStyle::default()
+    }
+}
+
 fn background(color: Hsla) -> HighlightStyle {
     HighlightStyle {
         background_color: Some(color),
@@ -1879,13 +1988,12 @@ fn file_label_line(
     styled_line(text.into(), &style.base, highlights)
 }
 
-fn line_column_line(row: &UsageRow<Location>, style: &RowStyle) -> StyledLine {
+fn line_number_line(row: &UsageRow<Location>, style: &RowStyle) -> StyledLine {
     let base = TextStyle {
         color: style.muted,
-        font_style: FontStyle::Italic,
         ..style.base.clone()
     };
-    styled_line(row.line_column_label(), &base, Vec::new())
+    styled_line(row.line_number_label(), &base, Vec::new())
 }
 
 fn code_line(
