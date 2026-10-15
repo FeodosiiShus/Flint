@@ -6,7 +6,7 @@ version = "1.24.0"
 publish.workspace = true
 license = "GPL-3.0-or-later"
 authors = ["Zed Team <hi@zed.dev>"]
-default-run = "zed"
+default-run = "flint"
 
 [lints]
 workspace = true
@@ -26,7 +26,7 @@ test-support = [
 ]
 
 [[bin]]
-name = "zed"
+name = "flint"
 path = "src/main.rs"
 
 [dependencies]
@@ -147,31 +147,31 @@ identifier = "io.github.feodosiishus.Flint"
 name = "Flint"
 osx_minimum_system_version = "10.15.7"
 osx_info_plist_exts = ["resources/info/*"]
-osx_url_schemes = ["zed"]
+osx_url_schemes = ["flint"]
 
 [package.metadata.bundle-nightly]
 icon = ["resources/app-icon-nightly@2x.png", "resources/app-icon-nightly.png"]
-identifier = "dev.zed.Zed-Nightly"
-name = "Zed Nightly"
+identifier = "io.github.feodosiishus.Flint-Nightly"
+name = "Flint Nightly"
 osx_minimum_system_version = "10.15.7"
 osx_info_plist_exts = ["resources/info/*"]
-osx_url_schemes = ["zed"]
+osx_url_schemes = ["flint"]
 
 [package.metadata.bundle-preview]
 icon = ["resources/app-icon-preview@2x.png", "resources/app-icon-preview.png"]
-identifier = "dev.zed.Zed-Preview"
-name = "Zed Preview"
+identifier = "io.github.feodosiishus.Flint-Preview"
+name = "Flint Preview"
 osx_minimum_system_version = "10.15.7"
 osx_info_plist_exts = ["resources/info/*"]
-osx_url_schemes = ["zed"]
+osx_url_schemes = ["flint"]
 
 [package.metadata.bundle-stable]
 icon = ["resources/app-icon@2x.png", "resources/app-icon.png"]
-identifier = "dev.zed.Zed"
-name = "Zed"
+identifier = "io.github.feodosiishus.Flint-Stable"
+name = "Flint"
 osx_minimum_system_version = "10.15.7"
 osx_info_plist_exts = ["resources/info/*"]
-osx_url_schemes = ["zed"]
+osx_url_schemes = ["flint"]
 
 [package.metadata.cargo-shear]
 ignored = ["profiling", "tracing"]

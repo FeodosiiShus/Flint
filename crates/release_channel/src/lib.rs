@@ -42,10 +42,10 @@ pub static RELEASE_CHANNEL: LazyLock<ReleaseChannel> =
 #[cfg(target_os = "windows")]
 pub fn app_identifier() -> &'static str {
     match *RELEASE_CHANNEL {
-        ReleaseChannel::Dev => "Zed-Editor-Dev",
-        ReleaseChannel::Nightly => "Zed-Editor-Nightly",
-        ReleaseChannel::Preview => "Zed-Editor-Preview",
-        ReleaseChannel::Stable => "Zed-Editor-Stable",
+        ReleaseChannel::Dev => "Flint-Editor-Dev",
+        ReleaseChannel::Nightly => "Flint-Editor-Nightly",
+        ReleaseChannel::Preview => "Flint-Editor-Preview",
+        ReleaseChannel::Stable => "Flint-Editor-Stable",
     }
 }
 
@@ -191,9 +191,9 @@ impl ReleaseChannel {
     pub fn display_name(&self) -> &'static str {
         match self {
             ReleaseChannel::Dev => "Flint",
-            ReleaseChannel::Nightly => "Zed Nightly",
-            ReleaseChannel::Preview => "Zed Preview",
-            ReleaseChannel::Stable => "Zed",
+            ReleaseChannel::Nightly => "Flint Nightly",
+            ReleaseChannel::Preview => "Flint Preview",
+            ReleaseChannel::Stable => "Flint",
         }
     }
 
@@ -213,9 +213,9 @@ impl ReleaseChannel {
     pub fn app_id(&self) -> &'static str {
         match self {
             ReleaseChannel::Dev => "io.github.feodosiishus.Flint",
-            ReleaseChannel::Nightly => "dev.zed.Zed-Nightly",
-            ReleaseChannel::Preview => "dev.zed.Zed-Preview",
-            ReleaseChannel::Stable => "dev.zed.Zed",
+            ReleaseChannel::Nightly => "io.github.feodosiishus.Flint-Nightly",
+            ReleaseChannel::Preview => "io.github.feodosiishus.Flint-Preview",
+            ReleaseChannel::Stable => "io.github.feodosiishus.Flint-Stable",
         }
     }
 }

@@ -1714,7 +1714,7 @@ const ready = true;"#;
         });
     });
     cx.run_until_parked();
-    editor.read_with(cx, |editor, cx| {
+    editor.update(cx, |editor, cx| {
         assert_eq!(editor.display_text(cx), format!("{source}\n"));
     });
 }

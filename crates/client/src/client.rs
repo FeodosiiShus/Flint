@@ -621,8 +621,8 @@ impl ProtoClient for Client {
     }
 }
 
-/// prefix for the zed:// url scheme
-pub const ZED_URL_SCHEME: &str = "zed";
+/// prefix for the flint:// url scheme
+pub const ZED_URL_SCHEME: &str = "flint";
 
 #[cfg(test)]
 mod tests {

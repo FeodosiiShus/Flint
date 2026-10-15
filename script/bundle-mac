@@ -74,7 +74,7 @@ rustup target add "${target_triple}"
 
 build_dir="target/${target_triple}/${target_dir}"
 
-echo "Compiling zed binaries"
+echo "Compiling Flint binaries"
 cargo build ${profile_args[@]+"${profile_args[@]}"} ${zed_feature_args[@]+"${zed_feature_args[@]}"} --package zed --package cli --target "${target_triple}"
 
 echo "Creating application bundle"
@@ -101,11 +101,11 @@ download_git() {
 }
 
 if [[ "${target_dir}" == "release" && "${local_install}" != true ]]; then
-  strip -x "${build_dir}/zed"
+  strip -x "${build_dir}/flint"
   strip -x "${build_dir}/cli"
 fi
 
-cp "${build_dir}/zed" "${app_path}/Contents/MacOS/zed"
+cp "${build_dir}/flint" "${app_path}/Contents/MacOS/flint"
 cp "${build_dir}/cli" "${app_path}/Contents/MacOS/cli"
 
 rm -rf "${app_path}/Contents/Frameworks"

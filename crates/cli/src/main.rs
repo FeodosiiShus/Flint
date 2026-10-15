@@ -31,7 +31,7 @@ use walkdir::WalkDir;
 
 use std::io::IsTerminal;
 
-const URL_PREFIX: [&'static str; 4] = ["zed://", "http://", "https://", "file://"];
+const URL_PREFIX: [&'static str; 5] = ["flint://", "zed://", "http://", "https://", "file://"];
 
 struct Detect;
 
@@ -86,11 +86,11 @@ struct Args {
     classic: bool,
     /// Sets a custom directory for all user data (e.g., database, extensions, logs).
     /// This overrides the default platform-specific data directory location:
-    #[cfg_attr(target_os = "macos", doc = "`~/Library/Application Support/Zed`.")]
-    #[cfg_attr(target_os = "windows", doc = "`%LOCALAPPDATA%\\Zed`.")]
+    #[cfg_attr(target_os = "macos", doc = "`~/Library/Application Support/Flint`.")]
+    #[cfg_attr(target_os = "windows", doc = "`%LOCALAPPDATA%\\Flint`.")]
     #[cfg_attr(
         not(any(target_os = "windows", target_os = "macos")),
-        doc = "`$XDG_DATA_HOME/zed`."
+        doc = "`$XDG_DATA_HOME/flint`."
     )]
     #[arg(long, value_name = "DIR", value_hint = clap::ValueHint::DirPath)]
     user_data_dir: Option<String>,
@@ -105,9 +105,9 @@ struct Args {
     /// Run Flint in the foreground (useful for debugging)
     #[arg(long)]
     foreground: bool,
-    /// Custom path to Flint.app or the zed binary
+    /// Custom path to Flint.app or the flint binary
     #[arg(long)]
-    zed: Option<PathBuf>,
+    flint: Option<PathBuf>,
     /// Pairs of file paths to diff. Can be specified multiple times.
     /// When directories are provided, recurses into them and shows all changed files in a single multi-diff view.
     #[arg(long, action = clap::ArgAction::Append, num_args = 2, value_names = ["OLD_PATH", "NEW_PATH"], value_hint = clap::ValueHint::AnyPath)]
@@ -124,7 +124,7 @@ struct Args {
     uninstall: bool,
 
     /// Used for SSH/Git password authentication, to remove the need for netcat as a dependency,
-    /// by having Zed act like netcat communicating over a Unix socket.
+    /// by having Flint act like netcat communicating over a Unix socket.
     #[arg(long, hide = true)]
     askpass: Option<String>,
 }
@@ -446,7 +446,7 @@ fn run() -> Result<()> {
         paths::set_custom_data_dir(dir);
     }
 
-    let app = Detect::detect(args.zed.as_deref()).context("Bundle detection")?;
+    let app = Detect::detect(args.flint.as_deref()).context("Bundle detection")?;
 
     if let Some(shell) = &args.completions {
         let file_path = std::env::current_exe()?;
@@ -808,7 +808,7 @@ mod linux {
     impl InstalledApp for App {
         fn zed_version_string(&self) -> String {
             format!(
-                "Zed {}{}{} – {}",
+                "Flint {}{}{} – {}",
                 if *release_channel::RELEASE_CHANNEL_NAME == "stable" {
                     "".to_string()
                 } else {
@@ -1066,7 +1066,7 @@ mod mac_os {
             user_data_dir: Option<&str>,
         ) -> io::Result<ExitStatus> {
             let path = match self {
-                Bundle::App { app_bundle, .. } => app_bundle.join("Contents/MacOS/zed"),
+                Bundle::App { app_bundle, .. } => app_bundle.join("Contents/MacOS/flint"),
                 Bundle::LocalPath { executable, .. } => executable.clone(),
             };
 

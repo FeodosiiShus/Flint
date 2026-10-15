@@ -291,15 +291,6 @@ alacritty_terminal = { git = "https://github.com/zed-industries/alacritty", rev 
 any_vec = "0.14"
 anyhow = "1.0.86"
 arc-swap = "1.9.0"
-ashpd = { version = "0.13", default-features = false, features = [
-    "async-io",
-    "inhibit",
-    "notification",
-    "open_uri",
-    "file_chooser",
-    "settings",
-    "trash"
-] }
 async-channel = "2.5.0"
 async-compression = { version = "0.4", features = ["bzip2", "gzip", "futures-io"] }
 async-fs = "2.1"
@@ -620,7 +611,6 @@ wax = "0.7"
 web-time = "1.1.0"
 webpki-roots = "1.0.8"
 which = "8"
-windows-registry = "0.6.0"
 zeroize = "1.8"
 zstd = "0.11"
 

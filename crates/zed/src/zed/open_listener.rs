@@ -109,6 +109,13 @@ impl OpenRequest {
         this.open_behavior = request.open_behavior;
 
         for url in request.urls {
+            // flint:// is the registered scheme. zed:// stays accepted so existing
+            // schema and settings links keep resolving inside the app.
+            let url = if let Some(rest) = url.strip_prefix("flint://") {
+                format!("zed://{rest}")
+            } else {
+                url
+            };
             if let Some(server_name) = url.strip_prefix("zed-cli://") {
                 this.kind = Some(OpenRequestKind::CliConnection(connect_to_cli(server_name)?));
             } else if let Some(action_index) = url.strip_prefix("zed-dock-action://") {
@@ -1125,7 +1132,14 @@ mod tests {
     fn test_parse_focus_app_url(cx: &mut TestAppContext) {
         let _app_state = init_test(cx);
 
-        for url in ["zed://", "zed://open", "zed://open/"] {
+        for url in [
+            "zed://",
+            "zed://open",
+            "zed://open/",
+            "flint://",
+            "flint://open",
+            "flint://open/",
+        ] {
             let request = cx.update(|_| {
                 OpenRequest::parse(RawOpenRequest {
                     urls: vec![url.into()],

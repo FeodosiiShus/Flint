@@ -4671,7 +4671,7 @@ fn window_and_layout_page() -> SettingsPage {
             }),
             SettingsPageItem::SettingItem(SettingItem {
                 title: "Icon Style",
-                description: "Artwork of the tool window bar icons: JetBrains uses the IntelliJ Platform icons, Zed uses Zed's own icons.",
+                description: "Artwork of the tool window bar icons: JetBrains uses the IntelliJ Platform icons, Zed uses Flint's own icons.",
                 field: Box::new(SettingField {
                     json_path: Some("tool_window_bars.icon_style"),
                     pick: |settings_content| {
