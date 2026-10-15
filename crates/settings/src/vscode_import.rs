@@ -562,6 +562,7 @@ impl VsCodeSettings {
                     }
                 }),
             document_folding_ranges: None,
+            fold_imports_by_default: None,
             document_symbols: None,
             linked_edits: self.read_bool("editor.linkedEditing"),
             preferred_line_length: self.read_u32("editor.wordWrapColumn"),

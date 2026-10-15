@@ -104,6 +104,7 @@ pub struct LanguageSettings {
     /// Controls whether folding ranges from language servers are used instead of
     /// tree-sitter and indent-based folding.
     pub document_folding_ranges: DocumentFoldingRanges,
+    /// Whether to fold contiguous top-level import statements when a file is first opened.
     pub fold_imports_by_default: bool,
     /// Controls the source of document symbols used for outlines and breadcrumbs.
     pub document_symbols: DocumentSymbols,

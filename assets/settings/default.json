@@ -1086,6 +1086,9 @@
   // - "off": Use tree-sitter and indent-based folding (default).
   // - "on": Use LSP folding wherever possible, falling back to tree-sitter and indent-based folding when no results were returned by the server.
   "document_folding_ranges": "off",
+  // Whether to fold contiguous top-level import statements when a file is first opened.
+  //
+  // Default: true
   "fold_imports_by_default": true,
 
   // Controls the source of document symbols used for outlines and breadcrumbs.

@@ -45,9 +45,11 @@ bitflags::bitflags! {
         const INJECTIONS = 1 << 4;
         const OVERRIDES = 1 << 5;
         const REDACTIONS = 1 << 6;
-        const FOLDS = 1 << 9;
-        const DEBUGGER = 1 << 7;
-        const TEXT_OBJECTS = 1 << 8;
+        // Bit 7 was RUNNABLES. These values are the on-disk extension-index format;
+        // do not reuse or renumber them.
+        const DEBUGGER = 1 << 8;
+        const TEXT_OBJECTS = 1 << 9;
+        const FOLDS = 1 << 10;
     }
 }
 
@@ -207,12 +209,12 @@ mod tests {
     fn query_files_serialize_as_bits() {
         let query_files = QueryFiles::HIGHLIGHTS | QueryFiles::TEXT_OBJECTS;
         let serialized = serde_json::to_string(&query_files).unwrap();
-        assert_eq!(serialized, "257");
+        assert_eq!(serialized, "513");
         assert_eq!(
             serde_json::from_str::<QueryFiles>(&serialized).unwrap(),
             query_files
         );
-        assert_eq!(serde_json::to_string(&QueryFiles::FOLDS).unwrap(), "512");
+        assert_eq!(serde_json::to_string(&QueryFiles::FOLDS).unwrap(), "1024");
 
         let unknown_bit = 1 << 15;
         let query_files = serde_json::from_str::<QueryFiles>(&unknown_bit.to_string()).unwrap();
