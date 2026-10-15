@@ -60,10 +60,6 @@ nix = { workspace = true, features = ["resource", "user"] }
 [target.'cfg(target_os = "macos")'.dependencies]
 mach2.workspace = true
 
-[target.'cfg(windows)'.dependencies]
-tendril = "0.5"
-windows.workspace = true
-
 [dev-dependencies]
 rand.workspace = true
 util_macros.workspace = true

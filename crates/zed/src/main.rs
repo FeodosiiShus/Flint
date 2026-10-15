@@ -143,46 +143,8 @@ fn fail_to_open_window_async(e: anyhow::Error, cx: &mut AsyncApp) {
 }
 
 fn fail_to_open_window(e: anyhow::Error, _cx: &mut App) {
-    eprintln!(
-        "Flint failed to open a window: {e:?}. See https://zed.dev/docs/linux for troubleshooting steps."
-    );
-    #[cfg(not(any(target_os = "linux", target_os = "freebsd")))]
-    {
-        process::exit(1);
-    }
-
-    // Maybe unify this with gpui::platform::linux::platform::ResultExt::notify_err(..)?
-    #[cfg(any(target_os = "linux", target_os = "freebsd"))]
-    {
-        use ashpd::desktop::notification::{Notification, NotificationProxy, Priority};
-        _cx.spawn(async move |_cx| {
-            let Ok(proxy) = NotificationProxy::new().await else {
-                process::exit(1);
-            };
-
-            let notification_id = "dev.zed.Oops";
-            proxy
-                .add_notification(
-                    notification_id,
-                    Notification::new("Flint failed to launch")
-                        .body(Some(
-                            format!(
-                                "{e:?}. See https://zed.dev/docs/linux for troubleshooting steps."
-                            )
-                            .as_str(),
-                        ))
-                        .priority(Priority::High)
-                        .icon(ashpd::desktop::Icon::with_names(&[
-                            "dialog-question-symbolic",
-                        ])),
-                )
-                .await
-                .ok();
-
-            process::exit(1);
-        })
-        .detach();
-    }
+    eprintln!("Flint failed to open a window: {e:?}.");
+    process::exit(1);
 }
 static STARTUP_TIME: OnceLock<Instant> = OnceLock::new();
 
@@ -286,9 +248,6 @@ fn main() {
             .unwrap_or("unknown"),
     );
 
-    #[cfg(windows)]
-    check_for_conpty_dll();
-
     let app = build_application()
         .with_assets(Assets)
         .with_restart_arguments(restart_arguments);
@@ -310,17 +269,6 @@ fn main() {
     {
         false
     } else {
-        #[cfg(any(target_os = "linux", target_os = "freebsd"))]
-        {
-            crate::zed::listen_for_cli_connections(open_listener.clone()).is_err()
-        }
-
-        #[cfg(target_os = "windows")]
-        {
-            !crate::zed::windows_only_instance::handle_single_instance(open_listener.clone(), &args)
-        }
-
-        #[cfg(target_os = "macos")]
         {
             use zed::mac_only_instance::*;
             ensure_only_instance() != IsOnlyInstance::Yes
@@ -1513,22 +1461,4 @@ fn dump_all_gpui_actions() {
         serde_json::to_string_pretty(&output).unwrap().as_bytes(),
     )
     .unwrap();
-}
-
-#[cfg(target_os = "windows")]
-fn check_for_conpty_dll() {
-    use windows::{
-        Win32::{Foundation::FreeLibrary, System::LibraryLoader::LoadLibraryW},
-        core::w,
-    };
-
-    if let Ok(hmodule) = unsafe { LoadLibraryW(w!("conpty.dll")) } {
-        unsafe {
-            FreeLibrary(hmodule)
-                .context("Failed to free conpty.dll")
-                .log_err();
-        }
-    } else {
-        log::warn!("Failed to load conpty.dll. Terminal will work with reduced functionality.");
-    }
 }

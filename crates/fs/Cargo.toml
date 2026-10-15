@@ -49,16 +49,8 @@ trash = { git = "https://github.com/zed-industries/trash-rs", rev = "41c6c800d88
 [target.'cfg(unix)'.dependencies]
 rustix.workspace = true
 
-[target.'cfg(target_os = "windows")'.dependencies]
-windows.workspace = true
-dunce.workspace = true
-async-std.workspace = true
-
 [target.'cfg(target_os = "macos")'.dependencies]
 unicode-normalization = "0.1"
-
-[package.metadata.cargo-shear]
-ignored = ["async-std"]
 
 [dev-dependencies]
 fs = { workspace = true, features = ["test-support"] }

@@ -36,9 +36,3 @@ which.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
-
-[target.'cfg(windows)'.dependencies]
-async-std.workspace = true
-
-[package.metadata.cargo-shear]
-ignored = ["async-std"]

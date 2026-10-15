@@ -1,4 +1,3 @@
-pub mod platforms;
 mod system_window_tabs;
 
 use gpui::{
@@ -15,10 +14,7 @@ use ui::{
 };
 use workspace::{MultiWorkspace, SidebarRenderState, SidebarSide, WorkspaceSettings};
 
-use crate::{
-    platforms::{platform_linux, platform_windows},
-    system_window_tabs::SystemWindowTabs,
-};
+use crate::system_window_tabs::SystemWindowTabs;
 
 pub use system_window_tabs::{
     DraggedWindowTab, MergeAllWindows, MoveTabToNewWindow, ShowNextWindowTab, ShowPreviousWindowTab,
@@ -169,71 +165,21 @@ impl PlatformTitleBar {
     }
 }
 
-/// Renders the platform-appropriate left-side window controls (e.g. Ubuntu/GNOME close button).
-///
-/// Only relevant on Linux with client-side decorations when the window manager
-/// places controls on the left.
 pub fn render_left_window_controls(
-    button_layout: Option<WindowButtonLayout>,
-    close_action: Box<dyn Action>,
-    window: &Window,
+    _button_layout: Option<WindowButtonLayout>,
+    _close_action: Box<dyn Action>,
+    _window: &Window,
 ) -> Option<AnyElement> {
-    if PlatformStyle::platform() != PlatformStyle::Linux {
-        return None;
-    }
-    if !matches!(window.window_decorations(), Decorations::Client { .. }) {
-        return None;
-    }
-    let button_layout = button_layout?;
-    if button_layout.left[0].is_none() {
-        return None;
-    }
-    Some(
-        platform_linux::LinuxWindowControls::new(
-            "left-window-controls",
-            button_layout.left,
-            close_action,
-        )
-        .into_any_element(),
-    )
+    None
 }
 
-/// Renders the platform-appropriate right-side window controls (close, minimize, maximize).
-///
-/// Returns `None` on Mac or when the platform doesn't need custom controls
-/// (e.g. Linux with server-side decorations).
 pub fn render_right_window_controls(
-    button_layout: Option<WindowButtonLayout>,
-    close_action: Box<dyn Action>,
-    window: &Window,
-    cx: &App,
+    _button_layout: Option<WindowButtonLayout>,
+    _close_action: Box<dyn Action>,
+    _window: &Window,
+    _cx: &App,
 ) -> Option<AnyElement> {
-    let decorations = window.window_decorations();
-    let height = platform_title_bar_height(window, cx);
-
-    match PlatformStyle::platform() {
-        PlatformStyle::Linux => {
-            if !matches!(decorations, Decorations::Client { .. }) {
-                return None;
-            }
-            let button_layout = button_layout?;
-            if button_layout.right[0].is_none() {
-                return None;
-            }
-            Some(
-                platform_linux::LinuxWindowControls::new(
-                    "right-window-controls",
-                    button_layout.right,
-                    close_action,
-                )
-                .into_any_element(),
-            )
-        }
-        PlatformStyle::Windows => {
-            Some(platform_windows::WindowsWindowControls::new(height).into_any_element())
-        }
-        PlatformStyle::Mac => None,
-    }
+    None
 }
 
 impl Render for PlatformTitleBar {

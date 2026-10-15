@@ -156,7 +156,7 @@ jobs:
         run: cargo test --locked --package gpui
 
       - name: Run zed action, keymap and project window tests
-        run: cargo test --locked --package zed --bin zed -- test_action_namespaces test_base_keymap test_open_paths test_bundled_languages test_project_window_
+        run: cargo test --locked --package zed --bin flint -- test_action_namespaces test_base_keymap test_open_paths test_bundled_languages test_project_window_
 
       - name: Check tests of crates changed by Flint compile
         run: cargo check --locked --tests --package editor --package workspace --package client --package settings_ui --package settings_content --package terminal_view --package language_tools --package diagnostics --package extension_host --package markdown --package markdown_preview

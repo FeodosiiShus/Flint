@@ -19,6 +19,3 @@ test-support = []
 anyhow.workspace = true
 criterion.workspace = true
 libc.workspace = true
-
-[target.'cfg(target_os = "linux")'.dependencies]
-perf-event.workspace = true
