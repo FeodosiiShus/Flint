@@ -408,6 +408,25 @@ VALUES {placeholders};
         })
         .await
     }
+
+    pub async fn mark_file_folds_decided(
+        &self,
+        workspace_id: WorkspaceId,
+        path: Arc<Path>,
+    ) -> Result<()> {
+        self.write(move |conn| {
+            conn.exec_bound(sql!(
+                DELETE FROM file_folds WHERE workspace_id = ?1 AND path = ?2;
+            ))?((workspace_id, path.as_ref()))?;
+            conn.exec_bound(sql!(
+                INSERT INTO file_folds
+                    (workspace_id, path, start, end, start_fingerprint, end_fingerprint)
+                VALUES (?1, ?2, 0, 0, NULL, NULL);
+            ))?((workspace_id, path.as_ref()))?;
+            Ok(())
+        })
+        .await
+    }
 }
 
 #[cfg(test)]

@@ -703,6 +703,123 @@ impl Editor {
         self.display_map.read(cx).fold_placeholder.clone()
     }
 
+    pub(super) fn collapse_fold_regions_on_first_open(
+        &mut self,
+        fold_regions_authoritative: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        struct DefaultFoldRegions;
+
+        if self.buffer_kind(cx) != ItemBufferKind::Singleton {
+            return true;
+        }
+        let Some(buffer) = self.buffer.read(cx).as_singleton() else {
+            return true;
+        };
+        if buffer.read(cx).language().is_none() {
+            return false;
+        }
+        if !LanguageSettings::for_buffer(buffer.read(cx), cx).fold_imports_by_default {
+            return true;
+        }
+
+        let folds_are_restored = WorkspaceSettings::get(None, cx).restore_on_startup
+            != RestoreOnStartupBehavior::EmptyTab;
+        if folds_are_restored
+            && let Some(workspace_id) = self.workspace_serialization_id(cx)
+            && let Some(file_path) = project::File::from_dyn(buffer.read(cx).file())
+                .map(|file| Arc::<Path>::from(file.abs_path(cx)))
+            && let Some(stored_folds) = EditorDb::global(cx)
+                .get_file_folds(workspace_id, &file_path)
+                .log_err()
+            && !stored_folds.is_empty()
+        {
+            return true;
+        }
+
+        let display_snapshot = self
+            .display_map
+            .update(cx, |display_map, cx| display_map.snapshot(cx));
+        if display_snapshot
+            .folds_in_range(MultiBufferOffset(0)..display_snapshot.buffer_snapshot().len())
+            .next()
+            .is_some()
+        {
+            return true;
+        }
+
+        let buffer_snapshot = buffer.read(cx).snapshot();
+        let regions = buffer_snapshot.fold_regions(0..buffer_snapshot.len());
+        if regions.is_empty() {
+            return fold_regions_authoritative;
+        }
+
+        let selections: Vec<Range<usize>> = self
+            .selections
+            .all::<MultiBufferOffset>(&display_snapshot)
+            .into_iter()
+            .map(|selection| {
+                let range = selection.range();
+                range.start.0..range.end.0
+            })
+            .collect();
+
+        let type_id = std::any::TypeId::of::<DefaultFoldRegions>();
+        let mut placeholder = self.default_fold_placeholder(cx);
+        placeholder.type_tag = Some(type_id);
+
+        let creases = regions
+            .into_iter()
+            .filter(|region| {
+                !selections
+                    .iter()
+                    .any(|selection| selection.start < region.end && region.start < selection.end)
+            })
+            .map(|region| {
+                Crease::simple(
+                    MultiBufferOffset(region.start)..MultiBufferOffset(region.end),
+                    placeholder.clone(),
+                )
+            })
+            .collect::<Vec<_>>();
+
+        self.fold_creases(creases, false, window, cx);
+        true
+    }
+
+    pub(super) fn schedule_collapse_fold_regions_on_first_open(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.mode.is_single_line() {
+            return;
+        }
+        self.collapse_fold_regions_attempt = cx.spawn_in(window, async move |this, cx| {
+            cx.background_executor()
+                .timer(FOLD_REGIONS_FIRST_OPEN_ATTEMPT_DELAY)
+                .await;
+            this.update_in(cx, |editor, window, cx| {
+                let Some(buffer_id) = editor
+                    .buffer
+                    .read(cx)
+                    .as_singleton()
+                    .map(|buffer| buffer.read(cx).remote_id())
+                else {
+                    return;
+                };
+                if editor.folded_regions_initialized_for.contains(&buffer_id) {
+                    return;
+                }
+                if editor.collapse_fold_regions_on_first_open(false, window, cx) {
+                    editor.folded_regions_initialized_for.insert(buffer_id);
+                }
+            })
+            .log_err();
+        });
+    }
+
     pub fn insert_creases(
         &mut self,
         creases: impl IntoIterator<Item = Crease<Anchor>>,
@@ -867,10 +984,11 @@ impl Editor {
         self.serialize_folds = cx.background_spawn(async move {
             background_executor.timer(SERIALIZATION_THROTTLE_TIME).await;
             if db_folds.is_empty() {
-                // No folds - delete any persisted folds for this file
-                db.delete_file_folds(workspace_id, file_path)
+                db.mark_file_folds_decided(workspace_id, file_path)
                     .await
-                    .with_context(|| format!("deleting file folds for workspace {workspace_id:?}"))
+                    .with_context(|| {
+                        format!("recording fold decision for workspace {workspace_id:?}")
+                    })
                     .log_err();
             } else {
                 db.save_file_folds(workspace_id, file_path, db_folds)

@@ -81,7 +81,7 @@ jobs:
             --package search --package merge_diff --package diagnostics --package language_tools \
             --package git --package fs --package project --package git_ui --package icons --package project_panel \
             --package editor --package markdown --package markdown_preview \
-            --package languages --package language --package extensions_ui \
+            --package languages --package language --package language_core --package grammars --package extensions_ui \
             --package migrator --package util --package settings_ui --package show_usages \
             --features fs/test-support,project/test-support \
             -E 'package(=settings) | package(=release_channel) | package(=cli) | package(=theme_settings)' \
@@ -102,11 +102,12 @@ jobs:
             -E 'package(=workspace) & kind(lib) & (test(~tab_context_menu) | test(~tab_bar_more_menu) | test(~bottom_toolbar) | test(~panel_size_state) | test(~test_restoring_pinned_tabs) | test(~modal_anchor) | test(~background_task))' \
             -E 'package(=icons)' \
             -E 'package(=project_panel) & kind(lib) & (test(~rounded_selection) | test(~select_opened_file) | test(~undo_rename_keeps_created_dir_holding_excluded_files))' \
-            -E 'package(=editor) & kind(lib) & (test(~rounded_thumb) | test(~mouse_context_menu) | test(~intellij_gutter) | test(~inspection_widget) | test(~breadcrumb) | test(~test_matching_bracket_highlights) | test(~inlay_hint_pill) | test(~text_editor_with_preview) | test(~sticky_header_whitespace) | test(~show_usages) | test(~code_vision))' \
+            -E 'package(=editor) & kind(lib) & (test(~rounded_thumb) | test(~mouse_context_menu) | test(~intellij_gutter) | test(~inspection_widget) | test(~breadcrumb) | test(~test_matching_bracket_highlights) | test(~inlay_hint_pill) | test(~text_editor_with_preview) | test(~sticky_header_whitespace) | test(~show_usages) | test(~code_vision) | test(~auto_collapse_imports))' \
             -E 'package(=markdown) & kind(lib) & test(~top_aligned_autoscroll)' \
             -E 'package(=markdown_preview)' \
             -E 'package(=languages) & kind(lib) & (test(~tsgo) | test(~server_activation))' \
-            -E 'package(=language) & kind(lib) & (test(~test_resolve_language_servers) | test(~test_language_servers_across_settings_files) | test(~test_language_servers_combined_restrictions))' \
+            -E 'package(=language) & kind(lib) & (test(~test_resolve_language_servers) | test(~test_language_servers_across_settings_files) | test(~test_language_servers_combined_restrictions) | test(~fold_regions))' \
+            -E 'package(=language_core)' \
             -E 'package(=extensions_ui) & kind(lib) & test(~marker_install)' \
             -E 'package(=migrator) & kind(lib) & test(~test_rename_restore_on_startup_values_at_root_and_in_overrides)' \
             -E 'package(=util) & kind(lib) & test(~path_with_position_parse_keeps_directories_containing_the_file_name)' \

@@ -1,6 +1,7 @@
 pub mod animation;
 mod appearance;
 mod background_image;
+mod balloon_metrics;
 mod chrome_size;
 mod color;
 mod component_metrics;
@@ -15,6 +16,7 @@ mod units;
 
 pub use appearance::*;
 pub use background_image::*;
+pub use balloon_metrics::*;
 pub use chrome_size::*;
 pub use color::*;
 pub use component_metrics::*;

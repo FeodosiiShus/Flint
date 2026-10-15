@@ -5145,6 +5145,125 @@ fn tsx_lang_with_indents() -> Arc<Language> {
     )
 }
 
+fn typescript_lang() -> Arc<Language> {
+    test_language(
+        "typescript",
+        tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
+    )
+}
+
+async fn typescript_fold_regions(source: &str, cx: &mut TestAppContext) -> Vec<String> {
+    let buffer = cx.new(|cx| Buffer::local(source, cx).with_language(typescript_lang(), cx));
+    buffer
+        .read_with(cx, |buffer, _| buffer.parsing_idle())
+        .await;
+    let snapshot = buffer.read_with(cx, |buffer, _| buffer.snapshot());
+    snapshot
+        .fold_regions(0..snapshot.len())
+        .into_iter()
+        .map(|range| snapshot.text_for_range(range).collect::<String>())
+        .collect()
+}
+
+#[gpui::test]
+async fn test_fold_regions_return_top_level_import_statement_runs(cx: &mut TestAppContext) {
+    let contiguous = indoc! {r#"
+        import a from 'a';
+        import {
+          b,
+          c,
+        } from 'bc';
+
+        const x = 1;
+    "#};
+    let contiguous_run = indoc! {r#"
+        import a from 'a';
+        import {
+          b,
+          c,
+        } from 'bc';"#};
+    assert_eq!(
+        typescript_fold_regions(contiguous, cx).await,
+        &[contiguous_run],
+        "a contiguous run folds into one region spanning every import, multi-line ones included"
+    );
+
+    let separated = indoc! {r#"
+        import a from 'a';
+        import b from 'b';
+
+        const x = 1;
+
+        import {
+          c,
+          d,
+        } from 'cd';
+    "#};
+    let first_group = indoc! {r#"
+        import a from 'a';
+        import b from 'b';"#};
+    let second_group = indoc! {r#"
+        import {
+          c,
+          d,
+        } from 'cd';"#};
+    assert_eq!(
+        typescript_fold_regions(separated, cx).await,
+        &[first_group, second_group],
+        "a statement between two runs splits them into separate groups"
+    );
+}
+
+#[gpui::test]
+async fn test_fold_regions_include_re_exports_but_not_other_exports(cx: &mut TestAppContext) {
+    let source = indoc! {r#"
+        export { x } from 'y';
+        export * from 'z';
+        export const x = 1;
+        export default function f() {}
+    "#};
+    assert_eq!(
+        typescript_fold_regions(source, cx).await,
+        &["export { x } from 'y';", "export * from 'z';"],
+        "only export statements that re-export another module carry a source string"
+    );
+}
+
+#[gpui::test]
+async fn test_fold_regions_exclude_nested_and_dynamic_imports(cx: &mut TestAppContext) {
+    let source = indoc! {r#"
+        import a from 'a';
+
+        function f() {
+          const m = import('m');
+        }
+
+        function g() {
+          const n = import('n');
+        }
+    "#};
+    assert_eq!(
+        typescript_fold_regions(source, cx).await,
+        &["import a from 'a';"],
+        "the query anchors imports to the program node, so dynamic imports inside a function body are not folded"
+    );
+}
+
+#[gpui::test]
+async fn test_fold_regions_are_empty_without_import_statements(cx: &mut TestAppContext) {
+    let source = indoc! {r#"
+        const x = 1;
+
+        function f() {}
+
+        export const y = 2;
+    "#};
+    assert!(
+        typescript_fold_regions(source, cx).await.is_empty(),
+        "a buffer with no import statements has nothing to fold"
+    );
+}
+
 #[gpui::test]
 fn test_autoindent_typescript_braceless_control_flow(cx: &mut App) {
     init_settings(cx, |_| {});

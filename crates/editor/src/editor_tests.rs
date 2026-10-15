@@ -1650,6 +1650,76 @@ async fn test_fold_action(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+async fn test_auto_collapse_imports_and_preserve_manual_unfold(cx: &mut TestAppContext) {
+    init_test(cx, |_| {});
+
+    let fs = FakeFs::new(cx.executor());
+    let source = r#"import {
+    Alpha,
+    Beta,
+} from "module";
+
+const ready = true;"#;
+    fs.insert_tree(
+        path!("/a"),
+        json!({
+            "file.ts": source,
+        }),
+    )
+    .await;
+
+    let project = Project::test(fs, [path!("/a").as_ref()], cx).await;
+    project.read_with(cx, |project, _| {
+        project.languages().add(language(
+            "typescript",
+            tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
+        ));
+    });
+
+    let (multi_workspace, cx) =
+        cx.add_window_view(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
+    let workspace =
+        multi_workspace.read_with(cx, |multi_workspace, _| multi_workspace.workspace().clone());
+    let worktree_id = workspace.update(cx, |workspace, cx| {
+        workspace.project().update(cx, |project, cx| {
+            project.worktrees(cx).next().unwrap().read(cx).id()
+        })
+    });
+    let editor = workspace
+        .update_in(cx, |workspace, window, cx| {
+            workspace.open_path((worktree_id, rel_path("file.ts")), None, true, window, cx)
+        })
+        .unwrap()
+        .await
+        .downcast::<Editor>()
+        .unwrap();
+
+    cx.run_until_parked();
+    cx.executor()
+        .advance_clock(FOLD_REGIONS_FIRST_OPEN_ATTEMPT_DELAY);
+    cx.run_until_parked();
+
+    editor.update_in(cx, |editor, window, cx| {
+        let collapsed_text = editor.display_text(cx);
+        assert!(collapsed_text.contains("⋯"));
+        assert!(!collapsed_text.contains("Beta,"));
+
+        editor.unfold_lines(&UnfoldLines, window, cx);
+        assert_eq!(editor.display_text(cx), source);
+    });
+    editor.update(cx, |editor, cx| {
+        editor.buffer.update(cx, |buffer, cx| {
+            let end = buffer.len(cx);
+            buffer.edit([(end..end, "\n")], None, cx);
+        });
+    });
+    cx.run_until_parked();
+    editor.read_with(cx, |editor, cx| {
+        assert_eq!(editor.display_text(cx), format!("{source}\n"));
+    });
+}
+
+#[gpui::test]
 fn test_fold_action_without_language(cx: &mut TestAppContext) {
     init_test(cx, |_| {});
 

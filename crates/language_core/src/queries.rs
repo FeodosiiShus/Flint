@@ -25,6 +25,8 @@ pub enum QueryFile {
     Debugger,
     #[strum(serialize = "textobjects.scm")]
     TextObjects,
+    #[strum(serialize = "folds.scm")]
+    Folds,
 }
 
 impl QueryFile {
@@ -43,8 +45,9 @@ bitflags::bitflags! {
         const INJECTIONS = 1 << 4;
         const OVERRIDES = 1 << 5;
         const REDACTIONS = 1 << 6;
-        const DEBUGGER = 1 << 8;
-        const TEXT_OBJECTS = 1 << 9;
+        const FOLDS = 1 << 9;
+        const DEBUGGER = 1 << 7;
+        const TEXT_OBJECTS = 1 << 8;
     }
 }
 
@@ -64,6 +67,7 @@ impl From<QueryFile> for QueryFiles {
             QueryFile::Injections => Self::INJECTIONS,
             QueryFile::Overrides => Self::OVERRIDES,
             QueryFile::Redactions => Self::REDACTIONS,
+            QueryFile::Folds => Self::FOLDS,
             QueryFile::Debugger => Self::DEBUGGER,
             QueryFile::TextObjects => Self::TEXT_OBJECTS,
         }
@@ -121,6 +125,7 @@ pub struct LanguageQueries {
     pub injections: Option<Cow<'static, str>>,
     pub overrides: Option<Cow<'static, str>>,
     pub redactions: Option<Cow<'static, str>>,
+    pub folds: Option<Cow<'static, str>>,
     pub text_objects: Option<Cow<'static, str>>,
     pub debugger: Option<Cow<'static, str>>,
 }
@@ -141,6 +146,7 @@ impl LanguageQueries {
                 QueryFile::Injections => &mut queries.injections,
                 QueryFile::Overrides => &mut queries.overrides,
                 QueryFile::Redactions => &mut queries.redactions,
+                QueryFile::Folds => &mut queries.folds,
                 QueryFile::Debugger => &mut queries.debugger,
                 QueryFile::TextObjects => &mut queries.text_objects,
             };
@@ -169,6 +175,7 @@ mod tests {
         assert_eq!(queries.redactions.as_deref(), Some("redactions.scm"));
         assert_eq!(queries.debugger.as_deref(), Some("debugger.scm"));
         assert_eq!(queries.text_objects.as_deref(), Some("textobjects.scm"));
+        assert_eq!(queries.folds.as_deref(), Some("folds.scm"));
 
         for query_file in QueryFile::iter() {
             let file_name: &'static str = query_file.into();
@@ -200,11 +207,12 @@ mod tests {
     fn query_files_serialize_as_bits() {
         let query_files = QueryFiles::HIGHLIGHTS | QueryFiles::TEXT_OBJECTS;
         let serialized = serde_json::to_string(&query_files).unwrap();
-        assert_eq!(serialized, "513");
+        assert_eq!(serialized, "257");
         assert_eq!(
             serde_json::from_str::<QueryFiles>(&serialized).unwrap(),
             query_files
         );
+        assert_eq!(serde_json::to_string(&QueryFiles::FOLDS).unwrap(), "512");
 
         let unknown_bit = 1 << 15;
         let query_files = serde_json::from_str::<QueryFiles>(&unknown_bit.to_string()).unwrap();

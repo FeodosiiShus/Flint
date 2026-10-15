@@ -104,6 +104,7 @@ pub struct LanguageSettings {
     /// Controls whether folding ranges from language servers are used instead of
     /// tree-sitter and indent-based folding.
     pub document_folding_ranges: DocumentFoldingRanges,
+    pub fold_imports_by_default: bool,
     /// Controls the source of document symbols used for outlines and breadcrumbs.
     pub document_symbols: DocumentSymbols,
     /// Controls where the `editor::Rewrap` action is allowed for this language.
@@ -616,6 +617,7 @@ impl settings::Settings for AllLanguageSettings {
                 language_servers: settings.language_servers.unwrap(),
                 semantic_tokens: settings.semantic_tokens.unwrap(),
                 document_folding_ranges: settings.document_folding_ranges.unwrap(),
+                fold_imports_by_default: settings.fold_imports_by_default.unwrap(),
                 document_symbols: settings.document_symbols.unwrap(),
                 allow_rewrap: settings.allow_rewrap.unwrap(),
                 show_whitespaces: settings.show_whitespaces.unwrap(),

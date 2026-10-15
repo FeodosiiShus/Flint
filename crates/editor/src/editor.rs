@@ -291,6 +291,7 @@ pub(crate) const CODE_ACTION_TIMEOUT: Duration = Duration::from_secs(5);
 pub(crate) const FORMAT_TIMEOUT: Duration = Duration::from_secs(5);
 pub(crate) const SCROLL_CENTER_TOP_BOTTOM_DEBOUNCE_TIMEOUT: Duration = Duration::from_secs(1);
 pub const LSP_REQUEST_DEBOUNCE_TIMEOUT: Duration = Duration::from_millis(50);
+const FOLD_REGIONS_FIRST_OPEN_ATTEMPT_DELAY: Duration = Duration::from_millis(50);
 
 pub enum ActiveDebugLine {}
 pub enum DebugStackFrameLine {}
@@ -1051,6 +1052,8 @@ pub struct Editor {
     refresh_folding_ranges_task: Task<()>,
     inlay_hints: Option<LspInlayHintData>,
     folding_newlines: Task<()>,
+    folded_regions_initialized_for: HashSet<BufferId>,
+    collapse_fold_regions_attempt: Task<()>,
     select_next_options: Option<SelectSearchOptions>,
     pub lookup_key: Option<Box<dyn Any + Send + Sync>>,
     on_local_selections_changed:
@@ -2368,6 +2371,8 @@ impl Editor {
             mode,
             selection_drag_state: SelectionDragState::None,
             folding_newlines: Task::ready(()),
+            folded_regions_initialized_for: HashSet::default(),
+            collapse_fold_regions_attempt: Task::ready(()),
             lookup_key: None,
             select_next_options: None,
             on_local_selections_changed: None,
@@ -2524,6 +2529,8 @@ impl Editor {
                 editor.register_buffer(buffer.read(cx).remote_id(), cx);
             }
         }
+
+        editor.schedule_collapse_fold_regions_on_first_open(window, cx);
 
         editor
     }
@@ -9691,6 +9698,12 @@ impl Editor {
                 });
             }
             multi_buffer::Event::Reparsed(buffer_id) => {
+                if !self.folded_regions_initialized_for.contains(buffer_id) {
+                    let buffer_id = *buffer_id;
+                    if self.collapse_fold_regions_on_first_open(true, window, cx) {
+                        self.folded_regions_initialized_for.insert(buffer_id);
+                    }
+                }
                 self.refresh_selected_text_highlights(&self.display_snapshot(cx), true, window, cx);
                 self.colorize_brackets(true, cx);
                 jsx_tag_auto_close::refresh_enabled_in_any_buffer(self, multibuffer, cx);
@@ -9714,6 +9727,7 @@ impl Editor {
                     self.refresh_document_highlights(cx);
                 }
                 jsx_tag_auto_close::refresh_enabled_in_any_buffer(self, multibuffer, cx);
+                self.schedule_collapse_fold_regions_on_first_open(window, cx);
                 cx.emit(EditorEvent::Reparsed(*buffer_id));
                 cx.notify();
             }

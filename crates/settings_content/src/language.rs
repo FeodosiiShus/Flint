@@ -334,6 +334,7 @@ pub struct LanguageSettingsContent {
     ///
     /// Default: "off"
     pub document_folding_ranges: Option<DocumentFoldingRanges>,
+    pub fold_imports_by_default: Option<bool>,
     /// Controls the source of document symbols used for outlines and breadcrumbs.
     ///
     /// Options:

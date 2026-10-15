@@ -142,7 +142,10 @@ pub use toolbar::{
     PaneSearchBarCallbacks, Toolbar, ToolbarItemEvent, ToolbarItemLocation, ToolbarItemView,
 };
 pub use ui;
-use ui::{BackgroundImageArea, BackgroundImageTarget, Window, background_image_layer, prelude::*};
+use ui::{
+    BALLOON_METRICS, BackgroundImageArea, BackgroundImageTarget, Window, background_image_layer,
+    prelude::*,
+};
 use url::Url;
 use util::{
     ResultExt, TryFutureExt,
@@ -6423,13 +6426,13 @@ impl Workspace {
         Some(
             div()
                 .absolute()
-                .right_3()
-                .bottom_3()
-                .w_112()
-                .h_full()
+                .right(BALLOON_METRICS.window_inset)
+                .bottom(BALLOON_METRICS.window_inset)
+                .w(BALLOON_METRICS.width)
                 .flex()
                 .flex_col()
                 .justify_end()
+                .items_end()
                 .gap_2()
                 .children(
                     self.notifications

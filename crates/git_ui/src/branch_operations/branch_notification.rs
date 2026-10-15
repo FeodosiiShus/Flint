@@ -1,20 +1,41 @@
 use std::time::{Duration, Instant};
 
-use gpui::{DismissEvent, EventEmitter, FocusHandle, Focusable, Task};
-use ui::{Tooltip, prelude::*};
+use gpui::{Anchor, DismissEvent, EventEmitter, FocusHandle, Focusable, FontWeight, Task};
+use ui::{
+    BALLOON_CONTENT_INSETS, BALLOON_MAX_VISIBLE_ACTIONS, BALLOON_METRICS, BalloonLayoutMetrics,
+    Button, ButtonSize, ButtonStyle, ContextMenu, ContextMenuEntry, ElevationIndex, PopoverMenu,
+    Tooltip, prelude::*,
+};
+use util::ResultExt as _;
 use workspace::notifications::{Notification, SuppressEvent};
 
 use super::{BranchNotice, NoticeSeverity};
 
-const MAX_ACTIONS: usize = 4;
 const AUTO_DISMISS_DELAY: Duration = Duration::from_secs(10);
 const MINIMUM_RESUME_DELAY: Duration = Duration::from_millis(800);
 const MAX_MESSAGE_HEIGHT_FRACTION: f32 = 0.4;
-const BALLOON_WIDTH: Pixels = px(360.);
-const BALLOON_VERTICAL_PADDING: Pixels = px(12.);
-const BALLOON_HORIZONTAL_PADDING: Pixels = px(14.);
-const ACTION_LINK_GAP: Pixels = px(16.);
 const BALLOON_HOVER_GROUP: &str = "branch-notification-balloon";
+const MORE_ACTIONS_LABEL: &str = "More";
+
+fn should_auto_dismiss(notice: &BranchNotice) -> bool {
+    notice.severity == NoticeSeverity::Info
+}
+
+fn title_weight(has_message: bool) -> FontWeight {
+    if has_message {
+        FontWeight::BOLD
+    } else {
+        FontWeight::NORMAL
+    }
+}
+
+fn severity_icon(severity: NoticeSeverity) -> (IconName, Color) {
+    match severity {
+        NoticeSeverity::Info => (IconName::Info, Color::Accent),
+        NoticeSeverity::Warning => (IconName::Warning, Color::Warning),
+        NoticeSeverity::Error => (IconName::XCircle, Color::Error),
+    }
+}
 
 pub struct BranchNotification {
     focus_handle: FocusHandle,
@@ -32,21 +53,8 @@ struct Countdown {
     _timer: Task<()>,
 }
 
-fn should_auto_dismiss(notice: &BranchNotice) -> bool {
-    notice.severity == NoticeSeverity::Info
-}
-
-fn severity_icon(severity: NoticeSeverity) -> (IconName, Color) {
-    match severity {
-        NoticeSeverity::Info => (IconName::Info, Color::Accent),
-        NoticeSeverity::Warning => (IconName::Warning, Color::Warning),
-        NoticeSeverity::Error => (IconName::XCircle, Color::Error),
-    }
-}
-
 impl BranchNotification {
-    pub fn new(mut notice: BranchNotice, cx: &mut Context<Self>) -> Self {
-        notice.actions.truncate(MAX_ACTIONS);
+    pub fn new(notice: BranchNotice, cx: &mut Context<Self>) -> Self {
         let auto_dismiss = should_auto_dismiss(&notice).then_some(AutoDismiss {
             remaining: AUTO_DISMISS_DELAY,
             countdown: None,
@@ -78,7 +86,7 @@ impl BranchNotification {
         let delay = auto_dismiss.remaining;
         let timer = cx.spawn(async move |this, cx| {
             cx.background_executor().timer(delay).await;
-            this.update(cx, |_, cx| cx.emit(DismissEvent)).ok();
+            this.update(cx, |_, cx| cx.emit(DismissEvent)).log_err();
         });
         auto_dismiss.countdown = Some(Countdown {
             started_at: cx.background_executor().now(),
@@ -116,18 +124,23 @@ impl Notification for BranchNotification {}
 impl Render for BranchNotification {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let (icon, icon_color) = severity_icon(self.notice.severity);
-        let line_height = window.line_height();
+        let has_title = self.notice.title.is_some();
+        let has_message = !self.notice.message.is_empty();
+        let has_actions = !self.notice.actions.is_empty();
+        let layout = BalloonLayoutMetrics::for_content(has_title, has_message, has_actions);
         let link_color = cx.theme().colors().text_accent;
 
-        let action_links = self
+        let visible_actions = self
             .notice
             .actions
             .iter()
+            .take(BALLOON_MAX_VISIBLE_ACTIONS)
             .enumerate()
             .map(|(index, action)| {
                 let handler = action.handler.clone();
                 div()
                     .id(("branch-notification-action", index))
+                    .debug_selector(move || format!("BRANCH_NOTIFICATION_ACTION_{index}"))
                     .flex_none()
                     .cursor_pointer()
                     .text_ui(cx)
@@ -141,14 +154,60 @@ impl Render for BranchNotification {
                     }))
             })
             .collect::<Vec<_>>();
-        let has_actions = !action_links.is_empty();
 
-        let close_button = IconButton::new("branch-notification-close", IconName::Close)
-            .icon_size(IconSize::Small)
-            .size(ButtonSize::Compact)
-            .tooltip(Tooltip::text("Close"))
-            .visible_on_hover(BALLOON_HOVER_GROUP)
-            .on_click(cx.listener(|_, _, _, cx| cx.emit(DismissEvent)));
+        let hidden_actions = self
+            .notice
+            .actions
+            .iter()
+            .skip(BALLOON_MAX_VISIBLE_ACTIONS)
+            .map(|action| (action.label.clone(), action.handler.clone()))
+            .collect::<Vec<_>>();
+        let more_actions = (!hidden_actions.is_empty()).then(|| {
+            let hidden_actions = hidden_actions.clone();
+            let notification = cx.entity().downgrade();
+            div()
+                .debug_selector(|| "BRANCH_NOTIFICATION_MORE_ACTIONS".into())
+                .child(
+                    PopoverMenu::new("branch-notification-more-actions")
+                        .anchor(Anchor::BottomLeft)
+                        .menu(move |window, cx| {
+                            let hidden_actions = hidden_actions.clone();
+                            let notification = notification.clone();
+                            Some(ContextMenu::build(window, cx, move |menu, _, _| {
+                                hidden_actions.iter().fold(menu, |menu, (label, handler)| {
+                                    let handler = handler.clone();
+                                    let notification = notification.clone();
+                                    menu.item(ContextMenuEntry::new(label.clone()).handler(
+                                        move |window, cx| {
+                                            notification
+                                                .update(cx, |_, cx| cx.emit(DismissEvent))
+                                                .log_err();
+                                            handler(window, cx);
+                                        },
+                                    ))
+                                })
+                            }))
+                        })
+                        .trigger(
+                            Button::new(
+                                "branch-notification-more-actions-trigger",
+                                MORE_ACTIONS_LABEL,
+                            )
+                            .color(Color::Accent)
+                            .style(ButtonStyle::Transparent)
+                            .size(ButtonSize::None),
+                        ),
+                )
+        });
+
+        let close_button = div().pt(layout.top).child(
+            IconButton::new("branch-notification-close", IconName::Close)
+                .icon_size(IconSize::Small)
+                .size(ButtonSize::Compact)
+                .tooltip(Tooltip::text("Close"))
+                .visible_on_hover(BALLOON_HOVER_GROUP)
+                .on_click(cx.listener(|_, _, _, cx| cx.emit(DismissEvent))),
+        );
 
         let message = div()
             .id("branch-notification-message")
@@ -156,51 +215,70 @@ impl Render for BranchNotification {
             .overflow_y_scroll()
             .child(Label::new(self.notice.message.clone()));
 
-        h_flex().w_full().justify_end().child(
+        let action_row = has_actions.then(|| {
             h_flex()
-                .id("branch-notification")
-                .group(BALLOON_HOVER_GROUP)
-                .occlude()
-                .w(BALLOON_WIDTH)
-                .items_start()
-                .gap_2()
-                .py(BALLOON_VERTICAL_PADDING)
-                .px(BALLOON_HORIZONTAL_PADDING)
-                .elevation_3(cx)
-                .on_hover(
-                    cx.listener(|this, hovered: &bool, _window, cx| this.set_hovered(*hovered, cx)),
-                )
-                .child(
-                    h_flex()
-                        .flex_none()
-                        .h(line_height)
-                        .child(Icon::new(icon).size(IconSize::Medium).color(icon_color)),
-                )
-                .child(
-                    v_flex()
-                        .flex_1()
-                        .min_w_0()
-                        .gap_2()
-                        .child(
-                            v_flex()
-                                .gap_1()
-                                .when_some(self.notice.title.clone(), |this, title| {
-                                    this.child(Label::new(title).weight(gpui::FontWeight::BOLD))
-                                })
-                                .when(!self.notice.message.is_empty(), |this| this.child(message)),
+                .debug_selector(|| "BRANCH_NOTIFICATION_ACTIONS".into())
+                .flex_wrap()
+                .items_center()
+                .gap_x(BALLOON_METRICS.action_gap)
+                .children(visible_actions)
+                .children(more_actions)
+        });
+
+        h_flex()
+            .id("branch-notification")
+            .group(BALLOON_HOVER_GROUP)
+            .occlude()
+            .w(BALLOON_METRICS.width)
+            .items_start()
+            .gap_x(BALLOON_CONTENT_INSETS.gap)
+            .pt(BALLOON_CONTENT_INSETS.top)
+            .pb(BALLOON_CONTENT_INSETS.bottom)
+            .pl(BALLOON_CONTENT_INSETS.left)
+            .pr(BALLOON_CONTENT_INSETS.right)
+            .rounded(BALLOON_METRICS.corner_radius)
+            .border(BALLOON_METRICS.border_stroke_width)
+            .border_color(cx.theme().colors().border)
+            .bg(cx.theme().colors().elevated_surface_background)
+            .shadow(ElevationIndex::ElevatedSurface.shadow(cx))
+            .on_hover(
+                cx.listener(|this, hovered: &bool, _window, cx| this.set_hovered(*hovered, cx)),
+            )
+            .child(
+                h_flex()
+                    .flex_none()
+                    .w(BALLOON_METRICS.icon_column_width)
+                    .pt(layout.icon_offset_y)
+                    .pl(BALLOON_METRICS.icon_offset_x)
+                    .child(Icon::new(icon).size(IconSize::Medium).color(icon_color)),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .pt(layout.top)
+                    .pb(layout.bottom)
+                    .child(
+                        v_flex()
+                            .gap(layout.title_to_content)
+                            .when_some(self.notice.title.clone(), |this, title| {
+                                this.child(
+                                    Label::new(title)
+                                        .weight(title_weight(has_message))
+                                        .truncate(),
+                                )
+                            })
+                            .when(has_message, |this| this.child(message)),
+                    )
+                    .when_some(action_row, |this, action_row| {
+                        this.child(
+                            div()
+                                .pt(layout.actions_top(has_title, has_message))
+                                .child(action_row),
                         )
-                        .when(has_actions, |this| {
-                            this.child(
-                                h_flex()
-                                    .flex_wrap()
-                                    .gap_x(ACTION_LINK_GAP)
-                                    .gap_y_1()
-                                    .children(action_links),
-                            )
-                        }),
-                )
-                .child(close_button),
-        )
+                    }),
+            )
+            .child(close_button)
     }
 }
 
@@ -210,8 +288,17 @@ mod tests {
     use std::rc::Rc;
 
     use gpui::{Entity, TestAppContext};
+    use settings::SettingsStore;
 
     use super::*;
+
+    fn init_test(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            let settings_store = SettingsStore::test(cx);
+            cx.set_global(settings_store);
+            theme_settings::init(theme::LoadThemes::JustBase, cx);
+        });
+    }
 
     fn with_actions(notice: BranchNotice, count: usize) -> BranchNotice {
         (0..count).fold(notice, |notice, index| {
@@ -259,8 +346,15 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn a_title_is_bold_only_when_a_message_accompanies_it() {
+        assert_eq!(title_weight(true), FontWeight::BOLD);
+        assert_eq!(title_weight(false), FontWeight::NORMAL);
+    }
+
     #[gpui::test]
     fn info_notice_dismisses_after_the_delay(cx: &mut TestAppContext) {
+        init_test(cx);
         let notification = cx.new(|cx| BranchNotification::new(BranchNotice::info("done"), cx));
         let (dismissed, _subscription) = track_dismissal(&notification, cx);
 
@@ -276,6 +370,7 @@ mod tests {
 
     #[gpui::test]
     fn info_notice_with_actions_dismisses_after_the_delay(cx: &mut TestAppContext) {
+        init_test(cx);
         let notification =
             cx.new(|cx| BranchNotification::new(with_actions(BranchNotice::info("Pushed"), 2), cx));
         let (dismissed, _subscription) = track_dismissal(&notification, cx);
@@ -295,6 +390,7 @@ mod tests {
 
     #[gpui::test]
     fn warnings_and_errors_stay_until_closed(cx: &mut TestAppContext) {
+        init_test(cx);
         let notifications = [
             cx.new(|cx| BranchNotification::new(BranchNotice::warning("careful"), cx)),
             cx.new(|cx| BranchNotification::new(BranchNotice::error("broken"), cx)),
@@ -314,6 +410,7 @@ mod tests {
 
     #[gpui::test]
     fn hovering_pauses_the_auto_dismiss_countdown(cx: &mut TestAppContext) {
+        init_test(cx);
         let notification = cx.new(|cx| BranchNotification::new(BranchNotice::info("done"), cx));
         let (dismissed, _subscription) = track_dismissal(&notification, cx);
 
@@ -342,9 +439,52 @@ mod tests {
     }
 
     #[gpui::test]
-    fn at_most_four_actions_are_kept(cx: &mut TestAppContext) {
+    fn three_actions_show_two_links_and_a_more_link(cx: &mut TestAppContext) {
+        init_test(cx);
+        let (_notification, cx) = cx.add_window_view(|_, cx| {
+            BranchNotification::new(with_actions(BranchNotice::error("broken"), 3), cx)
+        });
+
+        assert!(
+            cx.debug_bounds("BRANCH_NOTIFICATION_ACTION_0").is_some(),
+            "the first action stays a visible link"
+        );
+        assert!(
+            cx.debug_bounds("BRANCH_NOTIFICATION_ACTION_1").is_some(),
+            "the second action stays a visible link"
+        );
+        assert_eq!(
+            cx.debug_bounds("BRANCH_NOTIFICATION_ACTION_2"),
+            None,
+            "the third action is not shown as a link"
+        );
+        assert!(
+            cx.debug_bounds("BRANCH_NOTIFICATION_MORE_ACTIONS")
+                .is_some(),
+            "everything past the first two actions is reachable through More"
+        );
+    }
+
+    #[gpui::test]
+    fn two_actions_need_no_more_link(cx: &mut TestAppContext) {
+        init_test(cx);
+        let (_notification, cx) = cx.add_window_view(|_, cx| {
+            BranchNotification::new(with_actions(BranchNotice::warning("careful"), 2), cx)
+        });
+
+        assert!(cx.debug_bounds("BRANCH_NOTIFICATION_ACTION_1").is_some());
+        assert_eq!(
+            cx.debug_bounds("BRANCH_NOTIFICATION_MORE_ACTIONS"),
+            None,
+            "a balloon with two actions has nothing to hide"
+        );
+    }
+
+    #[gpui::test]
+    fn every_action_past_the_first_two_is_kept_for_the_more_menu(cx: &mut TestAppContext) {
+        init_test(cx);
         let notification = cx
-            .new(|cx| BranchNotification::new(with_actions(BranchNotice::error("broken"), 6), cx));
+            .new(|cx| BranchNotification::new(with_actions(BranchNotice::error("broken"), 5), cx));
         notification.read_with(cx, |notification, _| {
             let labels: Vec<&str> = notification
                 .notice
@@ -352,12 +492,16 @@ mod tests {
                 .iter()
                 .map(|action| action.label.as_ref())
                 .collect();
-            assert_eq!(labels, vec!["Action 0", "Action 1", "Action 2", "Action 3"]);
+            assert_eq!(
+                labels,
+                vec!["Action 0", "Action 1", "Action 2", "Action 3", "Action 4"]
+            );
         });
     }
 
     #[gpui::test]
-    fn fewer_actions_than_the_limit_are_all_kept(cx: &mut TestAppContext) {
+    fn fewer_actions_than_the_visible_budget_are_all_kept(cx: &mut TestAppContext) {
+        init_test(cx);
         let notification = cx.new(|cx| {
             BranchNotification::new(with_actions(BranchNotice::warning("careful"), 2), cx)
         });

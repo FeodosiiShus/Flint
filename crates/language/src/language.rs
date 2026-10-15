@@ -1000,6 +1000,10 @@ impl Language {
         self.with_grammar_query_and_name(|grammar, name| grammar.with_outline_query(source, name))
     }
 
+    pub fn with_folds_query(self, source: &str) -> Result<Self> {
+        self.with_grammar_query_and_name(|grammar, name| grammar.with_folds_query(source, name))
+    }
+
     pub fn with_text_object_query(self, source: &str) -> Result<Self> {
         self.with_grammar_query_and_name(|grammar, name| {
             grammar.with_text_object_query(source, name)

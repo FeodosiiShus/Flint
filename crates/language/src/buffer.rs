@@ -5096,6 +5096,60 @@ impl BufferSnapshot {
             .filter_map(|(range, obj)| (obj == TextObject::InsideFunction).then_some(range))
     }
 
+    pub fn fold_regions<T: ToOffset>(&self, within: Range<T>) -> Vec<Range<usize>> {
+        fn previous_statement(node: tree_sitter::Node<'_>) -> Option<tree_sitter::Node<'_>> {
+            let mut previous = node.prev_named_sibling();
+            while let Some(sibling) = previous {
+                if !sibling.is_extra() && !sibling.is_missing() {
+                    return Some(sibling);
+                }
+                previous = sibling.prev_named_sibling();
+            }
+            None
+        }
+
+        let within = within.to_offset(self);
+        let mut matches = self.syntax.matches(within, &self.text, |grammar| {
+            grammar.folds_config.as_ref().map(|config| &config.query)
+        });
+        let configs = matches
+            .grammars()
+            .iter()
+            .map(|grammar| grammar.folds_config.as_ref())
+            .collect::<Vec<_>>();
+
+        let mut regions = Vec::new();
+        let mut preceding_import_start = None;
+        while let Some(mat) = matches.peek() {
+            if let Some(config) = configs[mat.grammar_index] {
+                for capture in mat.captures {
+                    if capture.index == config.fold_capture_ix {
+                        let byte_range = capture.node.byte_range();
+                        if byte_range.end <= byte_range.start {
+                            continue;
+                        }
+                        let is_import = capture.node.kind() == "import_statement";
+                        let extends_preceding_imports = is_import
+                            && preceding_import_start.is_some_and(|start| {
+                                previous_statement(capture.node)
+                                    .is_some_and(|sibling| sibling.start_byte() == start)
+                            });
+                        if extends_preceding_imports {
+                            if let Some(previous) = regions.last_mut() {
+                                previous.end = byte_range.end;
+                            }
+                        } else {
+                            regions.push(byte_range);
+                        }
+                        preceding_import_start = is_import.then_some(capture.node.start_byte());
+                    }
+                }
+            }
+            matches.advance();
+        }
+        regions
+    }
+
     /// For each grammar in the language, runs the provided
     /// [`tree_sitter::Query`] against the given range.
     pub fn matches(
