@@ -5118,7 +5118,7 @@ impl BufferSnapshot {
             .map(|grammar| grammar.folds_config.as_ref())
             .collect::<Vec<_>>();
 
-        let mut regions = Vec::new();
+        let mut regions = Vec::<Range<usize>>::new();
         let mut preceding_import_start = None;
         while let Some(mat) = matches.peek() {
             if let Some(config) = configs[mat.grammar_index] {
