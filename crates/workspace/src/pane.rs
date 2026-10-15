@@ -455,6 +455,7 @@ pub struct Pane {
     hidden_tabs_menu_handle: PopoverMenuHandle<ContextMenu>,
     tab_bar_more_menu_handle: PopoverMenuHandle<ContextMenu>,
     hidden_tabs_button_visible: bool,
+    pinned_tab_bar_scroll_handle: ScrollHandle,
     pinned_tab_count: usize,
     diagnostics: HashMap<ProjectPath, DiagnosticSeverity>,
     zoom_out_on_close: bool,
@@ -631,6 +632,7 @@ impl Pane {
             hidden_tabs_menu_handle: Default::default(),
             tab_bar_more_menu_handle: Default::default(),
             hidden_tabs_button_visible: false,
+            pinned_tab_bar_scroll_handle: ScrollHandle::new(),
             pinned_tab_count: 0,
             diagnostics: Default::default(),
             zoom_out_on_close: true,
@@ -1514,7 +1516,9 @@ impl Pane {
     }
 
     fn update_active_tab(&mut self, index: usize) {
-        if !self.is_tab_pinned(index) {
+        if self.is_tab_pinned(index) {
+            self.pinned_tab_bar_scroll_handle.scroll_to_item(index);
+        } else {
             self.suppress_scroll = false;
             self.tab_bar_scroll_handle
                 .scroll_to_item(index - self.pinned_tab_count);
@@ -3402,6 +3406,21 @@ impl Pane {
                 let is_scrollable = max_scroll > px(2.0);
                 let has_active_unpinned_tab = self.active_item_index >= self.pinned_tab_count;
                 h_flex()
+                    .id("pinned_tabs_row")
+                    .min_w_0()
+                    .overflow_x_scroll()
+                    .track_scroll(&self.pinned_tab_bar_scroll_handle)
+                    .when_some(hidden_tabs_overflow, |this, overflow| {
+                        this.on_children_prepainted(hidden_tabs_overflow_listener(
+                            self.pinned_tab_bar_scroll_handle.clone(),
+                            self.pinned_tab_count,
+                            0,
+                            self.tab_bar_scroll_handle.clone(),
+                            tab_count.saturating_sub(self.pinned_tab_count),
+                            overflow,
+                            cx.entity_id(),
+                        ))
+                    })
                     .children(pinned_tabs)
                     .when(is_scrollable && is_scrolled, |this| {
                         this.when(has_active_unpinned_tab, |this| this.border_r_2())
@@ -3442,6 +3461,18 @@ impl Pane {
                     .id("pinned_tabs_row")
                     .debug_selector(|| "pinned_tabs_row".into())
                     .overflow_x_scroll()
+                    .track_scroll(&self.pinned_tab_bar_scroll_handle)
+                    .when_some(hidden_tabs_overflow, |this, overflow| {
+                        this.on_children_prepainted(hidden_tabs_overflow_listener(
+                            self.pinned_tab_bar_scroll_handle.clone(),
+                            self.pinned_tab_count,
+                            0,
+                            self.tab_bar_scroll_handle.clone(),
+                            tab_count.saturating_sub(self.pinned_tab_count),
+                            overflow,
+                            cx.entity_id(),
+                        ))
+                    })
                     .w_full()
                     .children(pinned_tabs)
                     .child(self.render_pinned_tab_bar_drop_target(cx)),
@@ -3476,13 +3507,17 @@ impl Pane {
                 this.on_children_prepainted(hidden_tabs_overflow_listener(
                     self.tab_bar_scroll_handle.clone(),
                     unpinned_tab_count,
+                    self.pinned_tab_count,
+                    self.pinned_tab_bar_scroll_handle.clone(),
+                    self.pinned_tab_count,
                     overflow,
                     cx.entity_id(),
                 ))
             })
             .id("unpinned tabs")
             .overflow_x_scroll()
-            .w_full()
+            .min_w_0()
+            .flex_grow_1()
             .track_scroll(&self.tab_bar_scroll_handle)
             .on_scroll_wheel(cx.listener(|this, _, _, _| {
                 this.suppress_scroll = true;
@@ -3502,14 +3537,20 @@ impl Pane {
             return None;
         }
         let has_hidden_tabs =
-            hidden_unpinned_tab_indices(&self.tab_bar_scroll_handle, unpinned_tab_count)
+            hidden_scrolled_tab_indices(&self.tab_bar_scroll_handle, unpinned_tab_count)
+                .next()
+                .is_some()
+                || hidden_scrolled_tab_indices(
+                    &self.pinned_tab_bar_scroll_handle,
+                    self.pinned_tab_count,
+                )
                 .next()
                 .is_some();
         self.hidden_tabs_button_visible =
             has_hidden_tabs || self.hidden_tabs_menu_handle.is_deployed();
         let button_appeared = self.hidden_tabs_button_visible && !was_visible;
         let active_tab_to_reveal = if button_appeared && !self.suppress_scroll {
-            self.active_item_index.checked_sub(self.pinned_tab_count)
+            Some(self.active_item_index)
         } else {
             None
         };
@@ -3522,9 +3563,12 @@ impl Pane {
     fn hidden_tabs(&self, window: &Window, cx: &App) -> Vec<HiddenTab> {
         let unpinned_tab_count = self.items.len().saturating_sub(self.pinned_tab_count);
         let details = tab_details(&self.items, window, cx);
-        hidden_unpinned_tab_indices(&self.tab_bar_scroll_handle, unpinned_tab_count)
-            .filter_map(|unpinned_index| {
-                let index = self.pinned_tab_count + unpinned_index;
+        hidden_scrolled_tab_indices(&self.pinned_tab_bar_scroll_handle, self.pinned_tab_count)
+            .chain(
+                hidden_scrolled_tab_indices(&self.tab_bar_scroll_handle, unpinned_tab_count)
+                    .map(|index| self.pinned_tab_count + index),
+            )
+            .filter_map(|index| {
                 let item = self.items.get(index)?;
                 let detail = details.get(index).copied().unwrap_or_default();
                 Some(HiddenTab {
@@ -4149,14 +4193,11 @@ fn hidden_tab_indices(
         .map(|(index, _)| index)
 }
 
-fn hidden_unpinned_tab_indices(
+fn hidden_scrolled_tab_indices(
     scroll_handle: &ScrollHandle,
-    unpinned_tab_count: usize,
+    tab_count: usize,
 ) -> impl Iterator<Item = usize> {
-    let laid_out_tab_count = scroll_handle
-        .children_count()
-        .saturating_sub(1)
-        .min(unpinned_tab_count);
+    let laid_out_tab_count = scroll_handle.children_count().min(tab_count);
     hidden_tab_indices(
         scroll_handle.bounds(),
         scroll_handle.offset(),
@@ -4166,18 +4207,27 @@ fn hidden_unpinned_tab_indices(
 
 fn hidden_tabs_overflow_listener(
     scroll_handle: ScrollHandle,
-    unpinned_tab_count: usize,
+    tab_count: usize,
+    index_offset: usize,
+    other_scroll_handle: ScrollHandle,
+    other_tab_count: usize,
     overflow: HiddenTabsOverflow,
     pane_id: EntityId,
 ) -> impl Fn(Vec<Bounds<Pixels>>, &mut Window, &mut App) + 'static {
     move |_, _, cx| {
-        let has_hidden_tabs = hidden_unpinned_tab_indices(&scroll_handle, unpinned_tab_count)
+        let has_hidden_tabs = hidden_scrolled_tab_indices(&scroll_handle, tab_count)
             .next()
-            .is_some();
-        let active_tab_to_reveal = overflow.active_tab_to_reveal.filter(|active_tab_index| {
-            hidden_unpinned_tab_indices(&scroll_handle, unpinned_tab_count)
-                .any(|index| index == *active_tab_index)
-        });
+            .is_some()
+            || hidden_scrolled_tab_indices(&other_scroll_handle, other_tab_count)
+                .next()
+                .is_some();
+        let active_tab_to_reveal = overflow
+            .active_tab_to_reveal
+            .and_then(|index| index.checked_sub(index_offset))
+            .filter(|active_tab_index| {
+                hidden_scrolled_tab_indices(&scroll_handle, tab_count)
+                    .any(|index| index == *active_tab_index)
+            });
         if let Some(active_tab_index) = active_tab_to_reveal {
             scroll_handle.scroll_to_item(active_tab_index);
         }
@@ -9127,6 +9177,217 @@ mod tests {
     }
 
     #[gpui::test]
+    async fn split_and_move_preserves_tab_pin_state(cx: &mut TestAppContext) {
+        init_test(cx);
+        for direction in [SplitDirection::Right, SplitDirection::Down] {
+            for pinned in [false, true] {
+                let fs = FakeFs::new(cx.executor());
+                let project = Project::test(fs, None, cx).await;
+                let (workspace, cx) =
+                    cx.add_window_view(|window, cx| Workspace::test_new(project, window, cx));
+                let source =
+                    workspace.read_with(cx, |workspace, _| workspace.active_pane().clone());
+                add_described_items(&source, &["stay", "move"], cx);
+                let item_id = source.update_in(cx, |pane, window, cx| {
+                    pane.activate_item(1, true, true, window, cx);
+                    if pinned {
+                        pane.pin_tab_at(1, window, cx);
+                    }
+                    pane.active_item().expect("active source item").item_id()
+                });
+                workspace.update_in(cx, |workspace, window, cx| {
+                    workspace.split_and_move(source.clone(), direction, window, cx);
+                });
+                cx.run_until_parked();
+                workspace.read_with(cx, |workspace, cx| {
+                    let destination = workspace
+                        .panes()
+                        .iter()
+                        .find(|pane| **pane != source)
+                        .expect("split destination")
+                        .read(cx);
+                    assert_eq!(destination.items_len(), 1);
+                    assert_eq!(
+                        destination.active_item().expect("moved item").item_id(),
+                        item_id
+                    );
+                    assert_eq!(destination.is_tab_pinned(0), pinned);
+                    assert_eq!(source.read(cx).items_len(), 1);
+                    assert!(source.read(cx).index_for_item_id(item_id).is_none());
+                });
+            }
+        }
+    }
+
+    #[gpui::test]
+    async fn hidden_tabs_pinned_nonoverflow_has_no_button_or_entries(cx: &mut TestAppContext) {
+        init_test(cx);
+        for separate_rows in [false, true] {
+            for pinned_count in [1, 2] {
+                set_pinned_tabs_separate_row(cx, separate_rows);
+                let fs = FakeFs::new(cx.executor());
+                let project = Project::test(fs, None, cx).await;
+                let (workspace, cx) =
+                    cx.add_window_view(|window, cx| Workspace::test_new(project, window, cx));
+                let pane = workspace.read_with(cx, |workspace, _| workspace.active_pane().clone());
+                cx.simulate_resize(size(px(1200.), px(600.)));
+                add_described_items(&pane, &["T0", "T1"], cx);
+                pane.update_in(cx, |pane, window, cx| {
+                    for index in 0..pinned_count {
+                        pane.pin_tab_at(index, window, cx);
+                    }
+                });
+                cx.run_until_parked();
+                assert!(cx.debug_bounds("TAB-0").is_some());
+                assert!(cx.debug_bounds("TAB-1").is_some());
+                assert_painted_tab_revealed(&pane, 0, cx);
+                assert_painted_tab_revealed(&pane, 1, cx);
+                assert!(cx.debug_bounds("hidden_tabs_button").is_none());
+                assert!(pane.update_in(cx, |pane, window, cx| {
+                    pane.hidden_tabs(window, cx).is_empty()
+                }));
+            }
+        }
+    }
+
+    #[gpui::test]
+    async fn hidden_tabs_pinned_overflow_includes_both_rows_and_activates_item_ids(
+        cx: &mut TestAppContext,
+    ) {
+        init_test(cx);
+        for separate_rows in [false, true] {
+            for pinned_count in [5, 10] {
+                set_pinned_tabs_separate_row(cx, separate_rows);
+                let fs = FakeFs::new(cx.executor());
+                let project = Project::test(fs, None, cx).await;
+                let (workspace, cx) =
+                    cx.add_window_view(|window, cx| Workspace::test_new(project, window, cx));
+                let pane = workspace.read_with(cx, |workspace, _| workspace.active_pane().clone());
+                cx.simulate_resize(size(px(220.), px(600.)));
+                add_described_items(&pane, &HIDDEN_TABS_LABELS, cx);
+                pane.update_in(cx, |pane, window, cx| {
+                    for index in 0..pinned_count {
+                        pane.pin_tab_at(index, window, cx);
+                    }
+                });
+                cx.run_until_parked();
+                let pinned_viewport =
+                    pane.read_with(cx, |pane, _| pane.pinned_tab_bar_scroll_handle.bounds());
+                let unpinned_viewport =
+                    pane.read_with(cx, |pane, _| pane.tab_bar_scroll_handle.bounds());
+                assert!(
+                    pinned_viewport.size.width > px(20.),
+                    "pinned tabs need a usable viewport: {pinned_viewport:?}"
+                );
+                if pinned_count < HIDDEN_TABS_LABELS.len() {
+                    assert!(
+                        unpinned_viewport.size.width > px(20.),
+                        "unpinned tabs must not be starved by pinned overflow: {unpinned_viewport:?}"
+                    );
+                }
+                let expected = HIDDEN_TABS_TAB_SELECTORS
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(index, selector)| {
+                        let bounds = cx.debug_bounds(selector).expect("painted tab");
+                        let viewport = if index < pinned_count {
+                            pinned_viewport
+                        } else {
+                            unpinned_viewport
+                        };
+                        (bounds.left() < viewport.left() - HIDDEN_TAB_VISIBILITY_TOLERANCE
+                            || bounds.right() > viewport.right() + HIDDEN_TAB_VISIBILITY_TOLERANCE)
+                            .then_some(index)
+                    })
+                    .collect::<Vec<_>>();
+                assert!(expected.iter().any(|index| *index < pinned_count));
+                if pinned_count < HIDDEN_TABS_LABELS.len() {
+                    assert!(expected.iter().any(|index| *index >= pinned_count));
+                }
+                let actual = pane.update_in(cx, |pane, window, cx| {
+                    pane.hidden_tabs(window, cx)
+                        .into_iter()
+                        .map(|tab| tab.item_id)
+                        .collect::<Vec<_>>()
+                });
+                let expected_ids = pane.read_with(cx, |pane, _| {
+                    expected
+                        .iter()
+                        .map(|index| pane.items[*index].item_id())
+                        .collect::<Vec<_>>()
+                });
+                assert_eq!(actual, expected_ids);
+                click_hidden_tabs_button(cx);
+                for (index, selector) in HIDDEN_TABS_MENU_ITEM_SELECTORS.iter().enumerate() {
+                    assert_eq!(
+                        cx.debug_bounds(selector).is_some(),
+                        expected.contains(&index)
+                    );
+                }
+                let (pinned_position, &index) = expected
+                    .iter()
+                    .enumerate()
+                    .find(|(_, index)| {
+                        let bounds = cx
+                            .debug_bounds(HIDDEN_TABS_TAB_SELECTORS[**index])
+                            .expect("painted pinned tab");
+                        **index < pinned_count
+                            && (bounds.right() <= pinned_viewport.left()
+                                || bounds.left() >= pinned_viewport.right())
+                    })
+                    .expect("at least one pinned tab must start completely outside its viewport");
+                let entry = cx
+                    .debug_bounds(HIDDEN_TABS_MENU_ITEM_SELECTORS[index])
+                    .expect("hidden entry");
+                cx.simulate_click(entry.center(), Modifiers::none());
+                cx.run_until_parked();
+                assert_eq!(
+                    pane.read_with(cx, |pane, _| pane
+                        .active_item()
+                        .expect("selected item")
+                        .item_id()),
+                    expected_ids[pinned_position]
+                );
+                assert!(pane.read_with(cx, |pane, _| pane.is_tab_pinned(pane.active_item_index())));
+                assert_painted_tab_revealed(&pane, index, cx);
+                if pinned_count < HIDDEN_TABS_LABELS.len() {
+                    let (position, index) = expected
+                        .iter()
+                        .enumerate()
+                        .find(|(_, index)| {
+                            let bounds = cx
+                                .debug_bounds(HIDDEN_TABS_TAB_SELECTORS[**index])
+                                .expect("painted unpinned tab");
+                            **index >= pinned_count
+                                && (bounds.right() <= unpinned_viewport.left()
+                                    || bounds.left() >= unpinned_viewport.right())
+                        })
+                        .expect(
+                            "at least one unpinned tab must start completely outside its viewport",
+                        );
+                    click_hidden_tabs_button(cx);
+                    let entry = cx
+                        .debug_bounds(HIDDEN_TABS_MENU_ITEM_SELECTORS[*index])
+                        .expect("hidden unpinned entry");
+                    cx.simulate_click(entry.center(), Modifiers::none());
+                    cx.run_until_parked();
+                    assert_eq!(
+                        pane.read_with(cx, |pane, _| pane
+                            .active_item()
+                            .expect("selected unpinned item")
+                            .item_id()),
+                        expected_ids[position]
+                    );
+                    assert!(
+                        !pane.read_with(cx, |pane, _| pane.is_tab_pinned(pane.active_item_index()))
+                    );
+                    assert_painted_tab_revealed(&pane, *index, cx);
+                }
+            }
+        }
+    }
+
+    #[gpui::test]
     async fn hidden_tabs_menu_lists_exactly_the_hidden_tabs(cx: &mut TestAppContext) {
         init_test(cx);
         let fs = FakeFs::new(cx.executor());
@@ -9877,6 +10138,36 @@ mod tests {
             }
         }
         hidden_indices
+    }
+
+    fn assert_painted_tab_revealed(pane: &Entity<Pane>, index: usize, cx: &mut VisualTestContext) {
+        let bounds = cx
+            .debug_bounds(HIDDEN_TABS_TAB_SELECTORS[index])
+            .expect("selected tab should be painted");
+        let viewport = pane.read_with(cx, |pane, _| {
+            if pane.is_tab_pinned(index) {
+                pane.pinned_tab_bar_scroll_handle.bounds()
+            } else {
+                pane.tab_bar_scroll_handle.bounds()
+            }
+        });
+        assert!(
+            viewport.size.width > px(20.),
+            "selected tab needs a usable viewport: {viewport:?}"
+        );
+        if bounds.size.width <= viewport.size.width {
+            assert!(
+                bounds.left() >= viewport.left() - HIDDEN_TAB_VISIBILITY_TOLERANCE
+                    && bounds.right() <= viewport.right() + HIDDEN_TAB_VISIBILITY_TOLERANCE,
+                "selected tab should be fully visible: tab {bounds:?}, viewport {viewport:?}"
+            );
+        } else {
+            assert!(
+                (bounds.left() - viewport.left()).abs() <= HIDDEN_TAB_VISIBILITY_TOLERANCE
+                    && bounds.right() >= viewport.right() - HIDDEN_TAB_VISIBILITY_TOLERANCE,
+                "an oversized selected tab should be left-aligned and cover the viewport: tab {bounds:?}, viewport {viewport:?}"
+            );
+        }
     }
 
     fn click_hidden_tabs_button(cx: &mut VisualTestContext) {

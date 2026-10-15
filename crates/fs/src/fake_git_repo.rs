@@ -93,6 +93,7 @@ pub struct FakeGitRepositoryState {
     pub stash_entries: GitStash,
     pub commit_template: Option<GitCommitTemplate>,
     pub blob_read_gate: Option<FakeBlobReadGate>,
+    pub commit_gate: Option<FakeBlobReadGate>,
     pub tags: Vec<Tag>,
     pub upstreams: HashMap<String, Upstream>,
     pub recent_branches: Vec<String>,
@@ -109,6 +110,8 @@ pub struct FakeGitRepositoryState {
     pub revert_conflicts: HashMap<Oid, Vec<(RepoPath, FakeConflictStages)>>,
     pub cherry_picked_commits: Vec<Oid>,
     pub reverted_commits: Vec<Oid>,
+    pub empty_commits: HashSet<Oid>,
+    pub sequencer_requests: Vec<(FakeGitOperation, Vec<Oid>)>,
 }
 
 impl FakeGitRepositoryState {
@@ -116,6 +119,7 @@ impl FakeGitRepositoryState {
         FakeGitRepositoryState {
             event_emitter,
             blob_read_gate: None,
+            commit_gate: None,
             head_contents: Default::default(),
             index_contents: Default::default(),
             unmerged_paths: Default::default(),
@@ -156,6 +160,8 @@ impl FakeGitRepositoryState {
             revert_conflicts: Default::default(),
             cherry_picked_commits: Vec::new(),
             reverted_commits: Vec::new(),
+            empty_commits: HashSet::default(),
+            sequencer_requests: Vec::new(),
         }
     }
 }
@@ -282,6 +288,8 @@ pub enum FakeGitOperation {
     PushTag,
     CherryPick,
     Revert,
+    Commit,
+    SkipCommit,
 }
 
 #[derive(Debug, Clone)]
@@ -1015,6 +1023,9 @@ fn fake_sequencer(
             "error: {progressive} is not possible because you have unmerged files.\nhint: Fix them up in the work tree, and then use 'git add/rm <file>'\nhint: as appropriate to mark resolution and make a commit.\nfatal: {command} failed"
         ),
     )?;
+    if state.refs.contains_key("CHERRY_PICK_HEAD") || state.refs.contains_key("REVERT_HEAD") {
+        anyhow::bail!("a cherry-pick or revert is already in progress");
+    }
     simulated_failure(state, failure_operation)?;
 
     let ordered_commits = match operation {
@@ -1027,6 +1038,23 @@ fn fake_sequencer(
         .unwrap_or_else(|| "detached HEAD".to_string());
     let mut output = String::new();
     for sha in ordered_commits {
+        if state.empty_commits.contains(&sha) {
+            if matches!(operation, FakeSequencerOperation::CherryPick) {
+                // Git writes CHERRY_PICK_HEAD before the empty-commit failure.
+                // --skip is only valid while that stopped commit is recorded.
+                state.refs.insert(head_ref.to_string(), sha.to_string());
+            } else {
+                anyhow::ensure!(
+                    state.index_contents == state.head_contents,
+                    "empty revert cannot be classified while staged changes remain"
+                );
+            }
+            return Ok(FakeSequencerResult {
+                conflicted: true,
+                output: "nothing to commit, working tree clean".to_string(),
+                conflict_files: Vec::new(),
+            });
+        }
         let subject = commit_subject(state, &sha);
         let full_sha = sha.to_string();
         let short = short_sha(&full_sha);
@@ -2676,6 +2704,9 @@ impl GitRepository for FakeGitRepository {
                     let arguments = std::iter::once("cherry-pick".to_string())
                         .chain(commits.iter().rev().map(ToString::to_string))
                         .collect::<Vec<_>>();
+                    state
+                        .sequencer_requests
+                        .push((FakeGitOperation::CherryPick, commits.clone()));
                     let result = fake_sequencer(state, commits, FakeSequencerOperation::CherryPick);
                     record_fake_console_command(state, &working_directory, &arguments, &result);
                     result
@@ -2705,6 +2736,9 @@ impl GitRepository for FakeGitRepository {
                         .into_iter()
                         .chain(commits.iter().map(ToString::to_string))
                         .collect::<Vec<_>>();
+                    state
+                        .sequencer_requests
+                        .push((FakeGitOperation::Revert, commits.clone()));
                     let result = fake_sequencer(state, commits, FakeSequencerOperation::Revert);
                     record_fake_console_command(state, &working_directory, &arguments, &result);
                     result
@@ -2712,13 +2746,50 @@ impl GitRepository for FakeGitRepository {
                 .await?;
             self.write_conflict_files(result.conflict_files).await?;
             let output = result.output;
-            Ok(if result.conflicted {
-                RevertOutcome::Conflicted { output }
-            } else {
-                RevertOutcome::Completed { output }
-            })
+            Ok(
+                if result.conflicted && output == "nothing to commit, working tree clean" {
+                    RevertOutcome::Empty { output }
+                } else if result.conflicted {
+                    RevertOutcome::Conflicted { output }
+                } else {
+                    RevertOutcome::Completed { output }
+                },
+            )
         }
         .boxed()
+    }
+
+    fn skip_commit(
+        &self,
+        operation: RepositoryOperation,
+        expected_commit: Oid,
+        _env: Arc<HashMap<String, String>>,
+    ) -> BoxFuture<'_, Result<()>> {
+        self.with_state_async(true, move |state| {
+            state
+                .sequencer_requests
+                .push((FakeGitOperation::SkipCommit, Vec::new()));
+            simulated_failure(state, FakeGitOperation::SkipCommit)?;
+            let marker = match operation {
+                RepositoryOperation::CherryPick => "CHERRY_PICK_HEAD",
+                RepositoryOperation::Revert => "REVERT_HEAD",
+                _ => anyhow::bail!("only cherry-pick and revert commits can be skipped"),
+            };
+            anyhow::ensure!(
+                state.refs.get(marker) == Some(&expected_commit.to_string()),
+                "the expected stopped commit is not in progress"
+            );
+            anyhow::ensure!(
+                state.unmerged_paths.is_empty() && state.index_contents == state.head_contents,
+                "cannot skip an empty commit while tracked changes remain"
+            );
+            state.refs.remove(marker);
+            state.index_contents = state.head_contents.clone();
+            state.unmerged_paths.clear();
+            state.conflict_stages.clear();
+            state.merge_message = None;
+            Ok(())
+        })
     }
 
     fn branches_containing_commit(&self, sha: Oid) -> BoxFuture<'_, Result<Vec<SharedString>>> {
@@ -3294,26 +3365,46 @@ impl GitRepository for FakeGitRepository {
         _askpass: AskPassDelegate,
         _env: Arc<HashMap<String, String>>,
     ) -> BoxFuture<'_, Result<()>> {
-        self.with_state_async(true, move |state| {
-            if !options.allow_empty && !options.amend && state.index_contents == state.head_contents
-            {
-                anyhow::bail!("nothing to commit (use allow_empty to create an empty commit)");
+        async move {
+            let gate = self
+                .with_state_async(true, |state| {
+                    state
+                        .sequencer_requests
+                        .push((FakeGitOperation::Commit, Vec::new()));
+                    Ok(state.commit_gate.clone())
+                })
+                .await?;
+            if let Some(gate) = gate {
+                gate.wait(Oid::from_bytes(&[0; 20])?).await;
             }
+            self.with_state_async(true, move |state| {
+                simulated_failure(state, FakeGitOperation::Commit)?;
+                if !options.allow_empty
+                    && !options.amend
+                    && state.index_contents == state.head_contents
+                {
+                    return Err(git::repository::EmptyCommit.into());
+                }
 
-            let old_sha = state.refs.get("HEAD").cloned().unwrap_or_default();
-            state.commit_history.push(FakeCommitSnapshot {
-                head_contents: state.head_contents.clone(),
-                index_contents: state.index_contents.clone(),
-                sha: old_sha,
-            });
+                let old_sha = state.refs.get("HEAD").cloned().unwrap_or_default();
+                state.commit_history.push(FakeCommitSnapshot {
+                    head_contents: state.head_contents.clone(),
+                    index_contents: state.index_contents.clone(),
+                    sha: old_sha,
+                });
 
-            state.head_contents = state.index_contents.clone();
+                state.head_contents = state.index_contents.clone();
 
-            let new_sha = format!("fake-commit-{}", state.commit_history.len());
-            state.refs.insert("HEAD".into(), new_sha);
+                let new_sha = format!("fake-commit-{}", state.commit_history.len());
+                state.refs.insert("HEAD".into(), new_sha);
 
-            Ok(())
-        })
+                clear_merge_markers(state);
+
+                Ok(())
+            })
+            .await
+        }
+        .boxed()
     }
 
     fn run_hook(

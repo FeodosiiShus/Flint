@@ -580,7 +580,13 @@ async fn search(mut session: UsagesSession, cx: &mut AsyncWindowContext) {
         return;
     };
     let model = UsagesModel::new(raw_usages, session.scope, filters);
-    match finish_for(&model) {
+    let classification_pending =
+        access.is_some() && (!filters.show_read_access || !filters.show_write_access);
+    match if classification_pending {
+        Finish::Popup
+    } else {
+        finish_for(&model)
+    } {
         Finish::Hint {
             message,
             warning,

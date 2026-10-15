@@ -62,6 +62,8 @@ pub struct CommitModal {
     properties: ModalContainerProperties,
     branch_list_handle: PopoverMenuHandle<GitPickerPopover>,
     commit_menu_handle: PopoverMenuHandle<ContextMenu>,
+    completion: Option<futures::channel::oneshot::Sender<anyhow::Result<()>>>,
+    commit_repository: Option<Entity<project::git_store::Repository>>,
 }
 
 impl Focusable for CommitModal {
@@ -71,7 +73,16 @@ impl Focusable for CommitModal {
 }
 
 impl EventEmitter<DismissEvent> for CommitModal {}
-impl ModalView for CommitModal {}
+impl ModalView for CommitModal {
+    fn on_before_dismiss(
+        &mut self,
+        _: &mut Window,
+        _: &mut Context<Self>,
+    ) -> workspace::DismissDecision {
+        drop(self.completion.take());
+        workspace::DismissDecision::Dismiss(true)
+    }
+}
 
 pub enum ForceMode {
     Amend,
@@ -79,6 +90,45 @@ pub enum ForceMode {
 }
 
 impl CommitModal {
+    pub(crate) fn set_completion(
+        &mut self,
+        repository: Entity<project::git_store::Repository>,
+        completion: futures::channel::oneshot::Sender<anyhow::Result<()>>,
+    ) {
+        self.commit_repository = Some(repository);
+        self.completion = Some(completion);
+    }
+
+    fn submit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let staged_only = self.completion.is_some();
+        let result = self.git_panel.update(cx, |panel, cx| {
+            if let Some(repository) = &self.commit_repository
+                && panel.active_repository.as_ref() != Some(repository)
+            {
+                return None;
+            }
+            let options = panel.commit_options();
+            panel.commit_changes_with_completion(options, staged_only, window, cx)
+        });
+        if let Some(completion) = self.completion.take() {
+            // Submission owns the completion now; closing the modal is not cancellation
+            // of an already running Git commit.
+            cx.spawn(async move |_, _| {
+                let result = match result {
+                    Some(receiver) => receiver.await.unwrap_or_else(|_| {
+                        Err(anyhow::anyhow!("commit completion was cancelled"))
+                    }),
+                    None => Err(anyhow::anyhow!("commit was not started")),
+                };
+                if completion.send(result).is_err() {
+                    log::debug!("batch commit completion receiver was dropped");
+                }
+            })
+            .detach();
+        }
+        cx.emit(DismissEvent);
+    }
+
     pub fn register(workspace: &mut Workspace) {
         workspace.register_action(|workspace, _: &Commit, window, cx| {
             CommitModal::toggle(workspace, Some(ForceMode::Commit), window, cx);
@@ -173,6 +223,8 @@ impl CommitModal {
             properties,
             branch_list_handle: PopoverMenuHandle::default(),
             commit_menu_handle: PopoverMenuHandle::default(),
+            completion: None,
+            commit_repository: None,
         }
     }
 
@@ -225,6 +277,7 @@ impl CommitModal {
             ))
             .menu({
                 let git_panel_entity = self.git_panel.clone();
+                let batch_commit = self.completion.is_some();
                 move |window, cx| {
                     let git_panel = git_panel_entity.read(cx);
                     let amend_enabled = git_panel.amend_pending();
@@ -237,7 +290,7 @@ impl CommitModal {
                             .when_some(keybinding_target.clone(), |el, keybinding_target| {
                                 el.context(keybinding_target)
                             })
-                            .when(has_previous_commit, |this| {
+                            .when(has_previous_commit && !batch_commit, |this| {
                                 this.toggleable_entry(
                                     "Amend",
                                     amend_enabled,
@@ -291,10 +344,16 @@ impl CommitModal {
     }
 
     pub fn render_footer(&self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let batch_commit = self.completion.is_some();
         let (can_commit, tooltip, commit_label, active_repo, commit_options, workspace) =
             self.git_panel.update(cx, |git_panel, cx| {
-                let (can_commit, tooltip) = git_panel.configure_commit_button(cx);
-                let title = git_panel.commit_button_title();
+                let (can_commit, tooltip) =
+                    git_panel.configure_commit_button_for_index(batch_commit, cx);
+                let title = if batch_commit {
+                    "Commit"
+                } else {
+                    git_panel.commit_button_title()
+                };
                 let active_repo = git_panel.active_repository.clone();
                 let commit_options = git_panel.commit_options();
                 (
@@ -372,11 +431,7 @@ impl CommitModal {
                             .disabled(!can_commit)
                             .child(Label::new(commit_label).size(LabelSize::Small).mr_0p5())
                             .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
-                                this.git_panel.update(cx, |git_panel, cx| {
-                                    let options = git_panel.commit_options();
-                                    git_panel.commit_changes(options, window, cx)
-                                });
-                                cx.emit(DismissEvent);
+                                this.submit(window, cx);
                             }))
                             .tooltip({
                                 let focus_handle = focus_handle.clone();
@@ -426,6 +481,18 @@ impl CommitModal {
     }
 
     fn on_commit(&mut self, _: &git::Commit, window: &mut Window, cx: &mut Context<Self>) {
+        if self.completion.is_some() {
+            if self
+                .commit_editor
+                .focus_handle(cx)
+                .contains_focused(window, cx)
+            {
+                self.submit(window, cx);
+            } else {
+                cx.propagate();
+            }
+            return;
+        }
         let did_execute = self.git_panel.update(cx, |git_panel, cx| {
             git_panel.commit(&self.commit_editor.focus_handle(cx), window, cx)
         });
@@ -446,6 +513,9 @@ impl CommitModal {
     }
 
     fn on_amend(&mut self, _: &git::Amend, window: &mut Window, cx: &mut Context<Self>) {
+        if self.completion.is_some() {
+            return;
+        }
         if self.git_panel.update(cx, |git_panel, cx| {
             git_panel.amend(&self.commit_editor.focus_handle(cx), window, cx)
         }) {

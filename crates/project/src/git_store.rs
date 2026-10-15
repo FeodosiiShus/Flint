@@ -10643,6 +10643,29 @@ impl Repository {
         )
     }
 
+    pub fn skip_commit(
+        &mut self,
+        operation: RepositoryOperation,
+        expected_commit: Oid,
+    ) -> oneshot::Receiver<Result<()>> {
+        self.send_job("skip_commit", None, move |repo, _cx| async move {
+            match repo {
+                RepositoryState::Local(LocalRepositoryState {
+                    backend,
+                    environment,
+                    ..
+                }) => {
+                    backend
+                        .skip_commit(operation, expected_commit, environment.clone())
+                        .await
+                }
+                RepositoryState::Remote(_) => Err(anyhow!(
+                    "skipping commits is not supported for remote repositories"
+                )),
+            }
+        })
+    }
+
     pub fn reset_hard(&mut self, commit: String) -> oneshot::Receiver<Result<()>> {
         self.send_job(
             "reset_hard",

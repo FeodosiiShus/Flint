@@ -362,8 +362,16 @@ pub enum CherryPickOutcome {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RevertOutcome {
-    Completed { output: String },
-    Conflicted { output: String },
+    Completed {
+        output: String,
+    },
+    Conflicted {
+        output: String,
+    },
+    /// A single revert produced no change and left no operation in progress.
+    Empty {
+        output: String,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
@@ -465,6 +473,18 @@ pub enum GitFailureKind {
 pub struct GitFailure {
     pub kind: GitFailureKind,
     pub message: String,
+}
+
+#[derive(Debug, Error)]
+#[error("nothing to commit")]
+pub struct EmptyCommit;
+
+#[derive(Debug, Error)]
+#[error("{stderr}")]
+struct GitCommandFailure {
+    code: Option<i32>,
+    stdout: String,
+    stderr: String,
 }
 
 const LOCAL_CHANGES_OVERWRITTEN_MARKERS: [&str; 2] = [
@@ -2000,6 +2020,15 @@ pub trait GitRepository: Send + Sync {
         commits: Vec<Oid>,
         env: Arc<HashMap<String, String>>,
     ) -> BoxFuture<'_, Result<RevertOutcome>>;
+    /// Skips only the matching single stopped commit when no tracked changes remain.
+    fn skip_commit(
+        &self,
+        _operation: RepositoryOperation,
+        _expected_commit: Oid,
+        _env: Arc<HashMap<String, String>>,
+    ) -> BoxFuture<'_, Result<()>> {
+        Box::pin(async { anyhow::bail!("skipping commits is not supported by this repository") })
+    }
     fn branches_containing_commit(&self, sha: Oid) -> BoxFuture<'_, Result<Vec<SharedString>>>;
     fn current_user(&self) -> BoxFuture<'_, Result<Option<GitUser>>>;
     fn log_authors(&self) -> BoxFuture<'_, Result<Vec<GitUser>>>;
@@ -4559,6 +4588,11 @@ impl GitRepository for RealGitRepository {
         // which we want to block on.
         async move {
             let git = git?;
+            let empty_before = if !options.allow_empty && !options.amend {
+                verified_empty_commit_state(&git, &env).await?
+            } else {
+                None
+            };
             let mut cmd = git.build_command(&["commit", "--quiet", "-m"]);
             cmd.envs(env.iter())
                 .arg(&message.to_string())
@@ -4586,7 +4620,20 @@ impl GitRepository for RealGitRepository {
                 cmd.arg("--author").arg(&format!("{name} <{email}>"));
             }
 
-            run_git_command(env, ask_pass, cmd, executor).await?;
+            if let Err(error) = run_git_command(env.clone(), ask_pass, cmd, executor).await {
+                let empty_output = error.downcast_ref::<GitCommandFailure>().is_some_and(|failure| {
+                    failure.code == Some(1)
+                        && (failure.stdout.lines().any(|line| line.starts_with("nothing to commit")
+                            || line.starts_with("nothing added to commit but untracked files present"))
+                            || failure.stderr.starts_with("The previous cherry-pick is now empty, possibly due to conflict resolution."))
+                });
+                if empty_output && empty_before.is_some()
+                    && verified_empty_commit_state(&git, &env).await? == empty_before
+                {
+                    return Err(EmptyCommit.into());
+                }
+                return Err(error);
+            }
 
             Ok(())
         }
@@ -5434,12 +5481,22 @@ impl GitRepository for RealGitRepository {
                 args.push("-x".to_string());
             }
             args.extend(commits.iter().rev().map(ToString::to_string));
-            let application =
-                apply_commits(&git, &git_dir, &args, RepositoryOperation::CherryPick, &env).await?;
+            let application = apply_commits(
+                &git,
+                &git_dir,
+                &args,
+                RepositoryOperation::CherryPick,
+                false,
+                &env,
+            )
+            .await?;
             anyhow::Ok(match application {
                 CommitApplication::Completed { output } => CherryPickOutcome::Completed { output },
                 CommitApplication::Conflicted { output } => {
                     CherryPickOutcome::Conflicted { output }
+                }
+                CommitApplication::Empty { .. } => {
+                    anyhow::bail!("unexpected stateless empty cherry-pick")
                 }
             })
         }))
@@ -5456,12 +5513,74 @@ impl GitRepository for RealGitRepository {
             let git = git?;
             let mut args = vec!["revert".to_string(), "--no-edit".to_string()];
             args.extend(commits.iter().map(ToString::to_string));
-            let application =
-                apply_commits(&git, &git_dir, &args, RepositoryOperation::Revert, &env).await?;
+            let application = apply_commits(
+                &git,
+                &git_dir,
+                &args,
+                RepositoryOperation::Revert,
+                commits.len() == 1,
+                &env,
+            )
+            .await?;
             anyhow::Ok(match application {
                 CommitApplication::Completed { output } => RevertOutcome::Completed { output },
                 CommitApplication::Conflicted { output } => RevertOutcome::Conflicted { output },
+                CommitApplication::Empty { output } => RevertOutcome::Empty { output },
             })
+        }))
+    }
+
+    fn skip_commit(
+        &self,
+        operation: RepositoryOperation,
+        expected_commit: Oid,
+        env: Arc<HashMap<String, String>>,
+    ) -> BoxFuture<'_, Result<()>> {
+        let git = self.git_binary_in_worktree();
+        let git_dir = self.path();
+        classify_task(self.executor.spawn(async move {
+            let (command, marker) = match operation {
+                RepositoryOperation::CherryPick => ("cherry-pick", "CHERRY_PICK_HEAD"),
+                RepositoryOperation::Revert => ("revert", "REVERT_HEAD"),
+                _ => anyhow::bail!("only cherry-pick and revert commits can be skipped"),
+            };
+            let git = git?;
+            anyhow::ensure!(
+                probe_operation_in_progress(&git_dir) == Some(operation),
+                "the expected operation is not in progress"
+            );
+            anyhow::ensure!(
+                !git_dir.join("sequencer").exists(),
+                "cannot skip a commit owned by another sequencer"
+            );
+            let stopped_commit = ensure_git_success(
+                git.build_stable_command_with_env(&["rev-parse", "--verify", marker], &env)
+                    .output()
+                    .await?,
+            )?;
+            anyhow::ensure!(
+                String::from_utf8(stopped_commit.stdout)?.trim() == expected_commit.to_string(),
+                "the stopped commit changed before skipping"
+            );
+            let status = ensure_git_success(
+                git.build_stable_command_with_env(
+                    &["status", "--porcelain", "--untracked-files=no"],
+                    &env,
+                )
+                .output()
+                .await?,
+            )?;
+            anyhow::ensure!(
+                status.stdout.is_empty(),
+                "cannot skip an empty commit while tracked changes remain"
+            );
+            ensure_git_success(
+                git.build_stable_command_with_env(&[command, "--skip"], &env)
+                    .env("GIT_EDITOR", "true")
+                    .output()
+                    .await?,
+            )?;
+            Ok(())
         }))
     }
 
@@ -6397,15 +6516,7 @@ where
     if env.contains_key("GIT_ASKPASS") {
         let git_process = command.spawn()?;
         let output = collect_output(git_process).await?;
-        anyhow::ensure!(
-            output.status.success(),
-            "{}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        Ok(RemoteCommandOutput {
-            stdout: String::from_utf8_lossy(&output.stdout).to_string(),
-            stderr: String::from_utf8_lossy(&output.stderr).to_string(),
-        })
+        remote_command_output(output)
     } else {
         let ask_pass = AskPassSession::new(executor, ask_pass).await?;
         command
@@ -6450,24 +6561,82 @@ async fn run_askpass_command(
         }
         output = git_output.fuse() => {
             let output = output?;
-            anyhow::ensure!(
-                output.status.success(),
-                "{}",
-                String::from_utf8_lossy(&output.stderr)
-            );
-            Ok(RemoteCommandOutput {
-                stdout: String::from_utf8_lossy(&output.stdout).to_string(),
-                stderr: String::from_utf8_lossy(&output.stderr).to_string(),
-            })
+            remote_command_output(output)
         }
     }
 }
 
 const PUBLISHED_BRANCH_NAMES: [&str; 2] = ["master", "main"];
 
+fn remote_command_output(output: Output) -> Result<RemoteCommandOutput> {
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    if !output.status.success() {
+        return Err(GitCommandFailure {
+            code: output.status.code(),
+            stdout,
+            stderr,
+        }
+        .into());
+    }
+    Ok(RemoteCommandOutput { stdout, stderr })
+}
+
+async fn verified_empty_commit_state(
+    git: &GitBinary,
+    env: &HashMap<String, String>,
+) -> Result<Option<Vec<u8>>> {
+    let status = ensure_git_success(
+        git.build_stable_command_with_env(&["status", "--porcelain", "--untracked-files=no"], env)
+            .output()
+            .await?,
+    )?;
+    if !status.stdout.is_empty() {
+        return Ok(None);
+    }
+    let hooks = ensure_git_success(
+        git.build_stable_command_with_env(
+            &["rev-parse", "--path-format=absolute", "--git-path", "hooks"],
+            env,
+        )
+        .output()
+        .await?,
+    )?;
+    let hooks = PathBuf::from(String::from_utf8(hooks.stdout)?.trim());
+    // A hook can emit Git's own empty-commit text. Without reliable hook exit
+    // provenance, installed hooks make automatic empty classification unsafe.
+    match std::fs::metadata(&hooks) {
+        Ok(metadata) if metadata.is_dir() => {
+            for hook in [
+                "pre-commit",
+                "prepare-commit-msg",
+                "commit-msg",
+                "post-commit",
+                "post-rewrite",
+            ] {
+                match std::fs::symlink_metadata(hooks.join(hook)) {
+                    Ok(_) => return Ok(None),
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(error) => return Err(error.into()),
+                }
+            }
+        }
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
+    }
+    let head = ensure_git_success(
+        git.build_stable_command_with_env(&["rev-parse", "--verify", "HEAD"], env)
+            .output()
+            .await?,
+    )?;
+    Ok(Some(head.stdout))
+}
+
 enum CommitApplication {
     Completed { output: String },
     Conflicted { output: String },
+    Empty { output: String },
 }
 
 async fn apply_commits(
@@ -6475,9 +6644,19 @@ async fn apply_commits(
     git_dir: &Path,
     args: &[String],
     operation: RepositoryOperation,
+    allow_stateless_empty: bool,
     env: &HashMap<String, String>,
 ) -> Result<CommitApplication> {
-    let was_in_progress = probe_operation_in_progress(git_dir) == Some(operation);
+    let operation_before = probe_operation_in_progress(git_dir);
+    let was_in_progress = operation_before == Some(operation);
+    let head_before = if allow_stateless_empty
+        && operation_before.is_none()
+        && !git_dir.join("sequencer").exists()
+    {
+        verified_empty_commit_state(git, env).await?
+    } else {
+        None
+    };
     let output = git
         .build_stable_command_with_env(args, env)
         .env("GIT_EDITOR", "true")
@@ -6492,6 +6671,23 @@ async fn apply_commits(
         return Ok(CommitApplication::Conflicted {
             output: joined_output(&output),
         });
+    }
+    // A clean single revert can be empty without creating REVERT_HEAD. Only
+    // classify that case after proving there is no operation or tracked change
+    // to discard; unlike a stopped cherry-pick it must not run --skip.
+    if let Some(head_before) = head_before
+        && output.status.code() == Some(1)
+        && (joined_output(&output).contains("nothing to commit")
+            || joined_output(&output)
+                .contains("nothing added to commit but untracked files present"))
+        && probe_operation_in_progress(git_dir).is_none()
+        && !git_dir.join("sequencer").exists()
+    {
+        if verified_empty_commit_state(git, env).await? == Some(head_before) {
+            return Ok(CommitApplication::Empty {
+                output: joined_output(&output),
+            });
+        }
     }
     Err(git_failure_from_output(&output))
 }
@@ -6974,6 +7170,348 @@ mod tests {
     fn git_init_repo(path: &Path) {
         fs::create_dir_all(path).expect("failed to create repo directory");
         git_command(path, ["init", "-b", "main"]);
+    }
+
+    #[gpui::test]
+    async fn test_skip_empty_cherry_pick_cleans_state_before_next_commit(cx: &mut TestAppContext) {
+        disable_git_global_config();
+        cx.executor().allow_parking();
+        let directory = tempfile::tempdir().expect("repository directory");
+        let path = directory.path();
+        init_repo_with_base_commit(path);
+        commit_file(path, "first.txt", "first\n", "first");
+        let first =
+            Oid::from_str(&git_command_output(path, ["rev-parse", "HEAD"])).expect("first sha");
+        commit_file(path, "second.txt", "second\n", "second");
+        let second =
+            Oid::from_str(&git_command_output(path, ["rev-parse", "HEAD"])).expect("second sha");
+        git_command(path, ["checkout", "-b", "target", "HEAD~1"]);
+        let repository = open_real_repository(path, cx);
+        let environment = Arc::new(test_commit_envs());
+        let outcome = repository
+            .cherry_pick(vec![first], environment.clone())
+            .await
+            .expect("empty pick stops");
+        assert!(
+            matches!(
+                &outcome,
+                CherryPickOutcome::Conflicted { output }
+                    if output.contains("previous cherry-pick is now empty")
+                        || output.contains("nothing to commit")
+                        || output.contains("nothing added to commit but untracked files present")
+            ),
+            "{outcome:?}"
+        );
+        assert_eq!(
+            repository.operation_in_progress().await.expect("operation"),
+            Some(RepositoryOperation::CherryPick)
+        );
+        assert_eq!(
+            git_command_output(path, ["rev-parse", "CHERRY_PICK_HEAD"]),
+            first.to_string()
+        );
+        assert!(!path.join(".git/sequencer").exists());
+        repository
+            .skip_commit(RepositoryOperation::CherryPick, first, environment.clone())
+            .await
+            .expect("skip empty pick");
+        assert_eq!(
+            repository.operation_in_progress().await.expect("operation"),
+            None
+        );
+        let outcome = repository
+            .cherry_pick(vec![second], environment)
+            .await
+            .expect("remaining pick");
+        assert!(matches!(outcome, CherryPickOutcome::Completed { .. }));
+        assert_eq!(
+            fs::read_to_string(path.join("second.txt")).expect("second file"),
+            "second\n"
+        );
+        assert_eq!(git_command_output(path, ["status", "--porcelain"]), "");
+    }
+
+    #[gpui::test]
+    async fn test_empty_revert_without_operation_continues_without_skip(cx: &mut TestAppContext) {
+        disable_git_global_config();
+        cx.executor().allow_parking();
+        let directory = tempfile::tempdir().expect("repository directory");
+        let path = directory.path();
+        init_repo_with_base_commit(path);
+        commit_file(path, "first.txt", "first\n", "first");
+        let first = git_command_output(path, ["rev-parse", "HEAD"]);
+        commit_file(path, "second.txt", "second\n", "second");
+        let second =
+            Oid::from_str(&git_command_output(path, ["rev-parse", "HEAD"])).expect("second sha");
+        git_command(path, ["revert", "--no-edit", &first]);
+        fs::write(path.join("untracked.txt"), "keep\n").expect("untracked user file");
+        let repository = open_real_repository(path, cx);
+        let environment = Arc::new(test_commit_envs());
+        let first = Oid::from_str(&first).expect("first sha");
+        let outcome = repository
+            .revert_commits(vec![first], environment.clone())
+            .await
+            .expect("empty revert is classified without an active operation");
+        assert!(matches!(outcome, RevertOutcome::Empty { .. }));
+        assert!(!path.join(".git/REVERT_HEAD").exists());
+        assert!(!path.join(".git/sequencer").exists());
+        assert_eq!(
+            repository.operation_in_progress().await.expect("operation"),
+            None
+        );
+        let outcome = repository
+            .revert_commits(vec![second], environment)
+            .await
+            .expect("remaining revert");
+        assert!(matches!(outcome, RevertOutcome::Completed { .. }));
+        assert!(!path.join("second.txt").exists());
+        assert_eq!(
+            fs::read_to_string(path.join("untracked.txt")).expect("user file"),
+            "keep\n"
+        );
+        assert_eq!(
+            git_command_output(path, ["status", "--porcelain"]),
+            "?? untracked.txt"
+        );
+    }
+
+    #[gpui::test]
+    async fn test_skip_empty_commit_rejects_missing_wrong_or_dirty_operation(
+        cx: &mut TestAppContext,
+    ) {
+        disable_git_global_config();
+        cx.executor().allow_parking();
+        let directory = tempfile::tempdir().expect("repository directory");
+        let path = directory.path();
+        init_repo_with_base_commit(path);
+        let base =
+            Oid::from_str(&git_command_output(path, ["rev-parse", "HEAD"])).expect("base sha");
+        commit_file(path, "first.txt", "first\n", "first");
+        let first =
+            Oid::from_str(&git_command_output(path, ["rev-parse", "HEAD"])).expect("first sha");
+        let repository = open_real_repository(path, cx);
+        let environment = Arc::new(test_commit_envs());
+        repository
+            .skip_commit(RepositoryOperation::CherryPick, first, environment.clone())
+            .await
+            .expect_err("no active operation must not be skipped");
+        assert!(matches!(
+            repository
+                .cherry_pick(vec![first], environment.clone())
+                .await
+                .expect("empty pick"),
+            CherryPickOutcome::Conflicted { .. }
+        ));
+        repository
+            .skip_commit(RepositoryOperation::Revert, first, environment.clone())
+            .await
+            .expect_err("wrong operation must not be skipped");
+        repository
+            .skip_commit(RepositoryOperation::CherryPick, base, environment.clone())
+            .await
+            .expect_err("wrong stopped commit must not be skipped");
+        fs::write(path.join("file.txt"), "user changes\n").expect("unstaged user changes");
+        repository
+            .skip_commit(RepositoryOperation::CherryPick, first, environment.clone())
+            .await
+            .expect_err("unstaged user changes must not be discarded");
+        git_command(path, ["add", "file.txt"]);
+        repository
+            .skip_commit(RepositoryOperation::CherryPick, first, environment)
+            .await
+            .expect_err("staged user changes must not be discarded");
+        assert_eq!(
+            git_command_output(path, ["rev-parse", "CHERRY_PICK_HEAD"]),
+            first.to_string()
+        );
+        assert_eq!(
+            git_command_output(path, ["rev-parse", "HEAD"]),
+            first.to_string()
+        );
+        assert_eq!(
+            fs::read_to_string(path.join("file.txt")).expect("user changes"),
+            "user changes\n"
+        );
+        assert!(git_command_output(path, ["diff", "--cached"]).contains("+user changes"));
+    }
+
+    #[gpui::test]
+    async fn test_empty_revert_with_tracked_user_changes_is_error_not_skipped(
+        cx: &mut TestAppContext,
+    ) {
+        disable_git_global_config();
+        cx.executor().allow_parking();
+        let directory = tempfile::tempdir().expect("repository directory");
+        let path = directory.path();
+        init_repo_with_base_commit(path);
+        commit_file(path, "first.txt", "first\n", "first");
+        let first = git_command_output(path, ["rev-parse", "HEAD"]);
+        git_command(path, ["revert", "--no-edit", &first]);
+        let head = git_command_output(path, ["rev-parse", "HEAD"]);
+        fs::write(path.join("file.txt"), "user changes\n").expect("tracked user changes");
+        let repository = open_real_repository(path, cx);
+        repository
+            .revert_commits(
+                vec![Oid::from_str(&first).expect("first sha")],
+                Arc::new(test_commit_envs()),
+            )
+            .await
+            .expect_err("dirty stateless failure must not become an empty outcome");
+        assert_eq!(git_command_output(path, ["rev-parse", "HEAD"]), head);
+        assert_eq!(
+            fs::read_to_string(path.join("file.txt")).expect("user file"),
+            "user changes\n"
+        );
+        assert!(!path.join(".git/REVERT_HEAD").exists());
+        assert!(!path.join(".git/sequencer").exists());
+        assert_eq!(git_command_output(path, ["diff", "--cached"]), "");
+    }
+
+    #[cfg(unix)]
+    #[gpui::test]
+    async fn test_stateless_empty_revert_requires_clean_preoperation_state(
+        cx: &mut TestAppContext,
+    ) {
+        use std::os::unix::fs::PermissionsExt as _;
+        cx.executor().allow_parking();
+        let directory = tempfile::tempdir().expect("repository directory");
+        let path = directory.path();
+        let git_dir = path.join(".git");
+        fs::create_dir(&git_dir).expect("Git directory");
+        let binary = path.join("fake-git");
+        fs::write(
+            &binary,
+            r#"#!/bin/sh
+for argument in "$@"; do
+    case "$argument" in
+        rev-parse) echo 0101010101010101010101010101010101010101; exit 0 ;;
+        status) if [ ! -f .clean ]; then echo ' M file.txt'; fi; exit 0 ;;
+        revert) touch .clean; echo 'nothing to commit'; exit 1 ;;
+    esac
+done
+exit 2
+"#,
+        )
+        .expect("controlled Git command");
+        fs::set_permissions(&binary, fs::Permissions::from_mode(0o755)).expect("executable");
+        let git = GitBinary::new(
+            binary,
+            path.to_path_buf(),
+            git_dir.clone(),
+            cx.executor(),
+            true,
+        );
+        let result = apply_commits(
+            &git,
+            &git_dir,
+            &[
+                "revert".to_string(),
+                "--no-edit".to_string(),
+                "HEAD".to_string(),
+            ],
+            RepositoryOperation::Revert,
+            true,
+            &HashMap::default(),
+        )
+        .await;
+        assert!(
+            result.is_err(),
+            "a dirty-before/clean-after failure must not be an Empty outcome"
+        );
+        assert!(path.join(".clean").exists(), "the command was exercised");
+    }
+
+    #[cfg(unix)]
+    #[gpui::test]
+    async fn test_empty_commit_error_is_distinct_from_hook_failure(cx: &mut TestAppContext) {
+        use std::os::unix::fs::PermissionsExt as _;
+        disable_git_global_config();
+        cx.executor().allow_parking();
+        let directory = tempfile::tempdir().expect("repository directory");
+        let path = directory.path();
+        init_repo_with_base_commit(path);
+        commit_file(path, "first.txt", "first\n", "first");
+        let first =
+            Oid::from_str(&git_command_output(path, ["rev-parse", "HEAD"])).expect("first sha");
+        let repository = open_real_repository(path, cx);
+        repository.set_trusted(true);
+        let environment = Arc::new(test_commit_envs());
+        assert!(matches!(
+            repository
+                .cherry_pick(vec![first], environment.clone())
+                .await
+                .expect("empty pick"),
+            CherryPickOutcome::Conflicted { .. }
+        ));
+        let error = repository
+            .commit(
+                "resolved".into(),
+                None,
+                CommitOptions::default(),
+                noop_askpass(cx),
+                environment.clone(),
+            )
+            .await
+            .expect_err("empty index");
+        assert!(error.is::<EmptyCommit>(), "{error:#}");
+        let hook = path.join(".git/hooks/pre-commit");
+        fs::write(
+            &hook,
+            "#!/bin/sh\necho 'hook failed: nothing to commit' >&2\nexit 1\n",
+        )
+        .expect("hook");
+        fs::set_permissions(&hook, fs::Permissions::from_mode(0o755)).expect("executable hook");
+        let error = repository
+            .commit(
+                "resolved".into(),
+                None,
+                CommitOptions::default(),
+                noop_askpass(cx),
+                environment,
+            )
+            .await
+            .expect_err("hook rejection");
+        assert!(!error.is::<EmptyCommit>());
+        assert!(format!("{error:#}").contains("hook failed: nothing to commit"));
+        assert_eq!(
+            git_command_output(path, ["rev-parse", "CHERRY_PICK_HEAD"]),
+            first.to_string()
+        );
+    }
+
+    #[gpui::test]
+    async fn test_skip_empty_commit_rejects_foreign_sequencer(cx: &mut TestAppContext) {
+        disable_git_global_config();
+        cx.executor().allow_parking();
+        let directory = tempfile::tempdir().expect("repository directory");
+        let path = directory.path();
+        init_repo_with_base_commit(path);
+        commit_file(path, "first.txt", "first\n", "first");
+        let first =
+            Oid::from_str(&git_command_output(path, ["rev-parse", "HEAD"])).expect("first sha");
+        let repository = open_real_repository(path, cx);
+        let environment = Arc::new(test_commit_envs());
+        assert!(matches!(
+            repository
+                .cherry_pick(vec![first], environment.clone())
+                .await
+                .expect("empty pick"),
+            CherryPickOutcome::Conflicted { .. }
+        ));
+        fs::create_dir(path.join(".git/sequencer")).expect("foreign sequencer");
+        fs::write(path.join(".git/sequencer/todo"), "foreign state\n").expect("foreign todo");
+        repository
+            .skip_commit(RepositoryOperation::CherryPick, first, environment)
+            .await
+            .expect_err("foreign sequencer must not be advanced");
+        assert_eq!(
+            fs::read_to_string(path.join(".git/sequencer/todo")).expect("foreign todo"),
+            "foreign state\n"
+        );
+        assert_eq!(
+            git_command_output(path, ["rev-parse", "CHERRY_PICK_HEAD"]),
+            first.to_string()
+        );
     }
 
     #[gpui::test]
@@ -8333,6 +8871,76 @@ mod tests {
             1,
             "Path states the separator itself and must not gain a second one"
         );
+    }
+
+    #[gpui::test]
+    async fn test_cherry_pick_after_committing_conflict_resolution_applies_remaining_commits(
+        cx: &mut TestAppContext,
+    ) {
+        disable_git_global_config();
+        cx.executor().allow_parking();
+        let directory = tempfile::tempdir().expect("repository directory");
+        let path = directory.path();
+        init_repo_with_base_commit(path);
+        git_command(path, ["checkout", "-b", "source"]);
+        commit_file(path, "file.txt", "source\n", "A");
+        let first = Oid::from_str(&git_command_output(path, ["rev-parse", "HEAD"])).expect("A sha");
+        commit_file(path, "second.txt", "second\n", "B");
+        let second =
+            Oid::from_str(&git_command_output(path, ["rev-parse", "HEAD"])).expect("B sha");
+        commit_file(path, "third.txt", "third\n", "C");
+        let third = Oid::from_str(&git_command_output(path, ["rev-parse", "HEAD"])).expect("C sha");
+        git_command(path, ["checkout", "main"]);
+        commit_file(path, "file.txt", "target\n", "target");
+        let repository = open_real_repository(path, cx);
+        let environment = Arc::new(test_commit_envs());
+        assert!(matches!(
+            repository
+                .cherry_pick(vec![first], environment.clone())
+                .await
+                .expect("A conflict"),
+            CherryPickOutcome::Conflicted { .. }
+        ));
+        fs::write(path.join("file.txt"), "resolved\n").expect("resolve conflict");
+        git_command(path, ["add", "file.txt"]);
+        repository
+            .commit(
+                "A resolved".into(),
+                None,
+                CommitOptions::default(),
+                noop_askpass(cx),
+                environment.clone(),
+            )
+            .await
+            .expect("commit resolution");
+        assert_eq!(
+            repository.operation_in_progress().await.expect("operation"),
+            None
+        );
+        assert!(matches!(
+            repository
+                .cherry_pick(vec![third, second], environment)
+                .await
+                .expect("remaining commits"),
+            CherryPickOutcome::Completed { .. }
+        ));
+        assert_eq!(
+            fs::read_to_string(path.join("file.txt")).expect("resolved file"),
+            "resolved\n"
+        );
+        assert_eq!(
+            fs::read_to_string(path.join("second.txt")).expect("second file"),
+            "second\n"
+        );
+        assert_eq!(
+            fs::read_to_string(path.join("third.txt")).expect("third file"),
+            "third\n"
+        );
+        assert_eq!(
+            git_command_output(path, ["log", "-3", "--format=%s"]),
+            "C\nB\nA resolved"
+        );
+        assert_eq!(git_command_output(path, ["status", "--porcelain"]), "");
     }
 
     #[gpui::test]

@@ -1,7 +1,8 @@
 use anyhow::Result;
 use git::Oid;
 use git::repository::{
-    Branch, CherryPickOutcome, CommitData, CommitDetails, GitFailure, GitFailureKind, RevertOutcome,
+    Branch, CherryPickOutcome, CommitData, CommitDetails, GitFailure, GitFailureKind,
+    RepositoryOperation, RevertOutcome,
 };
 use gpui::{App, AsyncWindowContext, SharedString, Task, Window};
 use util::ResultExt as _;
@@ -132,6 +133,7 @@ impl CommitDescription {
 enum Application {
     Completed,
     Stopped { output: String },
+    Empty,
 }
 
 fn user_name(name: &str, email: &str) -> String {
@@ -411,8 +413,21 @@ fn suggested_branch_name(labels: &[RefLabel], branches: &[Branch]) -> Option<Str
     }
 }
 
+#[cfg(test)]
+#[derive(Default)]
+struct BatchNotices(std::cell::RefCell<Vec<BranchNotice>>);
+#[cfg(test)]
+impl gpui::Global for BatchNotices {}
+
 fn notify(context: &BranchContext, notice: BranchNotice, cx: &mut AsyncWindowContext) {
-    cx.update(|_, app| context.notify(notice, app)).log_err();
+    cx.update(|_, app| {
+        #[cfg(test)]
+        if let Some(notices) = app.try_global::<BatchNotices>() {
+            notices.0.borrow_mut().push(notice.clone());
+        }
+        context.notify(notice, app)
+    })
+    .log_err();
 }
 
 pub(crate) fn cherry_pick_commits(
@@ -513,6 +528,7 @@ async fn apply_commit(
             Ok(match receiver.await?? {
                 RevertOutcome::Completed { .. } => Application::Completed,
                 RevertOutcome::Conflicted { output } => Application::Stopped { output },
+                RevertOutcome::Empty { .. } => Application::Empty,
             })
         }
     }
@@ -530,14 +546,48 @@ async fn apply_changes_flow(
     for commit in &commits {
         match apply_commit(context, operation, commit.sha, cx).await {
             Ok(Application::Completed) => successful.push(commit.clone()),
+            Ok(Application::Empty) => skipped.push(commit.clone()),
             Ok(Application::Stopped { output }) => {
                 if is_conflict(&output) {
-                    resolve_conflicts_flow(context, operation, commit, &successful, cx).await;
-                    return;
+                    match resolve_conflicts_flow(context, operation, commit, &successful, cx).await
+                    {
+                        Ok(true) => successful.push(commit.clone()),
+                        Ok(false) => return,
+                        Err(error) if error.is::<git::repository::EmptyCommit>() => {
+                            if let Err(error) =
+                                skip_commit(context, operation, commit.sha, cx).await
+                            {
+                                notify(
+                                    context,
+                                    failure_notice(operation, commit, &error, &successful),
+                                    cx,
+                                );
+                                return;
+                            }
+                            skipped.push(commit.clone());
+                        }
+                        Err(error) => {
+                            notify(
+                                context,
+                                failure_notice(operation, commit, &error, &successful),
+                                cx,
+                            );
+                            return;
+                        }
+                    }
+                    continue;
                 }
                 if is_empty_commit(operation, &output) {
+                    if let Err(error) = skip_commit(context, operation, commit.sha, cx).await {
+                        notify(
+                            context,
+                            failure_notice(operation, commit, &error, &successful),
+                            cx,
+                        );
+                        return;
+                    }
                     skipped.push(commit.clone());
-                    break;
+                    continue;
                 }
                 let notice = stopped_failure_notice(operation, commit, &output, &successful);
                 notify(context, notice, cx);
@@ -556,13 +606,32 @@ async fn apply_changes_flow(
     notify(context, result_notice(operation, &successful, &skipped), cx);
 }
 
+async fn skip_commit(
+    context: &BranchContext,
+    operation: ApplyOperation,
+    expected_commit: Oid,
+    cx: &mut AsyncWindowContext,
+) -> Result<()> {
+    let operation = match operation {
+        ApplyOperation::CherryPick => RepositoryOperation::CherryPick,
+        ApplyOperation::Revert => RepositoryOperation::Revert,
+    };
+    context
+        .repository
+        .update(cx, |repository, _| {
+            repository.skip_commit(operation, expected_commit)
+        })
+        .await??;
+    Ok(())
+}
+
 async fn resolve_conflicts_flow(
     context: &BranchContext,
     operation: ApplyOperation,
     commit: &CommitDescription,
     successful: &[CommitDescription],
     cx: &mut AsyncWindowContext,
-) {
+) -> Result<bool> {
     let params = conflict_params(operation, commit);
     let Some(resolution) = cx
         .update(|window, app| {
@@ -576,7 +645,7 @@ async fn resolve_conflicts_flow(
         })
         .log_err()
     else {
-        return;
+        return Ok(false);
     };
     if !resolution.await.proceed {
         notify(
@@ -584,7 +653,7 @@ async fn resolve_conflicts_flow(
             conflict_notice(context, operation, commit, successful),
             cx,
         );
-        return;
+        return Ok(false);
     }
     let message = match operation {
         ApplyOperation::CherryPick => {
@@ -593,7 +662,25 @@ async fn resolve_conflicts_flow(
         }
         ApplyOperation::Revert => revert_message(commit),
     };
-    show_commit_dialog(context, message, cx);
+    let completion = show_commit_dialog(context, message, cx)?;
+    match completion.await {
+        Ok(result) => result.map(|()| true),
+        Err(_) => {
+            if !successful.is_empty() {
+                notify(
+                    context,
+                    BranchNotice::warning(format!(
+                        "Commit cancelled: {}{}",
+                        commit.details(),
+                        successful_details(operation, successful)
+                    ))
+                    .title(format!("{} cancelled", operation.capitalized_name())),
+                    cx,
+                );
+            }
+            Ok(false)
+        }
+    }
 }
 
 async fn is_published(context: &BranchContext, sha: Oid, cx: &mut AsyncWindowContext) -> bool {
@@ -619,20 +706,33 @@ async fn is_published(context: &BranchContext, sha: Oid, cx: &mut AsyncWindowCon
     published_to_protected_branch(&remote_branches, &containing)
 }
 
-fn show_commit_dialog(context: &BranchContext, message: String, cx: &mut AsyncWindowContext) {
+fn show_commit_dialog(
+    context: &BranchContext,
+    message: String,
+    cx: &mut AsyncWindowContext,
+) -> Result<futures::channel::oneshot::Receiver<Result<()>>> {
     let workspace = context.workspace.clone();
+    let repository = context.repository.clone();
+    let (sender, receiver) = futures::channel::oneshot::channel();
     cx.update(|window, app| {
-        workspace
-            .update(app, |workspace, cx| {
-                if let Some(git_panel) = workspace.panel::<GitPanel>(cx) {
-                    let buffer = git_panel.read(cx).commit_message_buffer(cx);
-                    buffer.update(cx, |buffer, cx| buffer.set_text(message, cx));
-                }
-                CommitModal::toggle(workspace, Some(ForceMode::Commit), window, cx);
-            })
-            .log_err();
-    })
-    .log_err();
+        workspace.update(app, |workspace, cx| {
+            let git_panel = workspace
+                .panel::<GitPanel>(cx)
+                .ok_or_else(|| anyhow::anyhow!("Git panel is unavailable"))?;
+            anyhow::ensure!(
+                git_panel.read(cx).active_repository.as_ref() == Some(&repository),
+                "active repository changed during batch operation"
+            );
+            let buffer = git_panel.read(cx).commit_message_buffer(cx);
+            buffer.update(cx, |buffer, cx| buffer.set_text(message, cx));
+            CommitModal::toggle(workspace, Some(ForceMode::Commit), window, cx);
+            if let Some(modal) = workspace.active_modal::<CommitModal>(cx) {
+                modal.update(cx, |modal, _| modal.set_completion(repository, sender));
+            }
+            anyhow::Ok(())
+        })?
+    })??;
+    Ok(receiver)
 }
 
 pub(super) fn checkout_revision(
@@ -721,6 +821,649 @@ fn create_branch(
 mod tests {
     use super::*;
     use crate::branch_operations::NoticeSeverity;
+
+    async fn batch_fixture(
+        cx: &mut gpui::TestAppContext,
+        operation: ApplyOperation,
+        empty: bool,
+        conflict: bool,
+    ) -> (
+        std::sync::Arc<project::FakeFs>,
+        gpui::Entity<workspace::Workspace>,
+        BranchContext,
+        gpui::Task<()>,
+        gpui::VisualTestContext,
+    ) {
+        use gpui::AppContext as _;
+        use std::path::Path;
+        cx.update(|cx| {
+            let settings = settings::SettingsStore::test(cx);
+            cx.set_global(settings);
+            cx.set_global(BatchNotices::default());
+            cx.set_global(db::AppDatabase::test_new());
+            theme_settings::init(theme::LoadThemes::JustBase, cx);
+            editor::init(cx);
+            crate::init(cx);
+        });
+        let fs = project::FakeFs::new(cx.executor());
+        fs.insert_tree(
+            Path::new("/project"),
+            serde_json::json!({
+                ".git": {}, "file.txt": "resolved\n"
+            }),
+        )
+        .await;
+        let project = project::Project::test(fs.clone(), [Path::new("/project")], cx).await;
+        cx.run_until_parked();
+        let window = cx.add_window(|window, cx| {
+            workspace::MultiWorkspace::test_new(project.clone(), window, cx)
+        });
+        let workspace = window
+            .read_with(cx, |multi, _| multi.workspace().clone())
+            .expect("workspace");
+        let mut cx = gpui::VisualTestContext::from_window(window.into(), cx);
+        let repository = project.read_with(&cx, |project, cx| {
+            project.active_repository(cx).expect("repository")
+        });
+        let panel = workspace.update_in(&mut cx, GitPanel::new_test);
+        workspace.update_in(&mut cx, |workspace, window, cx| {
+            workspace.add_panel(panel.clone(), window, cx)
+        });
+        fs.with_git_state(Path::new("/project/.git"), true, |state| {
+            let first = description(1, "First").sha;
+            if empty {
+                state.empty_commits.insert(first);
+            }
+            if conflict {
+                // The resolver reload sees an already staged resolution, so this
+                // exercises batch/commit completion without driving the merge editor.
+                match operation {
+                    ApplyOperation::CherryPick => {
+                        state.cherry_pick_conflicts.insert(first, Vec::new());
+                    }
+                    ApplyOperation::Revert => {
+                        state.revert_conflicts.insert(first, Vec::new());
+                    }
+                }
+                state.index_contents.insert(
+                    git::repository::repo_path("file.txt"),
+                    b"resolved\n".to_vec(),
+                );
+                state.head_contents.insert(
+                    git::repository::repo_path("file.txt"),
+                    b"original\n".to_vec(),
+                );
+            }
+        })
+        .expect("configure repository");
+        if conflict {
+            fs.set_status_for_repo(
+                Path::new("/project/.git"),
+                &[(
+                    "file.txt",
+                    git::status::FileStatus::index(git::status::StatusCode::Modified),
+                )],
+            );
+        }
+        cx.run_until_parked();
+        let update = panel.update(&mut cx, |panel, _| panel.take_status_update_for_test());
+        update.await;
+        let context = BranchContext::new(workspace.downgrade(), repository);
+        let commits = [1, 2, 3]
+            .into_iter()
+            .map(|byte| MenuCommit {
+                sha: description(byte, "Change").sha,
+                parents: Vec::new(),
+                labels: Vec::new(),
+                data: Some(std::sync::Arc::new(CommitData {
+                    sha: description(byte, "Change").sha,
+                    parents: smallvec::smallvec![],
+                    author_name: "Jane".into(),
+                    author_email: "jane@example.com".into(),
+                    commit_timestamp: i64::from(byte),
+                    author_timestamp: i64::from(byte),
+                    committer_name: "Jane".into(),
+                    committer_email: "jane@example.com".into(),
+                    committer_timestamp: i64::from(byte),
+                    subject: "Change".into(),
+                    message: "Change\n\nBody".into(),
+                })),
+            })
+            .collect();
+        let task = workspace.update_in(&mut cx, |_, window, cx| {
+            apply_changes(context.clone(), operation, commits, window, cx)
+        });
+        (fs, workspace, context, task, cx)
+    }
+
+    fn applied(fs: &project::FakeFs, operation: ApplyOperation) -> Vec<Oid> {
+        fs.with_git_state(
+            std::path::Path::new("/project/.git"),
+            false,
+            |state| match operation {
+                ApplyOperation::CherryPick => state.cherry_picked_commits.clone(),
+                ApplyOperation::Revert => state.reverted_commits.clone(),
+            },
+        )
+        .expect("read applied commits")
+    }
+
+    fn assert_batch_requests(
+        fs: &project::FakeFs,
+        operation: ApplyOperation,
+        middle: Option<fs::FakeGitOperation>,
+        continued: bool,
+    ) {
+        let operation = match operation {
+            ApplyOperation::CherryPick => fs::FakeGitOperation::CherryPick,
+            ApplyOperation::Revert => fs::FakeGitOperation::Revert,
+        };
+        let mut expected = vec![(operation, vec![description(1, "").sha])];
+        if let Some(middle) = middle {
+            expected.push((middle, Vec::new()));
+        }
+        if continued {
+            expected.extend([2, 3].map(|byte| (operation, vec![description(byte, "").sha])));
+        }
+        fs.with_git_state(std::path::Path::new("/project/.git"), false, |state| {
+            assert_eq!(state.sequencer_requests, expected);
+        })
+        .expect("verify actual backend request order");
+    }
+
+    #[gpui::test]
+    async fn batch_applies_every_commit_on_ordinary_success(cx: &mut gpui::TestAppContext) {
+        let (fs, _workspace, _, task, _) =
+            batch_fixture(cx, ApplyOperation::CherryPick, false, false).await;
+        task.await;
+        assert_batch_requests(&fs, ApplyOperation::CherryPick, None, true);
+        assert_eq!(
+            applied(&fs, ApplyOperation::CherryPick),
+            vec![
+                description(1, "").sha,
+                description(2, "").sha,
+                description(3, "").sha
+            ]
+        );
+    }
+
+    #[gpui::test]
+    async fn batch_skips_empty_first_commit_and_applies_remaining_commit(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (fs, _workspace, _, task, _) =
+            batch_fixture(cx, ApplyOperation::CherryPick, true, false).await;
+        task.await;
+        assert_batch_requests(
+            &fs,
+            ApplyOperation::CherryPick,
+            Some(fs::FakeGitOperation::SkipCommit),
+            true,
+        );
+        assert_eq!(
+            applied(&fs, ApplyOperation::CherryPick),
+            vec![description(2, "").sha, description(3, "").sha]
+        );
+        fs.with_git_state(std::path::Path::new("/project/.git"), false, |state| {
+            assert!(
+                state
+                    .sequencer_requests
+                    .iter()
+                    .any(|(operation, _)| *operation == fs::FakeGitOperation::SkipCommit),
+                "an empty cherry-pick must reach the real --skip path"
+            );
+            assert!(!state.refs.contains_key("CHERRY_PICK_HEAD"));
+        })
+        .expect("read sequencer state");
+    }
+
+    #[gpui::test]
+    async fn batch_retains_remaining_commit_until_conflict_commit_succeeds(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        conflict_commit_succeeds(cx, ApplyOperation::CherryPick).await;
+    }
+
+    #[gpui::test]
+    async fn batch_revert_retains_remaining_commits_after_conflict_commit(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        conflict_commit_succeeds(cx, ApplyOperation::Revert).await;
+    }
+
+    async fn conflict_commit_succeeds(cx: &mut gpui::TestAppContext, operation: ApplyOperation) {
+        use gpui::Focusable as _;
+        let (fs, workspace, _, task, mut cx) = batch_fixture(cx, operation, false, true).await;
+        cx.run_until_parked();
+        assert!(applied(&fs, operation).is_empty());
+        let modal = workspace
+            .read_with(&cx, |workspace, cx| {
+                workspace.active_modal::<CommitModal>(cx)
+            })
+            .expect("conflict commit modal");
+        modal.update_in(&mut cx, |modal, window, cx| {
+            modal.focus_handle(cx).focus(window, cx);
+            window.dispatch_action(Box::new(git::Commit), cx);
+        });
+        task.await;
+        assert_eq!(
+            applied(&fs, operation),
+            vec![description(2, "").sha, description(3, "").sha]
+        );
+        fs.with_git_state(std::path::Path::new("/project/.git"), false, |state| {
+            assert_eq!(
+                state
+                    .head_contents
+                    .get(&git::repository::repo_path("file.txt")),
+                Some(&b"resolved\n".to_vec())
+            );
+            assert!(!state.refs.contains_key("CHERRY_PICK_HEAD"));
+            assert!(!state.refs.contains_key("REVERT_HEAD"));
+        })
+        .expect("read committed resolution");
+        assert_batch_requests(&fs, operation, Some(fs::FakeGitOperation::Commit), true);
+    }
+
+    #[gpui::test]
+    async fn batch_does_not_continue_when_conflict_commit_is_cancelled(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        conflict_commit_cancelled(cx, ApplyOperation::CherryPick).await;
+    }
+
+    #[gpui::test]
+    async fn batch_revert_does_not_continue_when_conflict_commit_is_cancelled(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        conflict_commit_cancelled(cx, ApplyOperation::Revert).await;
+    }
+
+    async fn conflict_commit_cancelled(cx: &mut gpui::TestAppContext, operation: ApplyOperation) {
+        let (fs, workspace, _, task, mut cx) = batch_fixture(cx, operation, false, true).await;
+        cx.run_until_parked();
+        workspace.update_in(&mut cx, |workspace, window, cx| {
+            assert!(workspace.active_modal::<CommitModal>(cx).is_some());
+            workspace.hide_modal(window, cx);
+        });
+        task.await;
+        assert!(applied(&fs, operation).is_empty());
+        fs.with_git_state(std::path::Path::new("/project/.git"), false, |state| {
+            let marker = match operation {
+                ApplyOperation::CherryPick => "CHERRY_PICK_HEAD",
+                ApplyOperation::Revert => "REVERT_HEAD",
+            };
+            assert!(state.refs.contains_key(marker));
+            assert_ne!(state.index_contents, state.head_contents);
+            assert!(
+                !state
+                    .sequencer_requests
+                    .iter()
+                    .any(|(request, _)| *request == fs::FakeGitOperation::Commit),
+                "dismissal before submission must not start a commit"
+            );
+        })
+        .expect("cancel preserves user's resolution");
+        assert_batch_requests(&fs, operation, None, false);
+    }
+
+    #[gpui::test]
+    async fn batch_does_not_continue_when_conflict_commit_fails(cx: &mut gpui::TestAppContext) {
+        conflict_commit_failed(cx, ApplyOperation::CherryPick).await;
+    }
+
+    #[gpui::test]
+    async fn batch_revert_does_not_continue_when_conflict_commit_fails(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        conflict_commit_failed(cx, ApplyOperation::Revert).await;
+    }
+
+    async fn conflict_commit_failed(cx: &mut gpui::TestAppContext, operation: ApplyOperation) {
+        use gpui::Focusable as _;
+        let (fs, workspace, _, task, mut cx) = batch_fixture(cx, operation, false, true).await;
+        fs.set_simulated_git_failure_for_repo(
+            std::path::Path::new("/project/.git"),
+            fs::FakeGitOperation::Commit,
+            Some((GitFailureKind::Other, "pre-commit hook rejected the commit")),
+        );
+        cx.run_until_parked();
+        let modal = workspace
+            .read_with(&cx, |workspace, cx| {
+                workspace.active_modal::<CommitModal>(cx)
+            })
+            .expect("conflict commit modal");
+        modal.update_in(&mut cx, |modal, window, cx| {
+            modal.focus_handle(cx).focus(window, cx);
+            window.dispatch_action(Box::new(git::Commit), cx);
+        });
+        task.await;
+        assert!(applied(&fs, operation).is_empty());
+        fs.with_git_state(std::path::Path::new("/project/.git"), false, |state| {
+            let marker = match operation {
+                ApplyOperation::CherryPick => "CHERRY_PICK_HEAD",
+                ApplyOperation::Revert => "REVERT_HEAD",
+            };
+            assert!(state.refs.contains_key(marker));
+            assert_ne!(state.index_contents, state.head_contents);
+            assert!(state.commit_history.is_empty());
+        })
+        .expect("failure preserves resolution and does not commit");
+        assert_batch_requests(&fs, operation, Some(fs::FakeGitOperation::Commit), false);
+    }
+
+    #[gpui::test]
+    async fn batch_does_not_continue_when_empty_commit_skip_fails(cx: &mut gpui::TestAppContext) {
+        let (fs, _workspace, _, task, _cx) =
+            batch_fixture(cx, ApplyOperation::CherryPick, true, false).await;
+        fs.set_simulated_git_failure_for_repo(
+            std::path::Path::new("/project/.git"),
+            fs::FakeGitOperation::SkipCommit,
+            Some((GitFailureKind::Other, "cannot clean sequencer state")),
+        );
+        task.await;
+        assert!(applied(&fs, ApplyOperation::CherryPick).is_empty());
+        fs.with_git_state(std::path::Path::new("/project/.git"), false, |state| {
+            assert!(state.refs.contains_key("CHERRY_PICK_HEAD"));
+        })
+        .expect("skip failure leaves operation stopped");
+        assert_batch_requests(
+            &fs,
+            ApplyOperation::CherryPick,
+            Some(fs::FakeGitOperation::SkipCommit),
+            false,
+        );
+    }
+
+    #[gpui::test]
+    async fn batch_revert_continues_after_stateless_empty_without_skip(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (fs, _workspace, _, task, _cx) =
+            batch_fixture(cx, ApplyOperation::Revert, true, false).await;
+        task.await;
+        assert_eq!(
+            applied(&fs, ApplyOperation::Revert),
+            vec![description(2, "").sha, description(3, "").sha]
+        );
+        fs.with_git_state(std::path::Path::new("/project/.git"), false, |state| {
+            assert!(!state.refs.contains_key("REVERT_HEAD"));
+        })
+        .expect("stateless empty revert leaves no operation");
+        assert_batch_requests(&fs, ApplyOperation::Revert, None, true);
+    }
+
+    #[gpui::test]
+    async fn batch_skips_conflict_resolution_that_becomes_empty(cx: &mut gpui::TestAppContext) {
+        use gpui::Focusable as _;
+        let (fs, workspace, _, task, mut cx) =
+            batch_fixture(cx, ApplyOperation::CherryPick, false, true).await;
+        cx.run_until_parked();
+        let head = fs
+            .with_git_state(std::path::Path::new("/project/.git"), false, |state| {
+                state.index_contents = state.head_contents.clone();
+                state
+                    .head_contents
+                    .get(&git::repository::repo_path("file.txt"))
+                    .cloned()
+                    .expect("HEAD file")
+            })
+            .expect("resolve by retaining HEAD");
+        fs.insert_file(std::path::Path::new("/project/file.txt"), head)
+            .await;
+        let modal = workspace
+            .read_with(&cx, |workspace, cx| {
+                workspace.active_modal::<CommitModal>(cx)
+            })
+            .expect("conflict commit modal");
+        modal.update_in(&mut cx, |modal, window, cx| {
+            modal.focus_handle(cx).focus(window, cx);
+            window.dispatch_action(Box::new(git::Commit), cx);
+        });
+        task.await;
+        assert_eq!(
+            applied(&fs, ApplyOperation::CherryPick),
+            vec![description(2, "").sha, description(3, "").sha]
+        );
+        fs.with_git_state(std::path::Path::new("/project/.git"), false, |state| {
+            assert_eq!(
+                state.sequencer_requests,
+                vec![
+                    (
+                        fs::FakeGitOperation::CherryPick,
+                        vec![description(1, "").sha]
+                    ),
+                    (fs::FakeGitOperation::Commit, Vec::new()),
+                    (fs::FakeGitOperation::SkipCommit, Vec::new()),
+                    (
+                        fs::FakeGitOperation::CherryPick,
+                        vec![description(2, "").sha]
+                    ),
+                    (
+                        fs::FakeGitOperation::CherryPick,
+                        vec![description(3, "").sha]
+                    ),
+                ]
+            );
+            assert!(!state.refs.contains_key("CHERRY_PICK_HEAD"));
+            assert!(state.commit_history.is_empty());
+        })
+        .expect("empty resolution is skipped before continuing");
+    }
+
+    #[gpui::test]
+    async fn batch_revert_applies_every_commit_on_ordinary_success(cx: &mut gpui::TestAppContext) {
+        let operation = ApplyOperation::Revert;
+        let (fs, _workspace, _, task, _cx) = batch_fixture(cx, operation, false, false).await;
+        task.await;
+        assert_batch_requests(&fs, operation, None, true);
+        assert_eq!(
+            applied(&fs, operation),
+            vec![
+                description(1, "").sha,
+                description(2, "").sha,
+                description(3, "").sha
+            ]
+        );
+    }
+
+    #[gpui::test]
+    async fn batch_does_not_skip_arbitrary_error_containing_empty_commit_text(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (fs, _workspace, _, task, _cx) =
+            batch_fixture(cx, ApplyOperation::CherryPick, false, false).await;
+        fs.set_simulated_git_failure_for_repo(
+            std::path::Path::new("/project/.git"),
+            fs::FakeGitOperation::CherryPick,
+            Some((GitFailureKind::Other, "hook failed: nothing to commit")),
+        );
+        task.await;
+        assert_batch_requests(&fs, ApplyOperation::CherryPick, None, false);
+        assert!(applied(&fs, ApplyOperation::CherryPick).is_empty());
+    }
+
+    #[gpui::test]
+    async fn batch_modal_hook_error_on_empty_resolution_is_not_skipped(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use gpui::Focusable as _;
+        let (fs, workspace, _, task, mut cx) =
+            batch_fixture(cx, ApplyOperation::CherryPick, false, true).await;
+        cx.run_until_parked();
+        let head = fs
+            .with_git_state(std::path::Path::new("/project/.git"), false, |state| {
+                state.index_contents = state.head_contents.clone();
+                state
+                    .head_contents
+                    .get(&git::repository::repo_path("file.txt"))
+                    .cloned()
+                    .expect("HEAD file")
+            })
+            .expect("empty resolved index");
+        fs.insert_file(std::path::Path::new("/project/file.txt"), head)
+            .await;
+        fs.set_simulated_git_failure_for_repo(
+            std::path::Path::new("/project/.git"),
+            fs::FakeGitOperation::Commit,
+            Some((GitFailureKind::Other, "hook failed: nothing to commit")),
+        );
+        let modal = workspace
+            .read_with(&cx, |workspace, cx| {
+                workspace.active_modal::<CommitModal>(cx)
+            })
+            .expect("commit modal");
+        modal.update_in(&mut cx, |modal, window, cx| {
+            modal.focus_handle(cx).focus(window, cx);
+            window.dispatch_action(Box::new(git::Commit), cx);
+        });
+        task.await;
+        cx.run_until_parked();
+        assert_batch_requests(
+            &fs,
+            ApplyOperation::CherryPick,
+            Some(fs::FakeGitOperation::Commit),
+            false,
+        );
+        fs.with_git_state(std::path::Path::new("/project/.git"), false, |state| {
+            assert!(state.refs.contains_key("CHERRY_PICK_HEAD"));
+            assert!(state.commit_history.is_empty());
+        })
+        .expect("hook failure preserves stopped operation");
+        cx.read(|cx| {
+            let notices = cx.global::<BatchNotices>().0.borrow();
+            assert_eq!(notices.len(), 1);
+            assert_eq!(notices[0].severity, NoticeSeverity::Error);
+            assert!(
+                notices[0]
+                    .message
+                    .contains("hook failed: nothing to commit")
+            );
+        });
+    }
+
+    #[gpui::test]
+    async fn batch_waits_for_backend_commit_after_modal_dismissal(cx: &mut gpui::TestAppContext) {
+        use gpui::Focusable as _;
+        let (fs, workspace, _, task, mut cx) =
+            batch_fixture(cx, ApplyOperation::CherryPick, false, true).await;
+        let gate = fs::FakeBlobReadGate::default();
+        fs.with_git_state(std::path::Path::new("/project/.git"), false, |state| {
+            state.commit_gate = Some(gate.clone())
+        })
+        .expect("gate commit completion");
+        cx.run_until_parked();
+        let modal = workspace
+            .read_with(&cx, |workspace, cx| {
+                workspace.active_modal::<CommitModal>(cx)
+            })
+            .expect("commit modal");
+        modal.update_in(&mut cx, |modal, window, cx| {
+            modal.focus_handle(cx).focus(window, cx);
+            window.dispatch_action(Box::new(git::Commit), cx);
+        });
+        cx.run_until_parked();
+        assert_eq!(gate.waiting(), 1);
+        assert!(
+            workspace
+                .read_with(&cx, |workspace, cx| workspace
+                    .active_modal::<CommitModal>(cx))
+                .is_none()
+        );
+        assert_batch_requests(
+            &fs,
+            ApplyOperation::CherryPick,
+            Some(fs::FakeGitOperation::Commit),
+            false,
+        );
+        assert!(applied(&fs, ApplyOperation::CherryPick).is_empty());
+        gate.open();
+        task.await;
+        assert_batch_requests(
+            &fs,
+            ApplyOperation::CherryPick,
+            Some(fs::FakeGitOperation::Commit),
+            true,
+        );
+        assert_eq!(
+            applied(&fs, ApplyOperation::CherryPick),
+            vec![description(2, "").sha, description(3, "").sha]
+        );
+    }
+
+    #[gpui::test]
+    async fn batch_later_conflict_commit_failure_preserves_prior_success_and_stops(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use gpui::Focusable as _;
+        let (fs, workspace, _, task, mut cx) =
+            batch_fixture(cx, ApplyOperation::CherryPick, false, false).await;
+        fs.with_git_state(std::path::Path::new("/project/.git"), true, |state| {
+            state
+                .cherry_pick_conflicts
+                .insert(description(2, "").sha, Vec::new());
+            state.index_contents.insert(
+                git::repository::repo_path("file.txt"),
+                b"resolved\n".to_vec(),
+            );
+            state.head_contents.insert(
+                git::repository::repo_path("file.txt"),
+                b"original\n".to_vec(),
+            );
+        })
+        .expect("conflict in B after A succeeds");
+        cx.run_until_parked();
+        assert_eq!(
+            applied(&fs, ApplyOperation::CherryPick),
+            vec![description(1, "").sha]
+        );
+        fs.set_simulated_git_failure_for_repo(
+            std::path::Path::new("/project/.git"),
+            fs::FakeGitOperation::Commit,
+            Some((GitFailureKind::Other, "hook rejected B")),
+        );
+        let modal = workspace
+            .read_with(&cx, |workspace, cx| {
+                workspace.active_modal::<CommitModal>(cx)
+            })
+            .expect("B commit modal");
+        modal.update_in(&mut cx, |modal, window, cx| {
+            modal.focus_handle(cx).focus(window, cx);
+            window.dispatch_action(Box::new(git::Commit), cx);
+        });
+        task.await;
+        assert_eq!(
+            applied(&fs, ApplyOperation::CherryPick),
+            vec![description(1, "").sha]
+        );
+        fs.with_git_state(std::path::Path::new("/project/.git"), false, |state| {
+            assert_eq!(
+                state.sequencer_requests,
+                vec![
+                    (
+                        fs::FakeGitOperation::CherryPick,
+                        vec![description(1, "").sha]
+                    ),
+                    (
+                        fs::FakeGitOperation::CherryPick,
+                        vec![description(2, "").sha]
+                    ),
+                    (fs::FakeGitOperation::Commit, Vec::new()),
+                ]
+            );
+            assert_eq!(
+                state.refs.get("CHERRY_PICK_HEAD"),
+                Some(&description(2, "").sha.to_string())
+            );
+        })
+        .expect("C is not attempted and B remains stopped");
+        cx.read(|cx| {
+            let notices = cx.global::<BatchNotices>().0.borrow();
+            assert_eq!(notices.len(), 1);
+            assert_eq!(notices[0].severity, NoticeSeverity::Error);
+            assert!(notices[0].message.contains("hook rejected B"));
+            assert!(notices[0].message.contains("01010101 Change"));
+        });
+    }
 
     fn description(sha_byte: u8, subject: &str) -> CommitDescription {
         let sha = Oid::from_bytes(&[sha_byte; 20]).expect("valid sha");

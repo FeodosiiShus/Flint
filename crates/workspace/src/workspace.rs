@@ -5870,12 +5870,19 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let was_pinned = {
+            let pane = pane.read(cx);
+            pane.active_item_index() < pane.pinned_count()
+        };
         let Some(item) = pane.update(cx, |pane, cx| pane.take_active_item(window, cx)) else {
             return;
         };
         let new_pane = self.add_pane(window, cx);
         new_pane.update(cx, |pane, cx| {
-            pane.add_item(item, true, true, None, window, cx)
+            pane.add_item(item, true, true, None, window, cx);
+            if was_pinned {
+                pane.pin_tab_at(pane.active_item_index(), window, cx);
+            }
         });
         self.center.split(&pane, &new_pane, direction, cx);
         cx.notify();

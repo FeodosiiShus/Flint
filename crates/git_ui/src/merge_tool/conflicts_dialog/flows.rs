@@ -85,15 +85,14 @@ fn write_file_text(
         let buffer = project
             .update(cx, |project, cx| project.open_buffer(project_path, cx))
             .await?;
-        let changed = buffer.update(cx, |buffer, cx| {
-            if buffer.text() == text {
-                return false;
+        let needs_save = buffer.update(cx, |buffer, cx| {
+            if buffer.text() != text {
+                let length = buffer.len();
+                buffer.edit([(0..length, text.as_str())], None, cx);
             }
-            let length = buffer.len();
-            buffer.edit([(0..length, text.as_str())], None, cx);
-            true
+            buffer.is_dirty()
         });
-        if changed {
+        if needs_save {
             project
                 .update(cx, |project, cx| project.save_buffer(buffer, cx))
                 .await?;
@@ -1034,6 +1033,143 @@ impl ConflictsDialog {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::Path;
+
+    use git::repository::repo_path;
+    use gpui::TestAppContext;
+    use project::FakeFs;
+    use serde_json::json;
+    use settings::SettingsStore;
+    use theme::LoadThemes;
+    use util::path;
+
+    async fn assert_written_text(
+        initial_text: &str,
+        edited_text: Option<&str>,
+        resolved_text: &str,
+        cx: &mut TestAppContext,
+    ) {
+        cx.update(|cx| {
+            let settings_store = SettingsStore::test(cx);
+            cx.set_global(settings_store);
+            cx.set_global(db::AppDatabase::test_new());
+            theme_settings::init(LoadThemes::JustBase, cx);
+            editor::init(cx);
+            crate::init(cx);
+        });
+        let fs = FakeFs::new(cx.background_executor.clone());
+        fs.insert_tree(path!("/project"), json!({ ".git": {} }))
+            .await;
+        fs.set_conflict_for_repo(
+            Path::new(path!("/project/.git")),
+            "a.txt",
+            Some("base\n"),
+            Some("ours\n"),
+            Some("theirs\n"),
+        );
+        fs.insert_tree(path!("/project"), json!({ "a.txt": initial_text }))
+            .await;
+        let project = Project::test(fs.clone(), [Path::new(path!("/project"))], cx).await;
+        project
+            .read_with(cx, |project, cx| {
+                project
+                    .worktrees(cx)
+                    .next()
+                    .expect("project should have a worktree")
+                    .read(cx)
+                    .as_local()
+                    .expect("worktree should be local")
+                    .scan_complete()
+            })
+            .await;
+        cx.run_until_parked();
+        let repository = project
+            .read_with(cx, |project, cx| project.active_repository(cx))
+            .expect("project should have a repository");
+        let project_path = repository
+            .read_with(cx, |repository, cx| {
+                repository.repo_path_to_project_path(&repo_path("a.txt"), cx)
+            })
+            .expect("file should have a project path");
+        let buffer = project
+            .update(cx, |project, cx| project.open_buffer(project_path, cx))
+            .await
+            .expect("buffer should open");
+        if let Some(edited_text) = edited_text {
+            buffer.update(cx, |buffer, cx| {
+                let length = buffer.len();
+                buffer.edit([(0..length, edited_text)], None, cx);
+                assert!(buffer.is_dirty());
+            });
+        } else {
+            assert!(!buffer.read_with(cx, |buffer, _| buffer.is_dirty()));
+        }
+        assert_eq!(
+            String::from_utf8(
+                fs.read_file_sync(path!("/project/a.txt"))
+                    .expect("file should exist")
+            )
+            .expect("file should be UTF-8"),
+            initial_text
+        );
+
+        cx.update(|cx| {
+            write_file_text(
+                project,
+                repository.clone(),
+                repo_path("a.txt"),
+                resolved_text.into(),
+                cx,
+            )
+        })
+        .await
+        .expect("resolved text should save");
+
+        assert_eq!(
+            String::from_utf8(
+                fs.read_file_sync(path!("/project/a.txt"))
+                    .expect("file should exist")
+            )
+            .expect("file should be UTF-8"),
+            resolved_text
+        );
+        assert_eq!(
+            buffer.read_with(cx, |buffer, _| buffer.text()),
+            resolved_text
+        );
+        assert!(!buffer.read_with(cx, |buffer, _| buffer.is_dirty()));
+        repository
+            .update(cx, |repository, cx| {
+                repository.mark_conflicts_resolved(vec![repo_path("a.txt")], Vec::new(), cx)
+            })
+            .await
+            .expect("saved resolution should stage");
+        let staged_text = fs
+            .with_git_state(Path::new(path!("/project/.git")), false, |state| {
+                state.index_contents.get(&repo_path("a.txt")).cloned()
+            })
+            .expect("repository state should exist")
+            .expect("resolution should be staged");
+        assert_eq!(
+            String::from_utf8(staged_text).expect("index should be UTF-8"),
+            resolved_text
+        );
+    }
+
+    #[gpui::test]
+    async fn merge_tool_multi_file_saves_dirty_matching_buffer(cx: &mut TestAppContext) {
+        assert_written_text("stale disk\n", Some("resolved\n"), "resolved\n", cx).await;
+    }
+
+    #[gpui::test]
+    async fn merge_tool_multi_file_preserves_clean_matching_buffer(cx: &mut TestAppContext) {
+        assert_written_text("resolved\n", None, "resolved\n", cx).await;
+    }
+
+    #[gpui::test]
+    async fn merge_tool_multi_file_saves_differing_buffer(cx: &mut TestAppContext) {
+        assert_written_text("stale disk\n", Some("unsaved edit\n"), "resolved\n", cx).await;
+    }
 
     #[test]
     fn merge_tool_resolution_follows_chosen_side() {

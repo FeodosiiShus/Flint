@@ -278,28 +278,11 @@ impl<L: Clone> UsagesModel<L> {
     }
 
     pub fn set_accesses(&mut self, accesses: impl IntoIterator<Item = (usize, UsageAccess)>) {
-        let mut changed_rows = Vec::new();
         for (raw_index, access) in accesses {
             let Some(raw_usage) = self.raw_usages.get_mut(raw_index) else {
                 continue;
             };
             raw_usage.access = access;
-            if let Some(row_index) = self.row_of_raw_usage.get(raw_index).copied().flatten() {
-                changed_rows.push(row_index);
-            }
-        }
-        changed_rows.sort_unstable();
-        changed_rows.dedup();
-        for row_index in changed_rows {
-            if let Some(row) = self.rows.get_mut(row_index) {
-                row.access = row
-                    .raw_indices
-                    .iter()
-                    .filter_map(|index| self.raw_usages.get(*index))
-                    .fold(UsageAccess::Unknown, |merged, usage| {
-                        merged.merge(usage.access)
-                    });
-            }
         }
         self.rebuild_display_rows();
     }
@@ -451,12 +434,48 @@ impl<L: Clone> UsagesModel<L> {
 
     fn is_row_visible(&self, row: &UsageRow<L>) -> bool {
         self.scope.contains(row)
-            && self
-                .filters
-                .is_visible(row.access, row.is_import, row.is_comment)
+            && row.raw_indices.iter().any(|index| {
+                self.raw_usages.get(*index).is_some_and(|usage| {
+                    self.filters
+                        .is_visible(usage.access, usage.is_import, usage.is_comment)
+                })
+            })
     }
 
     fn rebuild_display_rows(&mut self) {
+        let mut filtered_per_row = vec![0; self.rows.len()];
+        for group in group_usages(&self.raw_usages) {
+            let Some(row_index) = group
+                .first()
+                .and_then(|index| self.row_of_raw_usage.get(*index))
+                .copied()
+                .flatten()
+            else {
+                continue;
+            };
+            let visible: Vec<usize> = group
+                .iter()
+                .copied()
+                .filter(|index| {
+                    self.raw_usages.get(*index).is_some_and(|usage| {
+                        self.filters
+                            .is_visible(usage.access, usage.is_import, usage.is_comment)
+                    })
+                })
+                .collect();
+            if let Some(count) = filtered_per_row.get_mut(row_index) {
+                *count = group.len() - visible.len();
+            }
+            // Keep fully hidden rows addressable for stable row indices and scope counts.
+            if let Some(row) = build_row(
+                &self.raw_usages,
+                if visible.is_empty() { group } else { visible },
+            ) {
+                if let Some(slot) = self.rows.get_mut(row_index) {
+                    *slot = row;
+                }
+            }
+        }
         let mut display_rows = Vec::new();
         let mut in_scope_count = 0;
         let mut visible_count = 0;
@@ -469,11 +488,8 @@ impl<L: Clone> UsagesModel<L> {
                 continue;
             }
             in_scope_count += 1;
-            if !self
-                .filters
-                .is_visible(row.access, row.is_import, row.is_comment)
-            {
-                filtered_out_count += 1;
+            filtered_out_count += filtered_per_row.get(row_index).copied().unwrap_or_default();
+            if !self.is_row_visible(row) {
                 continue;
             }
             visible_count += 1;
@@ -867,6 +883,105 @@ mod tests {
             .filter_map(|index| model.usage_row_at(index))
             .map(|row| model.file_label(row, short_file_path).to_string())
             .collect()
+    }
+
+    #[test]
+    fn filters_rebuild_mixed_line_locations_ranges_and_counts() {
+        let line = "foo foo foo";
+        let mut model = model(vec![
+            RawUsage {
+                access: UsageAccess::Read,
+                ..usage_at(0, "a.ts", 0, line, "foo", 0)
+            },
+            RawUsage {
+                access: UsageAccess::Write,
+                ..usage_at(1, "a.ts", 0, line, "foo", 1)
+            },
+            RawUsage {
+                access: UsageAccess::ReadWrite,
+                ..usage_at(2, "a.ts", 0, line, "foo", 2)
+            },
+        ]);
+        model.set_filters(UsageFilters {
+            show_read_access: false,
+            ..UsageFilters::default()
+        });
+        assert_eq!(model.visible_locations(), vec![1, 2]);
+        assert_eq!(
+            model.usage_row_at(0).unwrap().match_ranges,
+            vec![4..7, 8..11]
+        );
+        assert_eq!(model.visible_usage_count(), 2);
+        assert_eq!(model.filtered_out_count(), 1);
+        model.set_filters(UsageFilters {
+            show_write_access: false,
+            ..UsageFilters::default()
+        });
+        assert_eq!(model.visible_locations(), vec![0, 2]);
+        assert_eq!(
+            model.usage_row_at(0).unwrap().match_ranges,
+            vec![0..3, 8..11]
+        );
+        model.set_filters(UsageFilters::default());
+        assert_eq!(model.visible_locations(), vec![0, 1, 2]);
+        assert_eq!(model.visible_usage_count(), 3);
+        assert_eq!(model.raw_usages().len(), 3);
+    }
+
+    #[test]
+    fn hiding_both_access_kinds_does_not_resurrect_a_merged_read_write_row() {
+        let line = "foo foo";
+        let mut model = model(vec![
+            usage_at(0, "a.ts", 0, line, "foo", 0),
+            usage_at(1, "a.ts", 0, line, "foo", 1),
+        ]);
+        model.set_filters(UsageFilters {
+            show_read_access: false,
+            show_write_access: false,
+            ..UsageFilters::default()
+        });
+        model.set_accesses([(0, UsageAccess::Read), (1, UsageAccess::Write)]);
+        assert_eq!(model.visible_locations(), Vec::<usize>::new());
+        assert_eq!(model.visible_count(), 0);
+        assert_eq!(model.visible_usage_count(), 0);
+        assert_eq!(model.display_rows(), &[DisplayRow::FilteredOut(2)]);
+        model.set_filters(UsageFilters::default());
+        assert_eq!(model.visible_locations(), vec![0, 1]);
+        assert_eq!(
+            model.usage_row_at(0).unwrap().match_ranges,
+            vec![0..3, 4..7]
+        );
+    }
+
+    #[test]
+    fn comment_and_import_filters_rebuild_mixed_code_line() {
+        let line = "foo foo foo";
+        let mut model = model(vec![
+            RawUsage {
+                is_import: true,
+                ..usage_at(0, "a.ts", 0, line, "foo", 0)
+            },
+            usage_at(1, "a.ts", 0, line, "foo", 1),
+            RawUsage {
+                is_comment: true,
+                ..usage_at(2, "a.ts", 0, line, "foo", 2)
+            },
+        ]);
+        model.set_filters(UsageFilters {
+            show_imports: false,
+            show_comments: false,
+            ..UsageFilters::default()
+        });
+        assert_eq!(model.visible_locations(), vec![1]);
+        assert_eq!(model.usage_row_at(0).unwrap().match_ranges, vec![4..7]);
+        assert_eq!(model.visible_usage_count(), 1);
+        assert_eq!(model.filtered_out_count(), 2);
+        model.set_filters(UsageFilters::default());
+        assert_eq!(model.visible_locations(), vec![0, 1, 2]);
+        assert_eq!(
+            model.usage_row_at(0).unwrap().match_ranges,
+            vec![0..3, 4..7, 8..11]
+        );
     }
 
     #[test]

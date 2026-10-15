@@ -1023,8 +1023,21 @@ impl GitPanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        drop(self.commit_changes_with_completion(options, false, window, cx));
+    }
+
+    pub(crate) fn commit_changes_with_completion(
+        &mut self,
+        options: CommitOptions,
+        staged_only: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<futures::channel::oneshot::Receiver<anyhow::Result<()>>> {
+        if self.pending_commit.is_some() {
+            return None;
+        }
         let Some(active_repository) = self.active_repository.clone() else {
-            return;
+            return None;
         };
         let error_spawn = |message, window: &mut Window, cx: &mut App| {
             let prompt = window.prompt(PromptLevel::Warning, message, None, &["OK"], cx);
@@ -1040,17 +1053,17 @@ impl GitPanel {
                 window,
                 cx,
             );
-            return;
+            return None;
         }
 
         let askpass = self.askpass_delegate("git commit", window, cx);
         let commit_message = self.custom_or_suggested_commit_message(window, cx);
 
         let Some(message) = commit_message else {
-            return;
+            return None;
         };
 
-        let task = if self.has_staged_changes() {
+        let task = if self.has_staged_changes() || staged_only {
             // Repository serializes all git operations, so we can just send a commit immediately
             let commit_task = active_repository.update(cx, |repo, cx| {
                 repo.commit(message.into(), None, options, askpass, cx)
@@ -1066,7 +1079,7 @@ impl GitPanel {
 
             if changed_files.is_empty() && !options.amend {
                 error_spawn("No changes to commit", window, cx);
-                return;
+                return None;
             }
 
             let stage_task =
@@ -1079,12 +1092,13 @@ impl GitPanel {
                 commit_task.await?
             })
         };
+        let (completion, receiver) = futures::channel::oneshot::channel();
         let task = cx.spawn_in(window, async move |this, cx| {
             let result = task.await;
             this.update_in(cx, |this, window, cx| {
                 this.pending_commit.take();
 
-                match result {
+                match &result {
                     Ok(()) => {
                         this.set_skip_hooks_enabled(false, cx);
                         if options.amend {
@@ -1096,13 +1110,19 @@ impl GitPanel {
                             this.serialize(cx);
                         }
                     }
-                    Err(e) => this.show_error_toast("commit", e, cx),
+                    // The batch caller reports failures with its accumulated commit results.
+                    Err(_) if staged_only => {}
+                    Err(error) => this.show_error_toast("commit", anyhow::anyhow!("{error:#}"), cx),
                 }
             })
-            .ok();
+            .log_err();
+            if completion.send(result).is_err() {
+                log::debug!("commit completion receiver was dropped");
+            }
         });
 
         self.pending_commit = Some(task);
+        Some(receiver)
     }
 
     pub(crate) fn uncommit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -2231,9 +2251,21 @@ impl GitPanel {
     }
 
     pub fn configure_commit_button(&self, cx: &mut Context<Self>) -> (bool, &'static str) {
+        self.configure_commit_button_for_index(false, cx)
+    }
+
+    pub(crate) fn configure_commit_button_for_index(
+        &self,
+        allow_empty_index: bool,
+        cx: &mut Context<Self>,
+    ) -> (bool, &'static str) {
         if self.has_unstaged_conflicts() {
             (false, "You must resolve conflicts before committing")
-        } else if !self.has_staged_changes() && !self.has_tracked_changes() && !self.amend_pending {
+        } else if !allow_empty_index
+            && !self.has_staged_changes()
+            && !self.has_tracked_changes()
+            && !self.amend_pending
+        {
             (false, "No changes to commit")
         } else if self.pending_commit.is_some() {
             (false, "Commit in progress")
@@ -2472,6 +2504,10 @@ impl GitPanel {
 
 #[cfg(any(test, feature = "test-support"))]
 impl GitPanel {
+    pub fn take_status_update_for_test(&mut self) -> Task<()> {
+        std::mem::replace(&mut self.update_status_entries_task, Task::ready(()))
+    }
+
     pub fn new_test(
         workspace: &mut Workspace,
         window: &mut Window,

@@ -14,7 +14,7 @@ use editor::{
     test::{editor_lsp_test_context::EditorLspTestContext, editor_test_context::EditorTestContext},
 };
 use futures::{
-    StreamExt as _,
+    FutureExt as _, StreamExt as _,
     channel::{mpsc, oneshot},
 };
 use gpui::{
@@ -679,6 +679,160 @@ async fn test_show_usages_confirm_navigates_and_cancel_restores_focus(cx: &mut T
             helper() + 1
         }
     "});
+}
+
+#[gpui::test]
+async fn test_unsupported_access_classification_finishes(cx: &mut TestAppContext) {
+    assert_unavailable_access_finishes(false, cx).await;
+}
+
+#[gpui::test]
+async fn test_failed_access_classification_finishes(cx: &mut TestAppContext) {
+    assert_unavailable_access_finishes(true, cx).await;
+}
+
+async fn assert_unavailable_access_finishes(fail: bool, cx: &mut TestAppContext) {
+    let mut cx = show_usages_context(
+        lsp::ServerCapabilities {
+            references_provider: Some(lsp::OneOf::Left(true)),
+            document_highlight_provider: Some(lsp::OneOf::Left(fail)),
+            ..lsp::ServerCapabilities::default()
+        },
+        cx,
+    )
+    .await;
+    cx.set_state(COUNTER_SOURCE);
+    cx.update(|_, cx| {
+        crate::save_state(
+            &ShowUsagesState {
+                filters: UsageFilters {
+                    show_write_access: false,
+                    ..UsageFilters::default()
+                },
+                ..ShowUsagesState::default()
+            },
+            cx,
+        )
+    });
+    handle_references(&cx, vec![location(&cx.buffer_lsp_url, 2, 4, 11)]);
+    if fail {
+        cx.lsp
+            .set_request_handler::<lsp::request::DocumentHighlightRequest, _, _>(|_, _| async {
+                Err(anyhow::anyhow!("classification unavailable"))
+            });
+    }
+    cx.dispatch_action(ShowUsages::default());
+    cx.run_until_parked();
+    assert!(active_popup(&mut cx).is_none());
+    let hint = active_hint(&mut cx).expect("unavailable classification is completed, not pending");
+    assert_eq!(
+        hint_state(&hint, &mut cx).message,
+        "It's the only usage in Project Files"
+    );
+}
+
+#[gpui::test]
+async fn test_delayed_filtered_single_usage_does_not_navigate(cx: &mut TestAppContext) {
+    assert_delayed_filtered_single_usage(false, cx).await;
+}
+
+#[gpui::test]
+async fn test_cancel_delayed_filtered_single_usage_does_not_reopen(cx: &mut TestAppContext) {
+    assert_delayed_filtered_single_usage(true, cx).await;
+}
+
+async fn assert_delayed_filtered_single_usage(cancel: bool, cx: &mut TestAppContext) {
+    let mut cx = show_usages_context(
+        lsp::ServerCapabilities {
+            references_provider: Some(lsp::OneOf::Left(true)),
+            document_highlight_provider: Some(lsp::OneOf::Left(true)),
+            ..lsp::ServerCapabilities::default()
+        },
+        cx,
+    )
+    .await;
+    cx.set_state(COUNTER_SOURCE);
+    cx.update(|_, cx| {
+        crate::save_state(
+            &ShowUsagesState {
+                filters: UsageFilters {
+                    show_write_access: false,
+                    ..UsageFilters::default()
+                },
+                ..ShowUsagesState::default()
+            },
+            cx,
+        )
+    });
+    let usage = location(&cx.buffer_lsp_url, 2, 4, 11);
+    handle_references(&cx, vec![usage.clone()]);
+    let (release, released) = oneshot::channel::<()>();
+    let released = released.shared();
+    let classification_started = Arc::new(AtomicUsize::new(0));
+    let classification_finished = Arc::new(AtomicUsize::new(0));
+    cx.lsp
+        .set_request_handler::<lsp::request::DocumentHighlightRequest, _, _>({
+            let classification_started = classification_started.clone();
+            let classification_finished = classification_finished.clone();
+            move |parameters, _| {
+                let released = released.clone();
+                let classification_started = classification_started.clone();
+                let classification_finished = classification_finished.clone();
+                let range = usage.range;
+                async move {
+                    let is_classification =
+                        parameters.text_document_position_params.position == range.start;
+                    if is_classification {
+                        classification_started.fetch_add(1, Ordering::SeqCst);
+                    }
+                    released.await.unwrap();
+                    if is_classification {
+                        classification_finished.fetch_add(1, Ordering::SeqCst);
+                    }
+                    Ok(Some(vec![lsp::DocumentHighlight {
+                        range,
+                        kind: Some(lsp::DocumentHighlightKind::WRITE),
+                    }]))
+                }
+            }
+        });
+    cx.dispatch_action(ShowUsages::default());
+    cx.run_until_parked();
+    assert!(
+        classification_started.load(Ordering::SeqCst) > 0,
+        "the usage-position classification request must reach the release gate before advancing time"
+    );
+    assert_eq!(classification_finished.load(Ordering::SeqCst), 0);
+    cx.executor().advance_clock(Duration::from_millis(1600));
+    cx.run_until_parked();
+    assert_eq!(classification_finished.load(Ordering::SeqCst), 0);
+    let popup = active_popup(&mut cx).expect("pending classification must retain the popup");
+    cx.assert_editor_state(COUNTER_SOURCE);
+    if cancel {
+        cx.dispatch_action(menu::Cancel);
+        cx.run_until_parked();
+        assert!(active_popup(&mut cx).is_none());
+    }
+    release.send(()).unwrap();
+    cx.run_until_parked();
+    if cancel {
+        assert!(
+            active_popup(&mut cx).is_none(),
+            "late classification must not reopen a dismissed popup"
+        );
+        assert!(
+            active_hint(&mut cx).is_none(),
+            "late classification must not navigate and show a hint"
+        );
+        cx.assert_editor_state(COUNTER_SOURCE);
+        return;
+    }
+    assert!(classification_finished.load(Ordering::SeqCst) > 0);
+    assert_eq!(
+        popup_state(&popup, &mut cx).display_rows,
+        vec![DisplayRow::FilteredOut(1)]
+    );
+    cx.assert_editor_state(COUNTER_SOURCE);
 }
 
 #[gpui::test]
