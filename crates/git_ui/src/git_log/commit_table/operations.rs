@@ -961,7 +961,12 @@ mod tests {
         };
         let mut expected = vec![(operation, vec![description(1, "").sha])];
         if let Some(middle) = middle {
-            expected.push((middle, Vec::new()));
+            // Skipping names the stopped commit it must skip; a conflict commit carries none.
+            let commits = match middle {
+                fs::FakeGitOperation::SkipCommit => vec![description(1, "").sha],
+                _ => Vec::new(),
+            };
+            expected.push((middle, commits));
         }
         if continued {
             expected.extend([2, 3].map(|byte| (operation, vec![description(byte, "").sha])));
