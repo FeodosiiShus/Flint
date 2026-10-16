@@ -102,7 +102,7 @@ jobs:
             -E 'package(=workspace) & kind(lib) & (test(~tab_context_menu) | test(~tab_bar_more_menu) | test(~bottom_toolbar) | test(~panel_size_state) | test(~test_restoring_pinned_tabs) | test(~modal_anchor) | test(~background_task))' \
             -E 'package(=icons)' \
             -E 'package(=project_panel) & kind(lib) & (test(~rounded_selection) | test(~select_opened_file) | test(~undo_rename_keeps_created_dir_holding_excluded_files))' \
-            -E 'package(=editor) & kind(lib) & (test(~rounded_thumb) | test(~mouse_context_menu) | test(~intellij_gutter) | test(~inspection_widget) | test(~breadcrumb) | test(~test_matching_bracket_highlights) | test(~inlay_hint_pill) | test(~text_editor_with_preview) | test(~sticky_header_whitespace) | test(~show_usages) | test(~code_vision) | test(~auto_collapse_imports))' \
+            -E 'package(=editor) & kind(lib) & (test(~rounded_thumb) | test(~mouse_context_menu) | test(~intellij_gutter) | test(~inspection_widget) | test(~breadcrumb) | test(~test_matching_bracket_highlights) | test(~inlay_hint_pill) | test(~text_editor_with_preview) | test(~sticky_header_whitespace) | test(~show_usages) | test(~code_vision) | test(~auto_collapse_imports) | test(~open_resolved_target))' \
             -E 'package(=markdown) & kind(lib) & test(~top_aligned_autoscroll)' \
             -E 'package(=markdown_preview)' \
             -E 'package(=languages) & kind(lib) & (test(~tsgo) | test(~server_activation))' \

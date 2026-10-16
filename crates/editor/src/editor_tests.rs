@@ -1650,9 +1650,66 @@ async fn test_fold_action(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
-async fn test_auto_collapse_imports_and_preserve_manual_unfold(cx: &mut TestAppContext) {
+fn test_intellij_gutter_fold_region_stays_foldable_after_unfold(cx: &mut TestAppContext) {
     init_test(cx, |_| {});
 
+    const SOURCE: &str = "import { alpha } from \"module\";\nimport { beta } from \"module\";\n\nconst ready = true;\n";
+    const IMPORTS_LEN: usize =
+        "import { alpha } from \"module\";\nimport { beta } from \"module\";".len();
+
+    let editor = cx.add_window(|window, cx| {
+        let buffer = MultiBuffer::build_simple(SOURCE, cx);
+        build_editor(buffer, window, cx)
+    });
+
+    editor
+        .update(cx, |editor, window, cx| {
+            editor.fold_ranges(
+                vec![MultiBufferOffset(0)..MultiBufferOffset(IMPORTS_LEN)],
+                false,
+                window,
+                cx,
+            );
+            assert!(
+                editor.display_text(cx).contains("⋯"),
+                "the imports are folded"
+            );
+
+            editor.unfold_lines(&UnfoldLines, window, cx);
+            assert_eq!(editor.display_text(cx), SOURCE, "the imports are expanded");
+
+            let snapshot = editor.snapshot(window, cx);
+            assert!(
+                snapshot.crease_for_buffer_row(MultiBufferRow(0)).is_some(),
+                "the folded region must stay registered so the gutter can fold it again"
+            );
+            assert!(
+                snapshot
+                    .render_crease_toggle(
+                        MultiBufferRow(0),
+                        true,
+                        window.line_height(),
+                        None,
+                        cx.entity(),
+                        window,
+                        cx,
+                    )
+                    .is_some(),
+                "the gutter offers a fold arrow for the expanded region"
+            );
+
+            editor.fold_at(MultiBufferRow(0), window, cx);
+            assert!(
+                editor.display_text(cx).contains("⋯"),
+                "the gutter fold arrow collapses the expanded region again"
+            );
+        })
+        .unwrap();
+}
+
+#[gpui::test]
+async fn test_auto_collapse_imports_and_preserve_manual_unfold(cx: &mut TestAppContext) {
+    init_test(cx, |_| {});
     let fs = FakeFs::new(cx.executor());
     let source = r#"import {
     Alpha,
@@ -34011,8 +34068,15 @@ fn test_crease_insertion_and_rendering(cx: &mut TestAppContext) {
 
             editor.insert_creases(Some(crease), cx);
             let snapshot = editor.snapshot(window, cx);
-            let _div =
-                snapshot.render_crease_toggle(MultiBufferRow(1), false, cx.entity(), window, cx);
+            let _div = snapshot.render_crease_toggle(
+                MultiBufferRow(1),
+                false,
+                window.line_height(),
+                None,
+                cx.entity(),
+                window,
+                cx,
+            );
             snapshot
         })
         .unwrap();

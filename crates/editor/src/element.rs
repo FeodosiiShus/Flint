@@ -1563,7 +1563,7 @@ impl EditorElement {
                 debug_assert!(gutter_settings.folds);
                 let available_space = size(
                     AvailableSpace::MinContent,
-                    AvailableSpace::Definite(line_height * 0.55),
+                    AvailableSpace::Definite(line_height),
                 );
                 let crease_toggle_size = crease_toggle.layout_as_root(available_space, window, cx);
 
@@ -2688,6 +2688,7 @@ impl EditorElement {
         rows: Range<DisplayRow>,
         row_infos: &[RowInfo],
         active_rows: &BTreeMap<DisplayRow, LineHighlightSpec>,
+        line_height: Pixels,
         snapshot: &EditorSnapshot,
         window: &mut Window,
         cx: &mut App,
@@ -2697,6 +2698,7 @@ impl EditorElement {
             && snapshot.display_snapshot.companion_snapshot().is_none()
             && self.editor.read(cx).buffer_kind(cx) == ItemBufferKind::Singleton;
         if include_fold_statuses {
+            let expanded_crease_end_rows = snapshot.expanded_crease_end_rows();
             row_infos
                 .iter()
                 .enumerate()
@@ -2708,7 +2710,15 @@ impl EditorElement {
                     let display_row = DisplayRow(rows.start.0 + ix as u32);
                     let active = active_rows.contains_key(&display_row);
 
-                    snapshot.render_crease_toggle(row, active, self.editor.clone(), window, cx)
+                    snapshot.render_crease_toggle(
+                        row,
+                        active,
+                        line_height,
+                        expanded_crease_end_rows.get(&row).copied(),
+                        self.editor.clone(),
+                        window,
+                        cx,
+                    )
                 })
                 .collect()
         } else {
@@ -8844,6 +8854,7 @@ impl Element for EditorElement {
                                     start_row..end_row,
                                     &row_infos,
                                     &active_rows,
+                                    line_height,
                                     &snapshot,
                                     window,
                                     cx,

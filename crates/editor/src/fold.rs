@@ -1,10 +1,51 @@
 use super::*;
 
+use crate::element::gutter_geometry::FOLD_ICON_WIDTH;
+
+/// Builds one gutter fold arrow: IntelliJ's 9 px chevron with a hit area that spans the
+/// full line height (see IntelliJ's IDEA-296393).
+pub fn crease_toggle(
+    id: ElementId,
+    icon: IconName,
+    aria_label: &'static str,
+    aria_expanded: bool,
+    line_height: Pixels,
+    editor: &Entity<Editor>,
+    window: &mut Window,
+    on_toggle: impl Fn(&mut Editor, &mut Window, &mut Context<Editor>) + 'static,
+) -> AnyElement {
+    h_flex()
+        .id(id)
+        .w(FOLD_ICON_WIDTH)
+        .h(line_height)
+        .flex_none()
+        .justify_center()
+        .cursor_pointer()
+        .aria_label(aria_label)
+        .aria_expanded(aria_expanded)
+        .child(
+            Icon::new(icon)
+                .size(IconSize::Custom(rems_from_px(FOLD_ICON_WIDTH)))
+                .color(Color::Muted),
+        )
+        .on_click(window.listener_for(editor, move |editor, _e, window, cx| {
+            on_toggle(editor, window, cx)
+        }))
+        .into_any_element()
+}
+
 impl EditorSnapshot {
+    /// Renders the fold toggle of the region starting at `buffer_row`, or the bottom toggle
+    /// of an expanded region when `expanded_crease_end` carries that region's first row.
+    /// Mirrors IntelliJ's gutter arrows: a collapsed region always shows an unfold arrow,
+    /// while an expanded region shows fold arrows (top and bottom) while the gutter or its
+    /// row is hovered.
     pub fn render_crease_toggle(
         &self,
         buffer_row: MultiBufferRow,
         row_contains_cursor: bool,
+        line_height: Pixels,
+        expanded_crease_end: Option<MultiBufferRow>,
         editor: Entity<Editor>,
         window: &mut Window,
         cx: &mut App,
@@ -47,21 +88,67 @@ impl EditorSnapshot {
         is_foldable |= !self.use_lsp_folding_ranges && self.starts_indent(buffer_row);
 
         if folded || (is_foldable && (row_contains_cursor || self.gutter_hovered)) {
-            Some(
-                Disclosure::new(("gutter_crease", buffer_row.0), !folded)
-                    .toggle_state(folded)
-                    .on_click(window.listener_for(&editor, move |this, _e, window, cx| {
-                        if folded {
-                            this.unfold_at(buffer_row, window, cx);
-                        } else {
-                            this.fold_at(buffer_row, window, cx);
-                        }
-                    }))
-                    .into_any_element(),
-            )
-        } else {
-            None
+            return Some(crease_toggle(
+                ("gutter_crease", buffer_row.0).into(),
+                if folded {
+                    IconName::GutterUnfold
+                } else {
+                    IconName::GutterFold
+                },
+                if folded { "Unfold" } else { "Fold" },
+                !folded,
+                line_height,
+                &editor,
+                window,
+                move |editor, window, cx| {
+                    if folded {
+                        editor.unfold_at(buffer_row, window, cx);
+                    } else {
+                        editor.fold_at(buffer_row, window, cx);
+                    }
+                },
+            ));
         }
+
+        if let Some(crease_start_row) = expanded_crease_end
+            && (row_contains_cursor || self.gutter_hovered)
+        {
+            return Some(crease_toggle(
+                ("gutter_crease_end", buffer_row.0).into(),
+                IconName::GutterFoldBottom,
+                "Fold",
+                true,
+                line_height,
+                &editor,
+                window,
+                move |editor, window, cx| editor.fold_at(crease_start_row, window, cx),
+            ));
+        }
+
+        None
+    }
+
+    /// Maps the last buffer row of every expanded multi-line fold region to that region's
+    /// first row, matching IntelliJ's bottom folding arrow: it keeps a region collapsible
+    /// from the gutter even when the region's first line is scrolled out of view.
+    pub fn expanded_crease_end_rows(&self) -> HashMap<MultiBufferRow, MultiBufferRow> {
+        let buffer_snapshot = self.buffer_snapshot();
+        let mut end_rows = HashMap::default();
+        for (_, crease) in self.crease_snapshot.creases() {
+            let Crease::Inline { range, .. } = crease else {
+                continue;
+            };
+            if !range.start.is_valid(buffer_snapshot) || !range.end.is_valid(buffer_snapshot) {
+                continue;
+            }
+            let start = range.start.to_point(buffer_snapshot);
+            let end = range.end.to_point(buffer_snapshot);
+            if end.row <= start.row || self.is_line_folded(MultiBufferRow(start.row)) {
+                continue;
+            }
+            end_rows.insert(MultiBufferRow(end.row), MultiBufferRow(start.row));
+        }
+        end_rows
     }
 
     pub fn render_crease_trailer(
@@ -577,6 +664,7 @@ impl Editor {
             return;
         }
 
+        self.register_creases_for_folding(&creases, cx);
         self.display_map.update(cx, |map, cx| map.fold(creases, cx));
 
         if auto_scroll {
@@ -588,6 +676,65 @@ impl Editor {
         self.scrollbar_marker_state.dirty = true;
         self.update_data_on_scroll(false, window, cx);
         self.folds_did_change(cx);
+    }
+
+    /// Registers fold regions in the crease map, mirroring IntelliJ where the gutter arrows
+    /// toggle a fold region that outlives its collapsed state. A fold alone is forgotten as
+    /// soon as it is expanded, which would leave imports impossible to collapse again.
+    fn register_creases_for_folding<T: ToOffset + Clone>(
+        &mut self,
+        creases: &[Crease<T>],
+        cx: &mut Context<Self>,
+    ) {
+        if self.display_map.read(cx).companion().is_some() {
+            return;
+        }
+
+        let buffer_snapshot = self.buffer.read(cx).snapshot(cx);
+        let crease_snapshot = self.display_map.read(cx).crease_snapshot();
+        let mut registered_ranges = crease_snapshot
+            .creases()
+            .filter_map(|(_, crease)| {
+                let Crease::Inline { range, .. } = crease else {
+                    return None;
+                };
+                if !range.start.is_valid(&buffer_snapshot) || !range.end.is_valid(&buffer_snapshot)
+                {
+                    return None;
+                }
+                Some((
+                    range.start.to_offset(&buffer_snapshot),
+                    range.end.to_offset(&buffer_snapshot),
+                ))
+            })
+            .collect::<HashSet<_>>();
+
+        let new_creases = creases
+            .iter()
+            .filter_map(|crease| {
+                let Crease::Inline {
+                    range, placeholder, ..
+                } = crease
+                else {
+                    return None;
+                };
+                let start = range.start.to_offset(&buffer_snapshot);
+                let end = range.end.to_offset(&buffer_snapshot);
+                if start >= end || !registered_ranges.insert((start, end)) {
+                    return None;
+                }
+                Some(Crease::simple(
+                    buffer_snapshot.anchor_before(start)..buffer_snapshot.anchor_after(end),
+                    placeholder.clone(),
+                ))
+            })
+            .collect::<Vec<_>>();
+
+        if new_creases.is_empty() {
+            return;
+        }
+
+        self.insert_creases(new_creases, cx);
     }
 
     /// Removes any folds whose ranges intersect any of the given ranges.

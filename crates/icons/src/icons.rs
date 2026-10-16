@@ -229,6 +229,7 @@ pub enum IconName {
     Gitlab,
     GreenCheckmark,
     GutterFold,
+    GutterFoldBottom,
     GutterUnfold,
     GutterUnfoldMirrored,
     Hash,

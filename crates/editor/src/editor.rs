@@ -242,7 +242,7 @@ use theme::{
 };
 use theme_settings::{ThemeSettings, observe_buffer_font_size_adjustment};
 use ui::{
-    ContextMenu, Disclosure, IconButtonShape, Indicator, KeyBinding, Tooltip, prelude::*,
+    ContextMenu, IconButtonShape, Indicator, KeyBinding, Tooltip, prelude::*,
     scrollbars::ScrollbarAutoHide, tooltip_container, utils::WithRemSize,
 };
 use ui_input::ErasedEditor;
