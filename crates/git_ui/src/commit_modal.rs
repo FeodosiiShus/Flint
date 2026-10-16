@@ -743,7 +743,7 @@ fn commit_and_push_label(commit_label: &str) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::commit_and_push_label;
 
     #[test]
     fn commit_and_push_label_follows_the_intellij_action_text() {
