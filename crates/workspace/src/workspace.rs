@@ -14147,6 +14147,72 @@ mod tests {
         );
     }
 
+    #[gpui::test]
+    async fn tool_window_bar_button_paints_the_intellij_fill_pill(cx: &mut TestAppContext) {
+        let (workspace, _panels, cx) = tool_window_bar_test_workspace(cx).await;
+        open_dock_with_center_focus(&workspace, DockPosition::Left, cx);
+
+        let settings = cx.update(|_, cx| WorkspaceSettings::get_global(cx).tool_window_bars);
+        let metrics = crate::tool_window_bar::ToolWindowButtonMetrics::new(
+            crate::tool_window_bar::ToolWindowBarSide::Left,
+            &settings,
+        );
+        let fill_color = cx.update(|_, cx| cx.theme().colors().ghost_element_active);
+        let scale = cx.update(|window, _| window.scale_factor());
+        let button = cx
+            .debug_bounds("tool_window_button_left_0")
+            .expect("the open panel has a bar button")
+            .scale(scale);
+
+        let fill = cx
+            .update(|window, _| {
+                window.painted_quads().into_iter().find(|quad| {
+                    quad.background.as_solid() == Some(fill_color)
+                        && button.contains(&quad.bounds.center())
+                })
+            })
+            .expect("the open button paints its fill pill");
+
+        let close_to =
+            |actual: f32, expected: Pixels| (actual - f32::from(expected) * scale).abs() < 0.5;
+        assert!(
+            close_to(f32::from(fill.bounds.size.width), metrics.fill_width),
+            "the pill is {} wide, IntelliJ's fill at the default icon size, not {}; button {button:?}, fill {:?}",
+            f32::from(metrics.fill_width),
+            f32::from(button.size.width),
+            fill.bounds,
+        );
+        assert!(close_to(
+            f32::from(fill.bounds.size.height),
+            metrics.fill_height
+        ));
+        assert!(
+            close_to(
+                f32::from(fill.bounds.left() - button.left()),
+                metrics.fill_insets.left
+            ),
+            "the pill keeps IntelliJ's {} px inset to the window edge",
+            f32::from(metrics.fill_insets.left),
+        );
+        assert!(close_to(
+            f32::from(button.right() - fill.bounds.right()),
+            metrics.fill_insets.right
+        ));
+        assert!(close_to(
+            f32::from(fill.bounds.top() - button.top()),
+            metrics.fill_insets.top
+        ));
+        assert!(close_to(
+            f32::from(button.bottom() - fill.bounds.bottom()),
+            metrics.fill_insets.bottom
+        ));
+        assert!(
+            close_to(fill.corner_radii.top_left.0, metrics.radius),
+            "the pill keeps IntelliJ's {} px corner radius",
+            f32::from(metrics.radius),
+        );
+    }
+
     fn open_dock_with_center_focus(
         workspace: &Entity<Workspace>,
         position: DockPosition,

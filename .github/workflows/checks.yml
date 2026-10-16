@@ -97,7 +97,7 @@ jobs:
             -E 'package(=git) | package(=fs)' \
             -E 'binary_id(=project::integration) & test(~git_store)' \
             -E 'package(=project) & kind(lib) & (test(~dotnet_root) | test(~server_activation))' \
-            -E 'package(=git_ui) & kind(lib) & (test(~merge_tool) | test(~git_panel) | test(~branches_popup) | test(~branch_operations) | test(~branch_refs) | test(~git_log) | test(~git_tool_window))' \
+            -E 'package(=git_ui) & kind(lib) & (test(~merge_tool) | test(~git_panel) | test(~commit_modal) | test(~branches_popup) | test(~branch_operations) | test(~branch_refs) | test(~git_log) | test(~git_tool_window))' \
             -E '(package(=workspace) | package(=ui)) & kind(lib) & (test(~tool_window_bar) | test(~tool_window_header) | test(~island) | test(~inactive_window) | test(~workspace_settings) | test(~tab::tests) | test(~hidden_tabs) | test(~split_and_move) | test(~test_new_tab_scrolls_into_view_completely) | test(~test_pinned_tabs_scroll_to_item_uses_correct_index) | test(~project_gradient) | test(~test_swap_item_))' \
             -E 'package(=workspace) & kind(lib) & (test(~tab_context_menu) | test(~tab_bar_more_menu) | test(~bottom_toolbar) | test(~panel_size_state) | test(~test_restoring_pinned_tabs) | test(~modal_anchor) | test(~background_task))' \
             -E 'package(=icons)' \

@@ -6,8 +6,8 @@ use git::{Amend, Commit, Signoff, SkipHooks};
 use git_ui_core::GitPickerPopover;
 use settings::Settings;
 use ui::{
-    ButtonLike, ContextMenu, ContextMenuEntry, DocumentationSide, ElevationIndex, KeybindingHint,
-    PopoverMenu, PopoverMenuHandle, SplitButton, Tooltip, prelude::*,
+    ContextMenu, ContextMenuEntry, DialogButton, DocumentationSide, KeybindingHint, PopoverMenu,
+    PopoverMenuHandle, Tooltip, prelude::*,
 };
 use zed_actions::{DecreaseBufferFontSize, IncreaseBufferFontSize, ResetBufferFontSize};
 
@@ -45,7 +45,7 @@ impl ModalContainerProperties {
         Self {
             modal_width,
             editor_height: 300.0,
-            footer_height: 24.0,
+            footer_height: 30.0,
             container_padding,
             modal_border_radius: 12.0,
         }
@@ -126,6 +126,15 @@ impl CommitModal {
             })
             .detach();
         }
+        cx.emit(DismissEvent);
+    }
+
+    /// Commits like [`Self::submit`] and pushes the branch once the commit succeeds, like
+    /// IntelliJ's "Commit and Push…".
+    fn submit_and_push(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.git_panel.update(cx, |panel, cx| {
+            panel.commit_and_push(window, cx);
+        });
         cx.emit(DismissEvent);
     }
 
@@ -267,14 +276,16 @@ impl CommitModal {
         id: impl Into<ElementId>,
         keybinding_target: Option<FocusHandle>,
     ) -> impl IntoElement {
-        let menu_open = self.commit_menu_handle.is_deployed();
-
         PopoverMenu::new(id.into())
             .with_handle(self.commit_menu_handle.clone())
-            .trigger(crate::render_split_button_chevron_trigger(
-                "modal-commit-split-button-right",
-                menu_open,
-            ))
+            .trigger_with_tooltip(
+                IconButton::new("modal-commit-options", IconName::EllipsisVertical)
+                    .size(ButtonSize::Medium)
+                    .icon_size(IconSize::Small)
+                    .icon_color(Color::Muted)
+                    .aria_label("Show Commit Options"),
+                Tooltip::text("Show Commit Options"),
+            )
             .menu({
                 let git_panel_entity = self.git_panel.clone();
                 let batch_commit = self.completion.is_some();
@@ -422,52 +433,101 @@ impl CommitModal {
             )
             .child(
                 h_flex()
-                    .gap_4()
+                    .gap_2()
                     .child(close_kb_hint)
-                    .child(SplitButton::new(
-                        ButtonLike::new_rounded_left(format!("split-button-left-{}", commit_label))
-                            .layer(ElevationIndex::ModalSurface)
-                            .size(ButtonSize::Compact)
-                            .disabled(!can_commit)
-                            .child(Label::new(commit_label).size(LabelSize::Small).mr_0p5())
-                            .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
-                                this.submit(window, cx);
-                            }))
-                            .tooltip({
-                                let focus_handle = focus_handle.clone();
-                                move |_window, cx| {
-                                    if can_commit {
-                                        Tooltip::with_meta_in(
-                                            tooltip,
-                                            Some(&git::Commit),
-                                            format!(
-                                                "git commit{}{}{}",
-                                                if commit_options.amend { " --amend" } else { "" },
-                                                if commit_options.signoff {
-                                                    " --signoff"
-                                                } else {
-                                                    ""
-                                                },
-                                                if commit_options.no_verify {
-                                                    " --no-verify"
-                                                } else {
-                                                    ""
-                                                }
-                                            ),
-                                            &focus_handle.clone(),
-                                            cx,
-                                        )
-                                    } else {
-                                        Tooltip::simple(tooltip, cx)
+                    .child(
+                        div()
+                            .debug_selector(|| "commit-modal-commit-button".into())
+                            .child(
+                                DialogButton::new(
+                                    format!("commit-modal-commit-{}", commit_label),
+                                    commit_label,
+                                )
+                                .default_button(true)
+                                .disabled(!can_commit)
+                                .tooltip({
+                                    let focus_handle = focus_handle.clone();
+                                    move |_window, cx| {
+                                        if can_commit {
+                                            Tooltip::with_meta_in(
+                                                tooltip,
+                                                Some(&git::Commit),
+                                                format!(
+                                                    "git commit{}{}{}",
+                                                    if commit_options.amend {
+                                                        " --amend"
+                                                    } else {
+                                                        ""
+                                                    },
+                                                    if commit_options.signoff {
+                                                        " --signoff"
+                                                    } else {
+                                                        ""
+                                                    },
+                                                    if commit_options.no_verify {
+                                                        " --no-verify"
+                                                    } else {
+                                                        ""
+                                                    }
+                                                ),
+                                                &focus_handle.clone(),
+                                                cx,
+                                            )
+                                        } else {
+                                            Tooltip::simple(tooltip, cx)
+                                        }
                                     }
-                                }
-                            }),
-                        self.render_git_commit_menu(
-                            format!("split-button-right-{}", commit_label),
-                            Some(focus_handle),
+                                })
+                                .on_click(cx.listener(
+                                    move |this, _: &ClickEvent, window, cx| {
+                                        this.submit(window, cx);
+                                    },
+                                )),
+                            ),
+                    )
+                    .when(!batch_commit, |this| {
+                        this.child(
+                            div()
+                                .debug_selector(|| "commit-modal-commit-and-push-button".into())
+                                .child(
+                                    DialogButton::new(
+                                        "commit-modal-commit-and-push",
+                                        commit_and_push_label(commit_label),
+                                    )
+                                    .disabled(!can_commit)
+                                    .tooltip({
+                                        let focus_handle = focus_handle.clone();
+                                        let push_label = commit_and_push_label(commit_label);
+                                        move |_window, cx| {
+                                            if can_commit {
+                                                Tooltip::with_meta_in(
+                                                    push_label,
+                                                    None,
+                                                    "git commit … && git push".to_string(),
+                                                    &focus_handle.clone(),
+                                                    cx,
+                                                )
+                                            } else {
+                                                Tooltip::simple(tooltip, cx)
+                                            }
+                                        }
+                                    })
+                                    .on_click(cx.listener(
+                                        move |this, _: &ClickEvent, window, cx| {
+                                            this.submit_and_push(window, cx);
+                                        },
+                                    )),
+                                ),
                         )
-                        .into_any_element(),
-                    )),
+                    })
+                    .child(
+                        div()
+                            .debug_selector(|| "commit-modal-options".into())
+                            .child(self.render_git_commit_menu(
+                                "modal-commit-options",
+                                Some(focus_handle),
+                            )),
+                    ),
             )
     }
 
@@ -667,5 +727,29 @@ impl Render for CommitModal {
                     })
                     .child(self.render_footer(window, cx)),
             )
+    }
+}
+
+/// IntelliJ's `action.commit.and.push.text` ("Commit and Push…") and
+/// `action.amend.commit.and.push.text` ("Amend Commit and Push…"), shortened to Flint's commit
+/// button titles.
+fn commit_and_push_label(commit_label: &str) -> &'static str {
+    if commit_label.starts_with("Amend") {
+        "Amend and Push…"
+    } else {
+        "Commit and Push…"
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn commit_and_push_label_follows_the_intellij_action_text() {
+        assert_eq!(commit_and_push_label("Commit"), "Commit and Push…");
+        assert_eq!(commit_and_push_label("Commit Tracked"), "Commit and Push…");
+        assert_eq!(commit_and_push_label("Amend"), "Amend and Push…");
+        assert_eq!(commit_and_push_label("Amend Tracked"), "Amend and Push…");
     }
 }

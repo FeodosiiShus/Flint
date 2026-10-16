@@ -52,7 +52,13 @@ pub struct WorkspaceSettings {
 const ISLANDS_GAP_RANGE: (u32, u32) = (0, 16);
 const ISLANDS_CORNER_RADIUS_RANGE: (u32, u32) = (0, 24);
 const TOOL_WINDOW_BAR_ICON_SIZE_RANGE: (u32, u32) = (12, 32);
-const TOOL_WINDOW_BAR_BUTTON_PADDING: Pixels = px(20.);
+/// Below this icon size the bar uses IntelliJ's Compact Mode artwork and metrics.
+pub(crate) const COMPACT_TOOL_WINDOW_ICON_SIZE_LIMIT: Pixels = px(18.);
+/// IntelliJ's `StripeToolbar.Button.size` is "37,40" at the default 20 px icon and "32,32" in
+/// Compact Mode with a 16 px icon, so the bar is 17 px wider than the icon, or 16 px in Compact
+/// Mode.
+const TOOL_WINDOW_BAR_BUTTON_PADDING: Pixels = px(17.);
+const TOOL_WINDOW_BAR_BUTTON_PADDING_COMPACT: Pixels = px(16.);
 pub const INACTIVE_FRAME_CONTENT_OPACITY: f32 = 0.56;
 
 #[derive(Copy, Clone, Debug, PartialEq)]
@@ -128,8 +134,18 @@ impl ToolWindowBarsSettings {
         }
     }
 
+    /// Whether the bar uses IntelliJ's Compact Mode: the 16x16 artwork and the compact metrics.
+    pub(crate) fn uses_compact_icons(&self) -> bool {
+        self.icon_size < COMPACT_TOOL_WINDOW_ICON_SIZE_LIMIT
+    }
+
     pub fn bar_width(&self) -> Pixels {
-        self.icon_size + TOOL_WINDOW_BAR_BUTTON_PADDING
+        self.icon_size
+            + if self.uses_compact_icons() {
+                TOOL_WINDOW_BAR_BUTTON_PADDING_COMPACT
+            } else {
+                TOOL_WINDOW_BAR_BUTTON_PADDING
+            }
     }
 }
 
@@ -482,11 +498,11 @@ mod tests {
                 icon_style: settings::ToolWindowIconStyle::Jetbrains,
             }
         );
-        assert_eq!(bars.bar_width(), px(40.));
+        assert_eq!(bars.bar_width(), px(37.));
 
         let compact = ToolWindowBarsSettings::from_content(None, Some(UiDensity::Compact));
         assert_eq!(compact.icon_size, px(16.));
-        assert_eq!(compact.bar_width(), px(36.));
+        assert_eq!(compact.bar_width(), px(32.));
     }
 
     #[test]
@@ -514,7 +530,7 @@ mod tests {
         };
         let bars = ToolWindowBarsSettings::from_content(Some(&too_large), Some(UiDensity::Compact));
         assert_eq!(bars.icon_size, px(32.));
-        assert_eq!(bars.bar_width(), px(52.));
+        assert_eq!(bars.bar_width(), px(49.));
     }
 
     #[test]

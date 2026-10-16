@@ -30,7 +30,7 @@ use theme::ActiveTheme;
 use title_bar_settings::TitleBarSettings;
 use toolbar_widgets::{
     TOOLBAR_WIDGET_HEIGHT, TOOLBAR_WIDGET_ICON_TEXT_GAP, TOOLBAR_WIDGET_PADDING_LEFT,
-    TOOLBAR_WIDGET_PADDING_RIGHT, ToolbarWidget, ToolbarWidgetColors, upstream_tracking_label,
+    TOOLBAR_WIDGET_PADDING_RIGHT, ToolbarWidget, ToolbarWidgetColors, upstream_tracking,
 };
 use ui::{
     COMPONENT_CORNER_RADII, KeyBinding, PopoverMenu, TintColor, Tooltip, prelude::*,
@@ -517,7 +517,7 @@ impl TitleBar {
     ) -> Option<AnyElement> {
         let workspace = self.workspace.upgrade()?;
 
-        let (branch_name, upstream_label, icon_info, is_detached_head) = {
+        let (branch_name, upstream, icon_info, is_detached_head) = {
             let repo = repository.read(cx);
 
             let is_detached_head = repo.branch.is_none();
@@ -537,11 +537,11 @@ impl TitleBar {
                     })
                 });
 
-            let upstream_label = repo
+            let upstream = repo
                 .branch
                 .as_ref()
                 .and_then(|branch| branch.tracking_status())
-                .and_then(|status| upstream_tracking_label(status.ahead, status.behind));
+                .and_then(|status| upstream_tracking(status.ahead, status.behind));
 
             let status = repo.status_summary();
             let tracked = status.index + status.worktree;
@@ -557,7 +557,7 @@ impl TitleBar {
                 (IconName::GitBranch, Color::Muted)
             };
 
-            (branch_name, upstream_label, icon_info, is_detached_head)
+            (branch_name, upstream, icon_info, is_detached_head)
         };
 
         let settings = TitleBarSettings::get_global(cx);
@@ -633,15 +633,12 @@ impl TitleBar {
                         "Create Branch",
                     )
                 } else {
-                    let branch_label: SharedString = match &upstream_label {
-                        Some(upstream) => format!("{branch_name}  {upstream}").into(),
-                        None => branch_name.into(),
-                    };
                     ToolbarWidget::new(
                         "project_branch_trigger",
                         Icon::new(branch_icon).color(branch_icon_color),
-                        branch_label,
+                        branch_name,
                     )
+                    .upstream(upstream)
                 }
                 .tab_index(0)
                 .tooltip(move |_window, cx| {
@@ -695,6 +692,7 @@ impl TitleBar {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use git::repository::{UpstreamTracking, UpstreamTrackingStatus};
     use gpui::{
         Background, Modifiers, Quad, TestAppContext, UpdateGlobal as _, VisualTestContext, point,
     };
@@ -708,6 +706,18 @@ mod tests {
     async fn open_project_title_bar<'a>(
         cx: &'a mut TestAppContext,
         checked_out_branch: Option<&'static str>,
+    ) -> (
+        Entity<Workspace>,
+        Entity<TitleBar>,
+        &'a mut VisualTestContext,
+    ) {
+        open_project_title_bar_with_upstream(cx, checked_out_branch, None).await
+    }
+
+    async fn open_project_title_bar_with_upstream<'a>(
+        cx: &'a mut TestAppContext,
+        checked_out_branch: Option<&'static str>,
+        upstream: Option<UpstreamTrackingStatus>,
     ) -> (
         Entity<Workspace>,
         Entity<TitleBar>,
@@ -730,10 +740,16 @@ mod tests {
                 .create_dir(&dot_git)
                 .await
                 .expect("git directory should be created");
-            app_state
-                .fs
-                .as_fake()
-                .set_branch_name(&dot_git, Some(branch));
+            let fake_fs = app_state.fs.as_fake();
+            fake_fs.set_branch_name(&dot_git, Some(branch));
+            if let Some(tracking) = upstream {
+                fake_fs.set_upstream_for_repo(
+                    &dot_git,
+                    branch,
+                    "origin/main",
+                    UpstreamTracking::Tracked(tracking),
+                );
+            }
         }
         let project = Project::test(app_state.fs.clone(), [Path::new(PROJECT_ROOT)], cx).await;
         let (multi_workspace, cx) =
@@ -922,6 +938,36 @@ mod tests {
             search_field.right() <= window_width * 0.5,
             "the search field stays in the left half of the title bar"
         );
+    }
+
+    #[gpui::test]
+    async fn branch_widget_follows_the_upstream_tracking_of_the_branch(cx: &mut TestAppContext) {
+        let (_workspace, _title_bar, cx) = open_project_title_bar_with_upstream(
+            cx,
+            Some("main"),
+            Some(UpstreamTrackingStatus {
+                ahead: 1,
+                behind: 2,
+            }),
+        )
+        .await;
+
+        assert!(
+            cx.debug_bounds("title_bar_incoming_commits").is_some(),
+            "a branch behind its upstream draws the incoming arrow"
+        );
+        assert!(
+            cx.debug_bounds("title_bar_outgoing_commits").is_some(),
+            "a branch ahead of its upstream draws the outgoing arrow"
+        );
+    }
+
+    #[gpui::test]
+    async fn branch_widget_draws_no_arrows_for_a_branch_in_sync(cx: &mut TestAppContext) {
+        let (_workspace, _title_bar, cx) = open_project_title_bar(cx, Some("main")).await;
+
+        assert_eq!(cx.debug_bounds("title_bar_incoming_commits"), None);
+        assert_eq!(cx.debug_bounds("title_bar_outgoing_commits"), None);
     }
 
     #[cfg(target_os = "macos")]

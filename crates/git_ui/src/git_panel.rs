@@ -902,6 +902,23 @@ impl GitPanel {
         }
     }
 
+    /// Commits staged changes with the current commit message and, once the commit succeeds,
+    /// pushes the branch, like IntelliJ's "Commit and Push…".
+    pub(crate) fn commit_and_push(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let options = self.commit_options();
+        let Some(completion) = self.commit_changes_with_completion(options, false, window, cx)
+        else {
+            return;
+        };
+        cx.spawn_in(window, async move |this, cx| {
+            if let Ok(Ok(())) = completion.await {
+                this.update_in(cx, |this, window, cx| this.push(false, false, window, cx))?;
+            }
+            anyhow::Ok(())
+        })
+        .detach_and_log_err(cx);
+    }
+
     /// Enters the amend state on first invocation, loading the last commit
     /// message for editing. On second invocation, performs the amend commit
     /// by delegating to [`Self::commit`]. Returns `true` if a commit was
@@ -2764,6 +2781,125 @@ mod tests {
         await_git_panel_entries(&panel, &mut cx).await;
 
         (fs, project, workspace, panel, cx)
+    }
+
+    #[gpui::test]
+    async fn test_commit_modal_shows_the_intellij_commit_buttons(cx: &mut TestAppContext) {
+        init_test(cx);
+        let (_, _, workspace, panel, mut cx) = setup_git_panel_with_changes(
+            cx,
+            json!({
+                ".git": {},
+                "file": "modified\n",
+            }),
+            &[("file", StatusCode::Modified)],
+        )
+        .await;
+
+        workspace.update_in(&mut cx, |workspace, window, cx| {
+            workspace.add_panel(panel.clone(), window, cx);
+            CommitModal::toggle(
+                workspace,
+                Some(crate::commit_modal::ForceMode::Commit),
+                window,
+                cx,
+            );
+        });
+        cx.run_until_parked();
+
+        assert!(
+            cx.debug_bounds("commit-modal-commit-button").is_some(),
+            "the footer shows the filled Commit button"
+        );
+        assert!(
+            cx.debug_bounds("commit-modal-commit-and-push-button")
+                .is_some(),
+            "the footer shows the outlined Commit and Push… button"
+        );
+        assert!(
+            cx.debug_bounds("commit-modal-options").is_some(),
+            "the footer shows the commit options button"
+        );
+    }
+
+    #[gpui::test]
+    async fn test_commit_modal_hides_commit_and_push_in_batch_mode(cx: &mut TestAppContext) {
+        init_test(cx);
+        let (_, project, workspace, panel, mut cx) = setup_git_panel_with_changes(
+            cx,
+            json!({
+                ".git": {},
+                "file": "modified\n",
+            }),
+            &[("file", StatusCode::Modified)],
+        )
+        .await;
+
+        workspace.update_in(&mut cx, |workspace, window, cx| {
+            workspace.add_panel(panel.clone(), window, cx);
+            CommitModal::toggle(
+                workspace,
+                Some(crate::commit_modal::ForceMode::Commit),
+                window,
+                cx,
+            );
+        });
+        cx.run_until_parked();
+
+        let modal = workspace
+            .read_with(&cx, |workspace, cx| {
+                workspace.active_modal::<CommitModal>(cx)
+            })
+            .expect("the commit modal is open");
+        let repository = project
+            .read_with(&cx, |project, cx| project.active_repository(cx))
+            .expect("the project has an active repository");
+        let (sender, _receiver) = futures::channel::oneshot::channel();
+        modal.update(&mut cx, |modal, cx| {
+            modal.set_completion(repository, sender);
+            cx.notify();
+        });
+        cx.run_until_parked();
+
+        assert!(cx.debug_bounds("commit-modal-commit-button").is_some());
+        assert_eq!(
+            cx.debug_bounds("commit-modal-commit-and-push-button"),
+            None,
+            "a batch commit has no push action to chain"
+        );
+    }
+
+    #[gpui::test]
+    async fn test_commit_and_push_without_a_commit_message_does_nothing(cx: &mut TestAppContext) {
+        init_test(cx);
+        let (fs, _, _, panel, mut cx) = setup_git_panel_with_changes(
+            cx,
+            json!({
+                ".git": {},
+                "file": "modified\n",
+                "other": "modified\n",
+            }),
+            &[
+                ("file", StatusCode::Modified),
+                ("other", StatusCode::Modified),
+            ],
+        )
+        .await;
+
+        panel.update_in(&mut cx, |panel, window, cx| {
+            panel.commit_and_push(window, cx);
+        });
+        cx.run_until_parked();
+
+        let commit_count = fs
+            .with_git_state(path!("/project/.git").as_ref(), false, |state| {
+                state.commit_history.len()
+            })
+            .expect("fake repository should exist");
+        assert_eq!(
+            commit_count, 0,
+            "an empty commit message must not start a commit, and no push may follow it"
+        );
     }
 
     #[gpui::test]

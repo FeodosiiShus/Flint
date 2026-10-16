@@ -2,24 +2,42 @@ use crate::WorkspaceSettings;
 use crate::dock::{Dock, PanelHandle, panel_context_menu};
 use crate::workspace_settings::ToolWindowBarsSettings;
 use gpui::{
-    Action, Anchor, AnyElement, App, Context, Entity, FocusHandle, Focusable, Hsla, IntoElement,
-    ParentElement, Render, Role, SharedString, Styled, Subscription, Window, div, px, rems,
+    Action, Anchor, AnyElement, App, Context, Edges, Entity, FocusHandle, Focusable, Hsla,
+    IntoElement, ParentElement, Render, Role, SharedString, Styled, Subscription, Window, div,
+    hsla, px, rems,
 };
 use settings::{Settings, SettingsStore, ToolWindowIconStyle};
 use std::sync::Arc;
 use theme::ThemeColors;
 use ui::{
-    BackgroundImageArea, BackgroundImageTarget, ContextMenu, CountBadge, Divider, DividerColor,
-    PopoverMenu, Tooltip, background_image_layer, prelude::*, right_click_menu,
+    BackgroundImageArea, BackgroundImageTarget, ButtonLike, ContextMenu, CountBadge, PopoverMenu,
+    Tooltip, background_image_layer, prelude::*, right_click_menu,
 };
 
-const BUTTON_PADDING: Pixels = px(6.);
-const BUTTON_RADIUS: Pixels = px(6.);
 const BAR_VERTICAL_PADDING: Pixels = px(4.);
-const BUTTON_GAP: Pixels = px(4.);
+const BUTTON_GAP: Pixels = px(0.);
 const NAMED_BUTTON_VERTICAL_PADDING: Pixels = px(4.);
 const LIGHT_BACKGROUND_LUMINANCE: f32 = 0.55;
-const COMPACT_ICON_SIZE_LIMIT: Pixels = px(18.);
+
+// IntelliJ New UI stripe metrics (Islands `StripeToolbar.Button` and `Button.ToolWindow.arc`):
+// the button box is `StripeToolbar.Button.size`, "37,40" normal and "32,32" compact; the fill
+// pill is the box minus the icon padding, `leftStripeIcon.padding` "5,5,5,2" and
+// `rightStripeIcon.padding` "5,2,5,5" (compact "4,5,4,3" and "4,3,4,5": 5 px to the window
+// edge, 2 px, 3 px compact, to the side facing the editor); the corner radius is half the arc
+// of 12, or 8 compact.
+const FILL_ICON_PADDING: Pixels = px(10.);
+const FILL_ICON_PADDING_COMPACT: Pixels = px(8.);
+const FILL_OUTER_INSET: Pixels = px(5.);
+const FILL_INNER_INSET: Pixels = px(2.);
+const FILL_OUTER_INSET_COMPACT: Pixels = px(5.);
+const FILL_INNER_INSET_COMPACT: Pixels = px(3.);
+const FILL_VERTICAL_INSET: Pixels = px(5.);
+const FILL_VERTICAL_INSET_COMPACT: Pixels = px(4.);
+const BUTTON_RADIUS: Pixels = px(6.);
+const BUTTON_RADIUS_COMPACT: Pixels = px(4.);
+// `StripeButtonSeparator`: a 11 px slot holding a 24x1 line.
+const SEPARATOR_HEIGHT: Pixels = px(11.);
+const SEPARATOR_LINE_WIDTH: Pixels = px(24.);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ToolWindowBarSide {
@@ -40,6 +58,71 @@ impl ToolWindowBarSide {
             Self::Left => (Anchor::TopLeft, Anchor::TopRight),
             Self::Right => (Anchor::TopRight, Anchor::TopLeft),
         }
+    }
+}
+
+/// The IntelliJ New UI geometry of one stripe button: the clickable box, the fill pill inside
+/// it and the pill's corner radius.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ToolWindowButtonMetrics {
+    pub box_width: Pixels,
+    pub box_height: Pixels,
+    pub fill_width: Pixels,
+    pub fill_height: Pixels,
+    pub fill_insets: Edges<Pixels>,
+    pub radius: Pixels,
+}
+
+impl ToolWindowButtonMetrics {
+    pub fn new(side: ToolWindowBarSide, settings: &ToolWindowBarsSettings) -> Self {
+        let (icon_padding, outer_inset, inner_inset, vertical_inset, radius) =
+            if settings.uses_compact_icons() {
+                (
+                    FILL_ICON_PADDING_COMPACT,
+                    FILL_OUTER_INSET_COMPACT,
+                    FILL_INNER_INSET_COMPACT,
+                    FILL_VERTICAL_INSET_COMPACT,
+                    BUTTON_RADIUS_COMPACT,
+                )
+            } else {
+                (
+                    FILL_ICON_PADDING,
+                    FILL_OUTER_INSET,
+                    FILL_INNER_INSET,
+                    FILL_VERTICAL_INSET,
+                    BUTTON_RADIUS,
+                )
+            };
+        let (left_inset, right_inset) = match side {
+            ToolWindowBarSide::Left => (outer_inset, inner_inset),
+            ToolWindowBarSide::Right => (inner_inset, outer_inset),
+        };
+        let fill_width = settings.icon_size + icon_padding;
+        let fill_height = fill_width;
+
+        Self {
+            box_width: fill_width + left_inset + right_inset,
+            box_height: fill_height + vertical_inset * 2.,
+            fill_width,
+            fill_height,
+            fill_insets: Edges {
+                top: vertical_inset,
+                bottom: vertical_inset,
+                left: left_inset,
+                right: right_inset,
+            },
+            radius,
+        }
+    }
+}
+
+/// `ToolWindow.Stripe.separatorColor` (`toolbar-border`): `transparent-white-30`, `#FFFFFF21`,
+/// in Islands Dark and `transparent-black-30`, `#00000020`, in Islands Light.
+fn stripe_separator_color(is_light: bool) -> Hsla {
+    if is_light {
+        hsla(0., 0., 0., 32. / 255.)
+    } else {
+        hsla(0., 0., 1., 33. / 255.)
     }
 }
 
@@ -210,7 +293,7 @@ impl ToolWindowBar {
         } else {
             Color::Muted
         };
-        let button_side = settings.icon_size + BUTTON_PADDING * 2.;
+        let metrics = ToolWindowButtonMetrics::new(self.side, settings);
         let icon_size = IconSize::Custom(rems(
             f32::from(settings.icon_size) / f32::from(window.rem_size()),
         ));
@@ -226,6 +309,25 @@ impl ToolWindowBar {
         let dock = button.dock;
         let badge = button.badge;
         let icon = tool_window_icon(button.icon, settings);
+        let pressed_background = colors.ghost_element_active;
+        let fill_group: SharedString = format!("tool-window-button-fill-{panel_id}").into();
+        let trigger_group = fill_group.clone();
+
+        let fill = div()
+            .absolute()
+            .top(metrics.fill_insets.top)
+            .bottom(metrics.fill_insets.bottom)
+            .left(metrics.fill_insets.left)
+            .right(metrics.fill_insets.right)
+            .rounded(metrics.radius)
+            .map(|this| match button_colors.background {
+                Some(background) => this.bg(background),
+                None => this
+                    .group_hover(fill_group.clone(), move |style| style.bg(hover_background))
+                    .group_active(fill_group.clone(), move |style| {
+                        style.bg(pressed_background)
+                    }),
+            });
 
         let trigger = div()
             .id(("tool-window-button", panel_id))
@@ -238,19 +340,23 @@ impl ToolWindowBar {
             .items_center()
             .justify_center()
             .gap_0p5()
-            .rounded(BUTTON_RADIUS)
+            .relative()
             .cursor_pointer()
             .map(|this| {
                 if show_names {
                     this.w(settings.bar_width() - BUTTON_GAP)
                         .py(NAMED_BUTTON_VERTICAL_PADDING)
+                        .rounded(BUTTON_RADIUS)
+                        .map(|this| match button_colors.background {
+                            Some(background) => this.bg(background),
+                            None => this.hover(move |style| style.bg(hover_background)),
+                        })
                 } else {
-                    this.size(button_side)
+                    this.w(metrics.box_width)
+                        .h(metrics.box_height)
+                        .group(trigger_group)
+                        .child(fill)
                 }
-            })
-            .map(|this| match button_colors.background {
-                Some(background) => this.bg(background),
-                None => this.hover(move |style| style.bg(hover_background)),
             })
             .child(
                 Icon::new(icon)
@@ -298,9 +404,10 @@ impl ToolWindowBar {
         let icon_size = IconSize::Custom(rems(
             f32::from(settings.icon_size) / f32::from(window.rem_size()),
         ));
-        let button_side = settings.icon_size + BUTTON_PADDING * 2.;
+        let metrics = ToolWindowButtonMetrics::new(self.side, settings);
         let (menu_anchor, menu_attach) = self.side.menu_placement();
         let has_panels = docks.iter().any(|dock| dock.read(cx).panels_len() > 0);
+        let more_icon = tool_window_icon(IconName::Ellipsis, settings);
 
         div()
             .debug_selector(|| "tool_window_more_button".into())
@@ -315,16 +422,12 @@ impl ToolWindowBar {
                         }))
                     })
                     .trigger_with_tooltip(
-                        IconButton::new(
-                            "tool-window-more-button",
-                            tool_window_icon(IconName::Ellipsis, settings),
-                        )
-                        .size(ButtonSize::Large)
-                        .icon_size(icon_size)
-                        .icon_color(Color::Muted)
-                        .width(button_side)
-                        .disabled(!has_panels)
-                        .aria_label("More Tool Windows"),
+                        ButtonLike::new("tool-window-more-button")
+                            .width(metrics.box_width)
+                            .height(metrics.box_height)
+                            .aria_label("More Tool Windows")
+                            .disabled(!has_panels)
+                            .child(Icon::new(more_icon).size(icon_size).color(Color::Muted)),
                         Tooltip::text("More Tool Windows"),
                     ),
             )
@@ -404,7 +507,7 @@ impl Render for ToolWindowBar {
         if top_buttons.is_empty() && bottom_buttons.is_empty() && more_button.is_none() {
             return div().into_any_element();
         }
-        let separator_width = settings.icon_size + BUTTON_PADDING * 2.;
+        let separator_width = settings.bar_width();
 
         v_flex()
             .id(("tool-window-bar", side as usize))
@@ -437,8 +540,15 @@ impl Render for ToolWindowBar {
                     .when_some(more_button, |this, more_button| {
                         this.child(
                             div()
+                                .debug_selector(|| "tool_window_bar_separator".into())
                                 .w(separator_width)
-                                .child(Divider::horizontal().color(DividerColor::Border)),
+                                .h(SEPARATOR_HEIGHT)
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .child(div().w(SEPARATOR_LINE_WIDTH).h(px(1.)).bg(
+                                    stripe_separator_color(cx.theme().appearance().is_light()),
+                                )),
                         )
                         .child(more_button)
                     })
@@ -453,7 +563,7 @@ fn tool_window_icon(icon: IconName, settings: &ToolWindowBarsSettings) -> IconNa
     if settings.icon_style == ToolWindowIconStyle::Zed {
         return icon;
     }
-    let compact = settings.icon_size < COMPACT_ICON_SIZE_LIMIT;
+    let compact = settings.uses_compact_icons();
     match (icon, compact) {
         (IconName::FileTree, false) => IconName::ToolWindowProject,
         (IconName::FileTree, true) => IconName::ToolWindowProjectCompact,
@@ -461,6 +571,12 @@ fn tool_window_icon(icon: IconName, settings: &ToolWindowBarsSettings) -> IconNa
         (IconName::GitBranch, true) => IconName::ToolWindowVcsCompact,
         (IconName::TerminalAlt, false) => IconName::ToolWindowTerminal,
         (IconName::TerminalAlt, true) => IconName::ToolWindowTerminalCompact,
+        (IconName::MagnifyingGlass, false) => IconName::ToolWindowSearch,
+        (IconName::MagnifyingGlass, true) => IconName::ToolWindowSearchCompact,
+        (IconName::Warning, false) => IconName::ToolWindowProblems,
+        (IconName::Warning, true) => IconName::ToolWindowProblemsCompact,
+        (IconName::BoltOutlined, false) => IconName::ToolWindowServices,
+        (IconName::BoltOutlined, true) => IconName::ToolWindowServicesCompact,
         (IconName::Ellipsis, false) => IconName::ToolWindowMore,
         (IconName::Ellipsis, true) => IconName::ToolWindowMoreCompact,
         _ => icon,
@@ -540,6 +656,9 @@ mod tests {
             (IconName::FileTree, IconName::ToolWindowProject),
             (IconName::GitBranch, IconName::ToolWindowVcs),
             (IconName::TerminalAlt, IconName::ToolWindowTerminal),
+            (IconName::MagnifyingGlass, IconName::ToolWindowSearch),
+            (IconName::Warning, IconName::ToolWindowProblems),
+            (IconName::BoltOutlined, IconName::ToolWindowServices),
             (IconName::Ellipsis, IconName::ToolWindowMore),
         ] {
             assert_eq!(
@@ -567,6 +686,21 @@ mod tests {
                 IconName::TerminalAlt,
                 IconName::ToolWindowTerminal,
                 IconName::ToolWindowTerminalCompact,
+            ),
+            (
+                IconName::MagnifyingGlass,
+                IconName::ToolWindowSearch,
+                IconName::ToolWindowSearchCompact,
+            ),
+            (
+                IconName::Warning,
+                IconName::ToolWindowProblems,
+                IconName::ToolWindowProblemsCompact,
+            ),
+            (
+                IconName::BoltOutlined,
+                IconName::ToolWindowServices,
+                IconName::ToolWindowServicesCompact,
             ),
             (
                 IconName::Ellipsis,
@@ -624,5 +758,83 @@ mod tests {
                 "an unmapped icon at {icon_size}px stays unchanged in jetbrains style"
             );
         }
+    }
+
+    #[test]
+    fn tool_window_button_metrics_match_intellij_at_the_default_size() {
+        let settings = bars_settings(20., ToolWindowIconStyle::Jetbrains);
+
+        let left = ToolWindowButtonMetrics::new(ToolWindowBarSide::Left, &settings);
+        assert_eq!(left.box_width, px(37.));
+        assert_eq!(left.box_height, px(40.));
+        assert_eq!(left.fill_width, px(30.));
+        assert_eq!(left.fill_height, px(30.));
+        assert_eq!(
+            left.fill_insets,
+            Edges {
+                top: px(5.),
+                bottom: px(5.),
+                left: px(5.),
+                right: px(2.),
+            }
+        );
+        assert_eq!(left.radius, px(6.));
+        assert_eq!(
+            left.box_width,
+            settings.bar_width(),
+            "the bar is exactly as wide as its buttons"
+        );
+
+        let right = ToolWindowButtonMetrics::new(ToolWindowBarSide::Right, &settings);
+        assert_eq!(
+            right.fill_insets,
+            Edges {
+                top: px(5.),
+                bottom: px(5.),
+                left: px(2.),
+                right: px(5.),
+            },
+            "the right bar mirrors the 2 px inset towards the editor"
+        );
+    }
+
+    #[test]
+    fn tool_window_button_metrics_use_the_compact_geometry_below_the_size_limit() {
+        let settings = bars_settings(16., ToolWindowIconStyle::Jetbrains);
+
+        let left = ToolWindowButtonMetrics::new(ToolWindowBarSide::Left, &settings);
+        assert_eq!(left.box_width, px(32.));
+        assert_eq!(left.box_height, px(32.));
+        assert_eq!(left.fill_width, px(24.));
+        assert_eq!(left.fill_height, px(24.));
+        assert_eq!(
+            left.fill_insets,
+            Edges {
+                top: px(4.),
+                bottom: px(4.),
+                left: px(5.),
+                right: px(3.),
+            }
+        );
+        assert_eq!(left.radius, px(4.));
+        assert_eq!(
+            left.box_width,
+            settings.bar_width(),
+            "the compact bar is exactly as wide as its buttons"
+        );
+    }
+
+    #[test]
+    fn stripe_separator_uses_the_intellij_stripe_border_color() {
+        assert_eq!(
+            stripe_separator_color(false),
+            gpui::hsla(0., 0., 1., 33. / 255.),
+            "Islands Dark draws the separator in transparent-white-30"
+        );
+        assert_eq!(
+            stripe_separator_color(true),
+            gpui::hsla(0., 0., 0., 32. / 255.),
+            "Islands Light draws the separator in transparent-black-30"
+        );
     }
 }
