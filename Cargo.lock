@@ -1241,7 +1241,6 @@ dependencies = [
 name = "cloud_api_types"
 version = "0.1.0"
 dependencies = [
- "chrono",
  "serde",
  "strum",
 ]
@@ -2171,7 +2170,6 @@ dependencies = [
  "base64",
  "breadcrumbs",
  "buffer_diff",
- "client",
  "clock",
  "collections",
  "convert_case 0.11.0",
@@ -2561,7 +2559,6 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "cloud_api_types",
- "collections",
  "command_palette_hooks",
  "component",
  "db",
@@ -2573,11 +2570,9 @@ dependencies = [
  "fuzzy",
  "git",
  "gpui",
- "http_client",
  "language",
  "log",
  "markdown",
- "num-format",
  "paths",
  "picker",
  "project",
@@ -3257,7 +3252,6 @@ dependencies = [
  "regex",
  "release_channel",
  "schemars",
- "search",
  "serde",
  "serde_json",
  "settings",
@@ -8663,7 +8657,6 @@ dependencies = [
  "db",
  "editor",
  "file_icons",
- "fs",
  "futures",
  "gpui",
  "indoc",

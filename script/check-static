@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+# No-build static gate for the whole repo.
+# Runs only checks that do not compile Rust code.
+# Intended for local pre-commit and quick CI/manual verification.
+
+cd "$(dirname "$0")/.."
+
+echo "== cargo fmt =="
+cargo fmt --all -- --check
+
+echo "== typos =="
+typos --config .config/typos.toml
+
+echo "== shellcheck =="
+bash script/shellcheck-scripts error
+
+echo "== repo convention checks =="
+bash script/check-todos
+bash script/check-keymaps
+bash script/check-licenses
+
+echo "== prettier =="
+bash script/prettier
+
+echo "== protobuf =="
+buf lint crates/proto/proto
+buf format --diff --exit-code crates/proto/proto
+
+echo "== unused dependencies =="
+cargo shear --locked --deny-warnings
+
+echo "== static check: OK =="

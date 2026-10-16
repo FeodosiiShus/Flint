@@ -11,6 +11,7 @@ Flint is a personal fork of [Zed](https://github.com/zed-industries/zed). It is 
 - The app is built on every push or merge to `main`, and on demand: Actions → Build macOS → Run workflow → branch `main`. The DMG is attached to the run as the `flint-macos-aarch64` artifact.
 - Running Build macOS from a `v*` tag also publishes a GitHub Release with the DMG attached.
 - To run the tests locally, use `script/local-ci-tests` (limits and prerequisites are documented in [AGENTS.md](AGENTS.md) under "Build guidelines"); release builds still run only in GitHub Actions.
+- For local non-build checks, use `bash script/check-static`; the same checks run automatically through `.git/hooks/pre-commit`. Clippy-based checks remain build-dependent: `bash script/clippy-advisory` and `bash script/clippy`.
 
 To cut a release:
 

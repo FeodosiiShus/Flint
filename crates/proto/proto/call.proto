@@ -4,7 +4,6 @@ package zed.messages;
 import "buffer.proto";
 import "core.proto";
 import "git.proto";
-import "lsp.proto";
 import "worktree.proto";
 
 message UpdateProject {

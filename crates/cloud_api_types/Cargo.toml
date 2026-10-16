@@ -13,6 +13,5 @@ path = "src/cloud_api_types.rs"
 doctest = false
 
 [dependencies]
-chrono.workspace = true
 serde.workspace = true
 strum.workspace = true

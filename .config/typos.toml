@@ -36,6 +36,10 @@ extend-exclude = [
     "crates/multi_buffer/src/multi_buffer_tests.rs",
     # Macos apis
     "crates/gpui_macos/src/dispatcher.rs",
+    # Typos false positives in generated/test data and curated fixtures.
+    "crates/show_usages/src/show_usages_tests.rs",
+    "crates/merge_diff/tests/fixtures/words.json",
+    "crates/merge_diff/tests/fixtures/chars.json",
     # Tests contain `baˇr` that cause `"ba" should be "by" or "be".`-like false-positives
     "crates/editor/src/document_symbols.rs",
 ]
@@ -72,9 +76,15 @@ extend-ignore-re = [
     "GHIzJ",
     # Intentionally non-matching query in project search tests
     "NOTHINGmATCHEStHIS",
+    # Commit-hash-like test fragments intentionally contain `ba`.
+    "f00ba47",
 ]
 check-filename = true
 
 [default.extend-words]
 scap = "scap"
 writeable = "writeable"
+Darcula = "Darcula"
+objets = "objets"
+navigatable = "navigatable"
+ue = "ue"

@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+# Advisory Clippy pass for logical and readability risks.
+# Unlike script/clippy, this does not deny warnings, so it surfaces issues
+# without breaking the current codebase. Gradually fix or promote lints to
+# [workspace.lints.clippy] when the project is ready.
+
+cd "$(dirname "$0")/.."
+
+"${CARGO:-cargo}" clippy "$@" --release --all-targets --all-features -- \
+  -W clippy::cognitive_complexity \
+  -W clippy::too_many_arguments \
+  -W clippy::too_many_lines \
+  -W clippy::unnecessary_wraps \
+  -W clippy::redundant_else \
+  -W clippy::collapsible_if \
+  -W unused_variables \
+  -W unused_assignments \
+  -W dead_code

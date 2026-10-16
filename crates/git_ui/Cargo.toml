@@ -79,7 +79,6 @@ language = { workspace = true, features = ["test-support"] }
 pretty_assertions.workspace = true
 project = { workspace = true, features = ["test-support"] }
 rand.workspace = true
-search.workspace = true
 settings = { workspace = true, features = ["test-support"] }
 tree-sitter-md.workspace = true
 unindent.workspace = true
