@@ -3406,7 +3406,6 @@ impl Pane {
                 let is_scrollable = max_scroll > px(2.0);
                 let has_active_unpinned_tab = self.active_item_index >= self.pinned_tab_count;
                 h_flex()
-                    .id("pinned_tabs_row")
                     .min_w_0()
                     .overflow_x_scroll()
                     .track_scroll(&self.pinned_tab_bar_scroll_handle)
@@ -3421,6 +3420,7 @@ impl Pane {
                             cx.entity_id(),
                         ))
                     })
+                    .id("pinned_tabs_row")
                     .children(pinned_tabs)
                     .when(is_scrollable && is_scrolled, |this| {
                         this.when(has_active_unpinned_tab, |this| this.border_r_2())
@@ -3458,8 +3458,6 @@ impl Pane {
             )
             .child(
                 h_flex()
-                    .id("pinned_tabs_row")
-                    .debug_selector(|| "pinned_tabs_row".into())
                     .overflow_x_scroll()
                     .track_scroll(&self.pinned_tab_bar_scroll_handle)
                     .when_some(hidden_tabs_overflow, |this, overflow| {
@@ -3473,6 +3471,8 @@ impl Pane {
                             cx.entity_id(),
                         ))
                     })
+                    .id("pinned_tabs_row")
+                    .debug_selector(|| "pinned_tabs_row".into())
                     .w_full()
                     .children(pinned_tabs)
                     .child(self.render_pinned_tab_bar_drop_target(cx)),

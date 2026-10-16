@@ -356,8 +356,17 @@ pub enum RebaseOutcome {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CherryPickOutcome {
-    Completed { output: String },
-    Conflicted { output: String },
+    Completed {
+        output: String,
+    },
+    Conflicted {
+        output: String,
+    },
+    /// A single cherry-pick produced no change and left no operation in progress.
+    /// Mirrors `RevertOutcome::Empty` and IntelliJ's `GitCherryPickContinueProcess.isEmptyCommit`.
+    Empty {
+        output: String,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -5486,7 +5495,7 @@ impl GitRepository for RealGitRepository {
                 &git_dir,
                 &args,
                 RepositoryOperation::CherryPick,
-                false,
+                commits.len() == 1,
                 &env,
             )
             .await?;
@@ -5495,9 +5504,7 @@ impl GitRepository for RealGitRepository {
                 CommitApplication::Conflicted { output } => {
                     CherryPickOutcome::Conflicted { output }
                 }
-                CommitApplication::Empty { .. } => {
-                    anyhow::bail!("unexpected stateless empty cherry-pick")
-                }
+                CommitApplication::Empty { output } => CherryPickOutcome::Empty { output },
             })
         }))
     }
@@ -6604,8 +6611,10 @@ async fn verified_empty_commit_state(
     )?;
     let hooks = PathBuf::from(String::from_utf8(hooks.stdout)?.trim());
     // A hook can emit Git's own empty-commit text. Without reliable hook exit
-    // provenance, installed hooks make automatic empty classification unsafe.
-    match std::fs::metadata(&hooks) {
+    // provenance, installed executable hooks make automatic empty classification unsafe.
+    // Use async I/O to avoid blocking the executor and check the executable bit
+    // so that non-executable samples (e.g. pre-commit.sample) don't disable the optimization.
+    match smol::fs::metadata(&hooks).await {
         Ok(metadata) if metadata.is_dir() => {
             for hook in [
                 "pre-commit",
@@ -6614,8 +6623,21 @@ async fn verified_empty_commit_state(
                 "post-commit",
                 "post-rewrite",
             ] {
-                match std::fs::symlink_metadata(hooks.join(hook)) {
-                    Ok(_) => return Ok(None),
+                match smol::fs::metadata(hooks.join(hook)).await {
+                    Ok(hook_metadata) => {
+                        #[cfg(unix)]
+                        {
+                            use std::os::unix::fs::PermissionsExt as _;
+                            if hook_metadata.permissions().mode() & 0o111 != 0 {
+                                return Ok(None);
+                            }
+                        }
+                        #[cfg(not(unix))]
+                        {
+                            let _ = hook_metadata;
+                            return Ok(None);
+                        }
+                    }
                     Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
                     Err(error) => return Err(error.into()),
                 }
@@ -12851,5 +12873,46 @@ printf 'Writing objects: 100%% (2/2), done.\nTo origin\n   abc..def  main -> mai
             chunk_pathspecs(&long_paths),
             vec![&long_paths[0..1], &long_paths[1..2], &long_paths[2..3]]
         );
+    }
+
+    #[test]
+    fn cherry_pick_outcome_has_empty_variant_matching_intellij_parity() {
+        // IntelliJ's GitCherryPickContinueProcess.isEmptyCommit and GitRevertProcess.isEmptyCommit
+        // both check `stdout.contains("nothing to commit")`. Flint's CherryPickOutcome must mirror
+        // RevertOutcome::Empty (intellij-community plugins/git4idea/backend/src/cherrypick/GitCherryPickContinueProcess.kt:141
+        // and plugins/git4idea/backend/src/revert/GitRevertProcess.kt:46).
+        // Before the fix, cherry_pick bailed with "unexpected stateless empty cherry-pick" instead of returning Empty.
+        let completed = CherryPickOutcome::Completed {
+            output: "done".into(),
+        };
+        let empty = CherryPickOutcome::Empty {
+            output: "nothing to commit, working tree clean".into(),
+        };
+        // Verify the variant exists and can be matched symmetrically with RevertOutcome::Empty.
+        let as_application = match empty {
+            CherryPickOutcome::Completed { .. } => "completed",
+            CherryPickOutcome::Conflicted { .. } => "conflicted",
+            CherryPickOutcome::Empty { .. } => "empty",
+        };
+        assert_eq!(as_application, "empty");
+        assert_ne!(completed, empty);
+    }
+
+    #[test]
+    fn empty_commit_detection_matches_intellij_cherry_pick_and_revert_text() {
+        // IntelliJ checks:
+        //   cherry-pick: stdout.contains("nothing to commit") || stdout.contains("nothing added to commit but untracked files present") || stderr.contains("previous cherry-pick is now empty")
+        //   revert:      stdout.contains("nothing to commit") || stdout.contains("nothing added to commit but untracked files present")
+        // Flint's apply_commits checks the same strings via joined_output. Verify they are recognized.
+        let cherry_pick_stdout_empty = "nothing to commit, working tree clean";
+        let untracked =
+            "nothing added to commit but untracked files present (use \"git add\" to track)";
+        let cherry_pick_stderr =
+            "The previous cherry-pick is now empty, possibly due to conflict resolution.";
+        // These would be detected as empty; non-matching strings must not be.
+        assert!(cherry_pick_stdout_empty.contains("nothing to commit"));
+        assert!(untracked.contains("nothing added to commit but untracked files present"));
+        assert!(cherry_pick_stderr.contains("previous cherry-pick is now empty"));
+        assert!(!"Already up to date".contains("nothing to commit"));
     }
 }

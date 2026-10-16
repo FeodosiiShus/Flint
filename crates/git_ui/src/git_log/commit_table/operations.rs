@@ -519,6 +519,7 @@ async fn apply_commit(
             Ok(match receiver.await?? {
                 CherryPickOutcome::Completed { .. } => Application::Completed,
                 CherryPickOutcome::Conflicted { output } => Application::Stopped { output },
+                CherryPickOutcome::Empty { .. } => Application::Empty,
             })
         }
         ApplyOperation::Revert => {
@@ -1233,7 +1234,10 @@ mod tests {
                         vec![description(1, "").sha]
                     ),
                     (fs::FakeGitOperation::Commit, Vec::new()),
-                    (fs::FakeGitOperation::SkipCommit, Vec::new()),
+                    (
+                        fs::FakeGitOperation::SkipCommit,
+                        vec![description(1, "").sha]
+                    ),
                     (
                         fs::FakeGitOperation::CherryPick,
                         vec![description(2, "").sha]

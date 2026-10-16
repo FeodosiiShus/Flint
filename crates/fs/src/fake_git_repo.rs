@@ -2768,7 +2768,7 @@ impl GitRepository for FakeGitRepository {
         self.with_state_async(true, move |state| {
             state
                 .sequencer_requests
-                .push((FakeGitOperation::SkipCommit, Vec::new()));
+                .push((FakeGitOperation::SkipCommit, vec![expected_commit]));
             simulated_failure(state, FakeGitOperation::SkipCommit)?;
             let marker = match operation {
                 RepositoryOperation::CherryPick => "CHERRY_PICK_HEAD",
