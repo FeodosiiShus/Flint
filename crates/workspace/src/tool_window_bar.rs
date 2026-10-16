@@ -314,6 +314,7 @@ impl ToolWindowBar {
         let trigger_group = fill_group.clone();
 
         let fill = div()
+            .id(("tool-window-button-fill", panel_id))
             .absolute()
             .top(metrics.fill_insets.top)
             .bottom(metrics.fill_insets.bottom)
@@ -424,7 +425,7 @@ impl ToolWindowBar {
                     .trigger_with_tooltip(
                         ButtonLike::new("tool-window-more-button")
                             .width(metrics.box_width)
-                            .height(metrics.box_height)
+                            .height(metrics.box_height.into())
                             .aria_label("More Tool Windows")
                             .disabled(!has_panels)
                             .child(Icon::new(more_icon).size(icon_size).color(Color::Muted)),

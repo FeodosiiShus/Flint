@@ -14173,41 +14173,62 @@ mod tests {
             })
             .expect("the open button paints its fill pill");
 
-        let close_to =
-            |actual: f32, expected: Pixels| (actual - f32::from(expected) * scale).abs() < 0.5;
-        assert!(
-            close_to(f32::from(fill.bounds.size.width), metrics.fill_width),
-            "the pill is {} wide, IntelliJ's fill at the default icon size, not {}; button {button:?}, fill {:?}",
-            f32::from(metrics.fill_width),
-            f32::from(button.size.width),
-            fill.bounds,
-        );
-        assert!(close_to(
-            f32::from(fill.bounds.size.height),
-            metrics.fill_height
-        ));
+        let close_to = |actual: f32, expected: f32| (actual - expected).abs() < 0.5;
         assert!(
             close_to(
-                f32::from(fill.bounds.left() - button.left()),
-                metrics.fill_insets.left
+                fill.bounds.size.width.0,
+                f32::from(metrics.fill_width) * scale
+            ),
+            "the pill is {} wide, IntelliJ's fill at the default icon size; button {:?}, fill {:?}",
+            f32::from(metrics.fill_width),
+            button.size,
+            fill.bounds,
+        );
+        assert!(
+            close_to(
+                fill.bounds.size.height.0,
+                f32::from(metrics.fill_height) * scale
+            ),
+            "the pill is {} high",
+            f32::from(metrics.fill_height),
+        );
+        assert!(
+            close_to(
+                fill.bounds.left().0 - button.left().0,
+                f32::from(metrics.fill_insets.left) * scale
             ),
             "the pill keeps IntelliJ's {} px inset to the window edge",
             f32::from(metrics.fill_insets.left),
         );
-        assert!(close_to(
-            f32::from(button.right() - fill.bounds.right()),
-            metrics.fill_insets.right
-        ));
-        assert!(close_to(
-            f32::from(fill.bounds.top() - button.top()),
-            metrics.fill_insets.top
-        ));
-        assert!(close_to(
-            f32::from(button.bottom() - fill.bounds.bottom()),
-            metrics.fill_insets.bottom
-        ));
         assert!(
-            close_to(fill.corner_radii.top_left.0, metrics.radius),
+            close_to(
+                button.right().0 - fill.bounds.right().0,
+                f32::from(metrics.fill_insets.right) * scale
+            ),
+            "the pill keeps IntelliJ's {} px inset towards the editor",
+            f32::from(metrics.fill_insets.right),
+        );
+        assert!(
+            close_to(
+                fill.bounds.top().0 - button.top().0,
+                f32::from(metrics.fill_insets.top) * scale
+            ),
+            "the pill keeps IntelliJ's {} px inset above it",
+            f32::from(metrics.fill_insets.top),
+        );
+        assert!(
+            close_to(
+                button.bottom().0 - fill.bounds.bottom().0,
+                f32::from(metrics.fill_insets.bottom) * scale
+            ),
+            "the pill keeps IntelliJ's {} px inset below it",
+            f32::from(metrics.fill_insets.bottom),
+        );
+        assert!(
+            close_to(
+                fill.corner_radii.top_left.0,
+                f32::from(metrics.radius) * scale
+            ),
             "the pill keeps IntelliJ's {} px corner radius",
             f32::from(metrics.radius),
         );
