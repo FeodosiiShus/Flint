@@ -2187,10 +2187,25 @@ pub async fn open_resolved_target(
         }
         Ok(true)
     } else if open_target.is_dir() {
+        let path = path_to_open.path.clone();
         workspace.update(cx, |workspace, cx| {
-            workspace.project().update(cx, |_, cx| {
-                cx.emit(project::Event::ActivateProjectPanel);
-            })
+            let project = workspace.project().clone();
+            let entry_id = project
+                .read(cx)
+                .find_project_path(&path, cx)
+                .and_then(|project_path| {
+                    project
+                        .read(cx)
+                        .entry_for_path(&project_path, cx)
+                        .map(|entry| entry.id)
+                });
+            // A directory inside a worktree is revealed and expanded in the project panel,
+            // like IntelliJ's directory hyperlink navigation; otherwise the panel is only
+            // brought into view, since there is no entry to select.
+            project.update(cx, |_, cx| match entry_id {
+                Some(entry_id) => cx.emit(project::Event::RevealInProjectPanel(entry_id)),
+                None => cx.emit(project::Event::ActivateProjectPanel),
+            });
         })?;
         Ok(true)
     } else {
@@ -2442,7 +2457,7 @@ fn compute_format_target(
 
 /// Computes the buffer ranges that have unstaged changes, expanded to full lines and
 /// with adjacent hunks merged, for use with format-on-save. An empty result means the
-/// buffer has no formatable modifications.
+/// buffer has no formattable modifications.
 fn compute_modified_ranges(
     buffer_snapshot: &language::BufferSnapshot,
     diff_snapshot: &buffer_diff::BufferDiffSnapshot,
@@ -2553,10 +2568,16 @@ mod tests {
     use fs::MTime;
     use gpui::{App, VisualTestContext};
     use language::TestFile;
-    use project::FakeFs;
+    use project::{FakeFs, ProjectEntryId};
     use serde_json::json;
+    use std::cell::RefCell;
     use std::path::{Path, PathBuf};
-    use util::{path, paths::PathWithPosition, rel_path::RelPath};
+    use std::rc::Rc;
+    use util::{
+        path,
+        paths::PathWithPosition,
+        rel_path::{RelPath, rel_path},
+    };
     use workspace::path_link::{OpenTarget, OpenTargetFoundBy};
 
     #[gpui::test]
@@ -3255,6 +3276,75 @@ mod tests {
         });
         // Column 4 is the fourth character of `aéøbc` (the `b`), which starts at byte 5.
         assert_eq!(cursor, language::Point::new(1, 5));
+    }
+
+    #[gpui::test]
+    async fn test_open_resolved_target_reveals_directory_in_project_panel(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        init_test(cx, |_| {});
+
+        let fs = FakeFs::new(cx.executor());
+        fs.insert_tree(
+            path!("/root"),
+            json!({
+                "src": {
+                    "nested": {
+                        "main.rs": "",
+                    },
+                },
+            }),
+        )
+        .await;
+
+        let project = Project::test(fs.clone(), [path!("/root").as_ref()], cx).await;
+        let (multi_workspace, cx) =
+            cx.add_window_view(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
+        let workspace = multi_workspace.read_with(cx, |mw, _| mw.workspace().clone());
+
+        let directory_entry_id = project.read_with(cx, |project, cx| {
+            let worktree = project.worktrees(cx).next().unwrap();
+            let worktree = worktree.read(cx);
+            worktree.entry_for_path(rel_path("src")).unwrap().id
+        });
+
+        let revealed: Rc<RefCell<Vec<ProjectEntryId>>> = Rc::default();
+        cx.update(|_, cx| {
+            let revealed = revealed.clone();
+            cx.subscribe(&project, move |_, event, _| {
+                if let project::Event::RevealInProjectPanel(entry_id) = event {
+                    revealed.borrow_mut().push(*entry_id);
+                }
+            })
+            .detach();
+        });
+
+        let open_target = OpenTarget::Path(
+            PathWithPosition {
+                path: PathBuf::from(path!("/root/src")),
+                row: None,
+                column: None,
+            },
+            true,
+            OpenTargetFoundBy::BackgroundPathResolution,
+        );
+
+        let opened = workspace
+            .update_in(cx, |_, window, cx| {
+                cx.spawn_in(window, async move |workspace, cx| {
+                    open_resolved_target(&workspace, &open_target, cx).await
+                })
+            })
+            .await
+            .expect("revealing the directory should succeed");
+        assert!(opened, "the directory target should be handled");
+        cx.run_until_parked();
+
+        assert_eq!(
+            *revealed.borrow(),
+            vec![directory_entry_id],
+            "the directory must be revealed and expanded in the project panel"
+        );
     }
 
     #[gpui::test]
