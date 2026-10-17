@@ -307,13 +307,10 @@ impl Output {
             if let Some(mdata) = entry.1
                 && let Ok(timings) = entry.2
             {
-                if let Some(handle) = categories.get_mut(&mdata.importance) {
-                    handle.insert(entry.0, (timings, mdata.iterations.unwrap(), mdata.weight));
-                } else {
-                    let mut new = HashMap::default();
-                    new.insert(entry.0, (timings, mdata.iterations.unwrap(), mdata.weight));
-                    categories.insert(mdata.importance, new);
-                }
+                categories
+                    .entry(mdata.importance.clone())
+                    .or_default()
+                    .insert(entry.0, (timings, mdata.iterations.unwrap(), mdata.weight));
             }
         }
 
