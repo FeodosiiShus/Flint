@@ -680,7 +680,7 @@ impl TextLayout {
                             TextOverflow::TruncateMiddle(s) => (width, s, TruncateFrom::Middle),
                         }
                     } else {
-                        (None, "".into(), TruncateFrom::End)
+                        (None, SharedString::new_static(""), TruncateFrom::End)
                     };
 
                 // Only use cached layout if:

@@ -138,8 +138,10 @@ impl Scheduler for PlatformScheduler {
                 spawned: scheduler::SpawnTime(Instant::now()),
             })
             .spawn(
-                move |_| async move {
-                    let _ = tx.send(());
+                move |_| {
+                    futures::future::lazy(move |_| {
+                        let _ = tx.send(());
+                    })
                 },
                 move |runnable| {
                     dispatcher.dispatch_after(duration, runnable);

@@ -1922,11 +1922,11 @@ impl Window {
                 // Defer the update because changing the AppKit appearance may
                 // synchronously invoke this callback while App is already borrowed.
                 foreground_executor
-                    .spawn(async move {
+                    .spawn(futures::future::lazy(move |_| {
                         handle
                             .update(&mut cx, |_, window, cx| window.appearance_changed(cx))
                             .log_err();
-                    })
+                    }))
                     .detach();
             }
         }));

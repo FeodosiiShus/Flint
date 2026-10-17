@@ -552,14 +552,14 @@ impl LineWrapper {
                 self.cached_ascii_char_widths[c as usize] = Some(width);
                 width
             }
-        } else if let Some(cached_width) = self.cached_other_char_widths.get(&c) {
-            *cached_width
         } else {
-            let width = self
-                .text_system
-                .layout_width(self.font_id, self.font_size, c);
-            self.cached_other_char_widths.insert(c, width);
-            width
+            let text_system = self.text_system.clone();
+            let font_id = self.font_id;
+            let font_size = self.font_size;
+            *self
+                .cached_other_char_widths
+                .entry(c)
+                .or_insert_with(|| text_system.layout_width(font_id, font_size, c))
         }
     }
 }
