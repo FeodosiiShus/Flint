@@ -10,7 +10,7 @@ use derive_more::Deref;
 pub use http::{self, Method, Request, Response, StatusCode, Uri, request::Builder};
 use http::{HeaderName, HeaderValue};
 
-use futures::future::BoxFuture;
+use futures::future::{BoxFuture, ready};
 use parking_lot::Mutex;
 #[cfg(feature = "test-support")]
 use std::{any::type_name, fmt};
@@ -146,7 +146,7 @@ pub trait HttpClient: 'static + Send + Sync {
 
         match request {
             Ok(request) => self.send(request),
-            Err(e) => Box::pin(async move { Err(e.into()) }),
+            Err(error) => Box::pin(ready(Err(error.into()))),
         }
     }
 
@@ -163,7 +163,7 @@ pub trait HttpClient: 'static + Send + Sync {
 
         match request {
             Ok(request) => self.send(request),
-            Err(e) => Box::pin(async move { Err(e.into()) }),
+            Err(error) => Box::pin(ready(Err(error.into()))),
         }
     }
 
