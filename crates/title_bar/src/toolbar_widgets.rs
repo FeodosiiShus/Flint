@@ -286,20 +286,6 @@ pub(crate) fn avatar_initials(text: &str) -> String {
         .collect();
     let filtered = filtered.trim();
 
-    let camel_case: String = filtered
-        .trim_start_matches(|character: char| !character.is_alphabetic())
-        .chars()
-        .take_while(|character| character.is_alphanumeric())
-        .enumerate()
-        .filter(|(index, character)| *index == 0 || character.is_uppercase())
-        .map(|(_, character)| character)
-        .take(2)
-        .collect::<String>()
-        .to_uppercase();
-    if camel_case.chars().count() == 2 {
-        return camel_case;
-    }
-
     for delimiters in [
         &[' '][..],
         &[','][..],
@@ -328,7 +314,16 @@ pub(crate) fn avatar_initials(text: &str) -> String {
         }
     }
 
-    camel_case
+    filtered
+        .trim_start_matches(|character: char| !character.is_alphabetic())
+        .chars()
+        .take_while(|character| character.is_alphanumeric())
+        .enumerate()
+        .filter(|(index, character)| *index == 0 || character.is_uppercase())
+        .map(|(_, character)| character)
+        .take(2)
+        .collect::<String>()
+        .to_uppercase()
 }
 
 /// The arrows shown for a branch that is behind or ahead of its upstream; only the non-zero

@@ -13596,13 +13596,19 @@ async fn rounded_selection_cursor_ring_outlines_the_pill_of_an_unmarked_entry(
         .collect::<Vec<_>>();
     assert_eq!(
         ring_quads.len(),
-        1,
-        "the keyboard cursor of an unmarked entry is drawn as a ring: {quads:?}"
+        4,
+        "the keyboard cursor of an unmarked entry is drawn as a four-edge ring: {quads:?}"
     );
-    let (ring_bounds, ring) = ring_quads[0];
+    for (_, ring) in &ring_quads {
+        assert!(
+            has_rounded_corners(ring),
+            "the ring follows the rounded pill: {ring:?}"
+        );
+    }
+    let (ring_bounds, _) = ring_quads[0];
     assert!(
-        has_rounded_corners(ring),
-        "the ring follows the rounded pill: {ring:?}"
+        ring_quads.iter().all(|(bounds, _)| *bounds == *ring_bounds),
+        "the four ring edges share the pill bounds: {ring_quads:?}"
     );
     assert!(
         (ring_bounds.left() - row_bounds.left() - TREE_SELECTION_INSET).abs() <= px(0.5)

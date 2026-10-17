@@ -1175,6 +1175,8 @@ mod tests {
             branch_picker.left() >= traffic_light_padding,
             "outside full screen the branch picker starts after the macOS window buttons, got {branch_picker:?}"
         );
+        let windowed_navigation_left = navigation.left();
+        let windowed_branch_picker_left = branch_picker.left();
 
         cx.update(|window, _| {
             window.toggle_fullscreen();
@@ -1215,8 +1217,16 @@ mod tests {
             "in full screen the navigation buttons move into the space of the hidden macOS window buttons, got {navigation:?}"
         );
         assert!(
-            branch_picker.left() < traffic_light_padding,
-            "in full screen the branch picker moves into the space of the hidden macOS window buttons, got {branch_picker:?}"
+            branch_picker.left() < windowed_branch_picker_left,
+            "in full screen the branch picker shifts left into the space of the hidden macOS window buttons, got {branch_picker:?} (windowed {windowed_branch_picker_left:?})"
+        );
+        assert!(
+            branch_picker.left() > navigation.right(),
+            "in full screen the branch picker stays after the navigation buttons, got {branch_picker:?} navigation {navigation:?}"
+        );
+        assert!(
+            navigation.left() < windowed_navigation_left,
+            "in full screen the navigation buttons shift left compared to windowed mode, got {navigation:?} (windowed {windowed_navigation_left:?})"
         );
 
         cx.update(|window, _| {
