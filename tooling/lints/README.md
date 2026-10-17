@@ -32,7 +32,7 @@ picks them up automatically when run from that directory.
 
 ## How to run
 
-Ideally you run this as part of the `clippy` script in the `zed/scripts` directory since this will also run our other linters.
+Run this as part of `script/clippy`, which executes the custom suite after clippy over the same scope (pass `-p <crate>` to scope it). The `lint` job in `.github/workflows/checks.yml` runs the suite in CI with the title_bar-green lints denied.
 
 ### Prerequisites
 

@@ -160,3 +160,56 @@ jobs:
 
       - name: Check tests of crates changed by Flint compile
         run: cargo check --locked --tests --package editor --package workspace --package client --package settings_ui --package settings_content --package terminal_view --package language_tools --package diagnostics --package extension_host --package markdown --package markdown_preview
+
+  lint:
+    name: Dylint on title_bar
+    runs-on: macos-26
+    timeout-minutes: 60
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Check Xcode and Metal toolchain
+        run: |
+          xcode-select -p
+          xcodebuild -version
+          xcrun --sdk macosx --show-sdk-version
+          probe_metal() {
+            printf 'kernel void probe(device float *out [[buffer(0)]]) { out[0] = 1.0; }\n' > "${RUNNER_TEMP}/probe.metal"
+            xcrun -sdk macosx metal -c "${RUNNER_TEMP}/probe.metal" -o "${RUNNER_TEMP}/probe.air" &&
+              xcrun -sdk macosx metallib "${RUNNER_TEMP}/probe.air" -o "${RUNNER_TEMP}/probe.metallib"
+          }
+          if ! probe_metal; then
+            xcodebuild -downloadComponent metalToolchain
+            probe_metal
+          fi
+
+      - name: Install Rust toolchain from rust-toolchain.toml
+        run: |
+          rustup toolchain install
+          rustup show active-toolchain
+          rustc --version
+          cargo --version
+
+      - name: Install dylint tools and pinned nightly
+        run: |
+          cargo install cargo-dylint dylint-link
+          toolchain="$(awk -F'"' '/^channel/ {print $2}' tooling/lints/rust-toolchain.toml)"
+          rustup toolchain install "$toolchain" --component rustc-dev,rust-src,llvm-tools-preview --profile minimal
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: "true"
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      # Deny the custom lints proven green on title_bar. entity_update_in_render
+      # is excluded: TitleBar::render intentionally syncs the platform
+      # titlebar (set_button_layout/set_children) during render, so that lint
+      # fires there by design. Widen the scope only from a green baseline.
+      - name: Run custom dylint suite on title_bar
+        run: |
+          DYLINT_RUSTFLAGS="-D shared_string_from_str_literal -D async_block_without_await -D blocking_io_on_foreground -D map_lookup_then_insert -D notify_in_render -D owned_string_into_shared" \
+            cargo dylint --all -- --locked -p title_bar

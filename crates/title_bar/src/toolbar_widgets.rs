@@ -84,7 +84,7 @@ impl ToolbarWidget {
             id: id.into(),
             icon: None,
             avatar: Some((initials, color)),
-            label: SharedString::from(""),
+            label: SharedString::new_static(""),
             upstream: None,
             loading: false,
             toggled: false,

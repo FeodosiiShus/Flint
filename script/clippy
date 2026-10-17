@@ -9,6 +9,19 @@ fi
 set -x
 "${CARGO:-cargo}" clippy "$@" --release --all-targets --all-features -- --deny warnings
 
+# Run the custom dylint suite (tooling/lints) over the same scope.
+# In CI the lint job installs cargo-dylint, dylint-link and the pinned
+# nightly first, so missing tools there are an error. Locally they are
+# optional: skip with a note instead of failing.
+if which cargo-dylint >/dev/null 2>&1 && which dylint-link >/dev/null 2>&1; then
+    "${CARGO:-cargo}" dylint --all -- "$@"
+elif [[ -n "${GITHUB_ACTIONS+x}" ]]; then
+    echo "cargo-dylint and dylint-link are required in CI (see tooling/lints/README.md)" >&2
+    exit 1
+else
+    echo "skipping dylint: install cargo-dylint and dylint-link to run the custom lints (see tooling/lints/README.md)" >&2
+fi
+
 # If local, run other checks if we have the tools installed.
 if [[ -z "${GITHUB_ACTIONS+x}" ]]; then
     which cargo-shear >/dev/null 2>&1 || exit 0

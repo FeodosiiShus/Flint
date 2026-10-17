@@ -592,7 +592,7 @@ impl TitleBar {
         show_search_button: bool,
         window: &Window,
         cx: &App,
-    ) -> impl IntoElement {
+    ) -> impl IntoElement + use<> {
         let (icon_size, side, radius) = Self::title_bar_button_metrics(window, cx);
         let colors = ToolbarWidgetColors::current(cx);
         let search_action = zed_actions::search_everywhere::Toggle { tab: None };
@@ -697,7 +697,8 @@ impl TitleBar {
         let settings = TitleBarSettings::get_global(cx);
         let effective_repository = Some(repository);
 
-        let worktree_label: SharedString = linked_worktree_name.unwrap_or_else(|| "main".into());
+        let worktree_label: SharedString =
+            linked_worktree_name.unwrap_or_else(|| SharedString::new_static("main"));
 
         let (creation_in_progress, is_switch) = self
             .workspace
