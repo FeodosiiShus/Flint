@@ -74,7 +74,8 @@ jobs:
 
       - name: Run core tests
         run: |
-          cargo nextest run --locked --profile ci --tests \
+          set -o pipefail
+          cargo nextest run --locked --profile ci --tests --no-fail-fast \
             --package settings --package release_channel --package cli --package theme_settings \
             --package ui --package workspace --package title_bar --package gpui_macos \
             --package search_everywhere --package file_finder --package project_symbols --package command_palette --package picker \
@@ -84,35 +85,104 @@ jobs:
             --package languages --package language --package language_core --package grammars --package extensions_ui \
             --package migrator --package util --package settings_ui --package show_usages \
             --features fs/test-support,project/test-support \
-            -E 'package(=settings) | package(=release_channel) | package(=cli) | package(=theme_settings)' \
-            -E '(package(=ui) | package(=workspace)) & kind(lib) & test(~background_image)' \
-            -E 'package(=ui) & kind(lib) & (test(~chrome_size) | test(~keybinding) | test(~icon_column))' \
-            -E 'binary_id(=ui::islands_chrome_pixels) | binary_id(=ui::popup_pixels)' \
-            -E 'package(=title_bar)' \
-            -E 'package(=gpui_macos) & kind(lib) & test(~fullscreen_titlebar)' \
-            -E 'package(=search_everywhere) | package(=file_finder) | package(=project_symbols) | package(=command_palette) | package(=picker)' \
-            -E 'package(=search) & kind(lib) & (test(~test_new_project_search_in_directory) | test(~test_deploy_search_with_multiple_panes) | test(~test_search_dismisses_modal))' \
-            -E 'package(=merge_diff)' \
-            -E '(package(=diagnostics) | package(=language_tools)) & kind(lib) & (test(~project_diagnostics_panel) | test(~language_services_panel))' \
-            -E 'package(=git) | package(=fs)' \
-            -E 'binary_id(=project::integration) & test(~git_store)' \
-            -E 'package(=project) & kind(lib) & (test(~dotnet_root) | test(~server_activation))' \
-            -E 'package(=git_ui) & kind(lib) & (test(~merge_tool) | test(~git_panel) | test(~commit_modal) | test(~branches_popup) | test(~branch_operations) | test(~branch_refs) | test(~git_log) | test(~git_tool_window))' \
-            -E '(package(=workspace) | package(=ui)) & kind(lib) & (test(~tool_window_bar) | test(~tool_window_header) | test(~island) | test(~inactive_window) | test(~workspace_settings) | test(~tab::tests) | test(~hidden_tabs) | test(~split_and_move) | test(~test_new_tab_scrolls_into_view_completely) | test(~test_pinned_tabs_scroll_to_item_uses_correct_index) | test(~project_gradient) | test(~test_swap_item_))' \
-            -E 'package(=workspace) & kind(lib) & (test(~tab_context_menu) | test(~tab_bar_more_menu) | test(~bottom_toolbar) | test(~panel_size_state) | test(~test_restoring_pinned_tabs) | test(~modal_anchor) | test(~background_task))' \
-            -E 'package(=icons)' \
-            -E 'package(=project_panel) & kind(lib) & (test(~rounded_selection) | test(~select_opened_file) | test(~undo_rename_keeps_created_dir_holding_excluded_files))' \
-            -E 'package(=editor) & kind(lib) & (test(~rounded_thumb) | test(~mouse_context_menu) | test(~intellij_gutter) | test(~inspection_widget) | test(~breadcrumb) | test(~test_matching_bracket_highlights) | test(~inlay_hint_pill) | test(~text_editor_with_preview) | test(~sticky_header_whitespace) | test(~show_usages) | test(~code_vision) | test(~auto_collapse_imports) | test(~open_resolved_target))' \
-            -E 'package(=markdown) & kind(lib) & test(~top_aligned_autoscroll)' \
-            -E 'package(=markdown_preview)' \
-            -E 'package(=languages) & kind(lib) & (test(~tsgo) | test(~server_activation))' \
-            -E 'package(=language) & kind(lib) & (test(~test_resolve_language_servers) | test(~test_language_servers_across_settings_files) | test(~test_language_servers_combined_restrictions) | test(~fold_regions))' \
-            -E 'package(=language_core)' \
-            -E 'package(=extensions_ui) & kind(lib) & test(~marker_install)' \
-            -E 'package(=migrator) & kind(lib) & test(~test_rename_restore_on_startup_values_at_root_and_in_overrides)' \
-            -E 'package(=util) & kind(lib) & test(~path_with_position_parse_keeps_directories_containing_the_file_name)' \
-            -E 'package(=settings_ui) & kind(lib) & (test(~test_trust_all_projects_json_path_names_the_written_key) | test(~test_reset_is_hidden_when_only_the_fallback_setting_is_set))' \
-            -E 'package(=show_usages)'
+            2>&1 | tee "${RUNNER_TEMP}/nextest-core.log"
+
+      - name: Failure summary
+        if: always()
+        env:
+          SUMMARY_TITLE: Core tests
+          SUMMARY_LOG_NAME: nextest-core.log
+        run: |
+          python3 -c '
+          import glob
+          import os
+          import re
+          import traceback
+          import xml.etree.ElementTree as ET
+
+
+          def collect_junit():
+              found = []
+              patterns = ["target/nextest/**/*.xml"]
+              runner_temp = os.environ.get("RUNNER_TEMP", "")
+              if runner_temp:
+                  patterns.append(os.path.join(runner_temp, "*.xml"))
+              for pattern in patterns:
+                  found.extend(glob.glob(pattern, recursive=True))
+              return sorted(set(found))
+
+
+          def main():
+              title = os.environ.get("SUMMARY_TITLE", "tests")
+              print(f"=== Failure summary ({title}) ===")
+              failures = []
+              source = "test step log"
+              junit_files = collect_junit()
+              if junit_files:
+                  source = ", ".join(junit_files)
+                  for path in junit_files:
+                      try:
+                          root = ET.parse(path).getroot()
+                      except Exception as exc:
+                          print(f"{path}: could not parse JUnit XML ({exc})")
+                          continue
+                      for case in root.iter("testcase"):
+                          problems = list(case.iter("failure")) + list(case.iter("error"))
+                          for problem in problems:
+                              name = f"{case.get('classname', '')}::{case.get('name', '')}".strip(":")
+                              detail = ((problem.get("message") or "") + "\n" + (problem.text or "")).strip()
+                              failures.append((name or "(unnamed test)", detail or "(no detail)"))
+              else:
+                  log_name = os.environ.get("SUMMARY_LOG_NAME", "")
+                  runner_temp = os.environ.get("RUNNER_TEMP", "")
+                  log_path = os.path.join(runner_temp, log_name) if runner_temp and log_name else log_name
+                  if log_path:
+                      source = log_path
+                  try:
+                      with open(log_path, encoding="utf-8", errors="replace") as handle:
+                          lines = handle.read().splitlines()
+                  except OSError as exc:
+                      print(f"No test output found at {log_path} ({exc}); see the test step log above.")
+                      lines = []
+                  fail_re = re.compile(r"\bFAIL\b|\bFAILED\b|^\s*error(\[|:)")
+                  in_failures = False
+                  for line in lines:
+                      if re.match(r"^\s*failures:\s*$", line):
+                          in_failures = True
+                          continue
+                      if in_failures:
+                          if not line.strip() or not line[:1].isspace():
+                              in_failures = False
+                          else:
+                              failures.append((line.strip(), line.strip()))
+                              continue
+                      if fail_re.search(line):
+                          failures.append((line.strip(), line.strip()))
+                  for line in [line for line in lines if re.search(r"\d+\s+(passed|failed|errored)", line)][-5:]:
+                      print(line)
+                  if lines and not failures and not any(fail_re.search(line) or "failed" in line for line in lines):
+                      print("No failures detected in test output.")
+              seen = set()
+              unique = []
+              for name, detail in failures:
+                  if name not in seen:
+                      seen.add(name)
+                      unique.append((name, detail))
+              for name, detail in unique[:200]:
+                  print(f"--- {name}")
+                  print(f"    source: {source}")
+                  for detail_line in detail.splitlines()[:20]:
+                      print(f"    {detail_line}")
+              if len(unique) > 200:
+                  print(f"... and {len(unique) - 200} more failing tests; see the test step log.")
+              print(f"Total failing tests reported: {len(unique)}")
+
+
+          try:
+              main()
+          except Exception:
+              traceback.print_exc()
+          '
 
   test-ui-heavy:
     name: GPUI and app tests
@@ -153,13 +223,116 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Run gpui tests
-        run: cargo test --locked --package gpui
+        run: |
+          set -o pipefail
+          cargo test --locked --no-fail-fast --package gpui 2>&1 | tee "${RUNNER_TEMP}/ui-heavy.log"
 
       - name: Run zed action, keymap and project window tests
-        run: cargo test --locked --package zed --bin flint -- test_action_namespaces test_base_keymap test_open_paths test_bundled_languages test_project_window_
+        run: |
+          set -o pipefail
+          cargo test --locked --no-fail-fast --package zed --bin flint -- test_action_namespaces test_base_keymap test_open_paths test_bundled_languages test_project_window_ 2>&1 | tee -a "${RUNNER_TEMP}/ui-heavy.log"
 
       - name: Check tests of crates changed by Flint compile
-        run: cargo check --locked --tests --package editor --package workspace --package client --package settings_ui --package settings_content --package terminal_view --package language_tools --package diagnostics --package extension_host --package markdown --package markdown_preview
+        run: |
+          set -o pipefail
+          cargo check --locked --tests --package editor --package workspace --package client --package settings_ui --package settings_content --package terminal_view --package language_tools --package diagnostics --package extension_host --package markdown --package markdown_preview 2>&1 | tee -a "${RUNNER_TEMP}/ui-heavy.log"
+
+      - name: Failure summary
+        if: always()
+        env:
+          SUMMARY_TITLE: GPUI and app tests
+          SUMMARY_LOG_NAME: ui-heavy.log
+        run: |
+          python3 -c '
+          import glob
+          import os
+          import re
+          import traceback
+          import xml.etree.ElementTree as ET
+
+
+          def collect_junit():
+              found = []
+              patterns = ["target/nextest/**/*.xml"]
+              runner_temp = os.environ.get("RUNNER_TEMP", "")
+              if runner_temp:
+                  patterns.append(os.path.join(runner_temp, "*.xml"))
+              for pattern in patterns:
+                  found.extend(glob.glob(pattern, recursive=True))
+              return sorted(set(found))
+
+
+          def main():
+              title = os.environ.get("SUMMARY_TITLE", "tests")
+              print(f"=== Failure summary ({title}) ===")
+              failures = []
+              source = "test step log"
+              junit_files = collect_junit()
+              if junit_files:
+                  source = ", ".join(junit_files)
+                  for path in junit_files:
+                      try:
+                          root = ET.parse(path).getroot()
+                      except Exception as exc:
+                          print(f"{path}: could not parse JUnit XML ({exc})")
+                          continue
+                      for case in root.iter("testcase"):
+                          problems = list(case.iter("failure")) + list(case.iter("error"))
+                          for problem in problems:
+                              name = f"{case.get('classname', '')}::{case.get('name', '')}".strip(":")
+                              detail = ((problem.get("message") or "") + "\n" + (problem.text or "")).strip()
+                              failures.append((name or "(unnamed test)", detail or "(no detail)"))
+              else:
+                  log_name = os.environ.get("SUMMARY_LOG_NAME", "")
+                  runner_temp = os.environ.get("RUNNER_TEMP", "")
+                  log_path = os.path.join(runner_temp, log_name) if runner_temp and log_name else log_name
+                  if log_path:
+                      source = log_path
+                  try:
+                      with open(log_path, encoding="utf-8", errors="replace") as handle:
+                          lines = handle.read().splitlines()
+                  except OSError as exc:
+                      print(f"No test output found at {log_path} ({exc}); see the test step log above.")
+                      lines = []
+                  fail_re = re.compile(r"\bFAIL\b|\bFAILED\b|^\s*error(\[|:)")
+                  in_failures = False
+                  for line in lines:
+                      if re.match(r"^\s*failures:\s*$", line):
+                          in_failures = True
+                          continue
+                      if in_failures:
+                          if not line.strip() or not line[:1].isspace():
+                              in_failures = False
+                          else:
+                              failures.append((line.strip(), line.strip()))
+                              continue
+                      if fail_re.search(line):
+                          failures.append((line.strip(), line.strip()))
+                  for line in [line for line in lines if re.search(r"\d+\s+(passed|failed|errored)", line)][-5:]:
+                      print(line)
+                  if lines and not failures and not any(fail_re.search(line) or "failed" in line for line in lines):
+                      print("No failures detected in test output.")
+              seen = set()
+              unique = []
+              for name, detail in failures:
+                  if name not in seen:
+                      seen.add(name)
+                      unique.append((name, detail))
+              for name, detail in unique[:200]:
+                  print(f"--- {name}")
+                  print(f"    source: {source}")
+                  for detail_line in detail.splitlines()[:20]:
+                      print(f"    {detail_line}")
+              if len(unique) > 200:
+                  print(f"... and {len(unique) - 200} more failing tests; see the test step log.")
+              print(f"Total failing tests reported: {len(unique)}")
+
+
+          try:
+              main()
+          except Exception:
+              traceback.print_exc()
+          '
 
   lint:
     name: Dylint on title_bar
@@ -211,5 +384,103 @@ jobs:
       # fires there by design. Widen the scope only from a green baseline.
       - name: Run custom dylint suite on title_bar
         run: |
+          set -o pipefail
           DYLINT_RUSTFLAGS="-D shared_string_from_str_literal -D async_block_without_await -D blocking_io_on_foreground -D map_lookup_then_insert -D notify_in_render -D owned_string_into_shared" \
-            cargo dylint --all -- --locked -p title_bar
+            cargo dylint --all -- --locked -p title_bar 2>&1 | tee "${RUNNER_TEMP}/dylint.log"
+
+      - name: Failure summary
+        if: always()
+        env:
+          SUMMARY_TITLE: Dylint on title_bar
+          SUMMARY_LOG_NAME: dylint.log
+        run: |
+          python3 -c '
+          import glob
+          import os
+          import re
+          import traceback
+          import xml.etree.ElementTree as ET
+
+
+          def collect_junit():
+              found = []
+              patterns = ["target/nextest/**/*.xml"]
+              runner_temp = os.environ.get("RUNNER_TEMP", "")
+              if runner_temp:
+                  patterns.append(os.path.join(runner_temp, "*.xml"))
+              for pattern in patterns:
+                  found.extend(glob.glob(pattern, recursive=True))
+              return sorted(set(found))
+
+
+          def main():
+              title = os.environ.get("SUMMARY_TITLE", "tests")
+              print(f"=== Failure summary ({title}) ===")
+              failures = []
+              source = "test step log"
+              junit_files = collect_junit()
+              if junit_files:
+                  source = ", ".join(junit_files)
+                  for path in junit_files:
+                      try:
+                          root = ET.parse(path).getroot()
+                      except Exception as exc:
+                          print(f"{path}: could not parse JUnit XML ({exc})")
+                          continue
+                      for case in root.iter("testcase"):
+                          problems = list(case.iter("failure")) + list(case.iter("error"))
+                          for problem in problems:
+                              name = f"{case.get('classname', '')}::{case.get('name', '')}".strip(":")
+                              detail = ((problem.get("message") or "") + "\n" + (problem.text or "")).strip()
+                              failures.append((name or "(unnamed test)", detail or "(no detail)"))
+              else:
+                  log_name = os.environ.get("SUMMARY_LOG_NAME", "")
+                  runner_temp = os.environ.get("RUNNER_TEMP", "")
+                  log_path = os.path.join(runner_temp, log_name) if runner_temp and log_name else log_name
+                  if log_path:
+                      source = log_path
+                  try:
+                      with open(log_path, encoding="utf-8", errors="replace") as handle:
+                          lines = handle.read().splitlines()
+                  except OSError as exc:
+                      print(f"No test output found at {log_path} ({exc}); see the test step log above.")
+                      lines = []
+                  fail_re = re.compile(r"\bFAIL\b|\bFAILED\b|^\s*error(\[|:)")
+                  in_failures = False
+                  for line in lines:
+                      if re.match(r"^\s*failures:\s*$", line):
+                          in_failures = True
+                          continue
+                      if in_failures:
+                          if not line.strip() or not line[:1].isspace():
+                              in_failures = False
+                          else:
+                              failures.append((line.strip(), line.strip()))
+                              continue
+                      if fail_re.search(line):
+                          failures.append((line.strip(), line.strip()))
+                  for line in [line for line in lines if re.search(r"\d+\s+(passed|failed|errored)", line)][-5:]:
+                      print(line)
+                  if lines and not failures and not any(fail_re.search(line) or "failed" in line for line in lines):
+                      print("No failures detected in test output.")
+              seen = set()
+              unique = []
+              for name, detail in failures:
+                  if name not in seen:
+                      seen.add(name)
+                      unique.append((name, detail))
+              for name, detail in unique[:200]:
+                  print(f"--- {name}")
+                  print(f"    source: {source}")
+                  for detail_line in detail.splitlines()[:20]:
+                      print(f"    {detail_line}")
+              if len(unique) > 200:
+                  print(f"... and {len(unique) - 200} more failing tests; see the test step log.")
+              print(f"Total failing tests reported: {len(unique)}")
+
+
+          try:
+              main()
+          except Exception:
+              traceback.print_exc()
+          '

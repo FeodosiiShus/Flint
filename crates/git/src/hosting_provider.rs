@@ -143,6 +143,7 @@ pub trait GitHostingProvider {
         _author_email: Option<SharedString>,
         _http_client: Arc<dyn HttpClient>,
     ) -> Result<Option<Url>> {
+        std::future::ready(()).await;
         Ok(None)
     }
 }

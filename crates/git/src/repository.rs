@@ -1506,8 +1506,8 @@ impl FetchOptions {
 
     pub fn name(&self) -> SharedString {
         match self {
-            Self::All => "Fetch all remotes".into(),
-            Self::Unshallow => "Fetch missing history".into(),
+            Self::All => SharedString::new_static("Fetch all remotes"),
+            Self::Unshallow => SharedString::new_static("Fetch missing history"),
             Self::Remote(remote) => remote.name.clone(),
         }
     }
@@ -1965,7 +1965,7 @@ pub trait GitRepository: Send + Sync {
     fn stash_entries(&self) -> BoxFuture<'static, Result<GitStash>>;
 
     fn check_access(&self) -> BoxFuture<'_, Result<()>> {
-        async move { Ok(()) }.boxed()
+        futures::future::ready(Ok(())).boxed()
     }
 
     fn branches(&self) -> BoxFuture<'_, Result<BranchesScanResult>>;
@@ -2036,7 +2036,9 @@ pub trait GitRepository: Send + Sync {
         _expected_commit: Oid,
         _env: Arc<HashMap<String, String>>,
     ) -> BoxFuture<'_, Result<()>> {
-        Box::pin(async { anyhow::bail!("skipping commits is not supported by this repository") })
+        Box::pin(futures::future::ready(Err(anyhow::anyhow!(
+            "skipping commits is not supported by this repository"
+        ))))
     }
     fn branches_containing_commit(&self, sha: Oid) -> BoxFuture<'_, Result<Vec<SharedString>>>;
     fn current_user(&self) -> BoxFuture<'_, Result<Option<GitUser>>>;
@@ -5171,11 +5173,11 @@ impl GitRepository for RealGitRepository {
                 }
 
                 if local_branch_exists("main") {
-                    return Ok(Some("main".into()));
+                    return Ok(Some(SharedString::new_static("main")));
                 }
 
                 if local_branch_exists("master") {
-                    return Ok(Some("master".into()));
+                    return Ok(Some(SharedString::new_static("master")));
                 }
 
                 Ok(None)
