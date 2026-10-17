@@ -173,7 +173,7 @@ impl RenderOnce for ToolbarWidget {
                 .child(
                     Label::new(initials)
                         .size(LabelSize::Custom(rems(
-                            f32::from(PROJECT_AVATAR_FONT_SIZE) / window.rem_size(),
+                            f32::from(PROJECT_AVATAR_FONT_SIZE) / f32::from(window.rem_size()),
                         )))
                         .weight(gpui::FontWeight::SEMIBOLD)
                         .color(Color::Custom(gpui::white())),

@@ -26,9 +26,9 @@ use project::{
 use settings::Settings as _;
 
 use std::path::Path;
-use theme::{ActiveTheme, UiDensity};
+use theme::UiDensity;
 use title_bar_settings::TitleBarSettings;
-use toolbar_widgets::{ToolbarWidget, ToolbarWidgetColors, avatar_initials};
+use toolbar_widgets::{ToolbarWidget, ToolbarWidgetColors, avatar_initials, upstream_tracking};
 use ui::{
     IconButton, PopoverMenu, TintColor, Tooltip, prelude::*, utils::platform_title_bar_height,
 };
@@ -314,7 +314,7 @@ impl Render for TitleBar {
             self.platform_titlebar.update(cx, |this, _| {
                 this.set_button_layout(button_layout);
                 this.set_project_gradient(project_gradient);
-                this.set_children([project_items, title_bar_actions]);
+                this.set_children([project_items, title_bar_actions.into_any_element()]);
             });
             self.platform_titlebar.clone().into_any_element()
         }
