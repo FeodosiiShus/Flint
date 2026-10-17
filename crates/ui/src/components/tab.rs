@@ -2,7 +2,7 @@ use std::cmp::Ordering;
 
 use gpui::{AnyElement, Hsla, IntoElement, Rgba, Stateful, transparent_black};
 use smallvec::SmallVec;
-use theme::{ThemeColors, UiDensity};
+use theme::{Appearance, ThemeColors, UiDensity};
 
 use crate::prelude::*;
 
@@ -13,15 +13,16 @@ const ISLAND_TAB_UNSELECTED_TEXT_WEIGHT: f32 = 0.7;
 const ISLAND_TAB_UNSELECTED_ICON_OPACITY: f32 = 0.75;
 const ISLAND_TAB_FIRST_TAB_OFFSET: Pixels = px(3.);
 const ISLAND_TAB_CLOSE_SLOT_SIZE: Pixels = px(16.);
-const ISLAND_TAB_SLOT_GAP: Pixels = px(2.);
-const ISLAND_TAB_CONTENT_START_PADDING: Pixels = px(8.);
-const ISLAND_TAB_MINIMUM_CONTENT_WIDTH: Pixels = px(50.);
+const ISLAND_TAB_MINIMUM_TAB_WIDTH: Pixels = px(50.);
 const ISLAND_TAB_FILE_COLOR_ALPHA: f32 = 0.4;
 const ISLAND_TAB_FILE_COLOR_ARC_SHRINK: Pixels = px(2.);
+const ISLAND_TAB_UI_FONT_SIZE_GAP: Pixels = px(2.);
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct IslandTabMetrics {
     pub strip_height: Pixels,
+    pub header_height: Pixels,
+    pub bottom_border_width: Pixels,
     pub pill_height: Pixels,
     pub pill_radius: Pixels,
     pub pill_inset: Pixels,
@@ -30,9 +31,19 @@ pub struct IslandTabMetrics {
     pub content_start_padding: Pixels,
     pub content_end_padding: Pixels,
     pub slot_gap: Pixels,
-    pub minimum_content_width: Pixels,
+    pub leading_close_start_padding: Pixels,
+    pub leading_close_end_padding: Pixels,
+    pub leading_close_gap: Pixels,
+    pub minimum_tab_width: Pixels,
     pub label_font_size_offset: Pixels,
     pub file_color_inset: Pixels,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct IslandTabPadding {
+    pub start: Pixels,
+    pub gap: Pixels,
+    pub end: Pixels,
 }
 
 impl IslandTabMetrics {
@@ -41,16 +52,21 @@ impl IslandTabMetrics {
         let pick =
             |default: f32, compact_value: f32| px(if compact { compact_value } else { default });
         Self {
-            strip_height: pick(41., 31.),
+            strip_height: pick(42., 32.),
+            header_height: pick(41., 31.),
+            bottom_border_width: TAB_BORDER_WIDTH,
             pill_height: pick(28., 24.),
             pill_radius: pick(6., 4.),
             pill_inset: pick(4., 2.),
             first_tab_offset: ISLAND_TAB_FIRST_TAB_OFFSET,
             close_slot_size: ISLAND_TAB_CLOSE_SLOT_SIZE,
-            content_start_padding: ISLAND_TAB_CONTENT_START_PADDING,
+            content_start_padding: pick(8., 4.),
             content_end_padding: pick(4., 2.),
-            slot_gap: ISLAND_TAB_SLOT_GAP,
-            minimum_content_width: ISLAND_TAB_MINIMUM_CONTENT_WIDTH,
+            slot_gap: pick(2., 0.),
+            leading_close_start_padding: pick(4., 4.),
+            leading_close_end_padding: pick(4., 2.),
+            leading_close_gap: pick(6., 0.),
+            minimum_tab_width: ISLAND_TAB_MINIMUM_TAB_WIDTH,
             label_font_size_offset: pick(0., -1.),
             file_color_inset: pick(3., 2.),
         }
@@ -64,24 +80,40 @@ impl IslandTabMetrics {
         self.first_tab_offset + self.pill_inset
     }
 
+    pub fn minimum_pill_width(&self) -> Pixels {
+        self.minimum_tab_width - self.pill_inset * 2.
+    }
+
     pub fn file_color_inner_radius(&self) -> Pixels {
         (self.pill_radius * 2. - self.file_color_inset - ISLAND_TAB_FILE_COLOR_ARC_SHRINK)
             .max(Pixels::ZERO)
             * 0.5
     }
+
+    pub fn padding(&self, close_side: TabCloseSide, has_close_slot: bool) -> IslandTabPadding {
+        match (close_side, has_close_slot) {
+            (TabCloseSide::Start, true) => IslandTabPadding {
+                start: self.leading_close_start_padding,
+                gap: self.leading_close_gap,
+                end: self.leading_close_end_padding,
+            },
+            _ => IslandTabPadding {
+                start: self.content_start_padding,
+                gap: self.slot_gap,
+                end: self.content_end_padding,
+            },
+        }
+    }
 }
 
-pub fn island_tab_label_size(
-    density: UiDensity,
-    default_size: Rems,
-    rem_size: Pixels,
-) -> LabelSize {
+pub fn island_tab_metrics(cx: &App) -> IslandTabMetrics {
+    IslandTabMetrics::for_density(current_ui_density(cx))
+}
+
+pub fn island_tab_label_size(density: UiDensity, rem_size: Pixels) -> LabelSize {
     let offset = IslandTabMetrics::for_density(density).label_font_size_offset;
-    if offset == Pixels::ZERO {
-        LabelSize::Default
-    } else {
-        LabelSize::Custom(rems(default_size.0 + offset / rem_size))
-    }
+    let font_size = (rem_size - ISLAND_TAB_UI_FONT_SIZE_GAP + offset).max(px(1.));
+    LabelSize::Custom(rems(font_size / rem_size))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -177,7 +209,19 @@ fn alpha_blending(foreground: Hsla, background: Hsla) -> Hsla {
     })
 }
 
-pub fn island_tab_label_color(selected: bool, hovered: bool, colors: &ThemeColors) -> Hsla {
+pub fn island_tab_label_color(
+    selected: bool,
+    pane_focused: bool,
+    hovered: bool,
+    colors: &ThemeColors,
+    appearance: Appearance,
+) -> Hsla {
+    if selected && !pane_focused {
+        return match appearance {
+            Appearance::Dark => gpui::white(),
+            Appearance::Light => gpui::black(),
+        };
+    }
     if selected || hovered {
         colors.text
     } else {
@@ -312,7 +356,7 @@ impl Tab {
 
     pub fn container_height(cx: &App) -> Pixels {
         let region = crate::ChromeRegion::TabBar;
-        let default_height = IslandTabMetrics::for_density(current_ui_density(cx)).strip_height;
+        let default_height = island_tab_metrics(cx).header_height;
         let height = crate::chrome_height(region, cx);
         let button_height = crate::chrome_button_height(region, ButtonSize::Default, cx);
         if height.is_none() && button_height.is_none() {
@@ -321,6 +365,16 @@ impl Tab {
         let height = height.unwrap_or(default_height);
         let button_height = crate::chrome_fit_height(region, ButtonSize::Default, cx);
         height.max(button_height + TAB_BORDER_WIDTH)
+    }
+
+    pub fn island_strip_height(cx: &App) -> Pixels {
+        let metrics = island_tab_metrics(cx);
+        let container_height = Self::container_height(cx);
+        if crate::chrome_height(crate::ChromeRegion::TabBar, cx).is_some() {
+            container_height
+        } else {
+            container_height + (metrics.strip_height - metrics.header_height)
+        }
     }
 }
 
@@ -388,8 +442,8 @@ impl RenderOnce for Tab {
                     .rounded(metrics.file_color_inner_radius())
                     .bg(file_color)
             });
-            let container_height = Tab::container_height(cx);
-            let pill_height = metrics.pill_height.min(container_height);
+            let strip_height = Tab::island_strip_height(cx);
+            let pill_height = metrics.pill_height.min(strip_height);
             let first_tab_offset = if self.position == TabPosition::First {
                 metrics.first_tab_offset
             } else {
@@ -399,10 +453,7 @@ impl RenderOnce for Tab {
                 Some(scale) => metrics.close_slot_size * scale,
                 None => metrics.close_slot_size,
             };
-            let (start_padding, end_padding) = match self.close_side {
-                TabCloseSide::End => (metrics.content_start_padding, metrics.content_end_padding),
-                TabCloseSide::Start => (metrics.content_end_padding, metrics.content_start_padding),
-            };
+            let padding = metrics.padding(self.close_side, self.end_slot.is_some());
             let close_slot = self.end_slot.map(|end_slot| {
                 h_flex()
                     .size(close_slot_size)
@@ -419,9 +470,10 @@ impl RenderOnce for Tab {
                 .group("")
                 .relative()
                 .h(pill_height)
-                .pl(start_padding - TAB_BORDER_WIDTH)
-                .pr(end_padding - TAB_BORDER_WIDTH)
-                .gap(metrics.slot_gap)
+                .min_w(metrics.minimum_pill_width())
+                .pl(padding.start - TAB_BORDER_WIDTH)
+                .pr(padding.end - TAB_BORDER_WIDTH)
+                .gap(padding.gap)
                 .text_color(text_color)
                 .rounded(metrics.pill_radius)
                 .border_1()
@@ -438,7 +490,7 @@ impl RenderOnce for Tab {
 
             return self
                 .div
-                .h(container_height)
+                .h(strip_height)
                 .flex()
                 .items_center()
                 .pl(first_tab_offset + metrics.pill_inset)
@@ -610,19 +662,20 @@ mod tests {
     }
 
     #[test]
-    fn island_tab_strip_height_is_forty_one_and_thirty_one_when_compact() {
-        assert_eq!(
-            IslandTabMetrics::for_density(UiDensity::Default).strip_height,
-            px(41.)
-        );
-        assert_eq!(
-            IslandTabMetrics::for_density(UiDensity::Comfortable).strip_height,
-            px(41.)
-        );
-        assert_eq!(
-            IslandTabMetrics::for_density(UiDensity::Compact).strip_height,
-            px(31.)
-        );
+    fn island_tab_strip_is_the_header_height_plus_the_one_pixel_top_inset() {
+        for (density, header, strip) in [
+            (UiDensity::Default, 41., 42.),
+            (UiDensity::Comfortable, 41., 42.),
+            (UiDensity::Compact, 31., 32.),
+        ] {
+            let metrics = IslandTabMetrics::for_density(density);
+            assert_eq!(metrics.header_height, px(header));
+            assert_eq!(metrics.strip_height, px(strip));
+            assert_eq!(
+                metrics.strip_height - metrics.header_height,
+                metrics.bottom_border_width
+            );
+        }
     }
 
     #[test]
@@ -652,13 +705,59 @@ mod tests {
     }
 
     #[test]
-    fn island_tab_content_slots_follow_the_intellij_layout() {
-        let metrics = IslandTabMetrics::for_density(UiDensity::Default);
-        assert_eq!(metrics.content_start_padding, px(8.));
-        assert_eq!(metrics.close_slot_size, px(16.));
-        assert_eq!(metrics.slot_gap, px(2.));
-        assert_eq!(metrics.content_end_padding, px(4.));
-        assert_eq!(metrics.minimum_content_width, px(50.));
+    fn island_tab_pill_sits_seven_and_four_pixels_below_the_strip_top() {
+        let default = IslandTabMetrics::for_density(UiDensity::Default);
+        let compact = IslandTabMetrics::for_density(UiDensity::Compact);
+        assert_eq!((default.strip_height - default.pill_height) / 2., px(7.));
+        assert_eq!((compact.strip_height - compact.pill_height) / 2., px(4.));
+    }
+
+    #[test]
+    fn island_tab_content_paddings_follow_the_intellij_tab_insets() {
+        let default = IslandTabMetrics::for_density(UiDensity::Default);
+        let compact = IslandTabMetrics::for_density(UiDensity::Compact);
+        let padding = |start: f32, gap: f32, end: f32| IslandTabPadding {
+            start: px(start),
+            gap: px(gap),
+            end: px(end),
+        };
+        assert_eq!(default.close_slot_size, px(16.));
+        assert_eq!(compact.close_slot_size, px(16.));
+        assert_eq!(
+            default.padding(TabCloseSide::End, true),
+            padding(8., 2., 4.)
+        );
+        assert_eq!(
+            compact.padding(TabCloseSide::End, true),
+            padding(4., 0., 2.)
+        );
+        assert_eq!(
+            default.padding(TabCloseSide::Start, true),
+            padding(4., 6., 4.)
+        );
+        assert_eq!(
+            compact.padding(TabCloseSide::Start, true),
+            padding(4., 0., 2.)
+        );
+        for metrics in [default, compact] {
+            assert_eq!(
+                metrics.padding(TabCloseSide::Start, false),
+                metrics.padding(TabCloseSide::End, false),
+                "without a close slot both sides share the right-hand insets"
+            );
+        }
+    }
+
+    #[test]
+    fn island_tab_minimum_width_is_fifty_counting_the_pill_insets() {
+        for density in [UiDensity::Default, UiDensity::Compact] {
+            let metrics = IslandTabMetrics::for_density(density);
+            assert_eq!(metrics.minimum_tab_width, px(50.));
+            assert_eq!(
+                metrics.minimum_pill_width() + metrics.pill_inset * 2.,
+                px(50.)
+            );
+        }
     }
 
     #[test]
@@ -707,7 +806,13 @@ mod tests {
         let mut colors = ThemeColors::dark();
         colors.text = Hsla::from(rgb(0xD1D3D9));
         colors.editor_background = Hsla::from(rgb(0x191A1C));
-        let blended = eight_bit(island_tab_label_color(false, false, &colors));
+        let blended = eight_bit(island_tab_label_color(
+            false,
+            true,
+            false,
+            &colors,
+            Appearance::Dark,
+        ));
         let expected = [0xAF, 0xB1, 0xB6];
         for (actual, expected) in blended.into_iter().zip(expected) {
             assert!(
@@ -718,11 +823,37 @@ mod tests {
     }
 
     #[test]
-    fn island_tab_selected_and_hovered_labels_use_the_full_text_color() {
+    fn island_tab_selected_and_hovered_labels_use_the_full_text_color_in_a_focused_pane() {
         let colors = ThemeColors::dark();
-        assert_eq!(island_tab_label_color(true, false, &colors), colors.text);
-        assert_eq!(island_tab_label_color(false, true, &colors), colors.text);
-        assert_ne!(island_tab_label_color(false, false, &colors), colors.text);
+        let label = |selected, hovered| {
+            island_tab_label_color(selected, true, hovered, &colors, Appearance::Dark)
+        };
+        assert_eq!(label(true, false), colors.text);
+        assert_eq!(label(false, true), colors.text);
+        assert_ne!(label(false, false), colors.text);
+    }
+
+    #[test]
+    fn island_tab_selected_label_of_an_unfocused_pane_is_pure_white_or_black() {
+        let colors = ThemeColors::dark();
+        for hovered in [false, true] {
+            assert_eq!(
+                island_tab_label_color(true, false, hovered, &colors, Appearance::Dark),
+                gpui::white()
+            );
+            assert_eq!(
+                island_tab_label_color(true, false, hovered, &colors, Appearance::Light),
+                gpui::black()
+            );
+        }
+        assert_eq!(
+            island_tab_label_color(false, false, true, &colors, Appearance::Dark),
+            colors.text
+        );
+        assert_ne!(
+            island_tab_label_color(false, false, false, &colors, Appearance::Dark),
+            colors.text
+        );
     }
 
     #[test]
@@ -815,28 +946,23 @@ mod tests {
     }
 
     #[test]
-    fn island_tab_label_is_one_pixel_smaller_only_when_compact() {
-        let default_size = rems_from_px(14_f32);
-        let rem_size = px(15.);
-        assert_eq!(
-            island_tab_label_size(UiDensity::Default, default_size, rem_size),
-            LabelSize::Default
-        );
-        assert_eq!(
-            island_tab_label_size(UiDensity::Comfortable, default_size, rem_size),
-            LabelSize::Default
-        );
-        let LabelSize::Custom(compact) =
-            island_tab_label_size(UiDensity::Compact, default_size, rem_size)
-        else {
-            panic!("compact density must shrink the label");
-        };
-        let shrink =
-            f32::from(default_size.to_pixels(rem_size)) - f32::from(compact.to_pixels(rem_size));
-        assert!(
-            (shrink - 1.).abs() < 0.001,
-            "compact label must be exactly 1 px smaller, got {shrink}"
-        );
+    fn island_tab_label_is_two_pixels_below_the_ui_font_and_one_smaller_when_compact() {
+        for (density, rem_size, expected) in [
+            (UiDensity::Default, 15., 13.),
+            (UiDensity::Comfortable, 15., 13.),
+            (UiDensity::Compact, 15., 12.),
+            (UiDensity::Default, 16., 14.),
+            (UiDensity::Compact, 16., 13.),
+        ] {
+            let LabelSize::Custom(size) = island_tab_label_size(density, px(rem_size)) else {
+                panic!("island tabs always draw a custom label size");
+            };
+            let actual = f32::from(size.to_pixels(px(rem_size)));
+            assert!(
+                (actual - expected).abs() < 0.001,
+                "{density:?} at a {rem_size} px UI font should be {expected} px, got {actual}"
+            );
+        }
     }
 
     #[test]
@@ -947,5 +1073,82 @@ mod tests {
         let (_, cx) = cx.add_window_view(|_, _| IslandFileColorTab { selected: false });
         assert!(cx.debug_bounds("TAB-file_color").is_some());
         assert!(cx.debug_bounds("TAB_FILE_COLOR").is_none());
+    }
+
+    struct IslandTabSides {
+        label_width: f32,
+    }
+
+    impl Render for IslandTabSides {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            h_flex()
+                .child(
+                    Tab::new("close_end")
+                        .islands(true)
+                        .position(TabPosition::Middle(Ordering::Equal))
+                        .close_side(TabCloseSide::End)
+                        .child(div().w(px(self.label_width)))
+                        .end_slot(div().size_full().debug_selector(|| "CLOSE-end".into())),
+                )
+                .child(
+                    Tab::new("close_start")
+                        .islands(true)
+                        .position(TabPosition::Middle(Ordering::Equal))
+                        .close_side(TabCloseSide::Start)
+                        .child(div().w(px(self.label_width)))
+                        .end_slot(div().size_full().debug_selector(|| "CLOSE-start".into())),
+                )
+        }
+    }
+
+    #[gpui::test]
+    fn island_tab_close_slot_sits_at_the_intellij_inset_on_either_side(cx: &mut TestAppContext) {
+        init_island_tab_test(cx);
+        let (_, cx) = cx.add_window_view(|_, _| IslandTabSides {
+            label_width: LABEL_WIDTH,
+        });
+        let metrics = IslandTabMetrics::for_density(UiDensity::Default);
+        let trailing_tab = cx.debug_bounds("TAB-close_end").expect("tab is painted");
+        let trailing_close = cx.debug_bounds("CLOSE-end").expect("close slot is painted");
+        let trailing_padding = metrics.padding(TabCloseSide::End, true);
+        assert_eq!(trailing_close.size.width, metrics.close_slot_size);
+        assert_eq!(
+            trailing_tab.right() - trailing_close.right(),
+            trailing_padding.end + metrics.pill_inset - TAB_BORDER_WIDTH
+        );
+        let leading_tab = cx.debug_bounds("TAB-close_start").expect("tab is painted");
+        let leading_close = cx
+            .debug_bounds("CLOSE-start")
+            .expect("close slot is painted");
+        let leading_padding = metrics.padding(TabCloseSide::Start, true);
+        assert_eq!(
+            leading_close.left() - leading_tab.left(),
+            metrics.pill_inset + leading_padding.start
+        );
+        assert_eq!(
+            leading_tab.size.width,
+            metrics.pill_inset * 2. - TAB_BORDER_WIDTH
+                + leading_padding.start
+                + metrics.close_slot_size
+                + leading_padding.gap
+                + px(LABEL_WIDTH)
+                + leading_padding.end
+        );
+    }
+
+    #[gpui::test]
+    fn island_tab_without_content_is_as_wide_as_the_intellij_minimum_tab(cx: &mut TestAppContext) {
+        init_island_tab_test(cx);
+        let (_, cx) = cx.add_window_view(|_, _| IslandTabSides { label_width: 1. });
+        let metrics = IslandTabMetrics::for_density(UiDensity::Default);
+        for selector in ["TAB-close_end", "TAB-close_start"] {
+            let tab = cx.debug_bounds(selector).expect("tab is painted");
+            assert_eq!(
+                tab.size.width,
+                metrics.minimum_tab_width - TAB_BORDER_WIDTH,
+                "{selector} keeps the 50 px label minimum less the 1 px tab overlap"
+            );
+            assert_eq!(tab.size.height, metrics.strip_height);
+        }
     }
 }

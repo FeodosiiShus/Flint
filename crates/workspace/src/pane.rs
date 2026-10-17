@@ -328,6 +328,8 @@ const ISLAND_TAB_ICON_SIZE: f32 = 16.;
 const ISLAND_TAB_ICON_LABEL_GAP: Pixels = px(4.);
 const ISLAND_TAB_DIRTY_DOT_BOX_SIZE: f32 = 13.;
 const ISLAND_TAB_DIRTY_DOT_DIAMETER: f32 = 6.;
+const ISLAND_TAB_CLOSE_SLOT_GROUP: &str = "island_tab_close_slot";
+const ISLAND_TAB_CLOSE_HOVER_ALPHA: f32 = 0.13;
 
 pub enum Event {
     AddItem {
@@ -2807,10 +2809,17 @@ impl Pane {
             return Some(icon.into_any_element());
         };
 
-        let knockout_item_color = if is_active {
-            cx.theme().colors().tab_active_background
+        let colors = cx.theme().colors();
+        let knockout_item_color = if WorkspaceSettings::get_global(cx).islands.enabled {
+            if is_active {
+                ui::island_tab_pill_colors(self.has_focus(window, cx), colors).background
+            } else {
+                colors.editor_background
+            }
+        } else if is_active {
+            colors.tab_active_background
         } else {
-            cx.theme().colors().tab_bar_background
+            colors.tab_bar_background
         };
 
         let (icon_decoration, icon_color) = if matches!(diagnostic, &DiagnosticSeverity::ERROR) {
@@ -2854,9 +2863,22 @@ impl Pane {
         let islands = WorkspaceSettings::get_global(cx).islands.enabled;
         let (unhovered_label_color, hovered_label_color) = {
             let colors = cx.theme().colors();
+            let appearance = cx.theme().appearance();
             (
-                Color::Custom(ui::island_tab_label_color(is_active, false, colors)),
-                Color::Custom(ui::island_tab_label_color(is_active, true, colors)),
+                Color::Custom(ui::island_tab_label_color(
+                    is_active,
+                    pane_focused,
+                    false,
+                    colors,
+                    appearance,
+                )),
+                Color::Custom(ui::island_tab_label_color(
+                    is_active,
+                    pane_focused,
+                    true,
+                    colors,
+                    appearance,
+                )),
             )
         };
         let label_size = islands.then(|| island_tab_label_size(window, cx));
@@ -2963,65 +2985,98 @@ impl Pane {
         let dirty_dot_color = indicator_color.map(|color| color.color(cx));
         let close_button_reveals_on_hover = (islands && indicator_color.is_some())
             || (matches!(show_close_button, ShowCloseButton::Hover) && !(islands && is_active));
+        let close_reveal_group = if islands && indicator_color.is_some() {
+            ISLAND_TAB_CLOSE_SLOT_GROUP
+        } else {
+            ""
+        };
+        let island_close_scale = ui::chrome_icon_scale(ui::ChromeRegion::TabBar, cx);
+        let island_close_box_size =
+            ui::island_tab_metrics(cx).close_slot_size * island_close_scale.unwrap_or(1.);
+        let island_close_icon_size = if island_close_scale.is_some() {
+            IconSize::Small
+        } else {
+            IconSize::Custom(gpui::rems(
+                f32::from(island_close_box_size) / f32::from(window.rem_size()),
+            ))
+        };
+        let island_close_hover_background = cx
+            .theme()
+            .colors()
+            .text
+            .opacity(ISLAND_TAB_CLOSE_HOVER_ALPHA);
         let close_action: &'static dyn Action = &CloseActiveItem {
             save_intent: None,
             close_pinned: false,
         };
-        let end_slot_button: Option<(IconButton, &'static str, &'static dyn Action)> = if is_pinned
-        {
-            Some((
-                IconButton::new("unpin tab", IconName::Pin).on_click(cx.listener(
-                    move |pane, _, window, cx| {
-                        pane.unpin_tab_at(ix, window, cx);
-                    },
-                )),
-                "Unpin Tab",
-                &TogglePinTab,
-            ))
-        } else {
-            match show_close_button {
-                ShowCloseButton::Hidden => None,
-                ShowCloseButton::Always | ShowCloseButton::Hover => {
-                    let close_button = IconButton::new("close tab", IconName::Close);
-                    let close_button = if close_button_reveals_on_hover {
-                        close_button.visible_on_hover("")
-                    } else {
-                        close_button
-                    };
-                    Some((
-                        close_button.on_click(cx.listener(move |pane, _, window, cx| {
-                            pane.close_item_by_id(item_id, SaveIntent::Close, window, cx)
-                                .detach_and_log_err(cx);
-                        })),
-                        "Close Tab",
-                        close_action,
-                    ))
-                }
-            }
-        };
-        let end_slot_button = end_slot_button.map(|(button, tooltip_text, action)| {
-            button
-                .shape(IconButtonShape::Square)
-                .icon_color(Color::Muted)
-                .size(ButtonSize::None)
-                .icon_size(IconSize::Small)
-                .chrome_region(ui::ChromeRegion::TabBar)
-                .map(|this| {
-                    if is_active {
-                        let focus_handle = focus_handle.clone();
-                        this.tooltip(move |window, cx| {
-                            Tooltip::for_action_in(
-                                tooltip_text,
-                                action,
-                                &window.focused(cx).unwrap_or_else(|| focus_handle.clone()),
-                                cx,
-                            )
-                        })
-                    } else {
-                        this.tooltip(Tooltip::text(tooltip_text))
+        let end_slot_button: Option<(IconButton, &'static str, &'static dyn Action, Color)> =
+            if is_pinned {
+                Some((
+                    IconButton::new("unpin tab", IconName::Pin).on_click(cx.listener(
+                        move |pane, _, window, cx| {
+                            pane.unpin_tab_at(ix, window, cx);
+                        },
+                    )),
+                    "Unpin Tab",
+                    &TogglePinTab,
+                    Color::Default,
+                ))
+            } else {
+                match show_close_button {
+                    ShowCloseButton::Hidden => None,
+                    ShowCloseButton::Always | ShowCloseButton::Hover => {
+                        let close_button = IconButton::new("close tab", IconName::Close);
+                        let close_button = if close_button_reveals_on_hover {
+                            close_button.visible_on_hover(close_reveal_group)
+                        } else {
+                            close_button
+                        };
+                        Some((
+                            close_button.on_click(cx.listener(move |pane, _, window, cx| {
+                                pane.close_item_by_id(item_id, SaveIntent::Close, window, cx)
+                                    .detach_and_log_err(cx);
+                            })),
+                            "Close Tab",
+                            close_action,
+                            Color::Placeholder,
+                        ))
                     }
-                })
-        });
+                }
+            };
+        let end_slot_button =
+            end_slot_button.map(|(button, tooltip_text, action, island_icon_color)| {
+                button
+                    .shape(IconButtonShape::Square)
+                    .size(ButtonSize::None)
+                    .chrome_region(ui::ChromeRegion::TabBar)
+                    .map(|this| {
+                        if islands {
+                            this.icon_color(island_icon_color)
+                                .icon_size(island_close_icon_size)
+                                .box_size(island_close_box_size)
+                                .corner_radius(island_close_box_size / 2.)
+                                .hover_background(island_close_hover_background)
+                                .active_background(island_close_hover_background)
+                        } else {
+                            this.icon_color(Color::Muted).icon_size(IconSize::Small)
+                        }
+                    })
+                    .map(|this| {
+                        if is_active {
+                            let focus_handle = focus_handle.clone();
+                            this.tooltip(move |window, cx| {
+                                Tooltip::for_action_in(
+                                    tooltip_text,
+                                    action,
+                                    &window.focused(cx).unwrap_or_else(|| focus_handle.clone()),
+                                    cx,
+                                )
+                            })
+                        } else {
+                            this.tooltip(Tooltip::text(tooltip_text))
+                        }
+                    })
+            });
         let tab_end_slot: Option<AnyElement> = if islands {
             let dirty_dot = dirty_dot_color.filter(|_| !is_pinned).map(|color| {
                 div()
@@ -3044,6 +3099,7 @@ impl Pane {
                         .flex()
                         .items_center()
                         .justify_center()
+                        .group(ISLAND_TAB_CLOSE_SLOT_GROUP)
                         .child(button)
                         .child(
                             div()
@@ -3052,7 +3108,7 @@ impl Pane {
                                 .flex()
                                 .items_center()
                                 .justify_center()
-                                .group_hover("", |style| style.invisible())
+                                .group_hover(ISLAND_TAB_CLOSE_SLOT_GROUP, |style| style.invisible())
                                 .child(dot),
                         )
                         .into_any_element(),
@@ -3065,12 +3121,8 @@ impl Pane {
             end_slot_button.map(IntoElement::into_any_element)
         };
 
-        let island_minimum_content_width =
-            ui::IslandTabMetrics::for_density(ThemeSettings::get_global(cx).ui_density)
-                .minimum_content_width;
         let pane_tab_content = h_flex()
             .id(("pane-tab-content", ix))
-            .when(islands, |this| this.min_w(island_minimum_content_width))
             .map(|this| {
                 if islands && !is_active {
                     this.relative()
@@ -3585,7 +3637,7 @@ impl Pane {
         div().debug_selector(|| "hidden_tabs_button".into()).child(
             PopoverMenu::new("hidden_tabs_menu")
                 .trigger_with_tooltip(
-                    IconButton::new("hidden_tabs_button", IconName::ChevronDown)
+                    IconButton::new("hidden_tabs_button", IconName::ChevronDownLarge)
                         .icon_size(IconSize::Small)
                         .chrome_region(ui::ChromeRegion::TabBar),
                     Tooltip::text("Show Hidden Tabs"),
@@ -3604,7 +3656,10 @@ impl Pane {
         div()
             .id("tab_bar_drop_target")
             .min_w_6()
-            .h(Tab::container_height(cx))
+            .h(TabBar::strip_height(
+                WorkspaceSettings::get_global(cx).islands.enabled,
+                cx,
+            ))
             .flex_grow_1()
             // HACK: This empty child is currently necessary to force the drop target to appear
             // despite us setting a min width above.
@@ -3648,7 +3703,10 @@ impl Pane {
             .id("pinned_tabs_border")
             .debug_selector(|| "pinned_tabs_border".into())
             .min_w_6()
-            .h(Tab::container_height(cx))
+            .h(TabBar::strip_height(
+                WorkspaceSettings::get_global(cx).islands.enabled,
+                cx,
+            ))
             .flex_grow_1()
             .border_l_1()
             .border_color(cx.theme().colors().border)
@@ -4994,11 +5052,7 @@ fn island_tab_file_color(item: &dyn ItemHandle, cx: &App) -> Option<Hsla> {
 }
 
 fn island_tab_label_size(window: &Window, cx: &App) -> LabelSize {
-    ui::island_tab_label_size(
-        ThemeSettings::get_global(cx).ui_density,
-        TextSize::Default.rems(cx),
-        window.rem_size(),
-    )
+    ui::island_tab_label_size(ThemeSettings::get_global(cx).ui_density, window.rem_size())
 }
 
 impl Render for DraggedTab {
@@ -5008,8 +5062,10 @@ impl Render for DraggedTab {
         let label_color = islands.then(|| {
             Color::Custom(ui::island_tab_label_color(
                 self.is_active,
+                true,
                 false,
                 cx.theme().colors(),
+                cx.theme().appearance(),
             ))
         });
         let label = self.item.tab_content(
@@ -8733,6 +8789,43 @@ mod tests {
         assert!(
             button_bounds.right() <= more_button_bounds.left(),
             "the hidden tabs button should sit before the tab bar more button"
+        );
+    }
+
+    #[gpui::test]
+    async fn island_tab_strip_of_a_pane_has_the_intellij_height_and_spaced_centered_end_buttons(
+        cx: &mut TestAppContext,
+    ) {
+        init_test(cx);
+        let fs = FakeFs::new(cx.executor());
+        let project = Project::test(fs, None, cx).await;
+        let (workspace, cx) =
+            cx.add_window_view(|window, cx| Workspace::test_new(project, window, cx));
+        let pane = workspace.read_with(cx, |workspace, _| workspace.active_pane().clone());
+        cx.simulate_resize(size(px(500.), px(600.)));
+
+        add_described_items(&pane, &HIDDEN_TABS_LABELS, cx);
+
+        let strip_height = cx.update(|_, cx| TabBar::strip_height(true, cx));
+        let tab = cx
+            .debug_bounds("TAB-0")
+            .expect("the first tab should be painted");
+        assert_eq!(tab.size.height, strip_height);
+        let hidden_button = cx
+            .debug_bounds("hidden_tabs_button")
+            .expect("ten tabs should overflow a 500px wide tab bar");
+        let more_button = cx
+            .debug_bounds("tab_bar_more_button")
+            .expect("the pane should show its tab bar more button");
+        for button in [hidden_button, more_button] {
+            assert!(
+                (button.center().y - tab.center().y).abs() <= px(0.5),
+                "the end buttons are centered in the strip: button {button:?}, tab {tab:?}"
+            );
+        }
+        assert!(
+            (more_button.left() - hidden_button.right() - px(4.)).abs() <= px(0.01),
+            "the end buttons are four pixels apart: {hidden_button:?}, {more_button:?}"
         );
     }
 

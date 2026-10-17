@@ -26,7 +26,7 @@ pub fn crease_toggle(
         .child(
             Icon::new(icon)
                 .size(IconSize::Custom(rems_from_px(FOLD_ICON_WIDTH)))
-                .color(Color::Muted),
+                .color(Color::Placeholder),
         )
         .on_click(window.listener_for(editor, move |editor, _e, window, cx| {
             on_toggle(editor, window, cx)

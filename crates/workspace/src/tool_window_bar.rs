@@ -2,21 +2,22 @@ use crate::WorkspaceSettings;
 use crate::dock::{Dock, PanelHandle, panel_context_menu};
 use crate::workspace_settings::ToolWindowBarsSettings;
 use gpui::{
-    Action, Anchor, AnyElement, App, Context, Edges, Entity, FocusHandle, Focusable, Hsla,
-    IntoElement, ParentElement, Render, Role, SharedString, Styled, Subscription, Window, div,
-    hsla, px, rems,
+    Action, Anchor, AnyElement, App, ClickEvent, Context, CursorStyle, Edges, Entity, FocusHandle,
+    Focusable, Hsla, IntoElement, MouseButton, ParentElement, Render, Role, SharedString, Stateful,
+    Styled, Subscription, Toggled, Window, div, hsla, px, rems, transparent_black,
 };
 use settings::{Settings, SettingsStore, ToolWindowIconStyle};
 use std::sync::Arc;
 use theme::ThemeColors;
 use ui::{
-    BackgroundImageArea, BackgroundImageTarget, ButtonLike, ContextMenu, CountBadge, PopoverMenu,
-    Tooltip, background_image_layer, prelude::*, right_click_menu,
+    BackgroundImageArea, BackgroundImageTarget, ContextMenu, CountBadge, PopoverMenu, Tooltip,
+    background_image_layer, prelude::*, right_click_menu,
 };
 
-const BAR_VERTICAL_PADDING: Pixels = px(4.);
+pub(crate) const ISLANDS_EMPTY_GAP: Pixels = px(4.);
+const BAR_BORDER_WIDTH: Pixels = px(1.);
+const BAR_TOP_PADDING: Pixels = px(1.);
 const BUTTON_GAP: Pixels = px(0.);
-const NAMED_BUTTON_VERTICAL_PADDING: Pixels = px(4.);
 const LIGHT_BACKGROUND_LUMINANCE: f32 = 0.55;
 
 // IntelliJ New UI stripe metrics (Islands `StripeToolbar.Button` and `Button.ToolWindow.arc`):
@@ -38,6 +39,15 @@ const BUTTON_RADIUS_COMPACT: Pixels = px(4.);
 // `StripeButtonSeparator`: a 11 px slot holding a 24x1 line.
 const SEPARATOR_HEIGHT: Pixels = px(11.);
 const SEPARATOR_LINE_WIDTH: Pixels = px(24.);
+const NAMES_BAR_WIDTH: Pixels = px(59.);
+const NAMES_ICON_LABEL_GAP: Pixels = px(3.);
+const NAMES_LABEL_HEIGHT: Pixels = px(13.);
+const NAMES_LABEL_FONT_SIZE: Pixels = px(11.);
+const NAMES_FILL_VERTICAL_INSET: Pixels = px(4.);
+const NAMES_FILL_VERTICAL_INSET_COMPACT: Pixels = px(3.);
+const NAMES_FILL_OUTER_INSET: Pixels = px(6.);
+const NAMES_FILL_OUTER_INSET_COMPACT: Pixels = px(4.);
+const NAMES_FILL_INNER_INSET: Pixels = px(2.);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ToolWindowBarSide {
@@ -75,36 +85,59 @@ pub struct ToolWindowButtonMetrics {
 
 impl ToolWindowButtonMetrics {
     pub fn new(side: ToolWindowBarSide, settings: &ToolWindowBarsSettings) -> Self {
-        let (icon_padding, outer_inset, inner_inset, vertical_inset, radius) =
-            if settings.uses_compact_icons() {
-                (
-                    FILL_ICON_PADDING_COMPACT,
-                    FILL_OUTER_INSET_COMPACT,
-                    FILL_INNER_INSET_COMPACT,
-                    FILL_VERTICAL_INSET_COMPACT,
-                    BUTTON_RADIUS_COMPACT,
-                )
-            } else {
-                (
-                    FILL_ICON_PADDING,
-                    FILL_OUTER_INSET,
-                    FILL_INNER_INSET,
-                    FILL_VERTICAL_INSET,
-                    BUTTON_RADIUS,
-                )
-            };
+        let compact = settings.uses_compact_icons();
+        let (icon_padding, outer_inset, inner_inset, vertical_inset, radius) = if compact {
+            (
+                FILL_ICON_PADDING_COMPACT,
+                FILL_OUTER_INSET_COMPACT,
+                FILL_INNER_INSET_COMPACT,
+                FILL_VERTICAL_INSET_COMPACT,
+                BUTTON_RADIUS_COMPACT,
+            )
+        } else {
+            (
+                FILL_ICON_PADDING,
+                FILL_OUTER_INSET,
+                FILL_INNER_INSET,
+                FILL_VERTICAL_INSET,
+                BUTTON_RADIUS,
+            )
+        };
+        let icon_box_height = settings.icon_size + icon_padding + vertical_inset * 2.;
+        let (vertical_inset, outer_inset, inner_inset) = match (settings.show_names, compact) {
+            (false, _) => (vertical_inset, outer_inset, inner_inset),
+            (true, false) => (
+                NAMES_FILL_VERTICAL_INSET,
+                NAMES_FILL_OUTER_INSET,
+                NAMES_FILL_INNER_INSET,
+            ),
+            (true, true) => (
+                NAMES_FILL_VERTICAL_INSET_COMPACT,
+                NAMES_FILL_OUTER_INSET_COMPACT,
+                NAMES_FILL_INNER_INSET,
+            ),
+        };
         let (left_inset, right_inset) = match side {
             ToolWindowBarSide::Left => (outer_inset, inner_inset),
             ToolWindowBarSide::Right => (inner_inset, outer_inset),
         };
-        let fill_width = settings.icon_size + icon_padding;
-        let fill_height = fill_width;
+        let (box_width, box_height) = if settings.show_names {
+            (
+                NAMES_BAR_WIDTH - BAR_BORDER_WIDTH,
+                icon_box_height + NAMES_ICON_LABEL_GAP + NAMES_LABEL_HEIGHT,
+            )
+        } else {
+            (
+                settings.icon_size + icon_padding + left_inset + right_inset,
+                icon_box_height,
+            )
+        };
 
         Self {
-            box_width: fill_width + left_inset + right_inset,
-            box_height: fill_height + vertical_inset * 2.,
-            fill_width,
-            fill_height,
+            box_width,
+            box_height,
+            fill_width: box_width - left_inset - right_inset,
+            fill_height: box_height - vertical_inset * 2.,
             fill_insets: Edges {
                 top: vertical_inset,
                 bottom: vertical_inset,
@@ -200,6 +233,166 @@ pub struct ToolWindowBar {
     _subscriptions: Vec<Subscription>,
 }
 
+fn stripe_fill(
+    id: impl Into<ElementId>,
+    metrics: &ToolWindowButtonMetrics,
+    group: &SharedString,
+    fixed_background: Option<Hsla>,
+    hover_background: Hsla,
+    pressed_background: Hsla,
+) -> Stateful<Div> {
+    div()
+        .id(id)
+        .absolute()
+        .top(metrics.fill_insets.top)
+        .bottom(metrics.fill_insets.bottom)
+        .left(metrics.fill_insets.left)
+        .right(metrics.fill_insets.right)
+        .rounded(metrics.radius)
+        .map(|this| match fixed_background {
+            Some(background) => this.bg(background),
+            None => this
+                .group_hover(group.clone(), move |style| style.bg(hover_background))
+                .group_active(group.clone(), move |style| style.bg(pressed_background)),
+        })
+}
+
+#[derive(IntoElement)]
+struct MoreToolWindowsTrigger {
+    metrics: ToolWindowButtonMetrics,
+    icon: IconName,
+    icon_size: IconSize,
+    icon_color: Hsla,
+    disabled_icon_color: Hsla,
+    hover_background: Hsla,
+    pressed_background: Hsla,
+    disabled: bool,
+    toggled: bool,
+    cursor_style: CursorStyle,
+    on_click: Option<Box<dyn Fn(&ClickEvent, &mut Window, &mut App)>>,
+}
+
+impl MoreToolWindowsTrigger {
+    fn new(
+        metrics: ToolWindowButtonMetrics,
+        icon: IconName,
+        icon_size: IconSize,
+        colors: &ThemeColors,
+    ) -> Self {
+        Self {
+            metrics,
+            icon,
+            icon_size,
+            icon_color: colors.icon,
+            disabled_icon_color: colors.icon_disabled,
+            hover_background: colors.ghost_element_hover,
+            pressed_background: colors.ghost_element_active,
+            disabled: false,
+            toggled: false,
+            cursor_style: CursorStyle::PointingHand,
+            on_click: None,
+        }
+    }
+}
+
+impl Clickable for MoreToolWindowsTrigger {
+    fn on_click(mut self, handler: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static) -> Self {
+        self.on_click = Some(Box::new(handler));
+        self
+    }
+
+    fn cursor_style(mut self, cursor_style: CursorStyle) -> Self {
+        self.cursor_style = cursor_style;
+        self
+    }
+}
+
+impl Toggleable for MoreToolWindowsTrigger {
+    fn toggle_state(mut self, selected: bool) -> Self {
+        self.toggled = selected;
+        self
+    }
+}
+
+impl Disableable for MoreToolWindowsTrigger {
+    fn disabled(mut self, disabled: bool) -> Self {
+        self.disabled = disabled;
+        self
+    }
+}
+
+impl RenderOnce for MoreToolWindowsTrigger {
+    fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
+        let metrics = self.metrics;
+        let interactive = !self.disabled;
+        let group: SharedString = "tool-window-more-fill".into();
+        let (hover_background, pressed_background) = if interactive {
+            (self.hover_background, self.pressed_background)
+        } else {
+            (transparent_black(), transparent_black())
+        };
+        let fixed_background = (interactive && self.toggled).then_some(self.pressed_background);
+        let fill = stripe_fill(
+            "tool-window-more-fill",
+            &metrics,
+            &group,
+            fixed_background,
+            hover_background,
+            pressed_background,
+        );
+        let icon_color = if interactive {
+            self.icon_color
+        } else {
+            self.disabled_icon_color
+        };
+
+        div()
+            .id("tool-window-more-button")
+            .role(Role::Button)
+            .aria_label("More Tool Windows")
+            .aria_toggled(if self.toggled {
+                Toggled::True
+            } else {
+                Toggled::False
+            })
+            .flex()
+            .flex_none()
+            .items_center()
+            .justify_center()
+            .relative()
+            .w(metrics.box_width)
+            .h(metrics.box_height)
+            .pt(metrics.fill_insets.top)
+            .pb(metrics.fill_insets.bottom)
+            .pl(metrics.fill_insets.left)
+            .pr(metrics.fill_insets.right)
+            .group(group)
+            .map(|this| {
+                if interactive {
+                    this.cursor(self.cursor_style)
+                } else {
+                    this.cursor_not_allowed()
+                }
+            })
+            .when_some(self.on_click.filter(|_| interactive), |this, on_click| {
+                this.on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
+                    .on_click(move |event, window, cx| {
+                        cx.stop_propagation();
+                        on_click(event, window, cx)
+                    })
+            })
+            .when(!self.toggled, |this| {
+                this.tooltip(Tooltip::text("More Tool Windows"))
+            })
+            .child(fill)
+            .child(
+                Icon::new(self.icon)
+                    .size(self.icon_size)
+                    .color(Color::Custom(icon_color)),
+            )
+    }
+}
+
 impl ToolWindowBar {
     pub fn new(
         side: ToolWindowBarSide,
@@ -288,6 +481,7 @@ impl ToolWindowBar {
         let colors = cx.theme().colors();
         let button_colors = tool_window_button_colors(button.state, colors);
         let hover_background = colors.ghost_element_hover;
+        let pressed_background = colors.ghost_element_active;
         let label_color = if button.state == ToolWindowButtonState::Focused {
             Color::Custom(button_colors.icon)
         } else {
@@ -297,8 +491,12 @@ impl ToolWindowBar {
         let icon_size = IconSize::Custom(rems(
             f32::from(settings.icon_size) / f32::from(window.rem_size()),
         ));
+        let label_size = LabelSize::Custom(rems(
+            f32::from(NAMES_LABEL_FONT_SIZE) / f32::from(window.rem_size()),
+        ));
         let show_names = settings.show_names;
         let name = button.name;
+        let icon_selector = format!("{}_icon", button.selector);
         let selector = button.selector;
         let panel_id = button.panel.panel_id().as_u64();
         let toggle_action = button.toggle_action;
@@ -309,26 +507,15 @@ impl ToolWindowBar {
         let dock = button.dock;
         let badge = button.badge;
         let icon = tool_window_icon(button.icon, settings);
-        let pressed_background = colors.ghost_element_active;
         let fill_group: SharedString = format!("tool-window-button-fill-{panel_id}").into();
-        let trigger_group = fill_group.clone();
-
-        let fill = div()
-            .id(("tool-window-button-fill", panel_id))
-            .absolute()
-            .top(metrics.fill_insets.top)
-            .bottom(metrics.fill_insets.bottom)
-            .left(metrics.fill_insets.left)
-            .right(metrics.fill_insets.right)
-            .rounded(metrics.radius)
-            .map(|this| match button_colors.background {
-                Some(background) => this.bg(background),
-                None => this
-                    .group_hover(fill_group.clone(), move |style| style.bg(hover_background))
-                    .group_active(fill_group.clone(), move |style| {
-                        style.bg(pressed_background)
-                    }),
-            });
+        let fill = stripe_fill(
+            ("tool-window-button-fill", panel_id),
+            &metrics,
+            &fill_group,
+            button_colors.background,
+            hover_background,
+            pressed_background,
+        );
 
         let trigger = div()
             .id(("tool-window-button", panel_id))
@@ -340,36 +527,38 @@ impl ToolWindowBar {
             .flex_none()
             .items_center()
             .justify_center()
-            .gap_0p5()
+            .gap(NAMES_ICON_LABEL_GAP)
             .relative()
             .cursor_pointer()
-            .map(|this| {
-                if show_names {
-                    this.w(settings.bar_width() - BUTTON_GAP)
-                        .py(NAMED_BUTTON_VERTICAL_PADDING)
-                        .rounded(BUTTON_RADIUS)
-                        .map(|this| match button_colors.background {
-                            Some(background) => this.bg(background),
-                            None => this.hover(move |style| style.bg(hover_background)),
-                        })
-                } else {
-                    this.w(metrics.box_width)
-                        .h(metrics.box_height)
-                        .group(trigger_group)
-                        .child(fill)
-                }
-            })
+            .w(metrics.box_width)
+            .h(metrics.box_height)
+            .pt(metrics.fill_insets.top)
+            .pb(metrics.fill_insets.bottom)
+            .pl(metrics.fill_insets.left)
+            .pr(metrics.fill_insets.right)
+            .group(fill_group)
+            .child(fill)
             .child(
-                Icon::new(icon)
-                    .size(icon_size)
-                    .color(Color::Custom(button_colors.icon)),
+                div().debug_selector(move || icon_selector).child(
+                    Icon::new(icon)
+                        .size(icon_size)
+                        .color(Color::Custom(button_colors.icon)),
+                ),
             )
             .when(show_names, |this| {
                 this.child(
-                    Label::new(name)
-                        .size(LabelSize::XSmall)
-                        .color(label_color)
-                        .truncate(),
+                    div()
+                        .w_full()
+                        .h(NAMES_LABEL_HEIGHT)
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(
+                            Label::new(name)
+                                .size(label_size)
+                                .color(label_color)
+                                .truncate(),
+                        ),
                 )
             })
             .on_click(move |_, window, cx| {
@@ -409,6 +598,9 @@ impl ToolWindowBar {
         let (menu_anchor, menu_attach) = self.side.menu_placement();
         let has_panels = docks.iter().any(|dock| dock.read(cx).panels_len() > 0);
         let more_icon = tool_window_icon(IconName::Ellipsis, settings);
+        let trigger =
+            MoreToolWindowsTrigger::new(metrics, more_icon, icon_size, cx.theme().colors())
+                .disabled(!has_panels);
 
         div()
             .debug_selector(|| "tool_window_more_button".into())
@@ -422,15 +614,7 @@ impl ToolWindowBar {
                             more_tool_windows_menu(menu, &docks, window, cx)
                         }))
                     })
-                    .trigger_with_tooltip(
-                        ButtonLike::new("tool-window-more-button")
-                            .width(metrics.box_width)
-                            .height(metrics.box_height.into())
-                            .aria_label("More Tool Windows")
-                            .disabled(!has_panels)
-                            .child(Icon::new(more_icon).size(icon_size).color(Color::Muted)),
-                        Tooltip::text("More Tool Windows"),
-                    ),
+                    .trigger(trigger),
             )
             .into_any_element()
     }
@@ -484,10 +668,10 @@ fn more_tool_windows_menu(
 
 impl Render for ToolWindowBar {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let settings = WorkspaceSettings::get_global(cx).tool_window_bars;
-        let content_opacity = WorkspaceSettings::get_global(cx)
-            .islands
-            .frame_content_opacity(window.is_window_active());
+        let workspace_settings = WorkspaceSettings::get_global(cx);
+        let settings = workspace_settings.tool_window_bars;
+        let islands = workspace_settings.islands;
+        let content_opacity = islands.frame_content_opacity(window.is_window_active());
         let background = cx.theme().colors().background;
         let side = self.side;
 
@@ -506,9 +690,14 @@ impl Render for ToolWindowBar {
         let more_button = (side == ToolWindowBarSide::Left)
             .then(|| self.render_more_button(&settings, window, cx));
         if top_buttons.is_empty() && bottom_buttons.is_empty() && more_button.is_none() {
-            return div().into_any_element();
+            return div()
+                .when(islands.enabled, |this| {
+                    this.flex_none().w(ISLANDS_EMPTY_GAP)
+                })
+                .into_any_element();
         }
-        let separator_width = settings.bar_width();
+        let metrics = ToolWindowButtonMetrics::new(side, &settings);
+        let separator_color = stripe_separator_color(cx.theme().appearance().is_light());
 
         v_flex()
             .id(("tool-window-bar", side as usize))
@@ -520,8 +709,12 @@ impl Render for ToolWindowBar {
             })
             .flex_none()
             .h_full()
-            .w(settings.bar_width())
-            .py(BAR_VERTICAL_PADDING)
+            .w(metrics.box_width + BAR_BORDER_WIDTH)
+            .pt(BAR_TOP_PADDING)
+            .map(|this| match side {
+                ToolWindowBarSide::Left => this.pr(BAR_BORDER_WIDTH),
+                ToolWindowBarSide::Right => this.pl(BAR_BORDER_WIDTH),
+            })
             .bg(background)
             .child(background_image_layer(
                 BackgroundImageTarget::EditorAndTools,
@@ -542,14 +735,20 @@ impl Render for ToolWindowBar {
                         this.child(
                             div()
                                 .debug_selector(|| "tool_window_bar_separator".into())
-                                .w(separator_width)
+                                .w(metrics.box_width)
                                 .h(SEPARATOR_HEIGHT)
+                                .pl(metrics.fill_insets.left)
+                                .pr(metrics.fill_insets.right)
                                 .flex()
                                 .items_center()
                                 .justify_center()
-                                .child(div().w(SEPARATOR_LINE_WIDTH).h(px(1.)).bg(
-                                    stripe_separator_color(cx.theme().appearance().is_light()),
-                                )),
+                                .child(
+                                    div()
+                                        .debug_selector(|| "tool_window_bar_separator_line".into())
+                                        .w(SEPARATOR_LINE_WIDTH)
+                                        .h(px(1.))
+                                        .bg(separator_color),
+                                ),
                         )
                         .child(more_button)
                     })
@@ -823,6 +1022,68 @@ mod tests {
             settings.bar_width(),
             "the compact bar is exactly as wide as its buttons"
         );
+    }
+
+    fn names_settings(icon_size: f32) -> ToolWindowBarsSettings {
+        ToolWindowBarsSettings {
+            show_names: true,
+            ..bars_settings(icon_size, ToolWindowIconStyle::Jetbrains)
+        }
+    }
+
+    #[test]
+    fn tool_window_button_metrics_with_names_match_intellij() {
+        let default = ToolWindowButtonMetrics::new(ToolWindowBarSide::Left, &names_settings(20.));
+        assert_eq!(
+            default.box_width,
+            px(58.),
+            "the 59 px named stripe minus its 1 px border"
+        );
+        assert_eq!(
+            default.box_height,
+            px(56.),
+            "the 40 px box plus a 3 px gap and a 13 px label"
+        );
+        assert_eq!(default.fill_width, px(50.));
+        assert_eq!(default.fill_height, px(48.));
+        assert_eq!(
+            default.fill_insets,
+            Edges {
+                top: px(4.),
+                bottom: px(4.),
+                left: px(6.),
+                right: px(2.),
+            }
+        );
+        assert_eq!(default.radius, px(6.));
+
+        let right = ToolWindowButtonMetrics::new(ToolWindowBarSide::Right, &names_settings(20.));
+        assert_eq!(
+            right.fill_insets,
+            Edges {
+                top: px(4.),
+                bottom: px(4.),
+                left: px(2.),
+                right: px(6.),
+            },
+            "the right bar mirrors the named insets"
+        );
+
+        let compact = ToolWindowButtonMetrics::new(ToolWindowBarSide::Left, &names_settings(16.));
+        assert_eq!(compact.box_width, px(58.));
+        assert_eq!(compact.box_height, px(48.));
+        assert_eq!(compact.fill_width, px(52.));
+        assert_eq!(compact.fill_height, px(42.));
+        assert_eq!(
+            compact.fill_insets,
+            Edges {
+                top: px(3.),
+                bottom: px(3.),
+                left: px(4.),
+                right: px(2.),
+            }
+        );
+        assert_eq!(compact.radius, px(4.));
     }
 
     #[test]

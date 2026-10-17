@@ -1,6 +1,5 @@
 use gpui::{
-    AnyElement, App, BoxShadow, ParentElement, RenderOnce, Styled, Window, div, hsla, prelude::*,
-    px,
+    AnyElement, App, BoxShadow, ParentElement, RenderOnce, Styled, Window, div, prelude::*, px,
 };
 
 use theme::ActiveTheme;
@@ -68,7 +67,7 @@ impl RenderOnce for SplitButton {
             SplitButtonStyle::Filled | SplitButtonStyle::Outlined
         );
 
-        let outline = BoxShadow::new(px(0.), px(0.), cx.theme().colors().border.opacity(0.8))
+        let outline = BoxShadow::new(px(0.), px(0.), cx.theme().colors().border)
             .spread_radius(px(1.))
             .inset();
 
@@ -98,11 +97,6 @@ impl RenderOnce for SplitButton {
             })
             .when(self.style == SplitButtonStyle::Filled, |this| {
                 this.bg(ElevationIndex::Surface.on_elevation_bg(cx))
-                    .shadow(vec![BoxShadow::new(
-                        px(0.),
-                        px(1.),
-                        hsla(0.0, 0.0, 0.0, 0.16),
-                    )])
             })
     }
 }

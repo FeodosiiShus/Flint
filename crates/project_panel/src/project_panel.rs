@@ -57,11 +57,12 @@ use std::{
     sync::Arc,
     time::Duration,
 };
+use theme::UiDensity;
 use theme_settings::ThemeSettings;
 use ui::{
     ContextMenu, DecoratedIcon, IconDecoration, IconDecorationKind, IndentGuideColors,
-    IndentGuideLayout, Indicator, KeyBinding, ListItem, ListItemSpacing, ProjectEmptyState,
-    ScrollAxes, ScrollableHandle, Scrollbars, StickyCandidate, Tooltip, WithScrollbar, prelude::*,
+    IndentGuideLayout, Indicator, KeyBinding, ListItem, ProjectEmptyState, ScrollAxes,
+    ScrollableHandle, Scrollbars, StickyCandidate, Tooltip, WithScrollbar, prelude::*,
 };
 use util::{
     ResultExt, TryFutureExt,
@@ -643,16 +644,108 @@ struct DraggedProjectEntryView {
     selections: Arc<[SelectedEntry]>,
 }
 
-const SELECTION_PILL_INSET: Pixels = px(4.);
-const SELECTION_PILL_CORNER_RADIUS: Pixels = px(6.);
-const INACTIVE_SELECTION_OPACITY: f32 = 0.5;
+const TREE_ICON_SIZE: Pixels = px(16.);
+const TREE_MIN_RENDERER_OFFSET: Pixels = px(18.);
+const TREE_RENDERER_INSET: Pixels = px(3.);
+const TREE_ICON_TEXT_GAP: Pixels = px(2.);
+const TREE_SELECTION_INSET: Pixels = px(12.);
+const TREE_SELECTION_RADIUS: Pixels = px(4.);
+const TREE_END_SLOT_PADDING: Pixels = px(4.);
+const TREE_STANDARD_SPACING_REDUCTION: Pixels = px(2.);
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct TreeRowMetrics {
+    row_height: Pixels,
+    inset_left: Pixels,
+    inset_vertical: Pixels,
+}
+
+impl TreeRowMetrics {
+    fn for_density(density: UiDensity) -> Self {
+        match density {
+            UiDensity::Compact => Self {
+                row_height: px(22.),
+                inset_left: px(8.),
+                inset_vertical: px(2.),
+            },
+            UiDensity::Default | UiDensity::Comfortable => Self {
+                row_height: px(24.),
+                inset_left: px(12.),
+                inset_vertical: px(4.),
+            },
+        }
+    }
+
+    fn entry_height(self, spacing: ProjectPanelEntrySpacing) -> Pixels {
+        match spacing {
+            ProjectPanelEntrySpacing::Comfortable => self.row_height,
+            ProjectPanelEntrySpacing::Standard => self.row_height - TREE_STANDARD_SPACING_REDUCTION,
+        }
+    }
+
+    fn control_left(self, indent_step: Pixels, depth: usize) -> Pixels {
+        self.inset_left + indent_step * depth
+    }
+
+    fn control_to_renderer(indent_step: Pixels) -> Pixels {
+        indent_step.max(TREE_MIN_RENDERER_OFFSET)
+    }
+
+    fn control_to_content_gap(indent_step: Pixels) -> Pixels {
+        Self::control_to_renderer(indent_step) - TREE_ICON_SIZE + TREE_RENDERER_INSET
+    }
+
+    fn selection_left(
+        self,
+        indent_step: Pixels,
+        depth: usize,
+        reserves_chevron_slot: bool,
+    ) -> Pixels {
+        let first_glyph = self.control_left(indent_step, depth)
+            + if reserves_chevron_slot {
+                Self::control_to_renderer(indent_step)
+            } else {
+                Pixels::ZERO
+            };
+        first_glyph.min(TREE_SELECTION_INSET)
+    }
+
+    fn guide_left(self) -> Pixels {
+        self.inset_left + TREE_ICON_SIZE / 2.
+    }
+
+    fn end_slot_padding(self) -> Pixels {
+        (TREE_SELECTION_INSET - self.inset_left).max(Pixels::ZERO) + TREE_END_SLOT_PADDING
+    }
+}
+
+fn tree_density(cx: &App) -> UiDensity {
+    ThemeSettings::get_global(cx).ui_density
+}
 
 struct ItemColors {
     default: Hsla,
     hover: Hsla,
     drag_over: Hsla,
     marked: Hsla,
+    marked_inactive: Hsla,
     focused: Hsla,
+}
+
+const INACTIVE_SELECTION_FALLBACK_OPACITY: f32 = 0.5;
+
+fn inactive_selection_color(
+    element_background: Hsla,
+    panel_background: Hsla,
+    selection: Hsla,
+) -> Hsla {
+    if element_background.is_transparent() || element_background == panel_background {
+        selection
+            .grayscale()
+            .opacity(INACTIVE_SELECTION_FALLBACK_OPACITY)
+    } else {
+        element_background
+    }
 }
 
 fn get_item_color(is_sticky: bool, has_background_image: bool, cx: &App) -> ItemColors {
@@ -672,6 +765,11 @@ fn get_item_color(is_sticky: bool, has_background_image: bool, cx: &App) -> Item
             colors.element_hover
         },
         marked: colors.element_selected,
+        marked_inactive: inactive_selection_color(
+            colors.element_background,
+            colors.panel_background,
+            colors.element_selected,
+        ),
         focused: colors.panel_focused_border,
         drag_over: colors.drop_target_background,
     }
@@ -682,10 +780,6 @@ struct SelectionPillColors {
     background: Hsla,
     hover_background: Hsla,
     border: Hsla,
-}
-
-fn inactive_selection_color(selection: Hsla) -> Hsla {
-    selection.grayscale().opacity(INACTIVE_SELECTION_OPACITY)
 }
 
 fn selection_pill_colors(
@@ -715,7 +809,7 @@ fn selection_pill_colors(
     let selection = if panel_contains_focus {
         item_colors.marked
     } else {
-        inactive_selection_color(item_colors.marked)
+        item_colors.marked_inactive
     };
     SelectionPillColors {
         background: selection,
@@ -5187,6 +5281,28 @@ impl ProjectPanel {
         None
     }
 
+    fn marked_neighbours(&self, entry_id: ProjectEntryId, worktree_id: WorktreeId) -> (bool, bool) {
+        let Some((worktree_ix, entry_ix, _)) = self.index_for_entry(entry_id, worktree_id) else {
+            return (false, false);
+        };
+        let Some(visible) = self.state.visible_entries.get(worktree_ix) else {
+            return (false, false);
+        };
+        let is_marked_at = |ix: Option<usize>| {
+            ix.and_then(|ix| visible.entries.get(ix))
+                .is_some_and(|entry| {
+                    self.marked_entries.contains(&SelectedEntry {
+                        worktree_id,
+                        entry_id: entry.id,
+                    })
+                })
+        };
+        (
+            is_marked_at(entry_ix.checked_sub(1)),
+            is_marked_at(entry_ix.checked_add(1)),
+        )
+    }
+
     fn entry_at_index(&self, index: usize) -> Option<(WorktreeId, GitEntryRef<'_>)> {
         let mut offset = 0;
         for worktree in &self.state.visible_entries {
@@ -5752,6 +5868,17 @@ impl ProjectPanel {
         let sticky_index = details.sticky.as_ref().map(|this| this.sticky_index);
         let settings = ProjectPanelSettings::get_global(cx);
         let rounded_selection = settings.rounded_selection;
+        let metrics = TreeRowMetrics::for_density(tree_density(cx));
+        let indent_step = px(settings.indent_size);
+        let row_height = metrics.entry_height(settings.entry_spacing);
+        let row_border = if rounded_selection {
+            Pixels::ZERO
+        } else {
+            px(1.)
+        };
+        let icon_size = IconSize::Custom(rems(
+            f32::from(TREE_ICON_SIZE) / f32::from(window.rem_size()),
+        ));
         let show_editor = details.is_editing && !details.is_processing;
 
         let selection = SelectedEntry {
@@ -5783,6 +5910,7 @@ impl ProjectPanel {
         let has_background_image =
             ui::has_background_image(ui::BackgroundImageTarget::EditorAndTools, window, cx);
         let item_colors = get_item_color(is_sticky, has_background_image, cx);
+        let icon_color = Color::Custom(cx.theme().colors().icon);
 
         let canonical_path = details.canonical_path.clone();
         let path_style = self.project.read(cx).path_style(cx);
@@ -5790,6 +5918,13 @@ impl ProjectPanel {
 
         let depth = details.depth;
         let worktree_id = details.worktree_id;
+        let content_left = metrics.control_left(indent_step, depth) - row_border;
+        let pill_left = metrics.selection_left(indent_step, depth, reserves_chevron_slot);
+        let (marked_above, marked_below) = if is_marked && !is_sticky {
+            self.marked_neighbours(entry_id, worktree_id)
+        } else {
+            (false, false)
+        };
 
         let bg_color = if is_marked && !rounded_selection {
             item_colors.marked
@@ -5820,6 +5955,8 @@ impl ProjectPanel {
 
         let panel_contains_focus = (is_active || is_marked) && self.contains_focus(window, cx);
         let show_focused_border = !self.mouse_down && is_active && panel_contains_focus;
+        let show_cursor_ring =
+            show_focused_border && (show_editor || !(is_marked && marked_selections.len() == 1));
         let focused_border_color = match validation_color_and_message {
             Some((color, _)) => color,
             None => item_colors.focused,
@@ -5873,7 +6010,7 @@ impl ProjectPanel {
                 is_marked,
                 is_drag_target,
                 panel_contains_focus,
-                show_focused_border.then_some(focused_border_color),
+                show_cursor_ring.then_some(focused_border_color),
             )
         });
         let knockout_behind_pill = |pill_color: Hsla| {
@@ -5938,10 +6075,11 @@ impl ProjectPanel {
             )
             .cursor_pointer()
             .rounded_none()
+            .h(row_height)
             .bg(bg_color)
-            .border_1()
-            .border_r_2()
-            .border_color(border_color)
+            .when(!rounded_selection, |this| {
+                this.border_1().border_r_2().border_color(border_color)
+            })
             .when(selection_pill.is_none(), |this| {
                 this.hover(|style| style.bg(bg_hover_color).border_color(border_hover_color))
             })
@@ -6297,9 +6435,10 @@ impl ProjectPanel {
                         .absolute()
                         .top_0()
                         .bottom_0()
-                        .left(SELECTION_PILL_INSET)
-                        .right(SELECTION_PILL_INSET)
-                        .rounded(SELECTION_PILL_CORNER_RADIUS)
+                        .left(pill_left)
+                        .right(TREE_SELECTION_INSET)
+                        .when(!marked_above, |this| this.rounded_t(TREE_SELECTION_RADIUS))
+                        .when(!marked_below, |this| this.rounded_b(TREE_SELECTION_RADIUS))
                         .border_1()
                         .border_color(pill.border)
                         .bg(pill.background)
@@ -6308,12 +6447,8 @@ impl ProjectPanel {
             })
             .child(
                 ListItem::new(id)
-                    .indent_level(depth)
-                    .indent_step_size(px(settings.indent_size))
-                    .spacing(match settings.entry_spacing {
-                        ProjectPanelEntrySpacing::Comfortable => ListItemSpacing::Dense,
-                        ProjectPanelEntrySpacing::Standard => ListItemSpacing::ExtraDense,
-                    })
+                    .height(relative(1.))
+                    .horizontal_padding(content_left, metrics.inset_left)
                     .selectable(false)
                     .when(
                         canonical_path.is_some()
@@ -6341,7 +6476,7 @@ impl ProjectPanel {
                                 h_flex()
                                     .gap_1()
                                     .flex_none()
-                                    .pr_3()
+                                    .pr(metrics.end_slot_padding())
                                     .when_some(diagnostic_count, |this, count| {
                                         this.when(count.error_count > 0, |this| {
                                             this.child(
@@ -6388,7 +6523,7 @@ impl ProjectPanel {
                                          decoration_kind: IconDecorationKind,
                                          color: Color| {
                             DecoratedIcon::new(
-                                Icon::from_path(glyph).color(Color::Muted),
+                                Icon::from_path(glyph).size(icon_size).color(icon_color),
                                 Some(
                                     IconDecoration::new(decoration_kind, knockout_color, cx)
                                         .group_name(Some(GROUP_NAME.into()))
@@ -6405,11 +6540,15 @@ impl ProjectPanel {
 
                         let icon_slot = if let Some(icon) = &icon {
                             Some(match diagnostic_mark.zip(decoration_color) {
-                                Some((DiagnosticMark::OnIcon(decoration_kind), color)) => {
-                                    div().child(decorated(icon.clone(), decoration_kind, color))
-                                }
-                                _ => h_flex()
-                                    .child(Icon::from_path(icon.to_string()).color(Color::Muted)),
+                                Some((DiagnosticMark::OnIcon(decoration_kind), color)) => div()
+                                    .size(TREE_ICON_SIZE)
+                                    .flex_none()
+                                    .child(decorated(icon.clone(), decoration_kind, color)),
+                                _ => h_flex().size(TREE_ICON_SIZE).flex_none().child(
+                                    Icon::from_path(icon.to_string())
+                                        .size(icon_size)
+                                        .color(icon_color),
+                                ),
                             })
                         } else if let Some(DiagnosticMark::Standalone(icon_name)) = diagnostic_mark
                         {
@@ -6418,57 +6557,71 @@ impl ProjectPanel {
                                     .map_or(Color::Error, |(_, color)| color);
                             Some(
                                 h_flex()
-                                    .size(IconSize::default().rems())
+                                    .size(TREE_ICON_SIZE)
+                                    .flex_none()
                                     .child(Icon::new(icon_name).color(color).size(IconSize::Small)),
                             )
                         } else if chevron.is_some() {
                             // The chevron already fills this slot; a spacer would double its width.
                             None
                         } else {
-                            Some(
-                                h_flex()
-                                    .size(IconSize::default().rems())
-                                    .invisible()
-                                    .flex_none(),
-                            )
+                            Some(h_flex().size(TREE_ICON_SIZE).invisible().flex_none())
                         };
 
-                        let chevron =
-                            chevron.map(|chevron| match diagnostic_mark.zip(decoration_color) {
+                        let chevron = chevron.map(|chevron| {
+                            let element = match diagnostic_mark.zip(decoration_color) {
                                 Some((DiagnosticMark::OnChevron(decoration_kind), color)) => {
                                     decorated(chevron, decoration_kind, color)
                                 }
                                 _ => Icon::from_path(chevron)
-                                    .color(Color::Muted)
+                                    .size(icon_size)
+                                    .color(icon_color)
                                     .into_any_element(),
-                            });
+                            };
+                            div().size(TREE_ICON_SIZE).flex_none().child(element)
+                        });
 
-                        match (chevron, icon_slot) {
+                        let control_gap = TreeRowMetrics::control_to_content_gap(indent_step);
+                        let mut row_slots: SmallVec<[AnyElement; 2]> = SmallVec::new();
+                        let label_gap = match (chevron, icon_slot) {
                             (Some(chevron), Some(icon_slot)) => {
-                                this.child(h_flex().gap_0p5().child(chevron).child(icon_slot))
+                                row_slots.push(chevron.into_any_element());
+                                row_slots.push(icon_slot.ml(control_gap).into_any_element());
+                                TREE_ICON_TEXT_GAP
                             }
-                            (Some(chevron), None) => this.child(h_flex().child(chevron)),
-                            (None, Some(icon_slot)) if reserves_chevron_slot => this.child(
-                                h_flex()
-                                    .gap_0p5()
-                                    .child(
-                                        h_flex()
-                                            .size(IconSize::default().rems())
-                                            .invisible()
-                                            .flex_none(),
-                                    )
-                                    .child(icon_slot),
-                            ),
-                            (None, Some(icon_slot)) => this.child(icon_slot),
-                            (None, None) => this,
-                        }
-                    })
-                    .child(if show_editor {
-                        h_flex().h_6().w_full().child(self.filename_editor.clone())
-                    } else {
-                        h_flex()
-                            .h_6()
-                            .map(|this| match self.state.ancestors.get(&entry_id) {
+                            (Some(chevron), None) => {
+                                row_slots.push(chevron.into_any_element());
+                                control_gap
+                            }
+                            (None, Some(icon_slot)) if reserves_chevron_slot => {
+                                row_slots.push(
+                                    h_flex()
+                                        .size(TREE_ICON_SIZE)
+                                        .invisible()
+                                        .flex_none()
+                                        .into_any_element(),
+                                );
+                                row_slots.push(icon_slot.ml(control_gap).into_any_element());
+                                TREE_ICON_TEXT_GAP
+                            }
+                            (None, Some(icon_slot))
+                                if settings.folder_indicator.shows_chevron() =>
+                            {
+                                row_slots.push(icon_slot.into_any_element());
+                                control_gap
+                            }
+                            (None, Some(icon_slot)) => {
+                                row_slots
+                                    .push(icon_slot.ml(TREE_RENDERER_INSET).into_any_element());
+                                TREE_ICON_TEXT_GAP
+                            }
+                            (None, None) => TREE_RENDERER_INSET,
+                        };
+
+                        let label = if show_editor {
+                            h_flex().w_full().child(self.filename_editor.clone())
+                        } else {
+                            h_flex().map(|this| match self.state.ancestors.get(&entry_id) {
                                 Some(folded_ancestors) => {
                                     this.children(self.render_folder_elements(
                                         folded_ancestors,
@@ -6498,6 +6651,14 @@ impl ProjectPanel {
                                         .into_any_element(),
                                 ),
                             })
+                        };
+
+                        this.child(
+                            h_flex()
+                                .w_full()
+                                .children(row_slots)
+                                .child(label.ml(label_gap)),
+                        )
                     })
                     .on_secondary_mouse_down(cx.listener(
                         move |this, event: &MouseDownEvent, window, cx| {
@@ -7184,6 +7345,8 @@ impl Render for ProjectPanel {
         let project = self.project.read(cx);
         let panel_settings = ProjectPanelSettings::get_global(cx);
         let indent_size = panel_settings.indent_size;
+        let metrics = TreeRowMetrics::for_density(tree_density(cx));
+        let guide_left = metrics.guide_left();
         let show_indent_guides = panel_settings.indent_guides.show == ShowIndentGuides::Always;
         let horizontal_scroll = panel_settings.scrollbar.horizontal_scroll;
         let show_sticky_entries = {
@@ -7452,8 +7615,6 @@ impl Render for ProjectPanel {
                                     .with_render_fn(
                                         cx.entity(),
                                         move |this, params, _, cx| {
-                                            const LEFT_OFFSET: Pixels =
-                                                ui::LIST_ITEM_INDENT_GUIDE_LEFT_OFFSET;
                                             const PADDING_Y: Pixels = px(4.);
                                             const HITBOX_OVERDRAW: Pixels = px(3.);
 
@@ -7479,7 +7640,7 @@ impl Render for ProjectPanel {
                                                     let bounds = Bounds::new(
                                                         point(
                                                             layout.offset.x * indent_size
-                                                                + LEFT_OFFSET,
+                                                                + guide_left,
                                                             layout.offset.y * item_height + offset,
                                                         ),
                                                         size(
@@ -7549,9 +7710,6 @@ impl Render for ProjectPanel {
                                         .with_render_fn(
                                             cx.entity(),
                                             move |_, params, _, _| {
-                                                const LEFT_OFFSET: Pixels =
-                                                    ui::LIST_ITEM_INDENT_GUIDE_LEFT_OFFSET;
-
                                                 let indent_size = params.indent_size;
                                                 let item_height = params.item_height;
 
@@ -7562,7 +7720,7 @@ impl Render for ProjectPanel {
                                                         let bounds = Bounds::new(
                                                             point(
                                                                 layout.offset.x * indent_size
-                                                                    + LEFT_OFFSET,
+                                                                    + guide_left,
                                                                 layout.offset.y * item_height,
                                                             ),
                                                             size(
@@ -7756,7 +7914,9 @@ impl Render for ProjectPanel {
                                     ))
                                 }),
                         )
-                        .size_full(),
+                        .size_full()
+                        .pt(metrics.inset_vertical)
+                        .pb(metrics.inset_vertical),
                 )
                 .custom_scrollbars(
                     {

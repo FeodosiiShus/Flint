@@ -278,7 +278,7 @@ fn pixels_context_menu_rows_and_separators_follow_the_intellij_popup_metrics() {
     assert_position_near(
         pill_bottom - pill_top,
         scale.physical(row.pill_height),
-        "a single-line menu pill is 24px tall, so the row is 26px with its insets",
+        "a single-line menu pill is 24px tall",
     );
 
     let pill_middle_row = pill_top + scale.pixel(row.pill_height) / 2;
@@ -435,6 +435,6 @@ fn pixels_tooltip_is_a_borderless_opaque_feedback_surface_with_intellij_insets()
     );
     assert!(
         !is_tooltip(left, top),
-        "the tooltip's top-left corner pixel is outside its 4px radius and must stay unfilled"
+        "the tooltip's top-left corner pixel is outside its 6px radius and must stay unfilled"
     );
 }

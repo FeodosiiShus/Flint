@@ -5,7 +5,8 @@ use ui_macros::RegisterComponent;
 use crate::traits::animation_ext::CommonAnimationExt;
 use crate::{ButtonCommon, ButtonLike, ButtonSize, ButtonStyle, Icon, Label};
 use crate::{
-    Color, DynamicSpacing, ElevationIndex, KeyBinding, KeybindingPosition, TintColor, prelude::*,
+    ButtonMetrics, Color, DynamicSpacing, ElevationIndex, KeyBinding, KeybindingPosition,
+    TintColor, prelude::*, ui_density,
 };
 
 /// An element that creates a button with a label and optional icons.
@@ -90,6 +91,7 @@ pub struct Button {
     alpha: Option<f32>,
     truncate: bool,
     loading: bool,
+    spread_content: bool,
 }
 
 impl Button {
@@ -114,6 +116,7 @@ impl Button {
             alpha: None,
             truncate: false,
             loading: false,
+            spread_content: false,
         }
     }
 
@@ -245,6 +248,21 @@ impl Button {
 
     pub fn chrome_region(mut self, region: crate::ChromeRegion) -> Self {
         self.base = self.base.chrome_region(region);
+        self
+    }
+
+    pub(crate) fn spread_content(mut self, spread: bool) -> Self {
+        self.spread_content = spread;
+        self
+    }
+
+    pub(crate) fn horizontal_padding(mut self, left: Pixels, right: Pixels) -> Self {
+        self.base = self.base.horizontal_padding(left, right);
+        self
+    }
+
+    pub(crate) fn corner_radius(mut self, radius: Pixels) -> Self {
+        self.base = self.base.corner_radius(radius);
         self
     }
 }
@@ -475,10 +493,20 @@ impl RenderOnce for Button {
             self.end_icon = scale_icon(self.end_icon, region, cx);
         }
 
+        let metrics = ButtonMetrics::for_size(self.base.size, ui_density(cx));
+        let icon_gap = match metrics.icon_gap {
+            Some(gap) => DefiniteLength::from(gap),
+            None => DefiniteLength::from(DynamicSpacing::Base04.rems(cx)),
+        };
+        if let Some(minimum_width) = metrics.minimum_width {
+            self.base.base = self.base.base.min_w(minimum_width);
+        }
+
         self.base.child(
             h_flex()
                 .when(self.truncate, |this| this.min_w_0().overflow_hidden())
-                .gap(DynamicSpacing::Base04.rems(cx))
+                .gap(icon_gap)
+                .when(self.spread_content, |this| this.w_full().justify_between())
                 .when_else(
                     self.loading,
                     |this| {

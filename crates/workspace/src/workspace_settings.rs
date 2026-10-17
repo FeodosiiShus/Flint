@@ -75,7 +75,7 @@ impl IslandsSettings {
         density: Option<settings::UiDensity>,
     ) -> Self {
         let compact = is_compact(density);
-        let default_gap = if compact { 3 } else { 4 };
+        let default_gap = if compact { 3 } else { 5 };
         let default_corner_radius = if compact { 8 } else { 10 };
         Self {
             enabled: content.and_then(|islands| islands.enabled).unwrap_or(true),
@@ -415,12 +415,12 @@ mod tests {
             islands,
             IslandsSettings {
                 enabled: true,
-                gap: px(4.),
+                gap: px(5.),
                 corner_radius: px(10.),
                 dim_inactive_window: true,
             }
         );
-        assert_eq!(islands.half_gap(), px(2.));
+        assert_eq!(islands.half_gap(), px(2.5));
 
         let default_density = IslandsSettings::from_content(
             Some(&IslandsSettingsContent::default()),

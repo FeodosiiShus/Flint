@@ -1,6 +1,6 @@
 use gpui::{Pixels, px};
 
-const MENU_VERTICAL_PADDING: f32 = 6.;
+const MENU_VERTICAL_PADDING: f32 = 7.;
 
 pub const POPOVER_Y_PADDING: Pixels = px(MENU_VERTICAL_PADDING * 2.);
 
@@ -44,7 +44,7 @@ impl PopupRowMetrics {
             PopupRowStyle::Menu => Self {
                 pill_height: px(24.),
                 pill_inset_x: px(7.),
-                pill_inset_y: px(1.),
+                pill_inset_y: px(0.),
                 pill_radius: px(4.),
                 content_padding_x: px(6.),
             },
@@ -96,7 +96,7 @@ pub struct TooltipMetrics {
 }
 
 pub const TOOLTIP_METRICS: TooltipMetrics = TooltipMetrics {
-    corner_radius: px(4.),
+    corner_radius: px(6.),
     padding_top: px(8.),
     padding_x: px(12.),
     padding_bottom: px(9.),

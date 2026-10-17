@@ -1,4 +1,8 @@
+<!-- Copyright 2000-2023 JetBrains s.r.o. and contributors. Use of this source code is governed by the Apache 2.0 license. -->
 <svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
-<path d="M12.486 6.2H7.24795C6.66895 6.2 6.19995 6.669 6.19995 7.248V12.486C6.19995 13.064 6.66895 13.533 7.24795 13.533H12.486C13.064 13.533 13.533 13.064 13.533 12.486V7.248C13.533 6.669 13.064 6.2 12.486 6.2Z" stroke="black" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
-<path d="M3.91712 10.203C3.63951 10.2022 3.37351 10.0915 3.1773 9.89511C2.98109 9.69872 2.87064 9.43261 2.87012 9.155V3.917C2.87091 3.63956 2.98147 3.37371 3.17765 3.17753C3.37383 2.98135 3.63968 2.87079 3.91712 2.87H9.15512C9.43273 2.87053 9.69883 2.98097 9.89523 3.17718C10.0916 3.37339 10.2023 3.63939 10.2031 3.917" stroke="black" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
+<rect x="2.5" y="3.5" width="9" height="10" rx="1.5" stroke="#6C707E"/>
+<rect x="5" y="6" width="4" height="1" rx="0.5" fill="#6C707E"/>
+<rect x="5" y="8" width="4" height="1" rx="0.5" fill="#6C707E"/>
+<rect x="5" y="10" width="4" height="1" rx="0.5" fill="#6C707E"/>
+<path fill-rule="evenodd" clip-rule="evenodd" d="M11.0017 2H11.5998C12.373 2 12.9998 2.6268 12.9998 3.4V3.91081C13.0011 3.94038 13.0017 3.97011 13.0017 4V11.5482C13.6063 11.1124 13.9998 10.4021 13.9998 9.6V3.4C13.9998 2.07452 12.9253 1 11.5998 1H6.39978C5.59677 1 4.88587 1.39437 4.4502 2H6.39978H11.0017Z" fill="#6C707E"/>
 </svg>

@@ -1,15 +1,62 @@
 use crate::dock::{Dock, DockPosition, PanelHandle, PanelHeaderAction, panel_context_menu};
-use gpui::{Action, Anchor, ElementId, Entity, FocusHandle, FontWeight};
+use gpui::{Action, Anchor, ElementId, Entity, FocusHandle};
 use std::sync::Arc;
+use theme::UiDensity;
 use ui::{ChromeRegion, IconButtonShape, PopoverMenu, Tooltip, prelude::*, right_click_menu};
 
 pub(crate) const TOOL_WINDOW_GROUP: &str = "tool-window";
 const PANEL_NAME_SUFFIX: &str = " Panel";
 const HEADER_LABEL_LEFT_INSET: Pixels = px(12.);
 const HEADER_LABEL_RIGHT_INSET: Pixels = px(16.);
+const HEADER_TOOLBAR_LEFT_INSET: Pixels = px(12.);
+const HEADER_TOOLBAR_RIGHT_INSET: Pixels = px(8.);
+const HEADER_ACTION_BUTTON_SIZE: Pixels = px(22.);
+const HEADER_ACTION_ICON_SIZE: Pixels = px(16.);
+const HEADER_ACTION_ICON_MARGIN: Pixels = px(3.);
+const HEADER_LABEL_COMPACT_FONT_SIZE_OFFSET: Pixels = px(-1.);
+const HEADER_BORDER_WIDTH: Pixels = px(1.);
 
 pub(crate) fn tool_window_title(name: &str) -> &str {
     name.strip_suffix(PANEL_NAME_SUFFIX).unwrap_or(name)
+}
+
+fn header_label_size(window: &Window, cx: &App) -> LabelSize {
+    match theme::theme_settings(cx).ui_density(cx) {
+        UiDensity::Compact => LabelSize::Custom(rems(
+            TextSize::Default.rems(cx).0
+                + HEADER_LABEL_COMPACT_FONT_SIZE_OFFSET / window.rem_size(),
+        )),
+        UiDensity::Default | UiDensity::Comfortable => LabelSize::Default,
+    }
+}
+
+fn header_action_side(icon_size: IconSize, rem_size: Pixels) -> Pixels {
+    let icon_pixels = icon_size.rems().to_pixels(rem_size);
+    HEADER_ACTION_BUTTON_SIZE.max(icon_pixels + HEADER_ACTION_ICON_MARGIN * 2.)
+}
+
+fn header_action_metrics(window: &Window, cx: &App) -> (IconSize, Pixels) {
+    let icon_size = match ui::chrome_icon_scale(ChromeRegion::Panel, cx) {
+        Some(_) => ui::chrome_icon_size(ChromeRegion::Panel, IconSize::Small, cx),
+        None => IconSize::Custom(rems(
+            f32::from(HEADER_ACTION_ICON_SIZE) / f32::from(window.rem_size()),
+        )),
+    };
+    (icon_size, header_action_side(icon_size, window.rem_size()))
+}
+
+fn header_action_button(
+    id: impl Into<ElementId>,
+    icon: IconName,
+    label: &'static str,
+    icon_size: IconSize,
+    side: Pixels,
+) -> IconButton {
+    IconButton::new(id, icon)
+        .shape(IconButtonShape::Square)
+        .icon_size(icon_size)
+        .box_size(side)
+        .aria_label(label)
 }
 
 pub(crate) fn render_tool_window_header(
@@ -30,6 +77,9 @@ pub(crate) fn render_tool_window_header(
             .unwrap_or_else(|| panel.persistent_name()),
     );
     let hide_tooltip_action = hide_action.boxed_clone();
+    let label_size = header_label_size(window, cx);
+    let (icon_size, button_side) = header_action_metrics(window, cx);
+    let bottom_border_color = cx.theme().colors().border_variant;
 
     let options_button = PopoverMenu::new(("tool-window-header-options", panel_id))
         .anchor(Anchor::TopRight)
@@ -39,14 +89,13 @@ pub(crate) fn render_tool_window_header(
             move |window, cx| Some(panel_context_menu(panel.clone(), dock.clone(), window, cx))
         })
         .trigger_with_tooltip(
-            IconButton::new(
+            header_action_button(
                 ("tool-window-header-options-button", panel_id),
                 IconName::EllipsisVertical,
-            )
-            .shape(IconButtonShape::Square)
-            .icon_size(IconSize::Small)
-            .chrome_region(ChromeRegion::Panel)
-            .aria_label("Options"),
+                "Options",
+                icon_size,
+                button_side,
+            ),
             Tooltip::text("Options"),
         );
 
@@ -62,14 +111,13 @@ pub(crate) fn render_tool_window_header(
             } = header_action;
             let tooltip_action = action.boxed_clone();
             let dock_focus_handle = dock_focus_handle.clone();
-            let button = IconButton::new(
+            let button = header_action_button(
                 (ElementId::from(("tool-window-header-action", panel_id)), id),
                 icon,
+                tooltip,
+                icon_size,
+                button_side,
             )
-            .shape(IconButtonShape::Square)
-            .icon_size(IconSize::Small)
-            .chrome_region(ChromeRegion::Panel)
-            .aria_label(tooltip)
             .tooltip(move |_window, cx| Tooltip::for_action(tooltip, &*tooltip_action, cx))
             .on_click(move |_, window, cx| {
                 window.focus(&dock_focus_handle, cx);
@@ -81,20 +129,21 @@ pub(crate) fn render_tool_window_header(
         })
         .collect::<Vec<_>>();
 
-    let hide_button = IconButton::new(("tool-window-header-hide", panel_id), IconName::Dash)
-        .shape(IconButtonShape::Square)
-        .icon_size(IconSize::Small)
-        .chrome_region(ChromeRegion::Panel)
-        .aria_label("Hide")
-        .tooltip(move |_window, cx| Tooltip::for_action("Hide", &*hide_tooltip_action, cx))
-        .on_click(move |_, window, cx| {
-            window.focus(&dock_focus_handle, cx);
-            window.dispatch_action(hide_action.boxed_clone(), cx);
-        });
+    let hide_button = header_action_button(
+        ("tool-window-header-hide", panel_id),
+        IconName::GeneralHide,
+        "Hide",
+        icon_size,
+        button_side,
+    )
+    .tooltip(move |_window, cx| Tooltip::for_action("Hide", &*hide_tooltip_action, cx))
+    .on_click(move |_, window, cx| {
+        window.focus(&dock_focus_handle, cx);
+        window.dispatch_action(hide_action.boxed_clone(), cx);
+    });
 
     let actions = h_flex()
         .flex_none()
-        .gap_0p5()
         .when(!show_actions, |this| {
             this.visible_on_hover(TOOL_WINDOW_GROUP)
         })
@@ -111,7 +160,6 @@ pub(crate) fn render_tool_window_header(
         );
 
     let header_content = panel.header_content(window, cx);
-    let has_header_content = header_content.is_some();
     let leading = match header_content {
         Some(content) => h_flex()
             .flex_1()
@@ -123,7 +171,7 @@ pub(crate) fn render_tool_window_header(
                 div()
                     .debug_selector(move || format!("tool_window_header_title_{position_key}"))
                     .flex_none()
-                    .child(Label::new(title).weight(FontWeight::SEMIBOLD)),
+                    .child(Label::new(title).size(label_size)),
             )
             .child(
                 div()
@@ -138,23 +186,57 @@ pub(crate) fn render_tool_window_header(
         None => div()
             .flex_1()
             .min_w_0()
-            .child(Label::new(title).weight(FontWeight::SEMIBOLD).truncate())
+            .pl(HEADER_LABEL_LEFT_INSET)
+            .child(
+                div()
+                    .debug_selector(move || format!("tool_window_header_title_{position_key}"))
+                    .child(Label::new(title).size(label_size).truncate()),
+            )
             .into_any_element(),
     };
 
     let header = h_flex()
         .debug_selector(move || format!("tool_window_header_{position_key}"))
+        .relative()
         .flex_none()
         .w_full()
         .h(ui::panel_header_height(cx))
-        .when(!has_header_content, |this| this.pl_2())
-        .pr_1()
-        .gap_1()
+        .pr(HEADER_TOOLBAR_RIGHT_INSET)
+        .gap(HEADER_TOOLBAR_LEFT_INSET)
         .child(leading)
-        .child(actions);
+        .child(actions)
+        .child(
+            div()
+                .absolute()
+                .left_0()
+                .right_0()
+                .bottom_0()
+                .h(HEADER_BORDER_WIDTH)
+                .bg(bottom_border_color),
+        );
 
     right_click_menu(("tool-window-header-menu", panel_id))
         .menu(move |window, cx| panel_context_menu(panel.clone(), dock.clone(), window, cx))
         .trigger(move |_is_menu_open, _window, _cx| header)
         .into_any_element()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tool_window_header_action_side_keeps_intellij_minimum_around_the_icon() {
+        let rem_size = px(16.);
+        assert_eq!(
+            header_action_side(IconSize::Custom(rems(1.)), rem_size),
+            px(22.),
+            "a 16 px icon sits in IntelliJ's 22 px toolbar button"
+        );
+        assert_eq!(
+            header_action_side(IconSize::Custom(rems(1.5)), rem_size),
+            px(30.),
+            "a larger icon keeps 3 px around it"
+        );
+    }
 }

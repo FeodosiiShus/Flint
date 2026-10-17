@@ -1,14 +1,10 @@
 use gpui::{AnyElement, AnyView, ClickEvent, Hsla, Role, transparent_black, white};
-use theme::UiDensity;
 
-use crate::{COMPONENT_CORNER_RADII, prelude::*, ui_density};
+use crate::{
+    ButtonMetrics, COMPONENT_CORNER_RADII, TOOLBAR_ICON_SIDE, exact_icon_size, prelude::*,
+    ui_density,
+};
 
-const HEIGHT: Pixels = px(28.);
-const COMPACT_HEIGHT: Pixels = px(24.);
-const COMPACT_CORNER_RADIUS: Pixels = px(3.);
-const MINIMUM_WIDTH: Pixels = px(72.);
-const HORIZONTAL_PADDING: Pixels = px(14.);
-const ICON_GAP: Pixels = px(6.);
 const DEFAULT_HOVER_OPACITY: f32 = 0.9;
 const DEFAULT_PRESSED_OPACITY: f32 = 0.8;
 
@@ -113,35 +109,32 @@ impl Disableable for DialogButton {
 }
 
 impl RenderOnce for DialogButton {
-    fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
-        let compact = ui_density(cx) == UiDensity::Compact;
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let metrics = ButtonMetrics::for_size(ButtonSize::Medium, ui_density(cx));
+        let rem_size = window.rem_size();
         let colors = self.colors(cx);
         let foreground = colors.foreground;
-        let (height, corner_radius) = if compact {
-            (COMPACT_HEIGHT, COMPACT_CORNER_RADIUS)
-        } else {
-            (HEIGHT, COMPONENT_CORNER_RADII.button)
-        };
 
         h_flex()
             .id(self.id)
             .role(Role::Button)
             .aria_label(self.label.clone())
             .flex_none()
-            .h(height)
-            .min_w(MINIMUM_WIDTH)
-            .px(HORIZONTAL_PADDING)
+            .h(metrics.height)
+            .when_some(metrics.minimum_width, |this, width| this.min_w(width))
+            .when_some(metrics.horizontal_padding, |this, padding| this.px(padding))
             .justify_center()
-            .gap(ICON_GAP)
-            .rounded(corner_radius)
+            .when_some(metrics.icon_gap, |this, gap| this.gap(gap))
+            .rounded(COMPONENT_CORNER_RADII.button)
             .border_1()
             .border_color(colors.border)
             .bg(colors.background)
             .font_ui(cx)
-            .children(
-                self.icon
-                    .map(|icon| Icon::new(icon).size(IconSize::Small).color(foreground)),
-            )
+            .children(self.icon.map(|icon| {
+                Icon::new(icon)
+                    .size(exact_icon_size(TOOLBAR_ICON_SIDE, rem_size))
+                    .color(foreground)
+            }))
             .children(self.start_slot)
             .child(Label::new(self.label).color(foreground))
             .when(self.disabled, |this| this.cursor_not_allowed())

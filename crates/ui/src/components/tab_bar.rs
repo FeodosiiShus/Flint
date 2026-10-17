@@ -1,8 +1,12 @@
 use gpui::{AnyElement, ScrollHandle};
 use smallvec::SmallVec;
 
-use crate::Tab;
 use crate::prelude::*;
+use crate::{Tab, island_tab_metrics};
+
+const ISLAND_END_CHILDREN_GAP: Pixels = px(4.);
+const ISLAND_END_CHILDREN_LEADING_PADDING: Pixels = px(8.);
+const ISLAND_END_CHILDREN_TRAILING_PADDING: Pixels = px(9.);
 
 #[derive(IntoElement, RegisterComponent)]
 pub struct TabBar {
@@ -34,6 +38,14 @@ impl TabBar {
     pub fn islands(mut self, islands: bool) -> Self {
         self.islands = islands;
         self
+    }
+
+    pub fn strip_height(islands: bool, cx: &App) -> Pixels {
+        if islands {
+            Tab::island_strip_height(cx)
+        } else {
+            Tab::container_height(cx)
+        }
     }
 
     pub fn start_children_mut(&mut self) -> &mut SmallVec<[AnyElement; 2]> {
@@ -98,19 +110,21 @@ impl ParentElement for TabBar {
 
 impl RenderOnce for TabBar {
     fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
-        let classic_borders = !self.islands;
-        let background = if self.islands {
+        let islands = self.islands;
+        let classic_borders = !islands;
+        let background = if islands {
             cx.theme().colors().editor_background
         } else {
             cx.theme().colors().tab_bar_background
         };
+        let bottom_border_width = island_tab_metrics(cx).bottom_border_width;
         div()
             .id(self.id)
             .group("tab_bar")
             .flex()
             .flex_none()
             .w_full()
-            .h(Tab::container_height(cx))
+            .h(Self::strip_height(islands, cx))
             .bg(background)
             .child(crate::background_image_layer(
                 crate::BackgroundImageTarget::EditorAndTools,
@@ -165,14 +179,30 @@ impl RenderOnce for TabBar {
                 this.child(
                     h_flex()
                         .flex_none()
-                        .gap(DynamicSpacing::Base04.rems(cx))
-                        .px(DynamicSpacing::Base06.rems(cx))
+                        .when(islands, |this| {
+                            this.gap(ISLAND_END_CHILDREN_GAP)
+                                .pl(ISLAND_END_CHILDREN_LEADING_PADDING)
+                                .pr(ISLAND_END_CHILDREN_TRAILING_PADDING)
+                        })
                         .when(classic_borders, |this| {
-                            this.border_color(cx.theme().colors().border)
+                            this.gap(DynamicSpacing::Base04.rems(cx))
+                                .px(DynamicSpacing::Base06.rems(cx))
+                                .border_color(cx.theme().colors().border)
                                 .border_b_1()
                                 .border_l_1()
                         })
                         .children(self.end_children),
+                )
+            })
+            .when(islands, |this| {
+                this.child(
+                    div()
+                        .absolute()
+                        .bottom_0()
+                        .left_0()
+                        .w_full()
+                        .h(bottom_border_width)
+                        .bg(cx.theme().colors().background),
                 )
             })
     }

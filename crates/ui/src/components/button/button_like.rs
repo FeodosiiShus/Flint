@@ -6,7 +6,9 @@ use gpui::{
 };
 use smallvec::SmallVec;
 
-use crate::{COMPONENT_CORNER_RADII, DynamicSpacing, ElevationIndex, prelude::*};
+use crate::{
+    ButtonMetrics, COMPONENT_CORNER_RADII, DynamicSpacing, ElevationIndex, prelude::*, ui_density,
+};
 
 /// A trait for buttons that can be Selected. Enables setting the [`ButtonStyle`] of a button when it is selected.
 pub trait SelectableButton: Toggleable {
@@ -222,14 +224,14 @@ impl ButtonStyle {
             },
             ButtonStyle::Tinted(tint) => tint.button_like_style(cx),
             ButtonStyle::Outlined => ButtonLikeStyles {
-                background: element_bg_from_elevation(elevation, cx),
-                border_color: cx.theme().colors().border_variant,
+                background: cx.theme().colors().ghost_element_background,
+                border_color: cx.theme().colors().border,
                 label_color: Color::Default.color(cx),
                 icon_color: Color::Default.color(cx),
             },
             ButtonStyle::OutlinedGhost => ButtonLikeStyles {
                 background: transparent_black(),
-                border_color: cx.theme().colors().border_variant,
+                border_color: cx.theme().colors().border,
                 label_color: Color::Default.color(cx),
                 icon_color: Color::Default.color(cx),
             },
@@ -328,14 +330,14 @@ impl ButtonStyle {
                 icon_color: Color::Default.color(cx),
             },
             ButtonStyle::Outlined => ButtonLikeStyles {
-                background: cx.theme().colors().element_active,
-                border_color: cx.theme().colors().border_variant,
+                background: cx.theme().colors().ghost_element_active,
+                border_color: cx.theme().colors().border,
                 label_color: Color::Default.color(cx),
                 icon_color: Color::Default.color(cx),
             },
             ButtonStyle::OutlinedGhost => ButtonLikeStyles {
                 background: transparent_black(),
-                border_color: cx.theme().colors().border_variant,
+                border_color: cx.theme().colors().border,
                 label_color: Color::Default.color(cx),
                 icon_color: Color::Default.color(cx),
             },
@@ -492,8 +494,12 @@ pub struct ButtonLike {
     pub(super) height: Option<DefiniteLength>,
     pub(super) layer: Option<ElevationIndex>,
     tab_index: Option<isize>,
-    size: ButtonSize,
+    pub(super) size: ButtonSize,
     pub(super) chrome_region: Option<crate::ChromeRegion>,
+    pub(super) corner_radius: Option<Pixels>,
+    pub(super) fixed_side: Option<Pixels>,
+    pub(super) selected_fill_pressed: bool,
+    pub(super) padding_override: Option<(Pixels, Pixels)>,
     rounding: Option<ButtonLikeRounding>,
     pub(super) aria_label: Option<SharedString>,
     aria_description: Option<SharedString>,
@@ -530,6 +536,10 @@ impl ButtonLike {
             height: None,
             size: ButtonSize::Default,
             chrome_region: None,
+            corner_radius: None,
+            fixed_side: None,
+            selected_fill_pressed: false,
+            padding_override: None,
             rounding: Some(ButtonLikeRounding::ALL),
             aria_label: None,
             aria_description: None,
@@ -580,6 +590,16 @@ impl ButtonLike {
 
     pub(crate) fn rounding(mut self, rounding: impl Into<Option<ButtonLikeRounding>>) -> Self {
         self.rounding = rounding.into();
+        self
+    }
+
+    pub(crate) fn horizontal_padding(mut self, left: Pixels, right: Pixels) -> Self {
+        self.padding_override = Some((left, right));
+        self
+    }
+
+    pub(crate) fn corner_radius(mut self, radius: Pixels) -> Self {
+        self.corner_radius = Some(radius);
         self
     }
 
@@ -767,17 +787,31 @@ impl RenderOnce for ButtonLike {
             ButtonStyle::Outlined | ButtonStyle::OutlinedGhost | ButtonStyle::OutlinedCustom(_)
         );
 
+        let selected_fill_pressed =
+            self.selected_fill_pressed && self.selected && self.selected_style.is_none();
+
         let active_background = self
             .active_background
             .unwrap_or_else(|| style.active(cx).background);
 
+        let metrics = ButtonMetrics::for_size(self.size, ui_density(cx));
         let chrome_height = self
             .chrome_region
             .filter(|_| self.height.is_none())
             .and_then(|region| crate::chrome_button_height(region, self.size, cx));
         let height = match chrome_height {
             Some(height) => DefiniteLength::from(height),
-            None => self.height.unwrap_or(self.size.rems().into()),
+            None => self.height.unwrap_or(metrics.height.into()),
+        };
+        let gap = match metrics.icon_gap {
+            Some(gap) => DefiniteLength::from(gap),
+            None => DefiniteLength::from(DynamicSpacing::Base04.rems(cx)),
+        };
+        let corner_radius = self.corner_radius.unwrap_or(COMPONENT_CORNER_RADII.button);
+        let background = if selected_fill_pressed {
+            active_background
+        } else {
+            style.enabled(self.layer, cx).background
         };
 
         self.base
@@ -817,31 +851,31 @@ impl RenderOnce for ButtonLike {
             .when_some(self.width, |this, width| {
                 this.w(width).justify_center().text_center()
             })
+            .when_some(self.fixed_side, |this, side| {
+                this.w(side).h(side).justify_center()
+            })
             .when(is_outlined, |this| this.border_1())
             .when_some(self.rounding, |this, rounding| {
-                this.when(rounding.top_left, |this| {
-                    this.rounded_tl(COMPONENT_CORNER_RADII.button)
-                })
-                .when(rounding.top_right, |this| {
-                    this.rounded_tr(COMPONENT_CORNER_RADII.button)
-                })
-                .when(rounding.bottom_right, |this| {
-                    this.rounded_br(COMPONENT_CORNER_RADII.button)
-                })
-                .when(rounding.bottom_left, |this| {
-                    this.rounded_bl(COMPONENT_CORNER_RADII.button)
-                })
+                this.when(rounding.top_left, |this| this.rounded_tl(corner_radius))
+                    .when(rounding.top_right, |this| this.rounded_tr(corner_radius))
+                    .when(rounding.bottom_right, |this| this.rounded_br(corner_radius))
+                    .when(rounding.bottom_left, |this| this.rounded_bl(corner_radius))
             })
-            .gap(DynamicSpacing::Base04.rems(cx))
-            .map(|this| match self.size {
-                ButtonSize::Large | ButtonSize::Medium => this.px(DynamicSpacing::Base08.rems(cx)),
-                ButtonSize::Default | ButtonSize::Compact => {
-                    this.px(DynamicSpacing::Base04.rems(cx))
+            .gap(gap)
+            .map(|this| {
+                match (
+                    self.fixed_side,
+                    self.padding_override,
+                    metrics.horizontal_padding,
+                ) {
+                    (Some(_), _, _) => this.px_0(),
+                    (None, Some((left, right)), _) => this.pl(left).pr(right),
+                    (None, None, Some(padding)) => this.px(padding),
+                    (None, None, None) => this.px(DynamicSpacing::Base08.rems(cx)),
                 }
-                ButtonSize::None => this.px_px(),
             })
             .border_color(style.enabled(self.layer, cx).border_color)
-            .bg(style.enabled(self.layer, cx).background)
+            .bg(background)
             .when(self.disabled, |this| {
                 if self.cursor_style == CursorStyle::PointingHand {
                     this.cursor_not_allowed()
@@ -851,9 +885,12 @@ impl RenderOnce for ButtonLike {
             })
             .when(!self.disabled, |this| {
                 let hovered_style = style.hovered(self.layer, cx);
-                let hover_background = self.hover_background.unwrap_or(hovered_style.background);
+                let hover_background = if selected_fill_pressed {
+                    active_background
+                } else {
+                    self.hover_background.unwrap_or(hovered_style.background)
+                };
                 let focus_color = |refinement: StyleRefinement| refinement.bg(hover_background);
-
                 this.cursor(self.cursor_style)
                     .hover(focus_color)
                     .map(|this| {

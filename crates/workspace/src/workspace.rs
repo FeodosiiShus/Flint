@@ -137,7 +137,7 @@ use std::{
 use task::{DebugScenario, SharedTaskContext};
 use theme::{ActiveTheme, ClientDecorationsExt, SystemAppearance};
 use theme_settings::ThemeSettings;
-use tool_window_bar::{ToolWindowBar, ToolWindowBarSide};
+use tool_window_bar::{ISLANDS_EMPTY_GAP, ToolWindowBar, ToolWindowBarSide};
 pub use toolbar::{
     PaneSearchBarCallbacks, Toolbar, ToolbarItemEvent, ToolbarItemLocation, ToolbarItemView,
 };
@@ -7995,16 +7995,26 @@ impl Workspace {
         )
     }
 
-    fn with_tool_window_bars(&self, show: bool, workspace_area: Stateful<Div>) -> AnyElement {
-        if !show {
-            return workspace_area.into_any_element();
-        }
-        div()
+    fn with_tool_window_bars(
+        &self,
+        show: bool,
+        islands: IslandsSettings,
+        workspace_area: Stateful<Div>,
+    ) -> AnyElement {
+        let frame = div()
             .flex()
             .flex_row()
             .flex_1()
             .w_full()
             .overflow_hidden()
+            .when(islands.enabled, |this| this.pb(ISLANDS_EMPTY_GAP));
+        if !show {
+            return frame
+                .when(islands.enabled, |this| this.px(ISLANDS_EMPTY_GAP))
+                .child(workspace_area)
+                .into_any_element();
+        }
+        frame
             .child(self.left_tool_window_bar.clone())
             .child(workspace_area)
             .child(self.right_tool_window_bar.clone())
@@ -8657,6 +8667,7 @@ impl Render for Workspace {
                     .child(
                         self.with_tool_window_bars(
                             show_tool_window_bars,
+                            islands,
                             div()
                                 .id("workspace")
                                 .bg(colors.background)
@@ -8759,9 +8770,8 @@ impl Render for Workspace {
                                         },
                                     ))
                                 })
-                                .child(
-                                    {
-                                        match bottom_dock_layout {
+                                .child({
+                                    match bottom_dock_layout {
                                     BottomDockLayout::Full => div()
                                         .flex()
                                         .flex_col()
@@ -9001,9 +9011,7 @@ impl Render for Workspace {
                                             cx,
                                         )),
                                 }
-                                    }
-                                    .when(islands.enabled, |this| this.p(islands.half_gap())),
-                                )
+                                })
                                 .children(self.zoomed.as_ref().and_then(|view| {
                                     let zoomed_view = view.upgrade()?;
                                     let zoomed_element = match zoomed_paddings {
@@ -13851,7 +13859,7 @@ mod tests {
         cx.update(|cx| {
             let settings = WorkspaceSettings::get_global(cx);
             assert!(settings.islands.enabled);
-            assert_eq!(settings.islands.gap, px(4.));
+            assert_eq!(settings.islands.gap, px(5.));
             assert_eq!(settings.islands.corner_radius, px(10.));
             assert!(settings.tool_window_bars.show);
             assert!(!settings.tool_window_bars.show_names);
@@ -14054,7 +14062,7 @@ mod tests {
         assert_eq!(
             cx.debug_bounds("tool_window_bar_right"),
             None,
-            "an empty right bar takes no space"
+            "an empty right bar draws no stripe"
         );
         assert!(
             cx.debug_bounds("tool_window_bar_left").is_some(),
@@ -14066,8 +14074,8 @@ mod tests {
         let window_width = cx.update(|window, _| window.viewport_size().width);
         assert_eq!(
             window_width - center.right(),
-            px(4.),
-            "without the right bar the editor island keeps only the islands gap to the window edge"
+            px(6.5),
+            "without the right bar the editor island keeps IntelliJ's 4 px empty gap plus the island rim to the window edge"
         );
     }
 
@@ -14116,7 +14124,7 @@ mod tests {
     }
 
     #[gpui::test]
-    async fn test_center_island_is_inset_by_the_gap(cx: &mut TestAppContext) {
+    async fn test_center_island_is_inset_by_the_island_rim_from_the_bars(cx: &mut TestAppContext) {
         let (_workspace, _panels, cx) = tool_window_bar_test_workspace(cx).await;
 
         let left_bar = cx
@@ -14128,8 +14136,8 @@ mod tests {
         let center = cx
             .debug_bounds("center_island")
             .expect("islands are enabled by default");
-        assert_eq!(center.left() - left_bar.right(), px(4.));
-        assert_eq!(right_bar.left() - center.right(), px(4.));
+        assert_eq!(center.left() - left_bar.right(), px(2.5));
+        assert_eq!(right_bar.left() - center.right(), px(2.5));
 
         cx.update(|_, cx| {
             SettingsStore::update_global(cx, |store, cx| {
@@ -14234,6 +14242,208 @@ mod tests {
         );
     }
 
+    #[gpui::test]
+    async fn test_islands_keep_intellij_gaps_to_the_frame_top_and_window_bottom(
+        cx: &mut TestAppContext,
+    ) {
+        let (_workspace, _panels, cx) = tool_window_bar_test_workspace(cx).await;
+
+        let left_bar = cx
+            .debug_bounds("tool_window_bar_left")
+            .expect("the left tool window bar is shown by default");
+        let center = cx
+            .debug_bounds("center_island")
+            .expect("islands are enabled by default");
+        let window_height = cx.update(|window, _| window.viewport_size().height);
+
+        assert_eq!(
+            center.top() - left_bar.top(),
+            px(2.5),
+            "the editor island sits the island rim below the frame top"
+        );
+        assert_eq!(
+            left_bar.bottom() - center.bottom(),
+            px(2.5),
+            "the editor island ends the island rim above the stripe bottom"
+        );
+        assert_eq!(
+            window_height - left_bar.bottom(),
+            px(4.),
+            "without a status bar the stripes and islands end IntelliJ's 4 px empty gap above the window bottom"
+        );
+    }
+
+    #[gpui::test]
+    async fn tool_window_bar_buttons_touch_the_stripe_edges_like_intellij(cx: &mut TestAppContext) {
+        let (_workspace, _panels, cx) = tool_window_bar_test_workspace(cx).await;
+
+        let left_bar = cx
+            .debug_bounds("tool_window_bar_left")
+            .expect("the left tool window bar is shown by default");
+        let right_bar = cx
+            .debug_bounds("tool_window_bar_right")
+            .expect("the right tool window bar is shown by default");
+        let first = cx
+            .debug_bounds("tool_window_button_left_0")
+            .expect("the left dock panel has a button");
+        let last = cx
+            .debug_bounds("tool_window_button_bottom_0")
+            .expect("the bottom dock panel has a button");
+        let right_button = cx
+            .debug_bounds("tool_window_button_right_0")
+            .expect("the right dock panel has a button");
+
+        assert_eq!(
+            first.top() - left_bar.top(),
+            px(1.),
+            "the first button starts below IntelliJ's 1 px stripe border"
+        );
+        assert_eq!(
+            left_bar.bottom(),
+            last.bottom(),
+            "the bottom group ends flush with the stripe"
+        );
+        assert_eq!(
+            left_bar.right() - first.right(),
+            px(1.),
+            "the left stripe border faces the editor"
+        );
+        assert_eq!(first.left(), left_bar.left());
+        assert_eq!(
+            right_button.left() - right_bar.left(),
+            px(1.),
+            "the right stripe border faces the editor"
+        );
+        assert_eq!(right_button.right(), right_bar.right());
+    }
+
+    #[gpui::test]
+    async fn tool_window_bar_icon_is_centered_in_the_fill_pill(cx: &mut TestAppContext) {
+        let (workspace, _panels, cx) = tool_window_bar_test_workspace(cx).await;
+        open_dock_with_center_focus(&workspace, DockPosition::Left, cx);
+
+        let fill_color = cx.update(|_, cx| cx.theme().colors().ghost_element_active);
+        let scale = cx.update(|window, _| window.scale_factor());
+        let button = cx
+            .debug_bounds("tool_window_button_left_0")
+            .expect("the open panel has a bar button")
+            .scale(scale);
+        let icon = cx
+            .debug_bounds("tool_window_button_left_0_icon")
+            .expect("the bar button draws its icon")
+            .scale(scale);
+        let fill = cx
+            .update(|window, _| {
+                window.painted_quads().into_iter().find(|quad| {
+                    quad.background.as_solid() == Some(fill_color)
+                        && button.contains(&quad.bounds.center())
+                })
+            })
+            .expect("the open button paints its fill pill");
+
+        let close_to = |actual: f32, expected: f32| (actual - expected).abs() < 0.5;
+        assert!(
+            close_to(icon.center().x.0, fill.bounds.center().x.0),
+            "the icon is centered horizontally in the pill, not in the stripe box: icon {icon:?}, pill {:?}",
+            fill.bounds,
+        );
+        assert!(
+            close_to(icon.center().y.0, fill.bounds.center().y.0),
+            "the icon is centered vertically in the pill: icon {icon:?}, pill {:?}",
+            fill.bounds,
+        );
+    }
+
+    #[gpui::test]
+    async fn tool_window_bar_separator_is_centered_over_the_fill_pill(cx: &mut TestAppContext) {
+        let (_workspace, _panels, cx) = tool_window_bar_test_workspace(cx).await;
+
+        for compact in [false, true] {
+            if compact {
+                cx.update(|_, cx| {
+                    SettingsStore::update_global(cx, |store, cx| {
+                        store.update_user_settings(cx, |settings| {
+                            settings.theme.ui_density = Some(settings::UiDensity::Compact);
+                        });
+                    });
+                });
+                cx.run_until_parked();
+            }
+
+            let settings = cx.update(|_, cx| WorkspaceSettings::get_global(cx).tool_window_bars);
+            let metrics = crate::tool_window_bar::ToolWindowButtonMetrics::new(
+                crate::tool_window_bar::ToolWindowBarSide::Left,
+                &settings,
+            );
+            let slot = cx
+                .debug_bounds("tool_window_bar_separator")
+                .expect("the left bar separates its top group from the More button");
+            let line = cx
+                .debug_bounds("tool_window_bar_separator_line")
+                .expect("the separator draws its line");
+
+            assert_eq!(line.size.width, px(24.));
+            assert_eq!(line.size.height, px(1.));
+            assert_eq!(
+                line.left() - slot.left(),
+                metrics.fill_insets.left + (metrics.fill_width - px(24.)) / 2.,
+                "the 24 px line is centered over the fill pill, compact: {compact}"
+            );
+            assert_eq!(
+                line.top() - slot.top(),
+                px(5.),
+                "the line sits in the middle of IntelliJ's 11 px separator slot"
+            );
+        }
+    }
+
+    #[gpui::test]
+    async fn tool_window_bar_more_button_paints_the_intellij_hover_pill(cx: &mut TestAppContext) {
+        let (_workspace, _panels, cx) = tool_window_bar_test_workspace(cx).await;
+
+        let settings = cx.update(|_, cx| WorkspaceSettings::get_global(cx).tool_window_bars);
+        let metrics = crate::tool_window_bar::ToolWindowButtonMetrics::new(
+            crate::tool_window_bar::ToolWindowBarSide::Left,
+            &settings,
+        );
+        let hover_color = cx.update(|_, cx| cx.theme().colors().ghost_element_hover);
+        let scale = cx.update(|window, _| window.scale_factor());
+        let more = cx
+            .debug_bounds("tool_window_more_button")
+            .expect("the left bar has a More tool windows button");
+        assert_eq!(more.size.width, metrics.box_width);
+        assert_eq!(more.size.height, metrics.box_height);
+
+        cx.simulate_mouse_move(more.center(), None, gpui::Modifiers::none());
+        let more = more.scale(scale);
+        let fill = cx
+            .update(|window, _| {
+                window.painted_quads().into_iter().find(|quad| {
+                    quad.background.as_solid() == Some(hover_color)
+                        && more.contains(&quad.bounds.center())
+                })
+            })
+            .expect("hovering the More button paints its fill pill");
+
+        let close_to = |actual: f32, expected: f32| (actual - expected).abs() < 0.5;
+        assert!(close_to(
+            fill.bounds.size.width.0,
+            f32::from(metrics.fill_width) * scale
+        ));
+        assert!(close_to(
+            fill.bounds.size.height.0,
+            f32::from(metrics.fill_height) * scale
+        ));
+        assert!(close_to(
+            fill.bounds.left().0 - more.left().0,
+            f32::from(metrics.fill_insets.left) * scale
+        ));
+        assert!(close_to(
+            fill.corner_radii.top_left.0,
+            f32::from(metrics.radius) * scale
+        ));
+    }
+
     fn open_dock_with_center_focus(
         workspace: &Entity<Workspace>,
         position: DockPosition,
@@ -14302,6 +14512,7 @@ mod tests {
         });
         cx.run_until_parked();
 
+        let content_inset = px(0.5);
         for (header_selector, island_selector, content_selector) in [
             (
                 "tool_window_header_left",
@@ -14324,12 +14535,14 @@ mod tests {
                 .debug_bounds(content_selector)
                 .expect("an open dock renders its panel");
             assert_eq!(
-                header.origin, island.origin,
-                "{header_selector} starts at the top left corner of its island"
+                header.origin,
+                island.origin + gpui::point(content_inset, content_inset),
+                "{header_selector} starts the IntelliJ content inset inside the top left corner of its island"
             );
             assert_eq!(
-                header.size.width, island.size.width,
-                "{header_selector} spans its island"
+                header.size.width,
+                island.size.width - content_inset * 2.,
+                "{header_selector} spans its island minus the content inset"
             );
             assert!(
                 header.size.height > px(0.),
@@ -14342,8 +14555,13 @@ mod tests {
             );
             assert_eq!(
                 content.bottom(),
-                island.bottom(),
+                island.bottom() - content_inset,
                 "the panel fills the rest of the island under {header_selector}"
+            );
+            assert_eq!(
+                island.right() - header.right(),
+                content_inset,
+                "{header_selector} keeps the content inset on the right too"
             );
         }
         assert_eq!(
@@ -14965,6 +15183,95 @@ mod tests {
             content.right() <= options.left() && options.right() <= hide.left(),
             "the content ends before the options and hide buttons: content {content:?}, options {options:?}, hide {hide:?}"
         );
+    }
+
+    #[gpui::test]
+    async fn tool_window_header_title_keeps_intellij_label_inset_without_panel_content(
+        cx: &mut TestAppContext,
+    ) {
+        let (workspace, _panels, cx) = tool_window_bar_test_workspace(cx).await;
+        open_dock_with_center_focus(&workspace, DockPosition::Left, cx);
+
+        let header = cx
+            .debug_bounds("tool_window_header_left")
+            .expect("the open left dock has a header");
+        let title = cx
+            .debug_bounds("tool_window_header_title_left")
+            .expect("the header shows the panel title");
+        assert_eq!(
+            title.left() - header.left(),
+            px(12.),
+            "the title keeps IntelliJ's 12px header label inset on the left"
+        );
+    }
+
+    #[gpui::test]
+    async fn tool_window_header_actions_use_the_intellij_toolbar_geometry(cx: &mut TestAppContext) {
+        let (workspace, _panels, cx) = tool_window_bar_test_workspace(cx).await;
+        open_dock_with_center_focus(&workspace, DockPosition::Left, cx);
+
+        let header = cx
+            .debug_bounds("tool_window_header_left")
+            .expect("the open left dock has a header");
+        cx.simulate_mouse_move(header.center(), None, gpui::Modifiers::none());
+        let options = cx
+            .debug_bounds("tool_window_header_options_left")
+            .expect("hovering the dock reveals the options button");
+        let hide = cx
+            .debug_bounds("tool_window_header_hide_left")
+            .expect("hovering the dock reveals the hide button");
+
+        for (name, button) in [("options", options), ("hide", hide)] {
+            assert_eq!(
+                button.size.width,
+                px(22.),
+                "the {name} button is IntelliJ's 22 px toolbar button"
+            );
+            assert_eq!(button.size.height, px(22.));
+            assert!(
+                (f32::from(button.center().y) - f32::from(header.center().y)).abs() < 0.5,
+                "the {name} button is centered in the header: header {header:?}, button {button:?}"
+            );
+        }
+        assert_eq!(
+            options.right(),
+            hide.left(),
+            "the header toolbar lays its buttons edge to edge"
+        );
+        assert_eq!(
+            header.right() - hide.right(),
+            px(8.),
+            "the toolbar keeps IntelliJ's 8 px right inset"
+        );
+    }
+
+    #[gpui::test]
+    async fn tool_window_header_draws_a_bottom_border_for_every_dock(cx: &mut TestAppContext) {
+        let (workspace, _panels, cx) = tool_window_bar_test_workspace(cx).await;
+        open_dock_with_center_focus(&workspace, DockPosition::Bottom, cx);
+        open_dock_with_center_focus(&workspace, DockPosition::Left, cx);
+
+        let border_color = cx.update(|_, cx| cx.theme().colors().border_variant);
+        let scale = cx.update(|window, _| window.scale_factor());
+        let close_to = |actual: f32, expected: f32| (actual - expected).abs() < 0.5;
+        for selector in ["tool_window_header_bottom", "tool_window_header_left"] {
+            let header = cx
+                .debug_bounds(selector)
+                .expect("the open dock has a header")
+                .scale(scale);
+            let border = cx.update(|window, _| {
+                window.painted_quads().into_iter().find(|quad| {
+                    quad.background.as_solid() == Some(border_color)
+                        && close_to(quad.bounds.size.height.0, scale)
+                        && close_to(quad.bounds.size.width.0, header.size.width.0)
+                        && close_to(quad.bounds.bottom().0, header.bottom().0)
+                })
+            });
+            assert!(
+                border.is_some(),
+                "{selector} draws IntelliJ's 1 px header bottom line"
+            );
+        }
     }
 
     #[gpui::test]

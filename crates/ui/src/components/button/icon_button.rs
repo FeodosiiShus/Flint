@@ -3,7 +3,7 @@ use gpui::{AnyView, DefiniteLength, Hsla};
 use super::button_like::{ButtonCommon, ButtonLike, ButtonSize, ButtonStyle};
 use crate::{
     ElevationIndex, Icon, IconWithIndicator, Indicator, SelectableButton, TintColor, Tooltip,
-    prelude::*,
+    icon_button_icon_size, icon_button_side, prelude::*, ui_density,
 };
 use crate::{IconName, IconSize};
 
@@ -27,6 +27,7 @@ pub struct IconButton {
     indicator: Option<Indicator>,
     indicator_border_color: Option<Hsla>,
     alpha: Option<f32>,
+    box_side: Option<Pixels>,
 }
 
 impl IconButton {
@@ -43,6 +44,7 @@ impl IconButton {
             indicator: None,
             indicator_border_color: None,
             alpha: None,
+            box_side: None,
         };
         this.base.base = this.base.base.debug_selector(|| format!("ICON-{:?}", icon));
         this
@@ -82,6 +84,16 @@ impl IconButton {
 
     pub fn icon_size(mut self, icon_size: IconSize) -> Self {
         self.icon_size = icon_size;
+        self
+    }
+
+    pub fn box_size(mut self, side: Pixels) -> Self {
+        self.box_side = Some(side);
+        self
+    }
+
+    pub fn corner_radius(mut self, radius: Pixels) -> Self {
+        self.base.corner_radius = Some(radius);
         self
     }
 
@@ -251,6 +263,8 @@ impl RenderOnce for IconButton {
     fn render(self, window: &mut Window, cx: &mut App) -> ButtonLike {
         let is_disabled = self.base.disabled;
         let is_selected = self.base.selected;
+        let pressed_fill =
+            is_selected && self.selected_style.is_none() && self.base.style == ButtonStyle::Subtle;
 
         let icon = self
             .selected_icon
@@ -258,41 +272,82 @@ impl RenderOnce for IconButton {
             .unwrap_or(self.icon);
 
         let icon_color = if is_disabled {
-            Color::Disabled
-        } else if self.selected_style.is_some() && is_selected {
-            self.selected_style.unwrap().into()
-        } else if is_selected {
-            self.selected_icon_color.unwrap_or(Color::Selected)
+            Color::Custom(cx.theme().colors().icon_disabled)
+        } else if let Some(selected_style) = self.selected_style.filter(|_| is_selected) {
+            Color::Custom(icon_foreground(selected_style.into(), cx))
+        } else if is_selected && !pressed_fill {
+            let selected_color = self.selected_icon_color.unwrap_or(Color::Selected);
+            Color::Custom(icon_foreground(selected_color, cx))
         } else {
-            let base_color = self.icon_color.color(cx);
-            Color::Custom(base_color.opacity(self.alpha.unwrap_or(1.0)))
+            let base_color = self
+                .selected_icon_color
+                .filter(|_| is_selected)
+                .unwrap_or(self.icon_color);
+            Color::Custom(icon_foreground(base_color, cx).opacity(self.alpha.unwrap_or(1.0)))
         };
 
         let chrome_region = self.base.chrome_region;
+        let region_configured =
+            chrome_region.is_some_and(|region| crate::chrome_icon_scale(region, cx).is_some());
+        let size = self.base.size;
+        let hugging = size == ButtonSize::None;
+        let rem_size = window.rem_size();
         let icon_size = match chrome_region {
-            Some(region) => crate::chrome_icon_size(region, self.icon_size, cx),
-            None => self.icon_size,
+            Some(region) if region_configured => {
+                crate::chrome_icon_size(region, self.icon_size, cx)
+            }
+            _ if hugging => self.icon_size,
+            _ => icon_button_icon_size(self.icon_size, rem_size),
         };
         let chrome_side = chrome_region
             .filter(|_| self.shape == IconButtonShape::Square)
             .and_then(|region| crate::chrome_square_side(region, self.icon_size, window, cx));
         let icon_element = Icon::new(icon).size(icon_size).color(icon_color);
 
-        self.base
-            .map(|this| match self.shape {
-                IconButtonShape::Square => {
-                    let size = self.icon_size.square(window, cx);
-                    let size = chrome_side.map_or(size, |side| size.max(side));
-                    this.width(size).height(size.into())
-                }
-                IconButtonShape::Wide => this,
-            })
-            .child(match self.indicator {
-                Some(indicator) => IconWithIndicator::new(icon_element, Some(indicator))
-                    .indicator_border_color(self.indicator_border_color)
-                    .into_any_element(),
-                None => icon_element.into_any_element(),
-            })
+        let fixed_side = match self.box_side {
+            Some(side) => Some(side),
+            None => match self.shape {
+                IconButtonShape::Square => match hugging || region_configured {
+                    true => {
+                        let side = self.icon_size.square(window, cx);
+                        Some(chrome_side.map_or(side, |chrome| side.max(chrome)))
+                    }
+                    false => Some(icon_button_side(
+                        size,
+                        ui_density(cx),
+                        icon_size.rems() * rem_size,
+                    )),
+                },
+                IconButtonShape::Wide if hugging => None,
+                IconButtonShape::Wide => Some(icon_button_side(
+                    size,
+                    ui_density(cx),
+                    icon_size.rems() * rem_size,
+                )),
+            },
+        };
+
+        let mut base = self.base;
+        base.selected_fill_pressed = pressed_fill;
+        base.fixed_side = fixed_side;
+        base.child(match self.indicator {
+            Some(indicator) => IconWithIndicator::new(icon_element, Some(indicator))
+                .indicator_border_color(self.indicator_border_color)
+                .into_any_element(),
+            None => icon_element.into_any_element(),
+        })
+    }
+}
+
+fn icon_foreground(color: Color, cx: &App) -> Hsla {
+    let colors = cx.theme().colors();
+    match color {
+        Color::Default => colors.icon,
+        Color::Muted => colors.icon_muted,
+        Color::Disabled => colors.icon_disabled,
+        Color::Placeholder => colors.icon_placeholder,
+        Color::Accent => colors.icon_accent,
+        other => other.color(cx),
     }
 }
 
@@ -471,5 +526,72 @@ impl Component for IconButton {
                 ),
             ])
             .into_any_element()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::prelude::*;
+    use gpui::{Render, TestAppContext, VisualTestContext};
+
+    struct SizeProbe;
+
+    impl Render for SizeProbe {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            h_flex()
+                .child(IconButton::new("wide", IconName::Check))
+                .child(IconButton::new("square", IconName::Close).shape(IconButtonShape::Square))
+                .child(
+                    IconButton::new("wide-box", IconName::Dash)
+                        .shape(IconButtonShape::Wide)
+                        .box_size(px(30.)),
+                )
+                .child(
+                    IconButton::new("square-box", IconName::ChevronDown)
+                        .shape(IconButtonShape::Square)
+                        .box_size(px(30.)),
+                )
+        }
+    }
+
+    fn init_theme(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            let settings_store = settings::SettingsStore::test(cx);
+            cx.set_global(settings_store);
+            theme_settings::init(theme::LoadThemes::JustBase, cx);
+        });
+    }
+
+    fn bounds(cx: &mut VisualTestContext, selector: &'static str) -> gpui::Bounds<Pixels> {
+        cx.debug_bounds(selector)
+            .unwrap_or_else(|| panic!("{selector} is painted"))
+    }
+
+    #[track_caller]
+    fn assert_box(cx: &mut VisualTestContext, selector: &'static str, expected: f32) {
+        let bounds = bounds(cx, selector);
+        for side in [bounds.size.width, bounds.size.height] {
+            assert!(
+                (f32::from(side) - expected).abs() < 1e-3,
+                "{selector} is {bounds:?}, expected {expected} px square"
+            );
+        }
+    }
+
+    #[gpui::test]
+    fn icon_button_chrome_size_wide_default_is_the_toolbar_box(cx: &mut TestAppContext) {
+        init_theme(cx);
+        let (_, cx) = cx.add_window_view(|_, _| SizeProbe);
+        assert_box(cx, "ICON-Check", 22.);
+        assert_box(cx, "ICON-Close", 22.);
+    }
+
+    #[gpui::test]
+    fn icon_button_chrome_size_box_size_overrides_shape(cx: &mut TestAppContext) {
+        init_theme(cx);
+        let (_, cx) = cx.add_window_view(|_, _| SizeProbe);
+        assert_box(cx, "ICON-Dash", 30.);
+        assert_box(cx, "ICON-ChevronDown", 30.);
     }
 }

@@ -8,7 +8,6 @@ use project::{
 };
 use settings::Settings as _;
 use smallvec::SmallVec;
-use theme_settings::ThemeSettings;
 use ui::{Tooltip, prelude::*};
 use util::ResultExt as _;
 
@@ -383,9 +382,11 @@ fn icon_cell(icon: IconName, color: Color) -> impl IntoElement {
         .child(Icon::new(icon).size(IconSize::Medium).color(color))
 }
 
-fn render_status_content(status: &StatusContent, cx: &App) -> AnyElement {
-    let count_font_size =
-        ThemeSettings::get_global(cx).ui_font_size(cx) - COUNT_FONT_SIZE_REDUCTION;
+fn status_count_font_size(rem_size: Pixels, cx: &App) -> Pixels {
+    TextSize::Default.rems(cx).to_pixels(rem_size) - COUNT_FONT_SIZE_REDUCTION
+}
+
+fn render_status_content(status: &StatusContent, count_font_size: Pixels, cx: &App) -> AnyElement {
     let count_color = Color::Muted.color(cx);
     match status {
         StatusContent::Text(text) => div()
@@ -420,6 +421,7 @@ fn render_inspection_widget(
     model: &InspectionWidgetModel,
     editor: &Entity<Editor>,
     popup: &Entity<InspectionPopup>,
+    count_font_size: Pixels,
     cx: &App,
 ) -> AnyElement {
     let focus_handle = editor.focus_handle(cx);
@@ -438,7 +440,7 @@ fn render_inspection_widget(
     let status_button = toolbar_button(
         "inspection-widget-status",
         status_insets,
-        render_status_content(&model.status, cx),
+        render_status_content(&model.status, count_font_size, cx),
         cx,
     )
     .hoverable_tooltip({
@@ -583,7 +585,9 @@ impl EditorElement {
             let popup = window.use_keyed_state("inspection-widget-popup", cx, |_, _| {
                 InspectionPopup::new(editor_handle)
             });
-            let mut element = render_inspection_widget(&model, &self.editor, &popup, cx);
+            let count_font_size = status_count_font_size(window.rem_size(), cx);
+            let mut element =
+                render_inspection_widget(&model, &self.editor, &popup, count_font_size, cx);
             let size = element.layout_as_root(AvailableSpace::min_size(), window, cx);
             (size.width <= text_hitbox.size.width)
                 .then_some(InspectionWidgetLayout { element, size })

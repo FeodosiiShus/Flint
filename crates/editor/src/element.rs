@@ -6,7 +6,7 @@ mod mouse;
 
 use gutter_geometry::{
     VcsMarkerPlacement, crease_toggle_x, gutter_button_x, gutter_separator_bounds,
-    left_edge_strip_width, line_number_font_size,
+    left_edge_strip_width, line_number_button_x, line_number_font_size,
 };
 #[cfg(test)]
 pub(crate) use header::StickyHeader;
@@ -2410,6 +2410,7 @@ impl EditorElement {
                 .filter_map(|row| {
                     gutter.layout_item_skipping_folds(
                         *row,
+                        GutterButtonPlacement::IconColumn,
                         |cx, _| editor.render_bookmark(*row, cx).into_any_element(),
                         window,
                         cx,
@@ -2434,6 +2435,7 @@ impl EditorElement {
         self.editor.update(cx, |editor, cx| {
             gutter.layout_item_skipping_folds(
                 row,
+                GutterButtonPlacement::LineNumbers,
                 |cx, window| {
                     editor
                         .render_gutter_hover_button(position, row, window, cx)
@@ -2462,6 +2464,7 @@ impl EditorElement {
                 .filter_map(|(row, (text_anchor, bp, state))| {
                     gutter.layout_item_skipping_folds(
                         *row,
+                        GutterButtonPlacement::IconColumn,
                         |cx, _| {
                             editor
                                 .render_breakpoint(*text_anchor, *row, &bp, *state, cx)
@@ -5000,7 +5003,10 @@ impl EditorElement {
         let line_height = layout.position_map.line_height;
         window.set_cursor_style(CursorStyle::Arrow, &layout.gutter_hitbox);
 
-        for line_layout in layout.line_numbers.values() {
+        for (row, line_layout) in layout.line_numbers.iter() {
+            if layout.hover_button_line_number_row == Some(*row) {
+                continue;
+            }
             for LineNumberSegment {
                 shaped_line,
                 hitbox,
@@ -6022,7 +6028,7 @@ impl EditorElement {
                 color: *color,
             })
             .collect_vec();
-        scrollbar_layout.marker_quads_for_ranges(cursor_ranges, None)
+        scrollbar_layout.marker_quads_for_ranges(cursor_ranges, ScrollbarMarkerLane::Cursor)
     }
 
     fn refresh_slow_scrollbar_markers(
@@ -6095,10 +6101,10 @@ impl EditorElement {
                                         }
                                     });
 
-                                marker_quads.extend(
-                                    scrollbar_layout
-                                        .marker_quads_for_ranges(marker_row_ranges, Some(0)),
-                                );
+                                marker_quads.extend(scrollbar_layout.marker_quads_for_ranges(
+                                    marker_row_ranges,
+                                    ScrollbarMarkerLane::Thin,
+                                ));
                             }
 
                             for (background_highlight_id, (_, background_ranges)) in
@@ -6132,10 +6138,10 @@ impl EditorElement {
                                             color,
                                         }
                                     });
-                                    marker_quads.extend(
-                                        scrollbar_layout
-                                            .marker_quads_for_ranges(marker_row_ranges, Some(1)),
-                                    );
+                                    marker_quads.extend(scrollbar_layout.marker_quads_for_ranges(
+                                        marker_row_ranges,
+                                        ScrollbarMarkerLane::Wide,
+                                    ));
                                 }
                             }
 
@@ -6196,10 +6202,10 @@ impl EditorElement {
                                         color,
                                     }
                                 });
-                                marker_quads.extend(
-                                    scrollbar_layout
-                                        .marker_quads_for_ranges(marker_row_ranges, Some(2)),
-                                );
+                                marker_quads.extend(scrollbar_layout.marker_quads_for_ranges(
+                                    marker_row_ranges,
+                                    ScrollbarMarkerLane::Wide,
+                                ));
                             }
 
                             Arc::from(marker_quads)
@@ -6502,10 +6508,17 @@ struct Gutter<'a> {
     row_infos: &'a [RowInfo],
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum GutterButtonPlacement {
+    IconColumn,
+    LineNumbers,
+}
+
 impl Gutter<'_> {
     fn layout_item_skipping_folds(
         &self,
         display_row: DisplayRow,
+        placement: GutterButtonPlacement,
         render_item: impl Fn(&mut Context<'_, Editor>, &mut Window) -> AnyElement,
         window: &mut Window,
         cx: &mut Context<'_, Editor>,
@@ -6519,12 +6532,13 @@ impl Gutter<'_> {
             return None;
         }
 
-        self.layout_item(display_row, render_item, window, cx)
+        self.layout_item(display_row, placement, render_item, window, cx)
     }
 
     fn layout_item(
         &self,
         display_row: DisplayRow,
+        placement: GutterButtonPlacement,
         render_item: impl Fn(&mut Context<'_, Editor>, &mut Window) -> AnyElement,
         window: &mut Window,
         cx: &mut Context<'_, Editor>,
@@ -6546,7 +6560,8 @@ impl Gutter<'_> {
             return None;
         }
 
-        let button = self.prepaint_button(render_item(cx, window), display_row, window, cx);
+        let button =
+            self.prepaint_button(render_item(cx, window), display_row, placement, window, cx);
         Some(button)
     }
 
@@ -6554,6 +6569,7 @@ impl Gutter<'_> {
         &self,
         mut button: AnyElement,
         row: DisplayRow,
+        placement: GutterButtonPlacement,
         window: &mut Window,
         cx: &mut App,
     ) -> AnyElement {
@@ -6562,7 +6578,15 @@ impl Gutter<'_> {
             AvailableSpace::Definite(self.line_height),
         );
         let indicator_size = button.layout_as_root(available_space, window, cx);
-        let x = gutter_button_x(self.dimensions.icon_area_x, indicator_size.width);
+        let x = match placement {
+            GutterButtonPlacement::IconColumn => {
+                gutter_button_x(self.dimensions.icon_area_x, indicator_size.width)
+            }
+            GutterButtonPlacement::LineNumbers => line_number_button_x(
+                self.dimensions.width - self.dimensions.right_padding,
+                indicator_size.width,
+            ),
+        };
 
         let mut y = Pixels::from(
             (row.as_f64() - self.scroll_position.y) * ScrollPixelOffset::from(self.line_height),
@@ -6716,6 +6740,8 @@ pub fn render_breadcrumb_text(
 
 const BOTTOM_BREADCRUMB_HORIZONTAL_PADDING: f32 = 5.;
 const BOTTOM_BREADCRUMB_VERTICAL_PADDING: f32 = 3.;
+const BOTTOM_BREADCRUMB_LEFT_GAP: f32 = 5.;
+const BOTTOM_BREADCRUMB_RIGHT_GAP: f32 = 9.;
 
 fn bottom_breadcrumb_strip_min_height(window: &Window, cx: &App) -> Pixels {
     let mut text_style = window.text_style();
@@ -6752,24 +6778,26 @@ fn render_bottom_breadcrumb_strip(
     });
 
     let crumbs = Itertools::intersperse_with(crumbs, || {
-        Icon::new(IconName::ChevronRight)
-            .size(IconSize::XSmall)
-            .color(Color::Placeholder)
+        h_flex()
+            .flex_none()
+            .w(px(BOTTOM_BREADCRUMB_LEFT_GAP + BOTTOM_BREADCRUMB_RIGHT_GAP))
+            .justify_center()
+            .child(
+                Icon::new(IconName::ChevronRight)
+                    .size(IconSize::XSmall)
+                    .color(Color::Placeholder),
+            )
             .into_any_element()
     });
 
     let crumb_row = h_flex()
         .id("breadcrumb_strip")
         .w_full()
+        .pl(px(BOTTOM_BREADCRUMB_LEFT_GAP))
         .min_h(bottom_breadcrumb_strip_min_height(window, cx))
         .overflow_x_scroll()
         .when_some(prefix, |this, prefix| {
-            this.child(
-                div()
-                    .flex_none()
-                    .pl(px(BOTTOM_BREADCRUMB_HORIZONTAL_PADDING))
-                    .child(prefix),
-            )
+            this.child(div().flex_none().child(prefix))
         })
         .children(crumbs)
         .when_some(editor, |this, editor| {
@@ -8412,6 +8440,7 @@ impl Element for EditorElement {
                     }),
                     |window| {
                         let (mut snapshot, is_read_only) = self.editor.update(cx, |editor, cx| {
+                            editor.refresh_has_gutter_icons(cx);
                             (editor.snapshot(window, cx), editor.read_only(cx))
                         });
                         let style = &self.style;
@@ -9486,6 +9515,7 @@ impl Element for EditorElement {
                             .0
                             .filter(|phantom| phantom.is_active)
                             .map(|phantom| phantom.display_row);
+                        let mut hover_button_line_number_row: Option<MultiBufferRow> = None;
 
                         if let Some(row) = gutter_hover_button
                             && !breakpoint_rows.contains_key(&row)
@@ -9494,9 +9524,14 @@ impl Element for EditorElement {
                         {
                             let position = snapshot
                                 .display_point_to_anchor(DisplayPoint::new(row, 0), Bias::Right);
-                            breakpoints.extend(
-                                self.layout_gutter_hover_button(&gutter, position, row, window, cx),
-                            );
+                            if let Some(hover_button) =
+                                self.layout_gutter_hover_button(&gutter, position, row, window, cx)
+                            {
+                                breakpoints.push(hover_button);
+                                hover_button_line_number_row = Some(MultiBufferRow(
+                                    DisplayPoint::new(row, 0).to_point(&snapshot).row,
+                                ));
+                            }
                         }
 
                         self.layout_signature_help(
@@ -9741,6 +9776,7 @@ impl Element for EditorElement {
                             mouse_context_menu,
                             bookmarks,
                             breakpoints,
+                            hover_button_line_number_row,
                             crease_toggles,
                             crease_trailers,
                             tab_invisible,
@@ -9998,6 +10034,7 @@ pub struct EditorLayout {
     selections: Vec<(PlayerColor, Vec<SelectionLayout>)>,
     bookmarks: Vec<AnyElement>,
     breakpoints: Vec<AnyElement>,
+    hover_button_line_number_row: Option<MultiBufferRow>,
     crease_toggles: Vec<Option<AnyElement>>,
     expand_toggles: Vec<Option<(AnyElement, gpui::Point<Pixels>)>>,
     diff_hunk_controls: Vec<AnyElement>,
@@ -10170,6 +10207,7 @@ impl ScrollbarLayout {
     const BORDER_WIDTH: Pixels = px(1.0);
     const LINE_MARKER_HEIGHT: Pixels = px(2.0);
     const MIN_MARKER_HEIGHT: Pixels = px(5.0);
+    const THIN_MARKER_WIDTH: Pixels = px(2.0);
     const MIN_THUMB_SIZE: Pixels = px(25.0);
 
     fn new(
@@ -10289,46 +10327,21 @@ impl ScrollbarLayout {
     fn marker_quads_for_ranges(
         &self,
         row_ranges: impl IntoIterator<Item = ColoredRange<DisplayRow>>,
-        column: Option<usize>,
+        lane: ScrollbarMarkerLane,
     ) -> Vec<PaintQuad> {
-        struct MinMax {
-            min: Pixels,
-            max: Pixels,
-        }
-        let (x_range, height_limit) = if let Some(column) = column {
-            let column_width = ((self.hitbox.size.width - Self::BORDER_WIDTH) / 3.0).floor();
-            let start = Self::BORDER_WIDTH + (column as f32 * column_width);
-            let end = start + column_width;
-            (
-                Range { start, end },
-                MinMax {
-                    min: Self::MIN_MARKER_HEIGHT,
-                    max: px(f32::MAX),
-                },
-            )
-        } else {
-            (
-                Range {
-                    start: Self::BORDER_WIDTH,
-                    end: self.hitbox.size.width,
-                },
-                MinMax {
-                    min: Self::LINE_MARKER_HEIGHT,
-                    max: Self::LINE_MARKER_HEIGHT,
-                },
-            )
-        };
+        let ScrollbarMarkerLaneGeometry {
+            x_range,
+            min_height,
+            max_height,
+        } = lane.geometry(self.hitbox.size.width);
 
         let row_to_y = |row: DisplayRow| row.as_f64() as f32 * self.text_unit_size;
         let mut pixel_ranges = row_ranges
             .into_iter()
             .map(|range| {
                 let start_y = row_to_y(range.start);
-                let end_y = row_to_y(range.end)
-                    + self
-                        .text_unit_size
-                        .max(height_limit.min)
-                        .min(height_limit.max);
+                let end_y =
+                    row_to_y(range.end) + self.text_unit_size.max(min_height).min(max_height);
                 ColoredRange {
                     start: start_y,
                     end: end_y,
@@ -10387,6 +10400,42 @@ fn rounded_thumb_bounds(
         thumb.size.apply_along(cross_axis, |_| thickness),
     );
     (bounds, Corners::all(thickness / 2.0))
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ScrollbarMarkerLane {
+    Cursor,
+    Thin,
+    Wide,
+}
+
+#[derive(Debug, PartialEq)]
+struct ScrollbarMarkerLaneGeometry {
+    x_range: Range<Pixels>,
+    min_height: Pixels,
+    max_height: Pixels,
+}
+
+impl ScrollbarMarkerLane {
+    fn geometry(self, track_width: Pixels) -> ScrollbarMarkerLaneGeometry {
+        match self {
+            Self::Cursor => ScrollbarMarkerLaneGeometry {
+                x_range: ScrollbarLayout::BORDER_WIDTH..track_width,
+                min_height: ScrollbarLayout::LINE_MARKER_HEIGHT,
+                max_height: ScrollbarLayout::LINE_MARKER_HEIGHT,
+            },
+            Self::Wide => ScrollbarMarkerLaneGeometry {
+                x_range: ScrollbarLayout::BORDER_WIDTH..track_width,
+                min_height: ScrollbarLayout::LINE_MARKER_HEIGHT,
+                max_height: px(f32::MAX),
+            },
+            Self::Thin => ScrollbarMarkerLaneGeometry {
+                x_range: Pixels::ZERO..ScrollbarLayout::THIN_MARKER_WIDTH,
+                min_height: ScrollbarLayout::MIN_MARKER_HEIGHT,
+                max_height: px(f32::MAX),
+            },
+        }
+    }
 }
 
 struct CreaseTrailerLayout {
@@ -13556,5 +13605,38 @@ mod tests {
             "the pill stays inside the track when the track itself is thinner than the minimum"
         );
         assert_eq!(corners, Corners::all(px(1.5)));
+    }
+
+    #[test]
+    fn rounded_thumb_track_marker_lanes_follow_intellij_error_stripe() {
+        let track_width = px(15.);
+
+        assert_eq!(
+            ScrollbarMarkerLane::Wide.geometry(track_width),
+            ScrollbarMarkerLaneGeometry {
+                x_range: px(1.)..px(15.),
+                min_height: px(2.),
+                max_height: px(f32::MAX),
+            },
+            "diagnostics and occurrences are 14 px wide ticks at least 2 px tall, like IntelliJ's wide stripes"
+        );
+        assert_eq!(
+            ScrollbarMarkerLane::Thin.geometry(track_width),
+            ScrollbarMarkerLaneGeometry {
+                x_range: Pixels::ZERO..px(2.),
+                min_height: px(5.),
+                max_height: px(f32::MAX),
+            },
+            "version control changes are 2 px wide marks at the track's left edge, like IntelliJ's thin stripes"
+        );
+        assert_eq!(
+            ScrollbarMarkerLane::Cursor.geometry(track_width),
+            ScrollbarMarkerLaneGeometry {
+                x_range: px(1.)..px(15.),
+                min_height: px(2.),
+                max_height: px(2.),
+            },
+            "cursor positions stay exactly 2 px tall"
+        );
     }
 }

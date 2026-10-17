@@ -99,12 +99,18 @@ fn render_view<V: Render>(
 }
 
 fn render_island_tab_strip(cx: &mut HeadlessAppContext, pane_focused: bool) -> RgbaImage {
-    let bar_height = cx.update(|cx| Tab::container_height(cx));
+    let bar_height = cx.update(|cx| TabBar::strip_height(true, cx));
     render_view(
         cx,
         size(px(TAB_STRIP_WIDTH), bar_height),
         IslandTabStrip { pane_focused },
     )
+}
+
+fn border_rows(image: &RgbaImage, strip_height: Pixels) -> u32 {
+    let scale = image.height() as f32 / f32::from(strip_height);
+    let metrics = IslandTabMetrics::for_density(UiDensity::Default);
+    (f32::from(metrics.bottom_border_width) * scale).round() as u32
 }
 
 fn rgb_channels(color: Hsla) -> [f32; 3] {
@@ -146,10 +152,11 @@ fn assert_pixel_near(actual: [u8; 3], expected: [u8; 3], tolerance: u8, descript
     );
 }
 
-fn find_pill(image: &RgbaImage, bar: [u8; 3]) -> PillBounds {
+fn find_pill(image: &RgbaImage, bar: [u8; 3], border_rows: u32) -> PillBounds {
     let differs_from_bar =
         |column: u32, row: u32| !pixels_near(pixel_at(image, column, row), bar, CHANNEL_TOLERANCE);
-    let middle_row = image.height() / 2;
+    let content_rows = image.height() - border_rows;
+    let middle_row = content_rows / 2;
     let left = (0..image.width())
         .find(|&column| differs_from_bar(column, middle_row))
         .expect("the pill should cross the middle row of the tab bar");
@@ -158,10 +165,10 @@ fn find_pill(image: &RgbaImage, bar: [u8; 3]) -> PillBounds {
         .find(|&column| differs_from_bar(column, middle_row))
         .expect("the pill should have a right edge");
     let center_column = (left + right) / 2;
-    let top = (0..image.height())
+    let top = (0..content_rows)
         .find(|&row| differs_from_bar(center_column, row))
         .expect("the pill should have a top edge");
-    let bottom = (0..image.height())
+    let bottom = (0..content_rows)
         .rev()
         .find(|&row| differs_from_bar(center_column, row))
         .expect("the pill should have a bottom edge");
@@ -262,7 +269,7 @@ fn pixels_selected_island_tab_in_a_focused_pane_is_a_filled_pill_with_the_select
             colors.editor_background,
             colors.tab_active_background,
             colors.border_selected,
-            Tab::container_height(cx),
+            TabBar::strip_height(true, cx),
         )
     });
     let bar = composite_over(bar_background, CLEAR_CHANNELS);
@@ -275,7 +282,7 @@ fn pixels_selected_island_tab_in_a_focused_pane_is_a_filled_pill_with_the_select
         "the selected border {expected_border:?} should stand out from the fill {expected_fill:?}"
     );
 
-    let pill = find_pill(&image, expected_bar);
+    let pill = find_pill(&image, expected_bar, border_rows(&image, strip_height));
     assert_pill_geometry(&image, &pill, strip_height);
     assert_pixel_near(
         pixel_at(&image, pill.center_column(), pill.top),
@@ -307,7 +314,7 @@ fn pixels_selected_island_tab_in_an_unfocused_pane_is_a_frame_filled_pill_with_t
             colors.editor_background,
             colors.background,
             colors.border,
-            Tab::container_height(cx),
+            TabBar::strip_height(true, cx),
         )
     });
     let bar = composite_over(bar_background, CLEAR_CHANNELS);
@@ -320,7 +327,7 @@ fn pixels_selected_island_tab_in_an_unfocused_pane_is_a_frame_filled_pill_with_t
         "the border color {expected_border:?} should stand out from the bar {expected_bar:?}"
     );
 
-    let pill = find_pill(&image, expected_bar);
+    let pill = find_pill(&image, expected_bar, border_rows(&image, strip_height));
     assert_pill_geometry(&image, &pill, strip_height);
     assert_pixel_near(
         pixel_at(&image, pill.center_column(), pill.top),
@@ -339,5 +346,43 @@ fn pixels_selected_island_tab_in_an_unfocused_pane_is_a_frame_filled_pill_with_t
         expected_bar,
         CHANNEL_TOLERANCE,
         "the corner of the unfocused pill's bounding box lies outside its rounded radius",
+    );
+}
+
+#[test]
+fn pixels_island_tab_strip_ends_with_a_frame_colored_line_below_the_pills() {
+    let mut cx = headless_app();
+    let image = render_island_tab_strip(&mut cx, true);
+    let (bar_background, frame_background, strip_height) = cx.update(|cx| {
+        let colors = cx.theme().colors();
+        (
+            colors.editor_background,
+            colors.background,
+            TabBar::strip_height(true, cx),
+        )
+    });
+    let bar = composite_over(bar_background, CLEAR_CHANNELS);
+    let expected_bar = to_pixel(bar);
+    let expected_line = to_pixel(composite_over(frame_background, bar));
+    assert!(
+        !pixels_near(expected_line, expected_bar, CHANNEL_TOLERANCE),
+        "the line {expected_line:?} should stand out from the bar {expected_bar:?}"
+    );
+    let rows = border_rows(&image, strip_height);
+    assert!(rows >= 1, "the line is at least one physical pixel thick");
+    let column = image.width() / 2;
+    for offset in 0..rows {
+        assert_pixel_near(
+            pixel_at(&image, column, image.height() - 1 - offset),
+            expected_line,
+            CHANNEL_TOLERANCE,
+            "the last rows of the strip are the frame-colored line",
+        );
+    }
+    assert_pixel_near(
+        pixel_at(&image, column, image.height() - 1 - rows),
+        expected_bar,
+        CHANNEL_TOLERANCE,
+        "the row above the line is the strip background",
     );
 }

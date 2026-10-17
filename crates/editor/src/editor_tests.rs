@@ -37353,6 +37353,86 @@ async fn test_clearing_bookmark_store_notifies_editor(cx: &mut TestAppContext) {
     assert!(active.is_empty());
 }
 
+fn laid_out_has_gutter_icons(ctx: &mut BookmarkTestContext) -> bool {
+    ctx.draw_window();
+    ctx.editor
+        .read_with(&ctx.cx, |editor, _| editor.has_gutter_icons)
+}
+
+#[gpui::test]
+async fn test_intellij_gutter_icon_column_follows_the_bookmarks_of_the_file(
+    cx: &mut TestAppContext,
+) {
+    let mut ctx =
+        BookmarkTestContext::new("First line\nSecond line\nThird line\nFourth line", cx).await;
+    assert!(
+        !laid_out_has_gutter_icons(&mut ctx),
+        "a file without bookmarks or breakpoints reserves no icon column"
+    );
+
+    ctx.move_to_row(1);
+    ctx.add_bookmark_with_label("");
+    assert!(
+        laid_out_has_gutter_icons(&mut ctx),
+        "the first bookmark opens the icon column in the very next layout"
+    );
+
+    ctx.editor.update(&mut ctx.cx, |editor, cx| {
+        editor.set_show_bookmarks(false, cx);
+    });
+    assert!(
+        !laid_out_has_gutter_icons(&mut ctx),
+        "bookmarks hidden from the gutter need no icon column"
+    );
+
+    ctx.editor.update(&mut ctx.cx, |editor, cx| {
+        editor.set_show_bookmarks(true, cx);
+    });
+    ctx.move_to_row(1);
+    ctx.toggle_bookmark();
+    assert!(
+        !laid_out_has_gutter_icons(&mut ctx),
+        "removing the last bookmark closes the icon column in the very next layout"
+    );
+}
+
+#[gpui::test]
+async fn test_intellij_gutter_icon_column_reserves_width_only_for_resolvable_stored_bookmarks(
+    cx: &mut TestAppContext,
+) {
+    let mut ctx =
+        BookmarkTestContext::new("First line\nSecond line\nThird line\nFourth line", cx).await;
+    let abs_path = ctx.abs_path();
+
+    for (row, expected, message) in [
+        (
+            99,
+            false,
+            "a stored bookmark past the end of the file is dropped and reserves nothing",
+        ),
+        (
+            2,
+            true,
+            "a stored bookmark inside the file opens the icon column once it resolves",
+        ),
+    ] {
+        let rows = BTreeMap::from([(
+            abs_path.clone(),
+            vec![SerializedBookmark {
+                row,
+                label: String::new(),
+            }],
+        )]);
+        let loaded = ctx.project.update(&mut ctx.cx, |project, cx| {
+            project
+                .bookmark_store()
+                .update(cx, |store, cx| store.load_serialized_bookmarks(rows, cx))
+        });
+        loaded.await.unwrap();
+        assert_eq!(laid_out_has_gutter_icons(&mut ctx), expected, "{message}");
+    }
+}
+
 #[gpui::test]
 async fn test_clear_bookmarks_action_repaints_workspace_editor(cx: &mut TestAppContext) {
     init_test(cx, |_| {});

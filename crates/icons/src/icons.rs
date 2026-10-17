@@ -64,6 +64,8 @@ pub enum IconName {
     CaseSensitive,
     Chat,
     Check,
+    CheckBoxIndeterminateMark,
+    CheckBoxMark,
     CheckDouble,
     CherryPick,
     ChevronDown,
@@ -200,6 +202,7 @@ pub enum IconName {
     GeneralChevronRight,
     GeneralDelete,
     GeneralDown,
+    GeneralHide,
     GeneralHistory,
     GeneralLeft,
     GeneralMoveDown,
@@ -441,6 +444,48 @@ mod tests {
 
     use crate::IconName;
 
+    const SIXTEEN_PIXEL_GRID: &str = "width=\"16\" height=\"16\" viewBox=\"0 0 16 16\"";
+    const CHECK_BOX_INTERIOR_GRID: &str = "width=\"14\" height=\"14\" viewBox=\"1 1 14 14\"";
+
+    const CHROME_ICON_GRIDS: &[(&str, &str)] = &[
+        ("arrow_down", SIXTEEN_PIXEL_GRID),
+        ("arrow_left", SIXTEEN_PIXEL_GRID),
+        ("arrow_right", SIXTEEN_PIXEL_GRID),
+        ("arrow_up", SIXTEEN_PIXEL_GRID),
+        ("arrow_up_right", SIXTEEN_PIXEL_GRID),
+        ("case_sensitive", SIXTEEN_PIXEL_GRID),
+        ("check", SIXTEEN_PIXEL_GRID),
+        ("check_box_indeterminate_mark", CHECK_BOX_INTERIOR_GRID),
+        ("check_box_mark", CHECK_BOX_INTERIOR_GRID),
+        ("chevron_down", SIXTEEN_PIXEL_GRID),
+        ("chevron_down_up", SIXTEEN_PIXEL_GRID),
+        ("chevron_left", SIXTEEN_PIXEL_GRID),
+        ("chevron_right", SIXTEEN_PIXEL_GRID),
+        ("chevron_up", SIXTEEN_PIXEL_GRID),
+        ("chevron_up_down", SIXTEEN_PIXEL_GRID),
+        ("close", SIXTEEN_PIXEL_GRID),
+        ("close_small_hovered", SIXTEEN_PIXEL_GRID),
+        ("copy", SIXTEEN_PIXEL_GRID),
+        ("ellipsis", SIXTEEN_PIXEL_GRID),
+        ("ellipsis_vertical", SIXTEEN_PIXEL_GRID),
+        ("file_lock", SIXTEEN_PIXEL_GRID),
+        ("folder", SIXTEEN_PIXEL_GRID),
+        ("folder_open", SIXTEEN_PIXEL_GRID),
+        ("general_hide", SIXTEEN_PIXEL_GRID),
+        ("git_branch", SIXTEEN_PIXEL_GRID),
+        ("info", SIXTEEN_PIXEL_GRID),
+        ("magnifying_glass", SIXTEEN_PIXEL_GRID),
+        ("menu", SIXTEEN_PIXEL_GRID),
+        ("pin", SIXTEEN_PIXEL_GRID),
+        ("plus", SIXTEEN_PIXEL_GRID),
+        ("regex", SIXTEEN_PIXEL_GRID),
+        ("settings", SIXTEEN_PIXEL_GRID),
+        ("trash", SIXTEEN_PIXEL_GRID),
+        ("warning", SIXTEEN_PIXEL_GRID),
+        ("whole_word", SIXTEEN_PIXEL_GRID),
+        ("x_circle", SIXTEEN_PIXEL_GRID),
+    ];
+
     #[test]
     fn test_all_icons_exist() {
         let asset_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../assets");
@@ -513,6 +558,23 @@ mod tests {
             assert!(
                 twin_stem.parse::<IconName>().is_ok(),
                 "Icon {icon:?} has no twin variant for {twin_stem}",
+            );
+        }
+    }
+
+    #[test]
+    fn test_chrome_icons_keep_the_intellij_grid() {
+        let asset_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../assets");
+
+        for (file_stem, expected_grid) in CHROME_ICON_GRIDS {
+            let icon = file_stem
+                .parse::<IconName>()
+                .expect("chrome icon stem is not an IconName");
+            let svg = std::fs::read_to_string(asset_path.join(&*icon.path()))
+                .expect("failed to read chrome icon");
+            assert!(
+                svg.contains(*expected_grid),
+                "Icon {icon:?} does not declare {expected_grid}",
             );
         }
     }

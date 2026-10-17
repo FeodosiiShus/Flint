@@ -1,6 +1,7 @@
 use gpui::{App, Pixels, Window, px, rems};
+use theme::UiDensity;
 
-use crate::{ButtonSize, DynamicSpacing, IconSize};
+use crate::{ButtonMetrics, ButtonSize, DynamicSpacing, IconSize};
 
 const DEFAULT_ICON_PX: f32 = 14.;
 const BUTTON_ICON_PADDING: Pixels = px(8.);
@@ -37,14 +38,14 @@ pub fn chrome_icon_scale(region: ChromeRegion, cx: &App) -> Option<f32> {
 
 pub fn chrome_button_height(region: ChromeRegion, size: ButtonSize, cx: &App) -> Option<Pixels> {
     let icon_size = configured_icon_size(region, cx)?;
-    Some(button_height(size, icon_size, current_ui_font_size(cx)))
+    Some(button_height(size, icon_size, current_ui_density(cx)))
 }
 
 pub(crate) fn chrome_fit_height(region: ChromeRegion, size: ButtonSize, cx: &App) -> Pixels {
-    let ui_font_size = current_ui_font_size(cx);
+    let density = current_ui_density(cx);
     match configured_icon_size(region, cx) {
-        Some(icon_size) => button_height(size, icon_size, ui_font_size),
-        None => size.rems().to_pixels(ui_font_size),
+        Some(icon_size) => button_height(size, icon_size, density),
+        None => ButtonMetrics::for_size(size, density).height,
     }
 }
 
@@ -90,6 +91,10 @@ fn current_ui_font_size(cx: &App) -> Pixels {
     theme::theme_settings(cx).ui_font_size(cx)
 }
 
+fn current_ui_density(cx: &App) -> UiDensity {
+    theme::theme_settings(cx).ui_density(cx)
+}
+
 fn icon_scale(icon_size: Pixels) -> f32 {
     f32::from(icon_size) / DEFAULT_ICON_PX
 }
@@ -107,9 +112,10 @@ fn scaled_icon_size(default: IconSize, icon_size: Pixels, ui_font_size: Pixels) 
     icon_size_from_px(scaled_icon_px(default, icon_size), ui_font_size)
 }
 
-fn button_height(size: ButtonSize, icon_size: Pixels, ui_font_size: Pixels) -> Pixels {
-    let default_height = size.rems().to_pixels(ui_font_size);
-    default_height.max(icon_size + BUTTON_ICON_PADDING)
+fn button_height(size: ButtonSize, icon_size: Pixels, density: UiDensity) -> Pixels {
+    ButtonMetrics::for_size(size, density)
+        .height
+        .max(icon_size + BUTTON_ICON_PADDING)
 }
 
 fn square_side(icon_size: Pixels, icon_px: Pixels, padding: Pixels) -> Pixels {
@@ -193,19 +199,22 @@ mod tests {
     #[test]
     fn buttons_grow_to_fit_the_icon_and_never_shrink_below_their_size() {
         let cases = [
-            (ButtonSize::Default, 20., 16., 28.),
-            (ButtonSize::Default, 10., 16., 22.),
-            (ButtonSize::Default, 14., 16., 22.),
-            (ButtonSize::Default, 14., 20., 27.5),
-            (ButtonSize::Default, 24., 20., 32.),
-            (ButtonSize::Large, 20., 16., 32.),
-            (ButtonSize::Large, 32., 16., 40.),
-            (ButtonSize::Compact, 10., 16., 18.),
-            (ButtonSize::None, 10., 16., 18.),
-            (ButtonSize::None, 32., 16., 40.),
+            (ButtonSize::Default, 20., UiDensity::Default, 28.),
+            (ButtonSize::Default, 10., UiDensity::Default, 22.),
+            (ButtonSize::Default, 14., UiDensity::Default, 22.),
+            (ButtonSize::Default, 14., UiDensity::Compact, 22.),
+            (ButtonSize::Default, 24., UiDensity::Comfortable, 32.),
+            (ButtonSize::Medium, 10., UiDensity::Default, 28.),
+            (ButtonSize::Medium, 10., UiDensity::Compact, 24.),
+            (ButtonSize::Medium, 20., UiDensity::Compact, 28.),
+            (ButtonSize::Large, 20., UiDensity::Default, 32.),
+            (ButtonSize::Large, 32., UiDensity::Default, 40.),
+            (ButtonSize::Compact, 10., UiDensity::Default, 18.),
+            (ButtonSize::None, 10., UiDensity::Default, 18.),
+            (ButtonSize::None, 32., UiDensity::Default, 40.),
         ];
-        for (size, icon_size, ui_font_size, expected) in cases {
-            let height = button_height(size, px(icon_size), px(ui_font_size));
+        for (size, icon_size, density, expected) in cases {
+            let height = button_height(size, px(icon_size), density);
             assert_px(f32::from(height), expected);
         }
     }
@@ -248,9 +257,13 @@ mod tests {
 
     #[test]
     fn panel_header_fits_the_tallest_region_button_for_every_icon_size() {
-        for ui_font_size in UI_FONT_SIZES {
+        for density in [
+            UiDensity::Compact,
+            UiDensity::Default,
+            UiDensity::Comfortable,
+        ] {
             for icon_size in ICON_SIZES {
-                let button = button_height(ButtonSize::Default, px(icon_size), px(ui_font_size));
+                let button = button_height(ButtonSize::Default, px(icon_size), density);
                 let header = header_height(Some(px(24.)), px(32.), button);
                 let tallest_square = square_side(
                     px(icon_size),

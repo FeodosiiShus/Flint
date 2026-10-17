@@ -1019,6 +1019,7 @@ pub struct Editor {
     bookmarks_tab_state: Option<Entity<BookmarksTabState>>,
     bookmarks_tab_subscription: Option<Subscription>,
     breakpoint_store: Option<Entity<BreakpointStore>>,
+    has_gutter_icons: bool,
     gutter_hover_button: (Option<GutterHoverButton>, Option<Task<()>>),
     hovered_diff_hunk_row: Option<DisplayRow>,
     pull_diagnostics_task: Task<()>,
@@ -1118,6 +1119,7 @@ pub struct EditorSnapshot {
     show_code_actions: Option<bool>,
     show_breakpoints: Option<bool>,
     show_bookmarks: Option<bool>,
+    has_gutter_icons: bool,
     git_blame_gutter_max_author_length: Option<usize>,
     pub display_snapshot: DisplaySnapshot,
     pub placeholder_display_snapshot: Option<DisplaySnapshot>,
@@ -1869,7 +1871,7 @@ impl Editor {
                 let editor = editor.clone();
                 FoldPlaceholder::fold_element(fold_id, cx)
                     .cursor_pointer()
-                    .child("⋯")
+                    .child("...")
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .on_click(move |_, _window, cx| {
                         editor
@@ -2085,6 +2087,7 @@ impl Editor {
 
                         editor.refresh_inline_values(cx);
                     }
+                    BreakpointStoreEvent::BreakpointsCleared(_) => cx.notify(),
                     _ => {}
                 },
             ));
@@ -2328,6 +2331,7 @@ impl Editor {
             bookmarks_tab_state: None,
             bookmarks_tab_subscription: None,
             breakpoint_store,
+            has_gutter_icons: false,
             gutter_hover_button: (None, None),
             hovered_diff_hunk_row: None,
             _subscriptions: vec![
@@ -2942,6 +2946,7 @@ impl Editor {
             show_code_actions: self.show_code_actions,
             show_bookmarks: self.show_bookmarks,
             show_breakpoints: self.show_breakpoints,
+            has_gutter_icons: self.has_gutter_icons,
             git_blame_gutter_max_author_length,
             scroll_anchor: self.scroll_manager.shared_scroll_anchor(cx),
             display_snapshot,
@@ -2955,6 +2960,52 @@ impl Editor {
                 .unwrap_or_else(|| EditorSettings::get_global(cx).current_line_highlight),
             gutter_hovered: self.gutter_hovered,
         }
+    }
+
+    fn refresh_has_gutter_icons(&mut self, cx: &mut Context<Self>) {
+        self.has_gutter_icons = self.read_has_gutter_icons(cx);
+    }
+
+    fn read_has_gutter_icons(&self, cx: &mut App) -> bool {
+        if !self.show_gutter {
+            return false;
+        }
+        let gutter_settings = EditorSettings::get_global(cx).gutter;
+        let show_breakpoints = self.show_breakpoints.unwrap_or(gutter_settings.breakpoints);
+        let show_bookmarks = self.show_bookmarks.unwrap_or(gutter_settings.bookmarks);
+        if !show_breakpoints && !show_bookmarks {
+            return false;
+        }
+        let Some(buffer) = self.buffer.read(cx).as_singleton() else {
+            return false;
+        };
+        if project::File::from_dyn(buffer.read(cx).file()).is_none() {
+            return false;
+        }
+        let buffer_snapshot = buffer.read(cx).snapshot();
+        if show_breakpoints
+            && let Some(breakpoint_store) = self.breakpoint_store.as_ref()
+            && breakpoint_store
+                .read(cx)
+                .breakpoints(&buffer, None, &buffer_snapshot, cx)
+                .next()
+                .is_some()
+        {
+            return true;
+        }
+        if show_bookmarks
+            && let Some(bookmark_store) = self.bookmark_store.clone()
+            && !bookmark_store.read(cx).is_empty()
+        {
+            let whole_buffer = buffer_snapshot.anchor_before(0usize)
+                ..buffer_snapshot.anchor_after(buffer_snapshot.len());
+            return !bookmark_store
+                .update(cx, |store, cx| {
+                    store.bookmarks_for_buffer(buffer.clone(), whole_buffer, &buffer_snapshot, cx)
+                })
+                .is_empty();
+        }
+        false
     }
 
     pub fn language_at<T: ToOffset>(&self, point: T, cx: &App) -> Option<Arc<Language>> {
@@ -11698,8 +11749,8 @@ impl EditorSnapshot {
             && let Some(ch_advance) = cx.text_system().ch_advance(font_id, font_size).log_err()
         {
             use crate::element::gutter_geometry::{
-                GutterContent, GutterGaps, annotations_area_width, line_number_font_size,
-                line_numbers_area_width,
+                GutterContent, GutterGaps, annotations_area_width, icon_area_width,
+                line_number_font_size, line_numbers_area_width,
             };
 
             let show_git_gutter = self.show_git_diff_gutter.unwrap_or_else(|| {
@@ -11771,6 +11822,7 @@ impl EditorSnapshot {
                 leading_area_width,
                 line_numbers_width,
                 icons,
+                icon_area_width: icon_area_width(!is_singleton || self.has_gutter_icons),
                 folds,
                 vcs_markers: show_git_gutter.then_some(gutter_settings.git_gutter_width),
             }

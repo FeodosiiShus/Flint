@@ -13090,11 +13090,13 @@ fn entry_row_bounds(panel: &ProjectPanel, entry_id: ProjectEntryId) -> Bounds<Pi
 #[test]
 fn rounded_selection_pill_colors_follow_entry_state() {
     let selection: Hsla = gpui::rgba(0x3e5889ff).into();
+    let inactive_selection: Hsla = gpui::rgba(0x33353bff).into();
     let item_colors = ItemColors {
         default: gpui::black(),
         hover: gpui::green(),
         drag_over: gpui::yellow(),
         marked: selection,
+        marked_inactive: inactive_selection,
         focused: gpui::white(),
     };
     let focused_border = Some(gpui::white());
@@ -13111,16 +13113,8 @@ fn rounded_selection_pill_colors_follow_entry_state() {
 
     let inactive = selection_pill_colors(&item_colors, true, false, false, None);
     assert_eq!(
-        inactive.background.s, 0.,
-        "the selection of an unfocused panel is a neutral grey"
-    );
-    assert_eq!(
-        inactive.background.l, selection.l,
-        "the inactive selection keeps the lightness of the active selection"
-    );
-    assert!(
-        inactive.background.a < selection.a,
-        "the inactive selection is more subdued than the active selection"
+        inactive.background, inactive_selection,
+        "the selection of an unfocused panel is the inactive selection color"
     );
     assert_eq!(
         inactive.hover_background, inactive.background,
@@ -13152,6 +13146,150 @@ fn rounded_selection_pill_colors_follow_entry_state() {
     );
 }
 
+#[test]
+fn rounded_selection_inactive_color_needs_a_visible_element_background() {
+    let panel_background: Hsla = gpui::rgba(0x191a1cff).into();
+    let element_background: Hsla = gpui::rgba(0x33353bff).into();
+    let selection: Hsla = gpui::rgba(0x2a4371ff).into();
+
+    assert_eq!(
+        inactive_selection_color(element_background, panel_background, selection),
+        element_background,
+        "the element background is IntelliJ's selection-bg-inactive when it stands out from the panel"
+    );
+
+    let fallback = inactive_selection_color(panel_background, panel_background, selection);
+    assert_eq!(
+        fallback.s, 0.,
+        "without a distinct element background the inactive selection is a neutral grey"
+    );
+    assert_eq!(
+        fallback.l, selection.l,
+        "the neutral grey keeps the lightness of the active selection"
+    );
+    assert!(
+        fallback.a < selection.a,
+        "the neutral grey is more subdued than the active selection"
+    );
+    assert_eq!(
+        inactive_selection_color(gpui::transparent_black(), panel_background, selection),
+        fallback,
+        "a transparent element background would make the selection invisible"
+    );
+}
+
+#[test]
+fn rounded_selection_tree_metrics_follow_intellij_in_both_densities() {
+    let default = TreeRowMetrics::for_density(UiDensity::Default);
+    assert_eq!(
+        (
+            default.row_height,
+            default.inset_left,
+            default.inset_vertical
+        ),
+        (px(24.), px(12.), px(4.)),
+        "Tree.rowHeight is 24 and Tree.border is 4,12,4,12"
+    );
+    let compact = TreeRowMetrics::for_density(UiDensity::Compact);
+    assert_eq!(
+        (
+            compact.row_height,
+            compact.inset_left,
+            compact.inset_vertical
+        ),
+        (px(22.), px(8.), px(2.)),
+        "Tree.rowHeight.compact is 22 and Tree.border.compact is 2,8,2,8"
+    );
+    assert_eq!(
+        TreeRowMetrics::for_density(UiDensity::Comfortable),
+        default,
+        "the comfortable density keeps the non-compact tree"
+    );
+
+    assert_eq!(
+        default.entry_height(ProjectPanelEntrySpacing::Comfortable),
+        px(24.)
+    );
+    assert_eq!(
+        default.entry_height(ProjectPanelEntrySpacing::Standard),
+        px(22.),
+        "standard spacing is two pixels denser than the IntelliJ row"
+    );
+    assert_eq!(
+        compact.entry_height(ProjectPanelEntrySpacing::Comfortable),
+        px(22.)
+    );
+    assert_eq!(
+        compact.entry_height(ProjectPanelEntrySpacing::Standard),
+        px(20.)
+    );
+}
+
+#[test]
+fn rounded_selection_tree_offsets_follow_intellij_classic_painter() {
+    let indent = px(19.);
+    let default = TreeRowMetrics::for_density(UiDensity::Default);
+    let compact = TreeRowMetrics::for_density(UiDensity::Compact);
+
+    assert_eq!(default.control_left(indent, 0), px(12.));
+    assert_eq!(
+        default.control_left(indent, 3),
+        px(69.),
+        "every level adds Tree.leftChildIndent 8 and Tree.rightChildIndent 11"
+    );
+    assert_eq!(compact.control_left(indent, 0), px(8.));
+    assert_eq!(compact.control_left(indent, 3), px(65.));
+
+    assert_eq!(TreeRowMetrics::control_to_renderer(indent), px(19.));
+    assert_eq!(
+        TreeRowMetrics::control_to_content_gap(indent),
+        px(6.),
+        "3px from the chevron box to the renderer plus the renderer's 3px inset"
+    );
+    assert_eq!(
+        TreeRowMetrics::control_to_renderer(px(12.)),
+        px(18.),
+        "the renderer never starts closer than the chevron box plus a 2px gap"
+    );
+
+    assert_eq!(default.guide_left(), px(20.));
+    assert_eq!(compact.guide_left(), px(16.));
+
+    assert_eq!(
+        default.end_slot_padding(),
+        px(4.),
+        "indicators end 4px inside the pill, which already ends at the 12px tree border"
+    );
+    assert_eq!(
+        compact.end_slot_padding(),
+        px(8.),
+        "the 8px compact border leaves 4px more before the pill's 12px offset"
+    );
+}
+
+#[test]
+fn rounded_selection_pill_left_follows_intellij_selection_offset() {
+    let indent = px(19.);
+    let default = TreeRowMetrics::for_density(UiDensity::Default);
+    let compact = TreeRowMetrics::for_density(UiDensity::Compact);
+
+    for depth in 0..3 {
+        assert_eq!(default.selection_left(indent, depth, false), px(12.));
+        assert_eq!(default.selection_left(indent, depth, true), px(12.));
+    }
+    assert_eq!(
+        compact.selection_left(indent, 0, false),
+        px(8.),
+        "the pill of a first level directory starts at the compact tree border"
+    );
+    assert_eq!(
+        compact.selection_left(indent, 0, true),
+        px(12.),
+        "a first level file starts after the chevron column, so the pill stops at the 12px selection offset"
+    );
+    assert_eq!(compact.selection_left(indent, 1, false), px(12.));
+}
+
 #[gpui::test]
 async fn rounded_selection_paints_inset_pill_behind_selected_entry(cx: &mut gpui::TestAppContext) {
     init_test(cx);
@@ -13166,6 +13304,7 @@ async fn rounded_selection_paints_inset_pill_behind_selected_entry(cx: &mut gpui
         let colors = cx.theme().colors();
         (colors.element_selected, colors.panel_focused_border)
     });
+    let scale_factor = cx.update(|window, _| window.scale_factor());
     let (row_bounds, quads) = painted_quads_in_entry_row(&panel, "root/file_1.txt", cx);
 
     let selection_quads = quads
@@ -13183,29 +13322,25 @@ async fn rounded_selection_paints_inset_pill_behind_selected_entry(cx: &mut gpui
         "the selection is a rounded pill: {pill:?}"
     );
     assert!(
-        pill_bounds.left() >= row_bounds.left() + SELECTION_PILL_INSET - px(0.5)
-            && pill_bounds.right() <= row_bounds.right() - SELECTION_PILL_INSET + px(0.5),
-        "the pill is inset from both edges of the row: {pill_bounds:?} in {row_bounds:?}"
+        (pill_bounds.left() - row_bounds.left() - TREE_SELECTION_INSET).abs() <= px(0.5)
+            && (row_bounds.right() - pill_bounds.right() - TREE_SELECTION_INSET).abs() <= px(0.5),
+        "the pill is inset 12px from both edges of the row, like IntelliJ's tree selection: {pill_bounds:?} in {row_bounds:?}"
     );
-
-    let focus_border_quads = quads
-        .iter()
-        .filter(|(_, quad)| quad.border_color == focus_border_color)
-        .collect::<Vec<_>>();
     assert!(
-        !focus_border_quads.is_empty(),
-        "the keyboard-focused entry keeps a visible focus border"
+        (pill_bounds.size.height - row_bounds.size.height).abs() <= px(0.5),
+        "the pill spans the whole height of the row: {pill_bounds:?} in {row_bounds:?}"
     );
-    for (border_bounds, border_quad) in focus_border_quads {
-        assert_eq!(
-            border_bounds, pill_bounds,
-            "the focus border outlines the pill instead of the full-width row"
-        );
-        assert!(
-            has_rounded_corners(border_quad),
-            "the focus border follows the rounded pill: {border_quad:?}"
-        );
-    }
+    assert!(
+        (pill.corner_radii.top_left.as_f32() / scale_factor - TREE_SELECTION_RADIUS.as_f32()).abs()
+            <= 0.5,
+        "the pill corners have a 4px radius, half of Tree.Selection.arc: {pill:?}"
+    );
+    assert!(
+        quads
+            .iter()
+            .all(|(_, quad)| quad.border_color != focus_border_color),
+        "a selected entry shows no keyboard cursor ring, like IntelliJ's tree on macOS: {quads:?}"
+    );
 }
 
 #[gpui::test]
@@ -13298,22 +13433,17 @@ async fn rounded_selection_uses_inactive_color_when_panel_loses_focus(
     });
     let unfocused_color = painted_pill_color(&panel, "root/file_1.txt", cx);
 
-    let element_selected = cx.update(|_, cx| cx.theme().colors().element_selected);
+    let (element_selected, element_background) = cx.update(|_, cx| {
+        let colors = cx.theme().colors();
+        (colors.element_selected, colors.element_background)
+    });
     assert_eq!(
         focused_color, element_selected,
         "the focused panel fills the selection with the active selection color"
     );
-    assert_ne!(
-        unfocused_color, focused_color,
-        "the selection color changes when the panel loses focus"
-    );
     assert_eq!(
-        unfocused_color.s, 0.,
-        "the selection of an unfocused panel is a neutral grey"
-    );
-    assert!(
-        unfocused_color.a < focused_color.a,
-        "the selection of an unfocused panel is more subdued"
+        unfocused_color, element_background,
+        "the selection of an unfocused panel is the inactive selection color, IntelliJ's selection-bg-inactive"
     );
 }
 
@@ -13352,9 +13482,132 @@ async fn rounded_selection_highlights_hovered_entry_with_pill(cx: &mut gpui::Tes
         "the hovered row is highlighted with a rounded pill: {hover_quad:?}"
     );
     assert!(
-        hover_bounds.left() >= row_bounds.left() + SELECTION_PILL_INSET - px(0.5)
-            && hover_bounds.right() <= row_bounds.right() - SELECTION_PILL_INSET + px(0.5),
-        "the hover pill is inset from both edges of the row: {hover_bounds:?} in {row_bounds:?}"
+        (hover_bounds.left() - row_bounds.left() - TREE_SELECTION_INSET).abs() <= px(0.5)
+            && (row_bounds.right() - hover_bounds.right() - TREE_SELECTION_INSET).abs() <= px(0.5),
+        "the hover pill is inset 12px from both edges of the row: {hover_bounds:?} in {row_bounds:?}"
+    );
+}
+
+#[gpui::test]
+async fn rounded_selection_rows_are_24px_high_in_default_density(cx: &mut gpui::TestAppContext) {
+    let row_height = entry_row_height_in_density(settings::UiDensity::Default, cx).await;
+    assert!(
+        (row_height - px(24.)).abs() <= px(0.01),
+        "Tree.rowHeight is 24: {row_height:?}"
+    );
+}
+
+#[gpui::test]
+async fn rounded_selection_rows_are_22px_high_in_compact_density(cx: &mut gpui::TestAppContext) {
+    let row_height = entry_row_height_in_density(settings::UiDensity::Compact, cx).await;
+    assert!(
+        (row_height - px(22.)).abs() <= px(0.01),
+        "Tree.rowHeight.compact is 22: {row_height:?}"
+    );
+}
+
+#[gpui::test]
+async fn rounded_selection_pill_follows_the_compact_tree_border(cx: &mut gpui::TestAppContext) {
+    init_test(cx);
+    set_rounded_selection(true, cx);
+    set_ui_density(settings::UiDensity::Compact, cx);
+    let (panel, mut cx) = open_panel_with_files(3, DockSide::Left, cx).await;
+    let cx = &mut cx;
+    let selection_color = cx.update(|_, cx| cx.theme().colors().element_selected);
+
+    mark_entry_and_focus_panel(&panel, "root", cx);
+    let (row_bounds, pill_bounds, _) =
+        painted_pill_in_entry_row(&panel, "root", selection_color, cx);
+    assert!(
+        (pill_bounds.left() - row_bounds.left() - px(8.)).abs() <= px(0.5),
+        "the pill of the first level directory starts at the 8px compact tree border: {pill_bounds:?} in {row_bounds:?}"
+    );
+    assert!(
+        (row_bounds.right() - pill_bounds.right() - TREE_SELECTION_INSET).abs() <= px(0.5),
+        "the pill still ends 12px before the right edge: {pill_bounds:?} in {row_bounds:?}"
+    );
+
+    panel.update(cx, |panel, _| panel.marked_entries.clear());
+    mark_entry_and_focus_panel(&panel, "root/file_1.txt", cx);
+    let (row_bounds, pill_bounds, _) =
+        painted_pill_in_entry_row(&panel, "root/file_1.txt", selection_color, cx);
+    assert!(
+        (pill_bounds.left() - row_bounds.left() - TREE_SELECTION_INSET).abs() <= px(0.5),
+        "the pill of a nested file starts at the 12px selection offset: {pill_bounds:?} in {row_bounds:?}"
+    );
+}
+
+#[gpui::test]
+async fn rounded_selection_merges_adjacent_marked_entries_into_one_block(
+    cx: &mut gpui::TestAppContext,
+) {
+    init_test(cx);
+    set_rounded_selection(true, cx);
+    let (panel, mut cx) = open_panel_with_files(3, DockSide::Left, cx).await;
+    let cx = &mut cx;
+    for index in 0..3 {
+        select_path_with_mark(&panel, &format!("root/file_{index}.txt"), cx);
+    }
+    panel.update_in(cx, |panel, window, cx| panel.focus_handle.focus(window, cx));
+    cx.run_until_parked();
+    let selection_color = cx.update(|_, cx| cx.theme().colors().element_selected);
+
+    let rounded_sides = |path: &str, cx: &mut VisualTestContext| {
+        let (_, _, pill) = painted_pill_in_entry_row(&panel, path, selection_color, cx);
+        (
+            pill.corner_radii.top_left.as_f32() > 0.,
+            pill.corner_radii.bottom_left.as_f32() > 0.,
+        )
+    };
+    assert_eq!(
+        rounded_sides("root/file_0.txt", cx),
+        (true, false),
+        "the first row of a selected block keeps its top corners round and joins the next row"
+    );
+    assert_eq!(
+        rounded_sides("root/file_1.txt", cx),
+        (false, false),
+        "a row between two selected rows is square"
+    );
+    assert_eq!(
+        rounded_sides("root/file_2.txt", cx),
+        (false, true),
+        "the last row of a selected block keeps its bottom corners round"
+    );
+}
+
+#[gpui::test]
+async fn rounded_selection_cursor_ring_outlines_the_pill_of_an_unmarked_entry(
+    cx: &mut gpui::TestAppContext,
+) {
+    init_test(cx);
+    set_rounded_selection(true, cx);
+    let (panel, mut cx) = open_panel_with_files(3, DockSide::Left, cx).await;
+    let cx = &mut cx;
+    select_path(&panel, "root/file_1.txt", cx);
+    panel.update_in(cx, |panel, window, cx| panel.focus_handle.focus(window, cx));
+    cx.run_until_parked();
+
+    let focus_border_color = cx.update(|_, cx| cx.theme().colors().panel_focused_border);
+    let (row_bounds, quads) = painted_quads_in_entry_row(&panel, "root/file_1.txt", cx);
+    let ring_quads = quads
+        .iter()
+        .filter(|(_, quad)| quad.border_color == focus_border_color)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        ring_quads.len(),
+        1,
+        "the keyboard cursor of an unmarked entry is drawn as a ring: {quads:?}"
+    );
+    let (ring_bounds, ring) = ring_quads[0];
+    assert!(
+        has_rounded_corners(ring),
+        "the ring follows the rounded pill: {ring:?}"
+    );
+    assert!(
+        (ring_bounds.left() - row_bounds.left() - TREE_SELECTION_INSET).abs() <= px(0.5)
+            && (row_bounds.right() - ring_bounds.right() - TREE_SELECTION_INSET).abs() <= px(0.5),
+        "the ring outlines the pill instead of the full-width row: {ring_bounds:?} in {row_bounds:?}"
     );
 }
 
@@ -13369,6 +13622,62 @@ fn set_rounded_selection(rounded_selection: bool, cx: &mut TestAppContext) {
             });
         });
     });
+}
+
+fn set_ui_density(density: settings::UiDensity, cx: &mut TestAppContext) {
+    cx.update(|cx| {
+        cx.update_global::<SettingsStore, _>(|store, cx| {
+            store.update_user_settings(cx, |settings| {
+                settings.theme.ui_density = Some(density);
+            });
+        });
+    });
+}
+
+async fn entry_row_height_in_density(
+    density: settings::UiDensity,
+    cx: &mut gpui::TestAppContext,
+) -> Pixels {
+    init_test(cx);
+    set_ui_density(density, cx);
+    let (panel, mut cx) = open_panel_with_files(3, DockSide::Left, cx).await;
+    let cx = &mut cx;
+    panel
+        .read_with(cx, |panel, _| panel.entry_row_height())
+        .expect("the entries list is laid out")
+}
+
+fn mark_entry_and_focus_panel(
+    panel: &Entity<ProjectPanel>,
+    path: &str,
+    cx: &mut VisualTestContext,
+) {
+    select_path_with_mark(panel, path, cx);
+    panel.update_in(cx, |panel, window, cx| {
+        panel.focus_handle.focus(window, cx);
+        cx.notify();
+    });
+    cx.run_until_parked();
+}
+
+fn painted_pill_in_entry_row(
+    panel: &Entity<ProjectPanel>,
+    path: &str,
+    color: Hsla,
+    cx: &mut VisualTestContext,
+) -> (Bounds<Pixels>, Bounds<Pixels>, Quad) {
+    let (row_bounds, quads) = painted_quads_in_entry_row(panel, path, cx);
+    let mut matching = quads
+        .into_iter()
+        .filter(|(_, quad)| quad.background == Background::from(color));
+    let (pill_bounds, pill) = matching
+        .next()
+        .expect("the entry paints a quad in the selection color");
+    assert!(
+        matching.next().is_none(),
+        "only one quad of the row paints the selection color"
+    );
+    (row_bounds, pill_bounds, pill)
 }
 
 fn painted_quads_in_entry_row(

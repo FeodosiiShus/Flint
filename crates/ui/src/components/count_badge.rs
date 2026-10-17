@@ -2,6 +2,10 @@ use gpui::FontWeight;
 
 use crate::prelude::*;
 
+const COUNT_BADGE_HEIGHT: Pixels = px(14.);
+const COUNT_BADGE_SINGLE_CHARACTER_WIDTH: Pixels = px(16.);
+const COUNT_BADGE_WIDTH: Pixels = px(20.);
+
 /// A small, pill-shaped badge that displays a numeric count.
 ///
 /// The count is capped at 99 and displayed as "99+" beyond that.
@@ -30,13 +34,19 @@ impl RenderOnce for CountBadge {
             .editor_background
             .blend(cx.theme().status().error.opacity(0.4));
 
+        let minimum_width = if label.chars().count() == 1 {
+            COUNT_BADGE_SINGLE_CHARACTER_WIDTH
+        } else {
+            COUNT_BADGE_WIDTH
+        };
+
         h_flex()
             .absolute()
             .top_0()
             .right_0()
             .p_px()
-            .h_3p5()
-            .min_w_3p5()
+            .h(COUNT_BADGE_HEIGHT)
+            .min_w(minimum_width)
             .rounded_full()
             .justify_center()
             .text_center()

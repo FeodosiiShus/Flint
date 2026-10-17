@@ -60,6 +60,7 @@ pub struct ListItem {
     focused: Option<bool>,
     dock: Option<DockSide>,
     height: Option<DefiniteLength>,
+    horizontal_padding: Option<(Pixels, Pixels)>,
     aria_role: Option<Role>,
     aria_label: Option<SharedString>,
     aria_keyshortcuts: Option<SharedString>,
@@ -97,6 +98,7 @@ impl ListItem {
             focused: None,
             dock: None,
             height: None,
+            horizontal_padding: None,
             aria_role: None,
             aria_label: None,
             aria_keyshortcuts: None,
@@ -280,6 +282,11 @@ impl ListItem {
         self.height = Some(height.into());
         self
     }
+
+    pub fn horizontal_padding(mut self, left: Pixels, right: Pixels) -> Self {
+        self.horizontal_padding = Some((left, right));
+        self
+    }
 }
 
 impl Disableable for ListItem {
@@ -386,6 +393,8 @@ impl RenderOnce for ListItem {
                         if self.inset {
                             this.min_h(popup_row.pill_height)
                                 .px(popup_row.content_padding_x)
+                        } else if let Some((left, right)) = self.horizontal_padding {
+                            this.pl(left).pr(right)
                         } else {
                             this.px(DynamicSpacing::Base06.rems(cx))
                         }

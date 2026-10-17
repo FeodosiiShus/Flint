@@ -17,7 +17,7 @@ use crate::application_menu::{
 
 use gpui::{
     AnyElement, App, Context, Entity, Hsla, InteractiveElement, IntoElement, MouseButton,
-    ParentElement, Render, Role, Styled, Subscription, WeakEntity, Window, actions, div, rgb,
+    ParentElement, Render, Styled, Subscription, WeakEntity, Window, actions, div, px, rgb,
 };
 use project::{
     Project, git_store::GitStoreEvent, project_settings::ProjectSettings,
@@ -26,27 +26,31 @@ use project::{
 use settings::Settings as _;
 
 use std::path::Path;
-use theme::ActiveTheme;
+use theme::{ActiveTheme, UiDensity};
 use title_bar_settings::TitleBarSettings;
-use toolbar_widgets::{
-    TOOLBAR_WIDGET_HEIGHT, TOOLBAR_WIDGET_ICON_TEXT_GAP, TOOLBAR_WIDGET_PADDING_LEFT,
-    TOOLBAR_WIDGET_PADDING_RIGHT, ToolbarWidget, ToolbarWidgetColors, upstream_tracking,
-};
+use toolbar_widgets::{ToolbarWidget, ToolbarWidgetColors, avatar_initials};
 use ui::{
-    COMPONENT_CORNER_RADII, KeyBinding, PopoverMenu, TintColor, Tooltip, prelude::*,
-    utils::platform_title_bar_height,
+    IconButton, PopoverMenu, TintColor, Tooltip, prelude::*, utils::platform_title_bar_height,
 };
 use util::ResultExt;
 use workspace::{
     AccessibleMode, MultiWorkspace, ToggleWorktreeSecurity, Workspace, WorkspaceSettings,
 };
+use zed_actions::OpenSettings;
 
 const MAX_BRANCH_NAME_LENGTH: usize = 40;
 const MAX_SHORT_SHA_LENGTH: usize = 8;
-const SEARCH_FIELD_WIDTH: f32 = 280.;
-pub const SEARCH_FIELD_DEBUG_SELECTOR: &str = "title_bar_search_field";
+pub const SEARCH_BUTTON_DEBUG_SELECTOR: &str = "title_bar_search_button";
+const SETTINGS_BUTTON_DEBUG_SELECTOR: &str = "title_bar_settings_button";
+const NAVIGATION_BUTTONS_DEBUG_SELECTOR: &str = "title_bar_navigation_buttons";
+const TITLE_BAR_ACTIONS_DEBUG_SELECTOR: &str = "title_bar_actions";
+const PROJECT_WIDGET_DEBUG_SELECTOR: &str = "title_bar_project_widget";
 const WORKTREE_AND_BRANCH_DEBUG_SELECTOR: &str = "title_bar_worktree_and_branch";
 const PROJECT_GRADIENT_COLOR: u32 = 0x955AE0;
+const TITLE_BAR_BUTTON_SIDE: Pixels = px(22.);
+const TITLE_BAR_BUTTON_RADIUS: Pixels = px(6.);
+const TITLE_BAR_BUTTON_RADIUS_COMPACT: Pixels = px(4.);
+const TITLE_BAR_ACTION_GAP: Pixels = px(10.);
 
 fn linked_worktree_name_anchor<'a>(
     main_worktree_path: Option<&'a Path>,
@@ -194,12 +198,30 @@ impl Render for TitleBar {
         let project_gradient = (project_name.is_some() && title_bar_settings.show_project_gradient)
             .then(Self::project_gradient_color);
 
+        let (can_go_back, can_go_forward) = self
+            .workspace
+            .upgrade()
+            .map(|workspace| {
+                workspace.read_with(cx, |workspace, cx| {
+                    let pane = workspace.active_pane().read(cx);
+                    (pane.can_navigate_backward(), pane.can_navigate_forward())
+                })
+            })
+            .unwrap_or((false, false));
+
         let project_items = h_flex()
             .h_full()
             .gap_0p5()
             .map(|title_bar| {
                 let mut render_project_items = true;
                 title_bar
+                    .child(Self::render_navigation_buttons(
+                        can_go_back,
+                        can_go_forward,
+                        self.workspace.clone(),
+                        window,
+                        cx,
+                    ))
                     .when_some(
                         self.application_menu.clone().filter(|_| !show_menus),
                         |title_bar, menu| {
@@ -216,6 +238,9 @@ impl Render for TitleBar {
                     .children(self.render_restricted_mode(cx))
                     .when(render_project_items, |title_bar| {
                         title_bar
+                            .when_some(project_name.clone(), |title_bar, project_name| {
+                                title_bar.child(Self::render_project_widget(project_name))
+                            })
                             .when_some(
                                 repository.filter(|_| is_git_enabled),
                                 |title_bar, repository| {
@@ -226,13 +251,13 @@ impl Render for TitleBar {
                                     ))
                                 },
                             )
-                            .when(title_bar_settings.show_search_button, |title_bar| {
-                                title_bar.child(Self::render_search_field(cx))
-                            })
                     })
             })
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .into_any_element();
+
+        let title_bar_actions =
+            Self::render_title_bar_actions(title_bar_settings.show_search_button, window, cx);
 
         if show_menus {
             self.platform_titlebar.update(cx, |this, _| {
@@ -280,7 +305,8 @@ impl Render for TitleBar {
                                 .size_full()
                                 .justify_between()
                                 .opacity(content_opacity)
-                                .child(project_items),
+                                .child(project_items)
+                                .child(title_bar_actions),
                         ),
                 )
                 .into_any_element()
@@ -288,7 +314,7 @@ impl Render for TitleBar {
             self.platform_titlebar.update(cx, |this, _| {
                 this.set_button_layout(button_layout);
                 this.set_project_gradient(project_gradient);
-                this.set_children([project_items]);
+                this.set_children([project_items, title_bar_actions]);
             });
             self.platform_titlebar.clone().into_any_element()
         }
@@ -459,53 +485,161 @@ impl TitleBar {
         rgb(PROJECT_GRADIENT_COLOR).into()
     }
 
-    fn render_search_field(cx: &App) -> impl IntoElement {
-        let region = ui::ChromeRegion::TitleBar;
-        let action = zed_actions::search_everywhere::Toggle { tab: None };
-        let colors = ToolbarWidgetColors::current(cx);
-        let focused_border = cx.theme().colors().border_focused;
+    fn title_bar_button_metrics(window: &Window, cx: &App) -> (IconSize, Pixels, Pixels) {
+        let radius = match theme::theme_settings(cx).ui_density(cx) {
+            UiDensity::Compact => TITLE_BAR_BUTTON_RADIUS_COMPACT,
+            UiDensity::Default | UiDensity::Comfortable => TITLE_BAR_BUTTON_RADIUS,
+        };
+        (
+            ui::exact_icon_size(ui::TOOLBAR_ICON_SIDE, window.rem_size()),
+            TITLE_BAR_BUTTON_SIDE,
+            radius,
+        )
+    }
+
+    fn render_navigation_buttons(
+        can_go_back: bool,
+        can_go_forward: bool,
+        workspace: WeakEntity<Workspace>,
+        window: &Window,
+        cx: &App,
+    ) -> impl IntoElement {
+        let (icon_size, side, radius) = Self::title_bar_button_metrics(window, cx);
+        let backward = IconButton::new("title_bar_navigate_backward", IconName::ArrowLeft)
+            .shape(ui::IconButtonShape::Square)
+            .style(ButtonStyle::Subtle)
+            .chrome_region(ui::ChromeRegion::TitleBar)
+            .icon_size(icon_size)
+            .box_size(side)
+            .corner_radius(radius)
+            .aria_label("Go Back")
+            .disabled(!can_go_back)
+            .tooltip(Tooltip::for_action_title("Go Back", &workspace::GoBack))
+            .on_click({
+                let workspace = workspace.clone();
+                move |_, window, cx| {
+                    if let Some(workspace) = workspace.upgrade() {
+                        let pane = workspace.read(cx).active_pane().clone();
+                        pane.update(cx, |pane, cx| {
+                            pane.navigate_backward(&workspace::GoBack, window, cx)
+                        });
+                    }
+                }
+            });
+        let forward = IconButton::new("title_bar_navigate_forward", IconName::ArrowRight)
+            .shape(ui::IconButtonShape::Square)
+            .style(ButtonStyle::Subtle)
+            .chrome_region(ui::ChromeRegion::TitleBar)
+            .icon_size(icon_size)
+            .box_size(side)
+            .corner_radius(radius)
+            .aria_label("Go Forward")
+            .disabled(!can_go_forward)
+            .tooltip(Tooltip::for_action_title(
+                "Go Forward",
+                &workspace::GoForward,
+            ))
+            .on_click({
+                let workspace = workspace.clone();
+                move |_, window, cx| {
+                    if let Some(workspace) = workspace.upgrade() {
+                        let pane = workspace.read(cx).active_pane().clone();
+                        pane.update(cx, |pane, cx| {
+                            pane.navigate_forward(&workspace::GoForward, window, cx)
+                        });
+                    }
+                }
+            });
 
         h_flex()
-            .debug_selector(|| SEARCH_FIELD_DEBUG_SELECTOR.into())
+            .debug_selector(|| NAVIGATION_BUTTONS_DEBUG_SELECTOR.into())
+            .items_center()
+            .gap(px(4.))
+            .child(backward)
+            .child(forward)
+    }
+
+    fn render_project_widget(project_name: SharedString) -> impl IntoElement {
+        let initials: SharedString = avatar_initials(&project_name).into();
+        let color = Self::project_gradient_color();
+        let tooltip_label = project_name.clone();
+        let open_recent = zed_actions::OpenRecent {
+            create_new_window: None,
+        };
+        let tooltip_action = open_recent.clone();
+
+        h_flex()
+            .debug_selector(|| PROJECT_WIDGET_DEBUG_SELECTOR.into())
             .child(
-                h_flex()
-                    .id("title_bar_search_field")
-                    .role(Role::Button)
-                    .aria_label("Search Everywhere")
-                    .tab_index(0isize)
-                    .font_ui(cx)
-                    .flex_none()
-                    .w(px(SEARCH_FIELD_WIDTH))
-                    .h(TOOLBAR_WIDGET_HEIGHT)
-                    .pl(TOOLBAR_WIDGET_PADDING_LEFT)
-                    .pr(TOOLBAR_WIDGET_PADDING_RIGHT)
-                    .gap(TOOLBAR_WIDGET_ICON_TEXT_GAP)
-                    .rounded(COMPONENT_CORNER_RADII.toolbar_widget)
-                    .border_1()
-                    .border_color(colors.border)
-                    .bg(colors.rest)
-                    .cursor_pointer()
-                    .hover(move |style| style.bg(colors.hover).border_color(colors.hover_border))
-                    .focus_visible(move |style| style.border_color(focused_border))
-                    .active(move |style| style.bg(colors.open))
-                    .tooltip(Tooltip::for_action_title("Search Everywhere", &action))
-                    .child(
-                        Icon::new(IconName::MagnifyingGlass)
-                            .size(ui::chrome_icon_size(region, IconSize::Medium, cx))
-                            .color(Color::Muted),
-                    )
-                    .child(Label::new("Search Everywhere").color(Color::Muted))
-                    .child(
-                        h_flex()
-                            .flex_1()
-                            .justify_end()
-                            .child(KeyBinding::for_action(&action, cx)),
-                    )
-                    .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
+                ToolbarWidget::avatar("project_widget_trigger", initials, color)
+                    .label(project_name)
+                    .tab_index(0)
+                    .tooltip(move |_window, cx| {
+                        Tooltip::with_meta(
+                            "Recent Projects",
+                            Some(&tooltip_action),
+                            format!("Currently Open: {tooltip_label}"),
+                            cx,
+                        )
+                    })
                     .on_click(move |_, window, cx| {
-                        cx.stop_propagation();
-                        window.dispatch_action(Box::new(action.clone()), cx)
+                        window.dispatch_action(Box::new(open_recent.clone()), cx)
                     }),
+            )
+    }
+
+    fn render_title_bar_actions(
+        show_search_button: bool,
+        window: &Window,
+        cx: &App,
+    ) -> impl IntoElement {
+        let (icon_size, side, radius) = Self::title_bar_button_metrics(window, cx);
+        let colors = ToolbarWidgetColors::current(cx);
+        let search_action = zed_actions::search_everywhere::Toggle { tab: None };
+        let action_button = move |id: &'static str, icon: IconName| {
+            IconButton::new(id, icon)
+                .shape(ui::IconButtonShape::Square)
+                .style(ButtonStyle::Subtle)
+                .chrome_region(ui::ChromeRegion::TitleBar)
+                .icon_size(icon_size)
+                .box_size(side)
+                .corner_radius(radius)
+                .hover_background(colors.hover)
+                .active_background(colors.open)
+        };
+
+        h_flex()
+            .debug_selector(|| TITLE_BAR_ACTIONS_DEBUG_SELECTOR.into())
+            .items_center()
+            .gap(TITLE_BAR_ACTION_GAP)
+            .when(show_search_button, |this| {
+                this.child(
+                    div()
+                        .debug_selector(|| SEARCH_BUTTON_DEBUG_SELECTOR.into())
+                        .child(
+                            action_button("title_bar_search_button", IconName::MagnifyingGlass)
+                                .aria_label("Search Everywhere")
+                                .tooltip(Tooltip::for_action_title(
+                                    "Search Everywhere",
+                                    &search_action,
+                                ))
+                                .on_click(move |_, window, cx| {
+                                    window.dispatch_action(Box::new(search_action.clone()), cx)
+                                }),
+                        ),
+                )
+            })
+            .child(
+                div()
+                    .debug_selector(|| SETTINGS_BUTTON_DEBUG_SELECTOR.into())
+                    .child(
+                        action_button("title_bar_settings_button", IconName::Settings)
+                            .aria_label("Settings")
+                            .tooltip(Tooltip::for_action_title("Settings", &OpenSettings))
+                            .on_click(|_, window, cx| {
+                                window.dispatch_action(Box::new(OpenSettings), cx)
+                            }),
+                    ),
             )
     }
 
@@ -782,9 +916,9 @@ mod tests {
         let gradient = cx
             .debug_bounds("project_gradient")
             .expect("a named project should tint the title bar with its gradient");
-        let search_field = cx
-            .debug_bounds(SEARCH_FIELD_DEBUG_SELECTOR)
-            .expect("the search field should be rendered in the title bar");
+        let search_button = cx
+            .debug_bounds(SEARCH_BUTTON_DEBUG_SELECTOR)
+            .expect("the search button should be rendered in the title bar");
         assert_eq!(
             gradient.origin,
             point(px(0.), px(0.)),
@@ -795,7 +929,7 @@ mod tests {
             "the gradient fills the full height of the title bar"
         );
         assert!(
-            gradient.right() >= search_field.right(),
+            gradient.right() >= search_button.right(),
             "the gradient spans the title bar behind its widgets"
         );
 
@@ -839,28 +973,22 @@ mod tests {
         let title_bar_color = platform_titlebar.update_in(cx, |platform_titlebar, window, cx| {
             platform_titlebar.title_bar_color(window, cx)
         });
-        let (project_color, inactive_opacity) = cx.update(|_, cx| {
-            (
-                TitleBar::project_gradient_color(),
-                <WorkspaceSettings as settings::Settings>::get_global(cx)
-                    .islands
-                    .frame_content_opacity(false),
-            )
+        let project_color = cx.update(|_, _| TitleBar::project_gradient_color());
+        let inactive_opacity = cx.update(|_, cx| {
+            <WorkspaceSettings as settings::Settings>::get_global(cx)
+                .islands
+                .frame_content_opacity(false)
         });
-        let search_field_border = cx.update(|_, cx| ToolbarWidgetColors::current(cx).border);
         let scale_factor = cx.update(|window, _| window.scale_factor());
-        let search_field = cx
-            .debug_bounds(SEARCH_FIELD_DEBUG_SELECTOR)
-            .expect("the search field should be rendered in the title bar")
+        let avatar_chip = cx
+            .debug_bounds(toolbar_widgets::PROJECT_AVATAR_CHIP_DEBUG_SELECTOR)
+            .expect("the project avatar chip should be rendered in the title bar")
             .scale(scale_factor);
-        let search_field_border_colors = |quads: &[Quad]| {
+        let avatar_chip_fills = |quads: &[Quad]| {
             quads
                 .iter()
-                .filter(|quad| {
-                    quad.border_widths.any(|width| width.0 > 0.)
-                        && search_field.contains(&quad.bounds.center())
-                })
-                .map(|quad| quad.border_color)
+                .filter(|quad| avatar_chip.contains(&quad.bounds.center()))
+                .map(|quad| quad.background)
                 .collect::<Vec<_>>()
         };
         assert!(
@@ -876,8 +1004,8 @@ mod tests {
             "an active window paints the gradient at full strength"
         );
         assert!(
-            search_field_border_colors(active_quads.as_slice()).contains(&search_field_border),
-            "an active window paints the search field border at full strength"
+            avatar_chip_fills(active_quads.as_slice()).contains(&Background::from(project_color)),
+            "an active window paints the project avatar chip at full strength"
         );
 
         cx.deactivate_window();
@@ -897,14 +1025,15 @@ mod tests {
                 .any(|quad| quad.background == gradient),
             "no undimmed gradient remains in an inactive window"
         );
-        let inactive_search_field_borders = search_field_border_colors(inactive_quads.as_slice());
+        let inactive_avatar_fills = avatar_chip_fills(inactive_quads.as_slice());
         assert!(
-            inactive_search_field_borders.contains(&search_field_border.opacity(inactive_opacity)),
-            "an inactive window dims the search field border"
+            inactive_avatar_fills
+                .contains(&Background::from(project_color.opacity(inactive_opacity))),
+            "an inactive window dims the project avatar chip"
         );
         assert!(
-            !inactive_search_field_borders.contains(&search_field_border),
-            "no undimmed search field border remains in an inactive window"
+            !inactive_avatar_fills.contains(&Background::from(project_color)),
+            "no undimmed project avatar chip remains in an inactive window"
         );
         assert!(
             !inactive_quads.iter().any(|quad| {
@@ -915,28 +1044,43 @@ mod tests {
     }
 
     #[gpui::test]
-    async fn search_field_sits_right_after_the_branch_picker(cx: &mut TestAppContext) {
+    async fn title_bar_actions_sit_inside_the_bar_aligned_with_its_right_edge(
+        cx: &mut TestAppContext,
+    ) {
         let (_workspace, _title_bar, cx) = open_project_title_bar(cx, Some("main")).await;
-
-        let branch_picker = cx
+        let title_bar_height = cx.update(|window, cx| platform_title_bar_height(window, cx));
+        let viewport_width = cx.update(|window, _| window.viewport_size().width);
+        let actions = cx
+            .debug_bounds(TITLE_BAR_ACTIONS_DEBUG_SELECTOR)
+            .expect("the title bar renders its right-hand action buttons");
+        let search_button = cx
+            .debug_bounds(SEARCH_BUTTON_DEBUG_SELECTOR)
+            .expect("the Settings gear and the search button share the right-hand group");
+        let settings_button = cx
+            .debug_bounds(SETTINGS_BUTTON_DEBUG_SELECTOR)
+            .expect("the Settings gear is rendered in the title bar");
+        let branch_widget = cx
             .debug_bounds(WORKTREE_AND_BRANCH_DEBUG_SELECTOR)
             .expect("a checked-out branch should show the branch picker");
-        let search_field = cx
-            .debug_bounds(SEARCH_FIELD_DEBUG_SELECTOR)
-            .expect("the search field should be rendered in the title bar");
-        let window_width = cx.update(|window, _| window.viewport_size().width);
 
-        assert!(
-            search_field.left() >= branch_picker.right(),
-            "the search field follows the branch picker"
+        assert_visible_inside_title_bar(actions, title_bar_height, "title bar actions");
+        assert_visible_inside_title_bar(search_button, title_bar_height, "search button");
+        assert_visible_inside_title_bar(settings_button, title_bar_height, "settings button");
+        assert_eq!(
+            search_button.size, settings_button.size,
+            "Search Everywhere and Settings are the same size button"
         );
         assert!(
-            search_field.left() - branch_picker.right() < search_field.size.height,
-            "the search field sits right next to the branch picker"
+            search_button.right() <= settings_button.left(),
+            "Search Everywhere sits before Settings, like the IntelliJ main toolbar: {search_button:?}, {settings_button:?}"
         );
         assert!(
-            search_field.right() <= window_width * 0.5,
-            "the search field stays in the left half of the title bar"
+            viewport_width - settings_button.right() < viewport_width * 0.05,
+            "the Settings gear ends at the right edge of the title bar: {settings_button:?}"
+        );
+        assert!(
+            branch_widget.right() < search_button.left(),
+            "the left-hand widgets stay left of the right-hand action buttons"
         );
     }
 
@@ -970,7 +1114,6 @@ mod tests {
         assert_eq!(cx.debug_bounds("title_bar_outgoing_commits"), None);
     }
 
-    #[cfg(target_os = "macos")]
     fn assert_visible_inside_title_bar(
         widget: gpui::Bounds<Pixels>,
         title_bar_height: Pixels,
@@ -1002,18 +1145,30 @@ mod tests {
         let branch_picker = cx
             .debug_bounds(WORKTREE_AND_BRANCH_DEBUG_SELECTOR)
             .expect("outside full screen the branch picker is shown in the title bar");
-        let search_field = cx
-            .debug_bounds(SEARCH_FIELD_DEBUG_SELECTOR)
-            .expect("outside full screen the search field is shown in the title bar");
+        let navigation = cx
+            .debug_bounds(NAVIGATION_BUTTONS_DEBUG_SELECTOR)
+            .expect("outside full screen the navigation buttons are shown in the title bar");
+        let search_button = cx
+            .debug_bounds(SEARCH_BUTTON_DEBUG_SELECTOR)
+            .expect("outside full screen the search button is shown in the title bar");
         assert_visible_inside_title_bar(
             branch_picker,
             title_bar_height,
             "branch picker outside full screen",
         );
         assert_visible_inside_title_bar(
-            search_field,
+            navigation,
             title_bar_height,
-            "search field outside full screen",
+            "navigation buttons outside full screen",
+        );
+        assert_visible_inside_title_bar(
+            search_button,
+            title_bar_height,
+            "search button outside full screen",
+        );
+        assert!(
+            navigation.left() >= traffic_light_padding,
+            "outside full screen the navigation buttons start after the macOS window buttons, got {navigation:?}"
         );
         assert!(
             branch_picker.left() >= traffic_light_padding,
@@ -1033,18 +1188,30 @@ mod tests {
         let branch_picker = cx
             .debug_bounds(WORKTREE_AND_BRANCH_DEBUG_SELECTOR)
             .expect("in full screen the branch picker is shown in the title bar");
-        let search_field = cx
-            .debug_bounds(SEARCH_FIELD_DEBUG_SELECTOR)
-            .expect("in full screen the search field is shown in the title bar");
+        let navigation = cx
+            .debug_bounds(NAVIGATION_BUTTONS_DEBUG_SELECTOR)
+            .expect("in full screen the navigation buttons are shown in the title bar");
+        let search_button = cx
+            .debug_bounds(SEARCH_BUTTON_DEBUG_SELECTOR)
+            .expect("in full screen the search button is shown in the title bar");
         assert_visible_inside_title_bar(
             branch_picker,
             title_bar_height,
             "branch picker in full screen",
         );
         assert_visible_inside_title_bar(
-            search_field,
+            navigation,
             title_bar_height,
-            "search field in full screen",
+            "navigation buttons in full screen",
+        );
+        assert_visible_inside_title_bar(
+            search_button,
+            title_bar_height,
+            "search button in full screen",
+        );
+        assert!(
+            navigation.left() < traffic_light_padding,
+            "in full screen the navigation buttons move into the space of the hidden macOS window buttons, got {navigation:?}"
         );
         assert!(
             branch_picker.left() < traffic_light_padding,
@@ -1064,18 +1231,30 @@ mod tests {
         let branch_picker = cx
             .debug_bounds(WORKTREE_AND_BRANCH_DEBUG_SELECTOR)
             .expect("after leaving full screen the branch picker is shown in the title bar");
-        let search_field = cx
-            .debug_bounds(SEARCH_FIELD_DEBUG_SELECTOR)
-            .expect("after leaving full screen the search field is shown in the title bar");
+        let navigation = cx
+            .debug_bounds(NAVIGATION_BUTTONS_DEBUG_SELECTOR)
+            .expect("after leaving full screen the navigation buttons are shown in the title bar");
+        let search_button = cx
+            .debug_bounds(SEARCH_BUTTON_DEBUG_SELECTOR)
+            .expect("after leaving full screen the search button is shown in the title bar");
         assert_visible_inside_title_bar(
             branch_picker,
             title_bar_height,
             "branch picker after leaving full screen",
         );
         assert_visible_inside_title_bar(
-            search_field,
+            navigation,
             title_bar_height,
-            "search field after leaving full screen",
+            "navigation buttons after leaving full screen",
+        );
+        assert_visible_inside_title_bar(
+            search_button,
+            title_bar_height,
+            "search button after leaving full screen",
+        );
+        assert!(
+            navigation.left() >= traffic_light_padding,
+            "after leaving full screen the navigation buttons start after the macOS window buttons again, got {navigation:?}"
         );
         assert!(
             branch_picker.left() >= traffic_light_padding,
@@ -1084,7 +1263,7 @@ mod tests {
     }
 
     #[gpui::test]
-    async fn clicking_the_search_field_opens_search_everywhere_on_its_default_tab(
+    async fn clicking_the_search_button_opens_search_everywhere_on_its_default_tab(
         cx: &mut TestAppContext,
     ) {
         let (workspace, _title_bar, cx) = open_project_title_bar(cx, None).await;
@@ -1100,10 +1279,10 @@ mod tests {
         });
         cx.run_until_parked();
 
-        let search_field = cx
-            .debug_bounds(SEARCH_FIELD_DEBUG_SELECTOR)
-            .expect("the search field should be rendered in the title bar");
-        cx.simulate_click(search_field.center(), Modifiers::none());
+        let search_button = cx
+            .debug_bounds(SEARCH_BUTTON_DEBUG_SELECTOR)
+            .expect("the search button should be rendered in the title bar");
+        cx.simulate_click(search_button.center(), Modifiers::none());
         cx.run_until_parked();
 
         assert_eq!(
@@ -1114,11 +1293,15 @@ mod tests {
     }
 
     #[gpui::test]
-    async fn show_search_button_false_removes_the_search_field(cx: &mut TestAppContext) {
+    async fn show_search_button_false_removes_the_search_button(cx: &mut TestAppContext) {
         let (_workspace, _title_bar, cx) = open_project_title_bar(cx, None).await;
         assert!(
-            cx.debug_bounds(SEARCH_FIELD_DEBUG_SELECTOR).is_some(),
-            "the search field is shown by default"
+            cx.debug_bounds(SEARCH_BUTTON_DEBUG_SELECTOR).is_some(),
+            "the search button is shown by default"
+        );
+        assert!(
+            cx.debug_bounds(SETTINGS_BUTTON_DEBUG_SELECTOR).is_some(),
+            "the Settings button does not depend on show_search_button"
         );
 
         update_user_settings(cx, |settings| {
@@ -1129,10 +1312,60 @@ mod tests {
         });
 
         assert_eq!(
-            cx.debug_bounds(SEARCH_FIELD_DEBUG_SELECTOR),
+            cx.debug_bounds(SEARCH_BUTTON_DEBUG_SELECTOR),
             None,
-            "turning off show_search_button removes the search field"
+            "turning off show_search_button removes the search button"
         );
+        assert!(
+            cx.debug_bounds(SETTINGS_BUTTON_DEBUG_SELECTOR).is_some(),
+            "the Settings button stays when the search button is hidden"
+        );
+    }
+
+    #[gpui::test]
+    async fn back_and_forward_buttons_are_disabled_without_navigation_history(
+        cx: &mut TestAppContext,
+    ) {
+        let (workspace, _title_bar, cx) = open_project_title_bar(cx, None).await;
+
+        let navigation = cx
+            .debug_bounds(NAVIGATION_BUTTONS_DEBUG_SELECTOR)
+            .expect("the navigation buttons are rendered in the title bar");
+        let backward = cx
+            .debug_bounds("ICON-ArrowLeft")
+            .expect("the back button is rendered in the title bar");
+        let forward = cx
+            .debug_bounds("ICON-ArrowRight")
+            .expect("the forward button is rendered in the title bar");
+        assert!(
+            backward.right() <= forward.left(),
+            "Back sits before Forward, like the IntelliJ main toolbar: {backward:?}, {forward:?}"
+        );
+        assert!(
+            navigation.left() <= backward.left() && forward.right() <= navigation.right(),
+            "both navigation buttons sit inside the navigation group: {navigation:?}"
+        );
+
+        let can_navigate = workspace.read_with(cx, |workspace, cx| {
+            let pane = workspace.active_pane().read(cx);
+            (pane.can_navigate_backward(), pane.can_navigate_forward())
+        });
+        assert_eq!(
+            can_navigate,
+            (false, false),
+            "a fresh project has no navigation history, so both buttons are disabled"
+        );
+    }
+
+    #[test]
+    fn project_avatar_initials_follow_intellij_camel_case_and_word_rules() {
+        assert_eq!(avatar_initials("Flint"), "F");
+        assert_eq!(avatar_initials("MyProject"), "MP");
+        assert_eq!(avatar_initials("My-Project"), "MP");
+        assert_eq!(avatar_initials("John Smith"), "JS");
+        assert_eq!(avatar_initials("John-Smith-Harris"), "JH");
+        assert_eq!(avatar_initials("VivaQuant.RS1"), "VR");
+        assert_eq!(avatar_initials("  vq.Automation  "), "VA");
     }
 
     #[test]

@@ -1,6 +1,6 @@
 use gpui::{
     AnyElement, AnyView, ClickEvent, ElementId, Hsla, IntoElement, KeybindingKeystroke, Keystroke,
-    Role, Styled, Toggled, Window, div, hsla, prelude::*, white,
+    Role, Styled, Toggled, Window, black, div, hsla, prelude::*, transparent_black, white,
 };
 use std::{rc::Rc, sync::Arc};
 
@@ -12,6 +12,21 @@ const CHECKBOX_BOX_SIZE: Pixels = px(16.);
 const CHECKBOX_FOCUS_RING_WIDTH: Pixels = px(2.);
 const CHECKBOX_LABEL_GAP: Pixels = px(4.);
 const CHECKBOX_PLACEHOLDER_DOT_SIZE: Pixels = px(4.);
+const CHECKBOX_MARK_SIZE: f32 = 14.;
+const SWITCH_WIDTH: Pixels = px(32.);
+const SWITCH_HEIGHT: Pixels = px(22.);
+const SWITCH_FOCUS_RING_WIDTH: Pixels = px(2.);
+const SWITCH_TRACK_INSET: Pixels = px(3.);
+const SWITCH_TRACK_WIDTH: Pixels = px(26.);
+const SWITCH_TRACK_HEIGHT: Pixels = px(16.);
+const SWITCH_ON_NOTCH_DIAMETER: Pixels = px(10.);
+const SWITCH_ON_NOTCH_LEFT: Pixels = px(16.);
+const SWITCH_ON_NOTCH_TOP: Pixels = px(6.);
+const SWITCH_OFF_NOTCH_DIAMETER: Pixels = px(8.);
+const SWITCH_OFF_NOTCH_LEFT: Pixels = px(7.);
+const SWITCH_OFF_NOTCH_TOP: Pixels = px(7.);
+const SWITCH_OFF_TRACK_ALPHA_DARK: f32 = 59. / 255.;
+const SWITCH_OFF_TRACK_ALPHA_LIGHT: f32 = 48. / 255.;
 
 // TODO: Checkbox, CheckboxWithLabel, and Switch could all be
 // restructured to use a ToggleLike, similar to Button/Buttonlike, Label/Labellike
@@ -226,7 +241,7 @@ impl Checkbox {
 }
 
 impl RenderOnce for Checkbox {
-    fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let colors = self.colors(cx);
         let is_interactive = !self.disabled && !self.visualization;
         let next_state = self.toggle_state.inverse();
@@ -239,16 +254,13 @@ impl RenderOnce for Checkbox {
         .alpha(0.5);
         let focus_ring_color = cx.theme().colors().border_focused;
 
+        let mark_size = IconSize::Custom(rems(CHECKBOX_MARK_SIZE / f32::from(window.rem_size())));
         let mark = match self.toggle_state {
-            ToggleState::Selected if !self.placeholder => Some(IconName::Check),
-            ToggleState::Indeterminate => Some(IconName::Dash),
+            ToggleState::Selected if !self.placeholder => Some(IconName::CheckBoxMark),
+            ToggleState::Indeterminate => Some(IconName::CheckBoxIndeterminateMark),
             ToggleState::Selected | ToggleState::Unselected => None,
         }
-        .map(|icon_name| {
-            Icon::new(icon_name)
-                .size(IconSize::Small)
-                .color(colors.mark)
-        });
+        .map(|icon_name| Icon::new(icon_name).size(mark_size).color(colors.mark));
 
         let on_click: Option<Rc<dyn Fn(&ToggleState, &ClickEvent, &mut Window, &mut App)>> =
             self.on_click.filter(|_| !self.disabled).map(Rc::from);
@@ -339,21 +351,10 @@ pub enum SwitchColor {
 }
 
 impl SwitchColor {
-    fn get_colors(&self, is_on: bool, cx: &App) -> (Hsla, Hsla) {
-        if !is_on {
-            return (
-                cx.theme().colors().element_disabled,
-                cx.theme().colors().border,
-            );
-        }
-
+    fn track_color(&self, cx: &App) -> Hsla {
         match self {
-            SwitchColor::Accent => {
-                let status = cx.theme().status();
-                let colors = cx.theme().colors();
-                (status.info.opacity(0.4), colors.text_accent.opacity(0.2))
-            }
-            SwitchColor::Custom(color) => (*color, color.opacity(0.6)),
+            SwitchColor::Accent => cx.theme().colors().text_accent,
+            SwitchColor::Custom(color) => *color,
         }
     }
 }
@@ -496,25 +497,33 @@ impl Switch {
 impl RenderOnce for Switch {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let is_on = self.toggle_state == ToggleState::Selected;
-        let adjust_ratio = if is_light(cx) { 1.5 } else { 1.0 };
+        let is_light_theme = is_light(cx);
+        let theme_colors = cx.theme().colors();
 
-        let base_color = cx.theme().colors().text;
-        let thumb_color = base_color;
-        let (bg_color, border_color) = self.color.get_colors(is_on, cx);
-
-        let bg_hover_color = if is_on {
-            bg_color.blend(base_color.opacity(0.16 * adjust_ratio))
+        let (track_background, track_border, notch_color) = if self.disabled {
+            (
+                transparent_black(),
+                theme_colors.border_disabled,
+                theme_colors.icon_disabled,
+            )
+        } else if is_on {
+            let on_color = self.color.track_color(cx);
+            (on_color, on_color, white())
+        } else if is_light_theme {
+            (
+                black().opacity(SWITCH_OFF_TRACK_ALPHA_LIGHT),
+                transparent_black(),
+                white(),
+            )
         } else {
-            bg_color.blend(base_color.opacity(0.05 * adjust_ratio))
+            (
+                white().opacity(SWITCH_OFF_TRACK_ALPHA_DARK),
+                transparent_black(),
+                theme_colors.text,
+            )
         };
+        let focus_ring_color = theme_colors.border_focused;
 
-        let thumb_opacity = match (is_on, self.disabled) {
-            (_, true) => 0.2,
-            (true, false) => 1.0,
-            (false, false) => 0.5,
-        };
-
-        let group_id = format!("switch_group_{:?}", self.id);
         let label = self.label;
         let aria_label = self.aria_label.or_else(|| label.clone());
         let aria_description = self.aria_description;
@@ -522,6 +531,36 @@ impl RenderOnce for Switch {
             .key_binding
             .as_ref()
             .and_then(|key_binding| key_binding.keyboard_shortcut_text(window, cx));
+
+        let track = div()
+            .absolute()
+            .left(SWITCH_TRACK_INSET - SWITCH_FOCUS_RING_WIDTH)
+            .top(SWITCH_TRACK_INSET - SWITCH_FOCUS_RING_WIDTH)
+            .w(SWITCH_TRACK_WIDTH)
+            .h(SWITCH_TRACK_HEIGHT)
+            .rounded_full()
+            .bg(track_background)
+            .border_1()
+            .border_color(track_border);
+
+        let notch = if is_on {
+            div()
+                .absolute()
+                .left(SWITCH_ON_NOTCH_LEFT - SWITCH_FOCUS_RING_WIDTH)
+                .top(SWITCH_ON_NOTCH_TOP - SWITCH_FOCUS_RING_WIDTH)
+                .size(SWITCH_ON_NOTCH_DIAMETER)
+                .rounded_full()
+                .bg(notch_color)
+        } else {
+            div()
+                .absolute()
+                .left(SWITCH_OFF_NOTCH_LEFT - SWITCH_FOCUS_RING_WIDTH)
+                .top(SWITCH_OFF_NOTCH_TOP - SWITCH_FOCUS_RING_WIDTH)
+                .size(SWITCH_OFF_NOTCH_DIAMETER)
+                .rounded_full()
+                .border_2()
+                .border_color(notch_color)
+        };
 
         let switch = div()
             .id((self.id.clone(), "switch"))
@@ -538,16 +577,18 @@ impl RenderOnce for Switch {
                 ToggleState::Indeterminate => Toggled::Mixed,
                 ToggleState::Unselected => Toggled::False,
             })
-            .p(px(1.0))
-            .border_2()
-            .border_color(cx.theme().colors().border_transparent)
-            .rounded_full()
+            .flex_none()
+            .w(SWITCH_WIDTH)
+            .h(SWITCH_HEIGHT)
+            .border(SWITCH_FOCUS_RING_WIDTH)
+            .border_color(transparent_black())
+            .rounded(SWITCH_HEIGHT * 0.5)
             .when_some(
                 self.tab_index.filter(|_| !self.disabled),
                 |this, tab_index| {
                     this.tab_index(tab_index)
-                        .focus_visible(|mut style| {
-                            style.border_color = Some(cx.theme().colors().border_focused);
+                        .focus_visible(move |mut style| {
+                            style.border_color = Some(focus_ring_color);
                             style
                         })
                         .when_some(self.on_click.clone(), |this, on_click| {
@@ -557,33 +598,7 @@ impl RenderOnce for Switch {
                         })
                 },
             )
-            .child(
-                h_flex()
-                    .w(DynamicSpacing::Base32.rems(cx))
-                    .h(DynamicSpacing::Base20.rems(cx))
-                    .group(group_id.clone())
-                    .child(
-                        h_flex()
-                            .when(is_on, |on| on.justify_end())
-                            .when(!is_on, |off| off.justify_start())
-                            .size_full()
-                            .rounded_full()
-                            .px(DynamicSpacing::Base02.px(cx))
-                            .bg(bg_color)
-                            .when(!self.disabled, |this| {
-                                this.group_hover(group_id.clone(), |el| el.bg(bg_hover_color))
-                            })
-                            .border_1()
-                            .border_color(border_color)
-                            .child(
-                                div()
-                                    .size(DynamicSpacing::Base12.rems(cx))
-                                    .rounded_full()
-                                    .bg(thumb_color)
-                                    .opacity(thumb_opacity),
-                            ),
-                    ),
-            );
+            .child(div().relative().size_full().child(track).child(notch));
 
         h_flex()
             .id(self.id)

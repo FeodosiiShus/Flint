@@ -1,8 +1,17 @@
 use gpui::{Anchor, AnyView, Entity, Pixels, Point, Role};
+use theme::UiDensity;
 
-use crate::{ButtonLike, ContextMenu, PopoverMenu, prelude::*};
+use crate::{
+    ButtonLike, COMPONENT_CORNER_RADII, ContextMenu, PopoverMenu, TOOLBAR_ICON_SIDE,
+    exact_icon_size, prelude::*, ui_density,
+};
 
 use super::PopoverMenuHandle;
+
+const LABEL_LEFT_PADDING: Pixels = px(9.);
+const COMPACT_LABEL_LEFT_PADDING: Pixels = px(6.);
+const ARROW_RIGHT_PADDING: Pixels = px(6.);
+const COMPACT_CORNER_RADIUS: Pixels = px(3.);
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum DropdownStyle {
@@ -48,9 +57,9 @@ impl DropdownMenu {
         Self {
             id: id.into(),
             label: LabelKind::Text(label.into()),
-            trigger_size: ButtonSize::Default,
+            trigger_size: ButtonSize::Medium,
             trigger_tooltip: None,
-            trigger_icon: Some(IconName::ChevronUpDown),
+            trigger_icon: Some(IconName::ChevronDown),
             style: DropdownStyle::default(),
             menu,
             full_width: false,
@@ -74,9 +83,9 @@ impl DropdownMenu {
         Self {
             id: id.into(),
             label: LabelKind::Element(label),
-            trigger_size: ButtonSize::Default,
+            trigger_size: ButtonSize::Medium,
             trigger_tooltip: None,
-            trigger_icon: Some(IconName::ChevronUpDown),
+            trigger_icon: Some(IconName::ChevronDown),
             style: DropdownStyle::default(),
             menu,
             full_width: false,
@@ -177,7 +186,7 @@ impl Disableable for DropdownMenu {
 }
 
 impl RenderOnce for DropdownMenu {
-    fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let button_style = match self.style {
             DropdownStyle::Solid => ButtonStyle::Filled,
             DropdownStyle::Subtle => ButtonStyle::Subtle,
@@ -187,6 +196,27 @@ impl RenderOnce for DropdownMenu {
 
         let full_width = self.full_width;
         let trigger_size = self.trigger_size;
+        let compact = ui_density(cx) == UiDensity::Compact;
+        let left_padding = if compact {
+            COMPACT_LABEL_LEFT_PADDING
+        } else {
+            LABEL_LEFT_PADDING
+        };
+        let corner_radius = if compact {
+            COMPACT_CORNER_RADIUS
+        } else {
+            COMPONENT_CORNER_RADII.input
+        };
+        let arrow_color = if self.disabled {
+            cx.theme().colors().icon_disabled
+        } else {
+            cx.theme().colors().icon
+        };
+        let arrow = self.trigger_icon.filter(|_| self.chevron).map(|icon| {
+            Icon::new(icon)
+                .size(exact_icon_size(TOOLBAR_ICON_SIDE, window.rem_size()))
+                .color(Color::Custom(arrow_color))
+        });
         // Ensure a handle exists so assistive technology can open/close the menu
         // via the Expand/Collapse accessibility actions (used by UIA on Windows
         // and AX on macOS; on Linux/AT-SPI the click action is used instead).
@@ -237,12 +267,11 @@ impl RenderOnce for DropdownMenu {
                         .when_some(aria_value, |this, value| this.aria_value(value))
                         .aria_expanded(expanded)
                         .style(button_style)
-                        .when_some(self.trigger_icon.filter(|_| self.chevron), |this, icon| {
-                            this.end_icon(
-                                Icon::new(icon).size(IconSize::XSmall).color(Color::Muted),
-                            )
-                        })
+                        .end_icon(arrow)
                         .when(full_width, |this| this.full_width())
+                        .spread_content(full_width)
+                        .horizontal_padding(left_padding, ARROW_RIGHT_PADDING)
+                        .corner_radius(corner_radius)
                         .size(trigger_size)
                         .disabled(self.disabled)
                         .when_some(self.tab_index, |this, tab_index| this.tab_index(tab_index)),
@@ -262,14 +291,10 @@ impl RenderOnce for DropdownMenu {
                         .aria_expanded(expanded)
                         .child(element)
                         .style(button_style)
-                        .when(self.chevron, |this| {
-                            this.child(
-                                Icon::new(IconName::ChevronUpDown)
-                                    .size(IconSize::XSmall)
-                                    .color(Color::Muted),
-                            )
-                        })
+                        .children(arrow)
                         .when(full_width, |this| this.full_width())
+                        .horizontal_padding(left_padding, ARROW_RIGHT_PADDING)
+                        .corner_radius(corner_radius)
                         .size(trigger_size)
                         .disabled(self.disabled)
                         .when_some(self.tab_index, |this, tab_index| this.tab_index(tab_index)),

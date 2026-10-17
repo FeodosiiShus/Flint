@@ -55,20 +55,31 @@ impl FoldPlaceholder {
     /// look (background, hover, active, rounded corners, full size).
     /// Callers add children and event handlers on top.
     pub fn fold_element(fold_id: FoldId, cx: &App) -> Stateful<gpui::Div> {
-        use gpui::{InteractiveElement as _, StatefulInteractiveElement as _, Styled as _};
+        use gpui::{
+            InteractiveElement as _, ParentElement as _, StatefulInteractiveElement as _,
+            Styled as _,
+        };
         use settings::Settings as _;
         use theme::ActiveTheme as _;
         use theme_settings::ThemeSettings;
         let settings = ThemeSettings::get_global(cx);
+        let colors = cx.theme().colors();
+        let background = colors.element_background;
         gpui::div()
             .id(fold_id)
             .font(settings.buffer_font.clone())
-            .text_color(cx.theme().colors().text_placeholder)
-            .bg(cx.theme().colors().ghost_element_background)
-            .hover(|style| style.bg(cx.theme().colors().ghost_element_hover))
-            .active(|style| style.bg(cx.theme().colors().ghost_element_active))
-            .rounded_xs()
+            .text_color(colors.text_placeholder)
+            .bg(background)
+            .hover(|style| style.bg(background.blend(colors.ghost_element_hover)))
+            .active(|style| style.bg(background.blend(colors.ghost_element_active)))
             .size_full()
+            .child(
+                gpui::div()
+                    .absolute()
+                    .inset_0()
+                    .border_1()
+                    .border_color(colors.border),
+            )
     }
 
     #[cfg(any(test, feature = "test-support"))]

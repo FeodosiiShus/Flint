@@ -13,7 +13,7 @@ const LINE_NUMBER_AREA_MINIMUM_WIDTH: Pixels = px(14.);
 const GAP_AFTER_ANNOTATIONS: Pixels = px(5.);
 const GUTTER_ICON_WIDTH: Pixels = px(14.);
 const GUTTER_ICON_INSET: Pixels = px(2.);
-const ICON_AREA_WIDTH: Pixels = px(16.);
+pub(crate) const ICON_AREA_WIDTH: Pixels = px(16.);
 pub(crate) const FOLD_ICON_WIDTH: Pixels = px(9.);
 const FOLD_AREA_WIDTH: Pixels = px(11.);
 const VCS_AREA_WIDTH: Pixels = px(8.);
@@ -60,6 +60,7 @@ pub(crate) struct GutterContent {
     pub(crate) leading_area_width: Option<Pixels>,
     pub(crate) line_numbers_width: Option<Pixels>,
     pub(crate) icons: bool,
+    pub(crate) icon_area_width: Pixels,
     pub(crate) folds: bool,
     pub(crate) vcs_markers: Option<GitGutterWidth>,
 }
@@ -106,7 +107,7 @@ impl GutterContent {
             None => (leading_area_end, leading_area_end, leading_area_end),
         };
         let fold_area_x = if self.icons {
-            icon_area_x + ICON_AREA_WIDTH + self.gaps.after_icons
+            icon_area_x + self.icon_area_width + self.gaps.after_icons
         } else {
             icon_area_x
         };
@@ -314,6 +315,18 @@ pub(super) fn crease_toggle_x(fold_area_x: Pixels, toggle_width: Pixels) -> Pixe
     fold_area_x + (FOLD_ICON_WIDTH - toggle_width) / 2.
 }
 
+pub(crate) fn icon_area_width(has_marker_icons: bool) -> Pixels {
+    if has_marker_icons {
+        ICON_AREA_WIDTH
+    } else {
+        Pixels::ZERO
+    }
+}
+
+pub(super) fn line_number_button_x(line_numbers_end: Pixels, button_width: Pixels) -> Pixels {
+    (line_numbers_end - button_width).max(Pixels::ZERO)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -336,6 +349,7 @@ mod tests {
                 JETBRAINS_MONO_12_DIGIT_ADVANCE * line_number_digits,
             )),
             icons: true,
+            icon_area_width: ICON_AREA_WIDTH,
             folds: true,
             vcs_markers: Some(GitGutterWidth::Default),
         }
@@ -466,6 +480,7 @@ mod tests {
             leading_area_width: None,
             line_numbers_width: None,
             icons: false,
+            icon_area_width: Pixels::ZERO,
             folds: false,
             vcs_markers: None,
         }
@@ -721,5 +736,55 @@ mod tests {
     fn intellij_gutter_line_numbers_are_one_pixel_smaller_than_the_buffer_font() {
         assert_eq!(line_number_font_size(px(14.)), px(13.));
         assert_eq!(line_number_font_size(px(0.5)), px(1.));
+    }
+
+    #[test]
+    fn intellij_gutter_compact_file_without_icons_keeps_only_the_gaps_between_numbers_and_folds() {
+        let areas = GutterContent {
+            icon_area_width: icon_area_width(false),
+            ..full_gutter(UiDensity::Compact, 3)
+        }
+        .layout();
+
+        assert_eq!(areas.line_numbers_end, px(24.));
+        assert_eq!(
+            areas.fold_area_x - areas.line_numbers_end,
+            px(4.),
+            "IntelliJ reserves no icon area without gutter icons, only the 2 px gaps after the numbers and after the icons"
+        );
+        assert_eq!(areas.vcs_marker_x, Some(px(42.)));
+        assert_eq!(areas.width, px(46.));
+    }
+
+    #[test]
+    fn intellij_gutter_default_density_file_without_icons_keeps_eight_pixels_before_the_folds() {
+        let areas = GutterContent {
+            icon_area_width: icon_area_width(false),
+            ..full_gutter(UiDensity::Default, 3)
+        }
+        .layout();
+
+        assert_eq!(areas.line_numbers_end, px(30.));
+        assert_eq!(areas.fold_area_x - areas.line_numbers_end, px(8.));
+    }
+
+    #[test]
+    fn intellij_gutter_icon_area_exists_only_when_a_marker_icon_exists() {
+        assert_eq!(
+            icon_area_width(true),
+            px(16.),
+            "a 14 px icon plus 1 px on each side"
+        );
+        assert_eq!(icon_area_width(false), Pixels::ZERO);
+    }
+
+    #[test]
+    fn intellij_gutter_hover_button_is_right_aligned_to_the_line_numbers() {
+        assert_eq!(line_number_button_x(px(24.), px(14.)), px(10.));
+        assert_eq!(
+            line_number_button_x(px(6.), px(14.)),
+            Pixels::ZERO,
+            "the button never leaves the gutter on the left"
+        );
     }
 }

@@ -176,8 +176,8 @@ Flint uses WebStorm's [Islands](https://plugins.jetbrains.com/docs/intellij/supp
 - Editor tabs: the tab bar has the editor background and no borders. The strip is 41 px high (31 px compact). The selected tab is a 28 px pill (24 px compact) with a 6 px radius (4 px compact) and a 1 px inside border, with no underline and no dividers between tabs. In a focused pane the pill has the `#233558` fill and the `#2E4D89` border (the theme's `tab.active_background` and `border.selected`); in an unfocused pane it has the frame fill (the theme's `background`) and the `border` colour. Tabs get the hover fill (`ghost_element_hover`), except the selected tab of a focused pane. Unselected labels and icons are dimmed (labels blended toward the strip background, icons at 75% opacity); selected and hovered tabs use the full text colour. Every tab reserves a 16 px slot at its right end for the close or pin button, so tabs do not change width on hover: the × shows on the selected tab and on hovered tabs, a modified tab shows a dot in the same slot (the × replaces it on hover), and a pinned tab shows the pin. Titles are no longer cut at 24 characters.
 - Tool window bars run down the left and right window edges. The left bar shows the left dock panels (by default Project), a separator, a "More Tool Windows" button (a menu of every panel, including panels whose button is hidden), and the bottom dock panels in its lower group. Like the left-bottom stripe of IntelliJ's new UI, the lower group is drawn from the bottom up: the panel with the lowest activation priority is the bottom-most button, so from top to bottom the default order is Language Services, Search, Terminal, Project Diagnostics and Git. The right bar shows the right dock panels. Click an icon to show or hide its panel; right-click it to move the panel to another dock or hide its button. The buttons are IntelliJ's stripe buttons: a 37×40 box at the default 20 px icon (32×32 in compact density) holding a 30×30 fill pill (24×24), inset 5 px from the window edge and 2 px from the side facing the editor (5 and 3 px compact), with a 6 px radius (4 px compact). Consecutive boxes touch, like IntelliJ's zero-gap stripe flow, and the separator between the top group and the More button is a 24 × 1 line in the stripe's `toolbar-border` colour (`#FFFFFF21`; `#00000020` in light themes). The pill marks an open panel (`ghost_element_active`, `#FFFFFF29`, IntelliJ's pressed stripe background); a focused panel fills it with the accent colour and a white icon (`#3871e1`, IntelliJ's selected stripe background, `ToolWindow.Button.selectedForeground`); a closed button shows the pill only under the pointer (`ghost_element_hover`, `#FFFFFF17`, IntelliJ's stripe hover). Like IntelliJ, an open button does not react to hover.
 - The right bar disappears when no right dock panel has a button, so it never leaves an empty strip. The editor island then keeps exactly the islands gap to the window edge, the same as on every other side.
-- Tool window headers: every open dock island starts with a header like a WebStorm tool window header: the panel name in semibold, then the panel's own buttons, ⋮ (the panel menu: move to another dock, hide the button) and — (hide the panel). Like WebStorm, the buttons appear only while the pointer is over the tool window or the tool window has focus. Right-clicking the header opens the same menu. A panel that hosts its own tab strip, like the terminal, has no common header: its tabs start at the top of the island. A panel adds its own buttons by implementing `Panel::header_actions`; the Project panel and the Project Diagnostics panel are the only ones that do. A panel can also show its own content, such as tabs, right after the name by implementing `Panel::header_content`; the name then keeps IntelliJ's tool window header label insets, 12 px before it and 16 px between it and the content.
-- Inactive window: when the Flint window is not focused, the title bar widgets and the tool window bar buttons are drawn at 56% opacity, matching the Islands `Island.inactiveAlpha` of 0.44. Backgrounds and the background image are not dimmed.
+- Tool window headers: every open dock island starts with a header like a WebStorm tool window header: the panel name in the UI font, then the panel's own buttons, ⋮ (the panel menu: move to another dock, hide the button) and — (hide the panel). Like WebStorm, the buttons appear only while the pointer is over the tool window or the tool window has focus. Right-clicking the header opens the same menu. A panel that hosts its own tab strip, like the terminal, has no common header: its tabs start at the top of the island. A panel adds its own buttons by implementing `Panel::header_actions`; the Project panel and the Project Diagnostics panel are the only ones that do. A panel can also show its own content, such as tabs, right after the name by implementing `Panel::header_content`; the name then keeps IntelliJ's tool window header label insets, 12 px before it and 16 px between it and the content.
+- Inactive window: when the Flint window is not focused, the title bar widgets and the tool window bar buttons are drawn at 56% opacity, matching the Islands `Island.inactiveAlpha` of 0.56. Backgrounds and the background image are not dimmed. IntelliJ applies that alpha to every frame painting (tab labels and borders included); Flint currently dims only the bar buttons and the header widgets.
 
 ```json
 "islands": { "enabled": true, "gap": null, "corner_radius": null, "dim_inactive_window": true },
@@ -185,7 +185,7 @@ Flint uses WebStorm's [Islands](https://plugins.jetbrains.com/docs/intellij/supp
 "tool_window_headers": { "show": true, "always_show_actions": false }
 ```
 
-- `islands.gap` — distance between islands in pixels, 0–16. Unset: 4, or 3 with `"unstable.ui_density": "compact"`.
+- `islands.gap` — distance between islands in pixels, 0–16. Unset: 5, or 3 with `"unstable.ui_density": "compact"`.
 - `islands.corner_radius` — island corner radius in pixels, 0–24. Unset: 10, or 8 in compact density.
 - `islands.dim_inactive_window` — dim the frame content of an inactive window. Works only with islands enabled.
 - `tool_window_bars.show` — `false` hides both bars. No panel buttons are shown anywhere then; panels open through the View menu, the command palette and key bindings.
@@ -237,10 +237,9 @@ Flint uses WebStorm's [Islands](https://plugins.jetbrains.com/docs/intellij/supp
 - Tabs: the modified dot is always shown (IntelliJ only with "Mark modified"), it is not clickable and its colour is the theme accent, not IntelliJ's `#548AF7`; with `close_button: hidden` a modified tab still shows the dot, so its width can change; the drag ghost shows only icon and label.
 - The unselected label blend is computed in Flint as the square root of 0.7·text² + 0.3·editor background² per channel, over the editor background, not IntelliJ's strip background `#191a1c`.
 - The right margin uses `editor.wrap_guide` (`#454963`); IntelliJ draws the right margin in the scheme's `RIGHT_MARGIN_COLOR` (`#21252b` in Eva Dark) and code-style visual guides in `#454963`.
-- IntelliJ's `Island.borderWidth` is 6; the Flint gap default of 4 is left as is.
+- IntelliJ's `Island.borderWidth` is 6; Flint's gap default is 5 (3 compact).
 - Split dividers between editor panes use `border` (`#40434a`), not IntelliJ's `#26282c`, which is invisible on Eva's editor background.
 - Filled buttons that sit on the modal layer (the Restricted Mode dialog) have the same colour as the dialog, because IntelliJ's popup colour `#26282c` equals the frame colour; only their label and their pressed state are visible.
-- The More Tool Windows button keeps the shared 4 px button corner radius where IntelliJ's stripe buttons use the 6 px `Button.ToolWindow.arc`.
 - Hover highlights use IntelliJ's translucent white, so they are fainter than Eva's solid blue; the sticky excerpt header keeps an opaque fill while hovered.
 
 ## Popups and menus
@@ -252,15 +251,15 @@ Popups use the metrics of IntelliJ's New UI on macOS:
 | Element | Flint | IntelliJ key |
 |---|---|---|
 | Popup corners and border | 8 px radius, 1 px `border.variant` (`#33353b`) | `PopupMenu.borderCornerRadius`, `Popup.borderColor` |
-| Context menu padding | 6 px above the first row and below the last | `PopupMenu.borderInsets` |
-| Context menu row | 26 px; hover and keyboard selection are one 4 px-radius pill inset 7 px from the sides and 1 px from the row edges, with the text 6 px inside it | `List.rowHeight`, `PopupMenu.Selection.outerInsets`, `innerInsets`, `arc` |
+| Context menu padding | 7 px above the first row and below the last | Jewel `MenuMetrics.contentPadding` |
+| Context menu row | 24 px; hover and keyboard selection are one 4 px-radius pill inset 7 px from the sides, with the text 6 px inside it | `List.rowHeight`, `PopupMenu.Selection.outerInsets`, `innerInsets`, `arc` |
 | Selection colour | `ghost_element.selected` (`#2a4371`) for both hover and keyboard selection | `selection-bg-active` |
 | Shortcuts | right-aligned, `text.placeholder` (`#73767c`) | `MenuItem.acceleratorForeground` |
 | Icon column | 18 px plus a 4 px gap, reserved on every row as soon as one row has an icon or a check mark | `MenuItem.maxGutterIconWidth` |
 | Separator | 9 px high, a 1 px `border.variant` line inset 10 px from both sides | `PopupMenuSeparator.height`, `stripeIndent`, `withToEdge` |
 | List popup rows (pickers, completions) | at least 24 px; the selection pill is inset 8 px with a 4 px radius and the text 8 px inside it; 8 px above and below the list | `Popup.Selection.leftRightInset`, `innerInsets`, `Popup.Body` insets |
 | Dialog buttons (Git dialogs, Conflicts dialog and Merge Revisions window, Language Services panel) | 28 px high (24 px compact), at least 72 px wide, 14 px side padding, 4 px radius, 1 px border, label at the UI font size; the default button is filled with `text.accent` (`#3871e1`) and has a white label, the others are transparent with a `border` (`#40434a`) outline and get the hover colour; disabled buttons have a `border.disabled` outline and a disabled label; 8 px apart in the Git dialogs and the Language Services panel | `Button.minimumSize`, `Button.arc` (an arc of 8 is a 4 px radius), `Button.default.startBackground`, `Button.startBorderColor`, `DarculaButtonUI.HORIZONTAL_PADDING` |
-| Tooltips | `element.background` over the popup colour (`#33353b`), no border, 4 px radius, padding 8 px top, 12 px sides, 9 px bottom, text at most 250 px wide | `ToolTip.background`, `ToolTip.borderCornerRadius`, `HelpTooltip.maxWidth` |
+| Tooltips | `ToolTip.background` (`#33353b`), no border, 6 px radius, padding 8 px top, 12 px sides, 9 px bottom, text at most 250 px wide | `ToolTip.background`, `ToolTip.borderCornerRadius` (Islands Dark 6), `HelpTooltip.maxWidth` |
 
 Not implemented: the lighter shortcut colour of the selected row (`#bbbbbb`, no theme key), the larger insets of multi-line tooltips, the native macOS shadow of IntelliJ's popup windows (Flint keeps its own shadow) and IntelliJ's group header insets in pickers.
 
@@ -274,12 +273,12 @@ Controls use the corner radii of IntelliJ's New UI everywhere in Flint, in pixel
 | Text fields and drop-downs | 4 px | `Component.arc` 8 |
 | List, tree and picker rows (hover and selection) | 4 px | `Popup.Selection.arc`, `Tree.Selection.arc` 8 |
 | Checkboxes | 3 px | New UI `checkBox.svg` (`rx` 2.5 plus the 1 px stroke) |
-| Title bar widgets | 6 px | `MainToolbar.Dropdown.arc` 12 |
+| Title bar widgets | 6 px (4 px compact) | `MainToolbar.Dropdown.arc` 12 / `.compact` 8 |
 | Banners and modal sections | 6 px | `Banner.arc` 12 |
 
 Checkboxes look like IntelliJ's New UI checkbox: a 16 px box with a 1 px border; unchecked it has the `editor.background` fill and the `border` outline, checked or indeterminate it is filled with `text.accent` (`#3871e1`) and shows a white check or dash. The label starts 4 px after the box (`CheckBox.textIconGap`). There is no hover state; keyboard focus draws a 2 px `border.focused` ring.
 
-Unchanged: popups (8 px), tooltips (4 px), editor tabs, switches, avatars and other fully round shapes.
+Unchanged: popups (8 px), editor tabs, switches, avatars and other fully round shapes.
 
 ## Editor tabs, project panel and scrollbar
 
@@ -400,18 +399,19 @@ Show Usages lists the usages of a symbol in a floating popup next to it, like In
 The title bar works like WebStorm's [main toolbar](https://www.jetbrains.com/help/webstorm/new-ui.html), left to right:
 
 - Window buttons (close, minimize, zoom), described below.
-- VCS widget: the branch status icon, the branch name, then the incoming and outgoing arrows when the branch is behind or ahead of its upstream, and a ˅. The arrows are IntelliJ's 12 px incoming (blue, the info colour) and outgoing (green, the success colour) icons, drawn edge to edge in that order, one for each non-zero direction and none when the branch is in sync. Click the widget to open the [Git Branches popup](#git-branches-popup). The worktree button is hidden by default.
-- Search Everywhere field: a field labelled "Search Everywhere" with the shortcut of `search everywhere: toggle` from your current keymap (`Shift` `Shift` with the JetBrains keymap). Click it to open Search Everywhere on its default tab.
+- Back and Forward icon buttons (22 × 22, 16 px icons). They dispatch the pane history actions and are disabled when there is no history.
+- Project widget: a 16 px coloured avatar chip with two initials, the project name and a ˅. Click it to open Recent Projects. Hidden when no project is open.
+- VCS widget: the branch status icon, the branch name, then the incoming and outgoing arrows when the branch is behind or ahead of its upstream, and a ˅. The arrows are IntelliJ's 12 px incoming (blue, the info colour) and outgoing (green, the success colour) icons. Click the widget to open the [Git Branches popup](#git-branches-popup). The worktree button is hidden by default.
+- On the right: Search Everywhere and Settings as 22 × 22 icon buttons (`MainToolbar.Icon`), 10 px apart. `title_bar.show_search_button` hides Search Everywhere.
 
 Widget look, from IntelliJ's main toolbar combo widget (`ToolbarComboButton`, `MainToolbar.Dropdown.*`):
 
-- The VCS widget and the worktree button are 28 px pills with a 6 px radius (`MainToolbar.Dropdown.arc` 12), 10 px padding on the left and 6 px on the right, a 6 px gap between the icon and the text and 2 px before the ˅, like the gap between the branch name and the arrows and between the arrows and the ˅ (`ToolbarComboButtonUI.iconTextGap` 6, `BEFORE_CHEVRON_GAP` 2). The text is in the normal text colour at the UI font size; the icon is 16 px, scaled by `title_bar.icon_size`.
-- Unlike IntelliJ, where the widget is transparent until hovered, the pill always has a fill so it reads as a button on the project gradient: white at 7% in dark themes (10% hovered, the `MainToolbar.Dropdown.transparentHoverBackground` `#FFFFFF1A`; 16% while its popup is open, Islands' pressed `#FFFFFF29`) and black at 5%, 7% and 11% in light themes.
-- The Search Everywhere field is 280 × 28 px with the same radius and fills plus a 1 px outline (white or black at 10%, 16% hovered); its label is muted, at the UI font size. IntelliJ shows Search Everywhere as an icon button; Flint keeps the labelled field.
+- The VCS widget, the worktree button and the project widget are 28 px pills with a 6 px radius (`MainToolbar.Dropdown.arc` 12), 10 px padding on the left and 6 px on the right, a 6 px gap between the icon and the text and 2 px before the ˅ (`ToolbarComboButtonUI.iconTextGap` 6, `BEFORE_CHEVRON_GAP` 2). The text is in the normal text colour at the UI font size; the icon is 16 px, scaled by `title_bar.icon_size`.
+- The pill is transparent until hovered, like IntelliJ: white at 0% rest, 9% hovered (`#FFFFFF17`) and 16% while its popup is open (`#FFFFFF29`) in dark themes, and the matching blacks in light themes. There is no outline.
 
 Project gradient: like WebStorm's colored project headers, the title bar is tinted with a project color, fading out from the left edge to the middle. The color is always IntelliJ's violet project color `#955ae0` (`RecentProject.Color7` `Avatar.Start`), whatever the project. It appears only when a project is open.
 
-The gradient, the search field and the worktree button can be turned on or off in `settings.json` or in Settings → Window & Layout → Title Bar:
+The gradient, the Search Everywhere button and the worktree button can be turned on or off in `settings.json` or in Settings → Window & Layout → Title Bar:
 
 ```json
 "title_bar": {

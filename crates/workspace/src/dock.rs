@@ -23,6 +23,7 @@ use ui::{
 use util::ResultExt as _;
 
 pub(crate) const RESIZE_HANDLE_SIZE: Pixels = px(6.);
+const ISLAND_TOOL_WINDOW_INSET: Pixels = px(3.);
 
 pub enum PanelEvent {
     ZoomIn,
@@ -1438,6 +1439,8 @@ impl Render for Dock {
                 .size_full();
 
             if islands.enabled {
+                let content_inset =
+                    (ISLAND_TOOL_WINDOW_INSET - islands.half_gap()).max(Pixels::ZERO);
                 return dock_panel
                     .p(islands.half_gap())
                     .child(
@@ -1457,8 +1460,15 @@ impl Render for Dock {
                                 true,
                                 gpui::Corners::all(islands.corner_radius),
                             ))
-                            .children(header)
-                            .child(panel_content),
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_col()
+                                    .size_full()
+                                    .p(content_inset)
+                                    .children(header)
+                                    .child(panel_content),
+                            ),
                     )
                     .when(self.resizable(cx), |this| {
                         this.child(create_resize_handle())
