@@ -7272,6 +7272,45 @@ async fn test_select_opened_file_without_active_item_focuses_panel(cx: &mut gpui
 }
 
 #[gpui::test]
+async fn test_select_opened_file_button_is_hidden_while_auto_reveal_is_on(
+    cx: &mut gpui::TestAppContext,
+) {
+    let (_workspace, panel, mut visual_cx) = setup_select_opened_file_panel(cx).await;
+    let cx = &mut visual_cx;
+    let header_action_ids = |panel: &Entity<ProjectPanel>, cx: &mut VisualTestContext| {
+        panel.update_in(cx, |panel, window, cx| {
+            panel
+                .header_actions(window, cx)
+                .into_iter()
+                .map(|action| action.id)
+                .collect::<Vec<_>>()
+        })
+    };
+
+    assert_eq!(
+        header_action_ids(&panel, cx),
+        vec!["select-opened-file", "expand-all", "collapse-all"],
+        "With auto reveal off the header offers Select Opened File"
+    );
+
+    cx.update(|_, cx| {
+        cx.update_global::<SettingsStore, _>(|store, cx| {
+            store.update_user_settings(cx, |settings| {
+                settings
+                    .project_panel
+                    .get_or_insert_default()
+                    .auto_reveal_entries = Some(true);
+            });
+        })
+    });
+    assert_eq!(
+        header_action_ids(&panel, cx),
+        vec!["expand-all", "collapse-all"],
+        "Like IntelliJ's Always Select Opened File mode, auto reveal hides Select Opened File"
+    );
+}
+
+#[gpui::test]
 async fn test_creating_excluded_entries(cx: &mut gpui::TestAppContext) {
     init_test(cx);
     cx.update(|cx| {

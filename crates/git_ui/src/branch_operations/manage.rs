@@ -33,7 +33,7 @@ pub struct DeleteActionPlan {
 struct DeletedTag {
     name: SharedString,
     sha: SharedString,
-    has_remotes: bool,
+    remote_count: usize,
 }
 
 pub async fn settle<T>(receiver: oneshot::Receiver<Result<T>>) -> Result<T> {
@@ -685,8 +685,16 @@ async fn delete_tag_task(
     Ok(DeletedTag {
         name: SharedString::from(name.to_string()),
         sha: tag.commit_sha,
-        has_remotes: !remotes.is_empty(),
+        remote_count: remotes.len(),
     })
+}
+
+fn delete_tag_on_remotes_label(remote_count: usize) -> Option<&'static str> {
+    match remote_count {
+        0 => None,
+        1 => Some("Delete on Remote"),
+        _ => Some("Delete on Remotes"),
+    }
 }
 
 fn deleted_tag_notice(context: &BranchContext, deleted: &DeletedTag) -> BranchNotice {
@@ -705,10 +713,10 @@ fn deleted_tag_notice(context: &BranchContext, deleted: &DeletedTag) -> BranchNo
             );
         },
     );
-    if deleted.has_remotes {
+    if let Some(label) = delete_tag_on_remotes_label(deleted.remote_count) {
         let remote_context = context.clone();
         let remote_name = deleted.name.clone();
-        notice = notice.action("Delete on Remote(s)", move |window, cx| {
+        notice = notice.action(label, move |window, cx| {
             delete_tag_on_remotes(remote_context.clone(), remote_name.clone(), window, cx);
         });
     }
@@ -1009,6 +1017,14 @@ mod tests {
 
         let several = deleted_remote_branch_notice("origin/x", &["x".to_string(), "y".to_string()]);
         assert_eq!(&*several.message, "Also deleted local branches: x, y");
+    }
+
+    #[test]
+    fn delete_tag_on_remotes_is_pluralised_by_the_number_of_remotes() {
+        assert_eq!(delete_tag_on_remotes_label(0), None);
+        assert_eq!(delete_tag_on_remotes_label(1), Some("Delete on Remote"));
+        assert_eq!(delete_tag_on_remotes_label(2), Some("Delete on Remotes"));
+        assert_eq!(delete_tag_on_remotes_label(5), Some("Delete on Remotes"));
     }
 
     #[test]

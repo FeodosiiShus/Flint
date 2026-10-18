@@ -1,4 +1,4 @@
-use crate::{COMPONENT_CORNER_RADII, prelude::*};
+use crate::{component_corner_radii, prelude::*};
 use gpui::{AnyElement, IntoElement, ParentElement, Styled};
 
 /// Banners provide informative and brief messages without interrupting the user.
@@ -70,7 +70,7 @@ impl RenderOnce for Banner {
             .gap_1p5()
             .when(self.wrap_content, |this| this.flex_wrap())
             .justify_between()
-            .rounded(COMPONENT_CORNER_RADII.banner)
+            .rounded(component_corner_radii(cx).banner)
             .border_1();
 
         let (icon, icon_color, bg_color, border_color) = match self.severity {
@@ -187,5 +187,67 @@ impl Component for Banner {
         example_group(severity_examples)
             .vertical()
             .into_any_element()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gpui::{Context, Render, TestAppContext, VisualTestContext};
+
+    struct BannerProbe;
+
+    impl Render for BannerProbe {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .p_4()
+                .child(Banner::new().child(Label::new("Banner message")))
+        }
+    }
+
+    fn init_theme(density: settings::UiDensity, cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            let settings_store = settings::SettingsStore::test(cx);
+            cx.set_global(settings_store);
+            theme_settings::init(theme::LoadThemes::JustBase, cx);
+            cx.update_global::<settings::SettingsStore, _>(|store, cx| {
+                store.update_user_settings(cx, |settings| {
+                    settings.theme.ui_density = Some(density);
+                });
+            });
+        });
+    }
+
+    fn painted_banner_radius(cx: &mut VisualTestContext) -> f32 {
+        cx.update(|window, cx| {
+            let border_color = cx.theme().colors().border.opacity(0.5);
+            let scale = window.scale_factor();
+            window
+                .painted_quads()
+                .into_iter()
+                .find(|quad| quad.border_color == border_color && quad.border_widths.top.0 > 0.)
+                .map(|quad| quad.corner_radii.top_left.0 / scale)
+                .expect("the info banner paints its bordered box")
+        })
+    }
+
+    #[gpui::test]
+    fn banner_uses_the_islands_banner_arc(cx: &mut TestAppContext) {
+        init_theme(settings::UiDensity::Default, cx);
+        let (_, cx) = cx.add_window_view(|_, _| BannerProbe);
+        assert!(
+            (painted_banner_radius(cx) - 6.).abs() < 0.01,
+            "Banner.arc 12 is a 6 px radius"
+        );
+    }
+
+    #[gpui::test]
+    fn banner_uses_the_islands_compact_banner_arc_in_compact_density(cx: &mut TestAppContext) {
+        init_theme(settings::UiDensity::Compact, cx);
+        let (_, cx) = cx.add_window_view(|_, _| BannerProbe);
+        assert!(
+            (painted_banner_radius(cx) - 4.).abs() < 0.01,
+            "Banner.arc.compact 8 is a 4 px radius"
+        );
     }
 }

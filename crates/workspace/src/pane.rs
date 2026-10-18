@@ -49,8 +49,8 @@ use theme_settings::ThemeSettings;
 use ui::{
     BackgroundImageArea, BackgroundImageTarget, ContextMenu, DecoratedIcon, Divider, DividerColor,
     IconButtonShape, IconDecoration, IconDecorationKind, Indicator, PopoverMenu, PopoverMenuHandle,
-    Tab, TabBar, TabPosition, Tooltip, background_image_layer, has_background_image, prelude::*,
-    right_click_menu,
+    Tab, TabBar, TabPosition, Tooltip, background_image_layer, has_any_background_image,
+    has_background_image, prelude::*, right_click_menu,
 };
 use util::{
     ResultExt, debug_panic, markdown::MarkdownInlineCode, maybe, paths::PathStyle,
@@ -3420,12 +3420,18 @@ impl Pane {
                 } else {
                     (None, None)
                 };
-                let separator = (item_actions.is_some() && right_children.is_some())
-                    .then(|| Divider::vertical().color(DividerColor::Border));
+                let (leading_separator, trailing_separator) = tab_actions_separators(
+                    self.hidden_tabs_button_visible,
+                    item_actions.is_some(),
+                    right_children.is_some(),
+                );
+                let divider =
+                    |shown: bool| shown.then(|| Divider::vertical().color(DividerColor::Border));
                 tab_bar
                     .start_children(left_children)
+                    .end_children(divider(leading_separator))
                     .end_children(item_actions)
-                    .end_children(separator)
+                    .end_children(divider(trailing_separator))
                     .end_children(right_children)
             })
     }
@@ -4297,6 +4303,18 @@ fn hidden_tabs_overflow_listener(
     }
 }
 
+/// Returns whether a separator goes before and after the tab actions, like IntelliJ's
+/// `TabActionGroupWrapper`: ˅ | actions | ⋮. IntelliJ only wraps the actions when the ⋮ entry
+/// point is shown, so without it there are no separators at all.
+fn tab_actions_separators(
+    hidden_tabs_button_visible: bool,
+    has_tab_actions: bool,
+    has_entry_point: bool,
+) -> (bool, bool) {
+    let separated = has_tab_actions && has_entry_point;
+    (separated && hidden_tabs_button_visible, separated)
+}
+
 fn build_hidden_tabs_menu(
     weak_pane: &WeakEntity<Pane>,
     window: &mut Window,
@@ -4553,6 +4571,9 @@ impl Render for Pane {
                 let has_worktrees = project.read(cx).visible_worktrees(cx).next().is_some();
                 let has_empty_frame_image =
                     has_background_image(BackgroundImageTarget::EmptyFrame, window, cx);
+                // WebStorm paints an empty editor area with the frame image only, so the
+                // editor_and_tools image painted by the editor island must be covered here.
+                let covers_editor_image = has_any_background_image(window, cx);
                 // main content
                 div()
                     .flex_1()
@@ -4581,7 +4602,7 @@ impl Render for Pane {
                             let editor_background = cx.theme().colors().editor_background;
                             let empty_frame_layer = background_image_layer(
                                 BackgroundImageTarget::EmptyFrame,
-                                BackgroundImageArea::Element,
+                                BackgroundImageArea::Window,
                                 editor_background,
                                 false,
                                 gpui::Corners::default(),
@@ -4591,8 +4612,11 @@ impl Render for Pane {
                                 .h_flex()
                                 .size_full()
                                 .justify_center()
+                                .when(covers_editor_image, |placeholder| {
+                                    placeholder.bg(editor_background)
+                                })
                                 .when(has_empty_frame_image, |placeholder| {
-                                    placeholder.bg(editor_background).child(empty_frame_layer)
+                                    placeholder.child(empty_frame_layer)
                                 })
                                 .on_click(cx.listener(
                                     move |this, event: &ClickEvent, window, cx| {
@@ -5123,6 +5147,30 @@ mod tests {
     use settings::SettingsStore;
     use theme::LoadThemes;
     use util::TryFutureExt;
+
+    #[test]
+    fn tab_actions_are_separated_from_the_hidden_tabs_button_and_the_entry_point() {
+        assert_eq!(
+            tab_actions_separators(true, true, true),
+            (true, true),
+            "with ˅ shown the tab actions sit between two separators: ˅ | actions | ⋮"
+        );
+        assert_eq!(
+            tab_actions_separators(false, true, true),
+            (false, true),
+            "without ˅ only ⋮ is separated from the tab actions"
+        );
+        assert_eq!(
+            tab_actions_separators(true, true, false),
+            (false, false),
+            "without ⋮ IntelliJ shows no separators"
+        );
+        assert_eq!(
+            tab_actions_separators(true, false, true),
+            (false, false),
+            "without tab actions there is nothing to separate"
+        );
+    }
 
     #[test]
     fn island_tab_test_file_rule_matches_spec_and_test_before_the_last_extension() {
@@ -5940,6 +5988,109 @@ mod tests {
         assert!(
             border_bounds.is_some(),
             "pinned_tabs_border should exist in two-row layout to show right border"
+        );
+    }
+
+    #[gpui::test]
+    async fn test_empty_pane_covers_the_editor_background_image(cx: &mut TestAppContext) {
+        init_test(cx);
+        let fs = FakeFs::new(cx.executor());
+        let project = Project::test(fs, None, cx).await;
+        let (workspace, cx) =
+            cx.add_window_view(|window, cx| Workspace::test_new(project.clone(), window, cx));
+        let pane = workspace.read_with(cx, |workspace, _| workspace.active_pane().clone());
+        assert_eq!(pane.read_with(cx, |pane, _| pane.items_len()), 0);
+        cx.run_until_parked();
+
+        let editor_fill =
+            cx.update(|_, cx| gpui::Background::from(cx.theme().colors().editor_background));
+        let count_editor_fills = |cx: &mut VisualTestContext| {
+            cx.update(|window, _| {
+                window
+                    .painted_quads()
+                    .iter()
+                    .filter(|quad| quad.background == editor_fill)
+                    .count()
+            })
+        };
+        let fills_without_image = count_editor_fills(cx);
+
+        let editor_image = ui::BackgroundImagePaintLayer {
+            image: std::sync::Arc::new(gpui::RenderImage::new(vec![image::Frame::new(
+                image::RgbaImage::new(1, 1),
+            )])),
+            mode: ui::BackgroundImageMode::Scale,
+            alignment: ui::BackgroundImageAlignment::Center,
+        };
+        cx.update(|window, cx| {
+            let images = ui::WindowBackgroundImages {
+                editor_and_tools: Some(editor_image),
+                empty_frame: None,
+            };
+            ui::BackgroundImageLayers::set_window(window.window_handle().window_id(), images, cx);
+            window.refresh();
+        });
+        cx.run_until_parked();
+
+        assert_eq!(
+            count_editor_fills(cx),
+            fills_without_image + 1,
+            "with only an editor image set, the empty pane gets the plain editor background, \
+             because WebStorm paints an empty editor area with the frame image only"
+        );
+    }
+
+    #[gpui::test]
+    async fn test_empty_frame_image_is_positioned_relative_to_the_window(cx: &mut TestAppContext) {
+        init_test(cx);
+        let fs = FakeFs::new(cx.executor());
+        let project = Project::test(fs, None, cx).await;
+        let (_workspace, cx) =
+            cx.add_window_view(|window, cx| Workspace::test_new(project.clone(), window, cx));
+        cx.run_until_parked();
+
+        let empty_frame_image = ui::BackgroundImagePaintLayer {
+            image: std::sync::Arc::new(gpui::RenderImage::new(vec![image::Frame::new(
+                image::RgbaImage::new(600, 600),
+            )])),
+            mode: ui::BackgroundImageMode::Plain,
+            alignment: ui::BackgroundImageAlignment::TopLeft,
+        };
+        cx.update(|window, cx| {
+            let images = ui::WindowBackgroundImages {
+                editor_and_tools: None,
+                empty_frame: Some(empty_frame_image),
+            };
+            ui::BackgroundImageLayers::set_window(window.window_handle().window_id(), images, cx);
+            window.refresh();
+        });
+        cx.run_until_parked();
+
+        let scale_factor = cx.update(|window, _| window.scale_factor());
+        let sprites = cx.update(|window, _| window.painted_polychrome_sprites());
+        assert!(
+            !sprites.is_empty(),
+            "the empty pane paints the empty frame image"
+        );
+        assert!(
+            sprites.iter().any(|sprite| {
+                let inset = sprite.bounds.origin.x.0.max(sprite.bounds.origin.y.0) / scale_factor;
+                inset >= 2.
+            }),
+            "the empty pane must be inset from the window corner to tell the two areas apart: \
+             {sprites:?}"
+        );
+        let shows_the_part_under_it = |sprite: &gpui::PolychromeSprite| {
+            let surface_origin = sprite.bounds.origin;
+            let image_origin = sprite.tile.bounds.origin;
+            (image_origin.x.0 as f32 - surface_origin.x.0 / scale_factor).abs() <= 1.
+                && (image_origin.y.0 as f32 - surface_origin.y.0 / scale_factor).abs() <= 1.
+        };
+        assert!(
+            sprites.iter().all(shows_the_part_under_it),
+            "a top left anchored image starts at the window corner, so the empty pane and the \
+             welcome page inside it show the part of it that lies under them, as in WebStorm: \
+             {sprites:?}"
         );
     }
 

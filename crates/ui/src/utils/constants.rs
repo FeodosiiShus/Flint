@@ -1,5 +1,4 @@
 use gpui::{App, Pixels, Window, px};
-#[cfg(not(target_os = "windows"))]
 use theme::UiDensity;
 
 pub const MACOS_SDK_26_OR_LATER: bool = cfg!(macos_sdk_26_or_later);
@@ -16,6 +15,11 @@ const TITLE_BAR_BUTTON_MARGIN: Pixels = px(8.);
 const MAIN_TOOLBAR_HEIGHT: Pixels = px(40.);
 #[cfg(not(target_os = "windows"))]
 const MAIN_TOOLBAR_COMPACT_HEIGHT: Pixels = px(32.);
+// IntelliJ's main toolbar combo widgets (project, VCS) take the 30 px main toolbar button
+// height (`MainToolbar.Button.size`, 26 px compact) as their minimum height.
+const TITLE_BAR_WIDGET_HEIGHT: Pixels = px(30.);
+const TITLE_BAR_WIDGET_COMPACT_HEIGHT: Pixels = px(26.);
+const TITLE_BAR_WIDGET_ICON_PADDING: Pixels = px(8.);
 
 /// Returns the platform-appropriate title bar height.
 ///
@@ -36,11 +40,28 @@ pub fn platform_title_bar_height(_window: &Window, cx: &App) -> Pixels {
     configured_title_bar_height(px(32.), cx)
 }
 
+/// Returns the height of the title bar's project, VCS and worktree widgets.
+///
+/// With `title_bar.icon_size` set, the widgets grow to keep 4 px above and below their
+/// scaled 16 px icons.
+pub fn title_bar_widget_height(cx: &App) -> Pixels {
+    let height = match theme::theme_settings(cx).ui_density(cx) {
+        UiDensity::Compact => TITLE_BAR_WIDGET_COMPACT_HEIGHT,
+        UiDensity::Default | UiDensity::Comfortable => TITLE_BAR_WIDGET_HEIGHT,
+    };
+    match crate::chrome_icon_scale(crate::ChromeRegion::TitleBar, cx) {
+        Some(scale) => height.max(crate::TOOLBAR_ICON_SIDE * scale + TITLE_BAR_WIDGET_ICON_PADDING),
+        None => height,
+    }
+}
+
 fn configured_title_bar_height(default: Pixels, cx: &App) -> Pixels {
     let region = crate::ChromeRegion::TitleBar;
     let size = crate::ButtonSize::Default;
     match crate::chrome_height(region, cx) {
-        Some(height) => height.max(crate::chrome_fit_height(region, size, cx)),
+        Some(height) => height
+            .max(crate::chrome_fit_height(region, size, cx))
+            .max(title_bar_widget_height(cx)),
         None => match crate::chrome_button_height(region, size, cx) {
             Some(button_height) => default.max(button_height + TITLE_BAR_BUTTON_MARGIN),
             None => default,

@@ -279,7 +279,7 @@ impl CommitModal {
         PopoverMenu::new(id.into())
             .with_handle(self.commit_menu_handle.clone())
             .trigger_with_tooltip(
-                IconButton::new("modal-commit-options", IconName::EllipsisVertical)
+                IconButton::new("modal-commit-options", COMMIT_OPTIONS_ICON)
                     .size(ButtonSize::Medium)
                     .icon_size(IconSize::Small)
                     .icon_color(Color::Muted)
@@ -730,6 +730,9 @@ impl Render for CommitModal {
     }
 }
 
+/// IntelliJ's new UI shows "Show Commit Options" as the plain gear (`AllIcons.General.GearPlain`).
+const COMMIT_OPTIONS_ICON: IconName = IconName::Settings;
+
 /// IntelliJ's `action.commit.and.push.text` ("Commit and Push…") and
 /// `action.amend.commit.and.push.text` ("Amend Commit and Push…"), shortened to Flint's commit
 /// button titles.
@@ -743,7 +746,13 @@ fn commit_and_push_label(commit_label: &str) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use super::commit_and_push_label;
+    use super::{COMMIT_OPTIONS_ICON, commit_and_push_label};
+    use ui::IconName;
+
+    #[test]
+    fn show_commit_options_uses_the_new_ui_gear() {
+        assert_eq!(COMMIT_OPTIONS_ICON, IconName::Settings);
+    }
 
     #[test]
     fn commit_and_push_label_follows_the_intellij_action_text() {

@@ -1214,6 +1214,19 @@ impl PickerDelegate for SearchEverywhereDelegate {
         }
     }
 
+    // Alt-Enter on an action row is IntelliJ's "assign a shortcut"; it reaches the
+    // delegate as `picker::ConfirmInput`.
+    fn confirm_input(
+        &mut self,
+        _secondary: bool,
+        window: &mut Window,
+        cx: &mut Context<Picker<Self>>,
+    ) {
+        if let Some(Entry::Item(Section::Actions, index)) = self.selected_entry() {
+            self.run_action(index, true, window, cx);
+        }
+    }
+
     fn dismissed(&mut self, _window: &mut Window, cx: &mut Context<Picker<Self>>) {
         self.dismiss(cx);
     }

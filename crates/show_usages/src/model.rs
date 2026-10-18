@@ -10,7 +10,7 @@ pub const USAGES_PAGE_SIZE: usize = 100;
 pub const MAX_LINE_LENGTH_TO_SHOW: usize = 200;
 
 const CHARS_BEFORE_FIRST_MATCH: usize = 40;
-const ELLIPSIS: &str = "…";
+const CHARS_AFTER_FIRST_MATCH: usize = 100;
 const FOOTER_PATH_MAX_LENGTH: usize = 80;
 const FOOTER_PATH_TRUNCATION: &str = "...";
 const HOME_PREFIX: &str = "~/";
@@ -618,7 +618,7 @@ fn build_row<L: Clone>(raw_usages: &[RawUsage<L>], group: Vec<usize>) -> Option<
         .filter_map(|raw_index| raw_usages.get(*raw_index))
         .collect();
     let first = *members.first()?;
-    let excerpt = LineExcerpt::new(first.line_text.as_str(), first.match_range.start);
+    let excerpt = LineExcerpt::new(first.line_text.as_str(), &first.match_range);
     let mut match_ranges: Vec<Range<usize>> = members
         .iter()
         .filter_map(|usage| excerpt.map_range(&usage.match_range))
@@ -659,11 +659,13 @@ struct LineExcerpt {
     text: SharedString,
     window_start: usize,
     window_end: usize,
-    prefix_length: usize,
 }
 
 impl LineExcerpt {
-    fn new(line_text: &str, first_match_start: usize) -> Self {
+    // Mirrors IntelliJ's ChunkExtractor: a long line is cut to the first usage with 40
+    // characters before and 100 after it, widened to whole words when the usage is
+    // an identifier, and drawn without ellipses.
+    fn new(line_text: &str, first_match: &Range<usize>) -> Self {
         let line = line_text.trim_end_matches('\r');
         let content = line.trim_start();
         let content_start = line.len() - content.len();
@@ -673,41 +675,55 @@ impl LineExcerpt {
             .chain(std::iter::once(line.len()))
             .collect();
         let character_count = boundaries.len().saturating_sub(1);
-        if character_count <= MAX_LINE_LENGTH_TO_SHOW {
+        // ChunkExtractor compares the whole line, indentation included, with the limit,
+        // even though the indentation itself is never shown.
+        if line.chars().count() <= MAX_LINE_LENGTH_TO_SHOW {
             return Self {
                 text: SharedString::from(content),
                 window_start: content_start,
                 window_end: line.len(),
-                prefix_length: 0,
             };
         }
+        let characters: Vec<char> = content.chars().collect();
+        let is_identifier_at = |index: usize| {
+            characters
+                .get(index)
+                .is_some_and(|character| is_identifier_start(*character))
+        };
         let first_match_character =
-            boundaries.partition_point(|boundary| *boundary < first_match_start);
-        let start_character = first_match_character
-            .saturating_sub(CHARS_BEFORE_FIRST_MATCH)
-            .min(character_count - MAX_LINE_LENGTH_TO_SHOW);
-        let end_character = start_character + MAX_LINE_LENGTH_TO_SHOW;
+            boundaries.partition_point(|boundary| *boundary < first_match.start);
+        let first_match_end_character =
+            boundaries.partition_point(|boundary| *boundary < first_match.end);
+        let mut start_character = first_match_character.saturating_sub(CHARS_BEFORE_FIRST_MATCH);
+        let mut end_character =
+            (first_match_end_character + CHARS_AFTER_FIRST_MATCH).min(character_count);
+        if first_match_end_character > first_match_character
+            && is_identifier_at(first_match_character)
+            && is_identifier_at(first_match_end_character - 1)
+        {
+            while end_character < character_count && is_identifier_at(end_character - 1) {
+                end_character += 1;
+            }
+            while start_character > 0 && is_identifier_at(start_character) {
+                start_character -= 1;
+            }
+            if start_character > 0 {
+                start_character += 1;
+            }
+            if end_character < character_count {
+                end_character -= 1;
+            }
+        }
         let window_start = boundaries
             .get(start_character)
             .copied()
             .unwrap_or(content_start);
         let window_end = boundaries.get(end_character).copied().unwrap_or(line.len());
-        let clipped_start = start_character > 0;
-        let clipped_end = end_character < character_count;
         let window_text = line.get(window_start..window_end).unwrap_or_default();
-        let mut text = String::with_capacity(window_text.len() + 2 * ELLIPSIS.len());
-        if clipped_start {
-            text.push_str(ELLIPSIS);
-        }
-        text.push_str(window_text);
-        if clipped_end {
-            text.push_str(ELLIPSIS);
-        }
         Self {
-            text: SharedString::from(text),
+            text: SharedString::from(window_text),
             window_start,
             window_end,
-            prefix_length: if clipped_start { ELLIPSIS.len() } else { 0 },
         }
     }
 
@@ -718,8 +734,8 @@ impl LineExcerpt {
             return None;
         }
         let text = self.text.as_str();
-        let mut display_start = self.prefix_length + (start - self.window_start);
-        let mut display_end = self.prefix_length + (end - self.window_start);
+        let mut display_start = start - self.window_start;
+        let mut display_end = end - self.window_start;
         while display_start > 0 && !text.is_char_boundary(display_start) {
             display_start -= 1;
         }
@@ -732,6 +748,12 @@ impl LineExcerpt {
             None
         }
     }
+}
+
+// Java's Character.isJavaIdentifierStart, which ChunkExtractor uses to find word
+// boundaries; digits are deliberately not included.
+fn is_identifier_start(character: char) -> bool {
+    character.is_alphabetic() || character == '_' || character == '$'
 }
 
 fn short_file_labels<L>(rows: &[UsageRow<L>]) -> HashMap<SharedString, SharedString> {
@@ -1131,59 +1153,93 @@ mod tests {
     }
 
     #[test]
-    fn long_line_is_clipped_around_the_first_match() {
-        let line = format!("{}foo{}", "x".repeat(300), "y".repeat(300));
+    fn long_line_is_cut_from_40_characters_before_to_100_after_the_first_match() {
+        let line = format!("{}\"foo\"{}", "x".repeat(300), "y".repeat(300));
         let highlight = HighlightId::new(2);
         let model = model(vec![RawUsage {
             syntax_highlights: vec![
                 (0..10, highlight),
-                (300..303, highlight),
+                (250..262, highlight),
+                (300..305, highlight),
+                (400..410, highlight),
                 (455..470, highlight),
             ],
-            ..usage(0, "a.ts", 0, &line, "foo")
+            ..usage(0, "a.ts", 0, &line, "\"foo\"")
         }]);
 
         let row = only_row(&model);
-        let prefix_length = ELLIPSIS.len();
-        assert!(row.display_text.starts_with(ELLIPSIS));
-        assert!(row.display_text.ends_with(ELLIPSIS));
         assert_eq!(
-            row.display_text.chars().count(),
-            MAX_LINE_LENGTH_TO_SHOW + 2
+            row.display_text.as_str(),
+            format!("{}\"foo\"{}", "x".repeat(40), "y".repeat(100)),
+            "a usage that is not an identifier keeps the plain window, without ellipses"
         );
-        assert_eq!(matched_texts(row), vec!["foo"]);
-        assert_eq!(row.match_ranges[0].start, prefix_length + 40);
+        assert_eq!(matched_texts(row), vec!["\"foo\""]);
+        assert_eq!(row.match_ranges, vec![40..45]);
         assert_eq!(
             row.syntax_highlights,
             vec![
-                (prefix_length + 40..prefix_length + 43, highlight),
-                (prefix_length + 195..prefix_length + 200, highlight),
+                (0..2, highlight),
+                (40..45, highlight),
+                (140..145, highlight),
             ]
         );
     }
 
     #[test]
-    fn long_line_with_match_at_start_is_clipped_only_at_the_end() {
-        let line = format!("    foo{}", "y".repeat(300));
+    fn long_line_cut_keeps_the_words_at_both_ends_whole() {
+        let line = format!("{}foo{}", "alpha ".repeat(50), " omega".repeat(50));
         let model = model(vec![usage(0, "a.ts", 0, &line, "foo")]);
 
         let row = only_row(&model);
-        assert!(row.display_text.starts_with("foo"));
-        assert!(row.display_text.ends_with(ELLIPSIS));
+        assert!(row.display_text.starts_with("alpha alpha"));
+        assert!(row.display_text.ends_with("omega omega"));
+        assert_eq!(row.display_text.chars().count(), 147);
+        assert_eq!(matched_texts(row), vec!["foo"]);
+        assert_eq!(row.match_ranges, vec![42..45]);
+    }
+
+    #[test]
+    fn long_line_with_match_at_start_is_cut_only_at_the_end() {
+        let line = format!("    foo{}", " bar".repeat(100));
+        let model = model(vec![usage(0, "a.ts", 0, &line, "foo")]);
+
+        let row = only_row(&model);
+        assert_eq!(
+            row.display_text.as_str(),
+            format!("foo{}", " bar".repeat(25))
+        );
         assert_eq!(row.match_ranges, vec![0..3]);
     }
 
     #[test]
-    fn long_multibyte_line_with_match_at_end_is_clipped_only_at_the_start() {
-        let line = format!("{}foo", "ж".repeat(300));
+    fn indented_line_is_cut_when_it_is_over_the_limit_with_its_indentation() {
+        let line = format!(
+            "{}{}\"foo\"{}",
+            " ".repeat(20),
+            "x".repeat(100),
+            "y".repeat(85)
+        );
+        let model = model(vec![usage(0, "a.ts", 0, &line, "\"foo\"")]);
+
+        let row = only_row(&model);
+        assert_eq!(
+            row.display_text.as_str(),
+            format!("{}\"foo\"{}", "x".repeat(40), "y".repeat(85)),
+            "IntelliJ counts the indentation towards the 200-character limit"
+        );
+        assert_eq!(row.match_ranges, vec![40..45]);
+    }
+
+    #[test]
+    fn long_multibyte_line_with_match_at_end_is_cut_only_at_the_start() {
+        let line = format!("{}foo", "жж ".repeat(100));
         let model = model(vec![usage(0, "a.ts", 0, &line, "foo")]);
 
         let row = only_row(&model);
-        assert!(row.display_text.starts_with(ELLIPSIS));
-        assert!(row.display_text.ends_with("foo"));
         assert_eq!(
-            row.display_text.chars().count(),
-            MAX_LINE_LENGTH_TO_SHOW + 1
+            row.display_text.as_str(),
+            format!("{}foo", "жж ".repeat(13)),
+            "the word boundary before the window is skipped like in IntelliJ"
         );
         assert_eq!(matched_texts(row), vec!["foo"]);
     }

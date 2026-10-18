@@ -21,6 +21,7 @@ pub(crate) enum ThemedImage {
     ReadOnly,
     BannerWarning,
     BannerInfo,
+    BannerError,
 }
 
 impl ThemedImage {
@@ -36,6 +37,8 @@ impl ThemedImage {
             (Self::BannerWarning, false) => "images/merge_banner_warning_light.svg",
             (Self::BannerInfo, true) => "images/merge_banner_info_dark.svg",
             (Self::BannerInfo, false) => "images/merge_banner_info_light.svg",
+            (Self::BannerError, true) => "images/merge_banner_error_dark.svg",
+            (Self::BannerError, false) => "images/merge_banner_error_light.svg",
         }
     }
 }
@@ -51,12 +54,13 @@ mod tests {
 
     use super::ThemedImage;
 
-    const ALL_IMAGES: [ThemedImage; 5] = [
+    const ALL_IMAGES: [ThemedImage; 6] = [
         ThemedImage::DialogQuestion,
         ThemedImage::DialogWarning,
         ThemedImage::ReadOnly,
         ThemedImage::BannerWarning,
         ThemedImage::BannerInfo,
+        ThemedImage::BannerError,
     ];
 
     fn asset_contents(path: &str) -> String {
@@ -92,7 +96,9 @@ mod tests {
     fn raster_and_logical_size(image: ThemedImage) -> (u32, u32) {
         match image {
             ThemedImage::DialogQuestion | ThemedImage::DialogWarning => (56, 28),
-            ThemedImage::BannerWarning | ThemedImage::BannerInfo => (32, 16),
+            ThemedImage::BannerWarning | ThemedImage::BannerInfo | ThemedImage::BannerError => {
+                (32, 16)
+            }
             ThemedImage::ReadOnly => (16, 16),
         }
     }

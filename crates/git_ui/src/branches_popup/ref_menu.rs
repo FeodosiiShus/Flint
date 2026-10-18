@@ -185,11 +185,14 @@ fn local_groups(context: &MenuContext<'_>) -> Vec<Vec<MenuItemPlan>> {
             MenuAction::CheckoutAndRebase,
             format!("Checkout and Rebase onto {current}"),
         ));
+        // Unlike Update, IntelliJ keeps Checkout and Update enabled while a fetch runs.
         if context.has_remotes() {
-            checkout_group.push(MenuItemPlan::Item(with_update_state(MenuItem::new(
-                MenuAction::CheckoutAndUpdate,
-                "Checkout and Update",
-            ))));
+            checkout_group.push(MenuItemPlan::Item(
+                MenuItem::new(MenuAction::CheckoutAndUpdate, "Checkout and Update").enabled_unless(
+                    !context.has_tracked_branch,
+                    format!("Tracked branch is not configured for {quoted}"),
+                ),
+            ));
         }
     }
 
@@ -348,7 +351,11 @@ fn tag_groups(context: &MenuContext<'_>) -> Vec<Vec<MenuItemPlan>> {
     } else {
         push_items.into_iter().map(MenuItemPlan::Item).collect()
     };
-    let manage_group = vec![item(MenuAction::Delete, "Delete")];
+    let manage_group = if context.is_detached_head_tag() {
+        Vec::new()
+    } else {
+        vec![item(MenuAction::Delete, "Delete")]
+    };
 
     vec![
         checkout_group,
@@ -648,6 +655,17 @@ mod tests {
     }
 
     #[test]
+    fn running_fetch_keeps_checkout_and_update_enabled() {
+        let mut scenario = Scenario::new(RefTarget::local("topic"));
+        scenario.fetching = true;
+        let plan = scenario.plan();
+        let checkout_and_update = find_item(&plan, &MenuAction::CheckoutAndUpdate);
+        assert!(checkout_and_update.enabled);
+        assert_eq!(checkout_and_update.tooltip, None);
+        assert!(!find_item(&plan, &MenuAction::Update).enabled);
+    }
+
+    #[test]
     fn detached_head_disables_rebase_with_the_intellij_tooltip_and_uses_the_short_sha() {
         let mut scenario = Scenario::new(RefTarget::local("topic"));
         scenario.current_branch = None;
@@ -741,42 +759,39 @@ mod tests {
     }
 
     #[test]
-    fn the_tag_under_a_detached_head_hides_checkout_and_merge() {
+    fn the_tag_under_a_detached_head_hides_checkout_merge_and_delete() {
         let mut scenario = Scenario::new(RefTarget::tag("v1.0"));
         scenario.current_branch = None;
         scenario.tag_commit_sha = scenario.head_sha.clone();
         let plan = scenario.plan();
         assert_eq!(
             describe(&plan),
-            vec![
-                "Show Diff with Working Tree",
-                "---",
-                "Push to origin",
-                "---",
-                "Delete"
-            ]
+            vec!["Show Diff with Working Tree", "---", "Push to origin"]
         );
         assert_well_formed(&plan);
     }
 
     #[test]
-    fn a_tag_keeps_checkout_and_merge_unless_head_is_detached_exactly_on_it() {
+    fn a_tag_keeps_checkout_merge_and_delete_unless_head_is_detached_exactly_on_it() {
         let mut scenario = Scenario::new(RefTarget::tag("v1.0"));
         scenario.tag_commit_sha = scenario.head_sha.clone();
         let attached = scenario.plan();
         assert!(has_item(&attached, &MenuAction::Checkout));
         assert!(has_item(&attached, &MenuAction::MergeIntoCurrent));
+        assert!(has_item(&attached, &MenuAction::Delete));
 
         scenario.current_branch = None;
         scenario.tag_commit_sha = Some("ffffffffffffffffffffffffffffffffffffffff".to_string());
         let elsewhere = scenario.plan();
         assert!(has_item(&elsewhere, &MenuAction::Checkout));
         assert!(has_item(&elsewhere, &MenuAction::MergeIntoCurrent));
+        assert!(has_item(&elsewhere, &MenuAction::Delete));
 
         scenario.head_sha = None;
         scenario.tag_commit_sha = None;
         let unknown = scenario.plan();
         assert!(has_item(&unknown, &MenuAction::Checkout));
+        assert!(has_item(&unknown, &MenuAction::Delete));
     }
 
     #[test]

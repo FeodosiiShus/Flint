@@ -40,6 +40,10 @@ use crate::merge_tool::conflict_resolution::{
 };
 
 const MAX_QUOTED_REF_NAME_CHARS: usize = 40;
+// IntelliJ's `GitBranchPresentation.truncateBranchName` leaves names up to four characters over
+// the limit untouched and keeps the last five characters of longer ones.
+const QUOTED_REF_NAME_DELTA: usize = 4;
+const QUOTED_REF_NAME_SUFFIX: usize = 5;
 const ELLIPSIS: char = '\u{2026}';
 const PUSH_PROGRESS_TITLE: &str = "Pushing\u{2026}";
 
@@ -282,12 +286,17 @@ impl BranchNotice {
 }
 
 pub fn quoted_ref_label(name: &str) -> String {
-    if name.chars().count() > MAX_QUOTED_REF_NAME_CHARS {
-        let kept: String = name.chars().take(MAX_QUOTED_REF_NAME_CHARS - 1).collect();
-        format!("'{kept}{ELLIPSIS}'")
-    } else {
-        format!("'{name}'")
+    let length = name.chars().count();
+    if length <= MAX_QUOTED_REF_NAME_CHARS + QUOTED_REF_NAME_DELTA {
+        return format!("'{name}'");
     }
+    let shortened_length = MAX_QUOTED_REF_NAME_CHARS - 1;
+    let prefix: String = name
+        .chars()
+        .take(shortened_length - QUOTED_REF_NAME_SUFFIX - 1)
+        .collect();
+    let suffix: String = name.chars().skip(length - QUOTED_REF_NAME_SUFFIX).collect();
+    format!("'{prefix}{ELLIPSIS}{suffix}'")
 }
 
 pub(crate) fn failure_text(error: &anyhow::Error) -> Option<String> {
@@ -333,15 +342,18 @@ mod tests {
     }
 
     #[test]
-    fn quoted_ref_label_truncates_longer_names_with_an_ellipsis_to_the_limit() {
-        let name = "b".repeat(MAX_QUOTED_REF_NAME_CHARS + 1);
+    fn quoted_ref_label_keeps_names_up_to_four_characters_over_the_limit_untouched() {
+        let name = "a".repeat(44);
+        assert_eq!(quoted_ref_label(&name), format!("'{name}'"));
+    }
+
+    #[test]
+    fn quoted_ref_label_shortens_longer_names_in_the_middle_keeping_the_last_five_characters() {
+        let name = format!("feature/{}-12345", "b".repeat(40));
         let label = quoted_ref_label(&name);
-        let expected = format!("'{}{ELLIPSIS}'", "b".repeat(MAX_QUOTED_REF_NAME_CHARS - 1));
+        let expected = format!("'{}{ELLIPSIS}12345'", &name[..33]);
         assert_eq!(label, expected);
-        assert_eq!(
-            label.trim_matches('\'').chars().count(),
-            MAX_QUOTED_REF_NAME_CHARS
-        );
+        assert_eq!(label.trim_matches('\'').chars().count(), 39);
     }
 
     #[test]
@@ -349,11 +361,8 @@ mod tests {
         let name = "\u{e9}".repeat(MAX_QUOTED_REF_NAME_CHARS + 5);
         let label = quoted_ref_label(&name);
         assert!(label.starts_with("'\u{e9}"));
-        assert!(label.ends_with(&format!("{ELLIPSIS}'")));
-        assert_eq!(
-            label.trim_matches('\'').chars().count(),
-            MAX_QUOTED_REF_NAME_CHARS
-        );
+        assert!(label.ends_with(&format!("{ELLIPSIS}{}'", "\u{e9}".repeat(5))));
+        assert_eq!(label.trim_matches('\'').chars().count(), 39);
     }
 
     #[test]

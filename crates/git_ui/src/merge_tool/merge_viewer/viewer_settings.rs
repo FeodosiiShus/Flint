@@ -1,5 +1,5 @@
 use db::kvp::KeyValueStore;
-use gpui::App;
+use gpui::{App, Global};
 use merge_diff::ComparisonPolicy;
 use util::ResultExt as _;
 
@@ -31,6 +31,21 @@ impl Default for ViewerSettings {
             appearance: Appearance::default(),
         }
     }
+}
+
+// WebStorm keeps ENABLE_SYNC_SCROLL in the transient per-place settings: it carries over to
+// later merge windows but is never written to disk, so it lives in memory only.
+struct SessionSyncScroll(bool);
+
+impl Global for SessionSyncScroll {}
+
+pub(crate) fn session_sync_scroll(cx: &App) -> bool {
+    cx.try_global::<SessionSyncScroll>()
+        .is_none_or(|state| state.0)
+}
+
+pub(crate) fn remember_session_sync_scroll(enabled: bool, cx: &mut App) {
+    cx.set_global(SessionSyncScroll(enabled));
 }
 
 fn ignore_policy_value(policy: ComparisonPolicy) -> &'static str {
@@ -163,6 +178,19 @@ mod tests {
         assert!(parse_flag(Some("garbage"), true));
         assert!(!parse_flag(Some(" false\n"), true));
         assert!(parse_flag(Some(" true\n"), false));
+    }
+
+    #[gpui::test]
+    fn merge_tool_viewer_settings_synchronize_scrolling_is_kept_for_the_session_only(
+        cx: &mut TestAppContext,
+    ) {
+        cx.update(|cx| {
+            assert!(session_sync_scroll(cx));
+            remember_session_sync_scroll(false, cx);
+            assert!(!session_sync_scroll(cx));
+            remember_session_sync_scroll(true, cx);
+            assert!(session_sync_scroll(cx));
+        });
     }
 
     #[gpui::test]

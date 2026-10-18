@@ -1,4 +1,6 @@
-use gpui::{Action, Context, Entity, Global, VisualTestContext, Window, WindowHandle};
+use gpui::{
+    Action, Bounds, Context, Entity, Global, Pixels, VisualTestContext, Window, WindowHandle,
+};
 use merge_diff::Side;
 
 use super::ConflictsDialog;
@@ -42,6 +44,10 @@ impl OpenConflictsDialog {
         let result = self.dialog.update_in(&mut self.cx, update);
         self.cx.run_until_parked();
         result
+    }
+
+    pub(super) fn debug_bounds(&mut self, selector: &'static str) -> Option<Bounds<Pixels>> {
+        self.cx.debug_bounds(selector)
     }
 
     pub(super) fn dispatch(&mut self, action: impl Action) {

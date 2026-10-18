@@ -1,7 +1,7 @@
 use gpui::{
     ClickEvent, CursorStyle, ElementId, FocusHandle, ManagedView, MouseButton, Role, accesskit,
 };
-use ui::{COMPONENT_CORNER_RADII, PopoverMenuHandle, prelude::*};
+use ui::{PopoverMenuHandle, component_corner_radii, prelude::*};
 
 use crate::components::{
     COMBO_BOX_ARROW_AREA_WIDTH, COMBO_BOX_MIN_WIDTH, CONTROL_HEIGHT, CONTROL_TEXT_MARGIN_LEFT,
@@ -95,6 +95,7 @@ impl Toggleable for ComboBoxTrigger {
 
 impl RenderOnce for ComboBoxTrigger {
     fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
+        let corner_radius = component_corner_radii(cx).input;
         let colors = cx.theme().colors();
         let focused_border = colors.border_focused;
 
@@ -116,7 +117,7 @@ impl RenderOnce for ComboBoxTrigger {
             .flex_none()
             .h(CONTROL_HEIGHT)
             .min_w(COMBO_BOX_MIN_WIDTH)
-            .rounded(COMPONENT_CORNER_RADII.input)
+            .rounded(corner_radius)
             .border_1()
             .border_color(if self.open {
                 focused_border
@@ -159,5 +160,66 @@ impl RenderOnce for ComboBoxTrigger {
                 }
                 this
             })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gpui::{Context, Render, TestAppContext};
+
+    struct ComboBoxProbe;
+
+    impl Render for ComboBoxProbe {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .p_4()
+                .child(ComboBoxTrigger::new("combo-box", "Option"))
+        }
+    }
+
+    fn painted_trigger_radius(density: settings::UiDensity, cx: &mut TestAppContext) -> f32 {
+        cx.update(|cx| {
+            let settings_store = settings::SettingsStore::test(cx);
+            cx.set_global(settings_store);
+            theme_settings::init(theme::LoadThemes::JustBase, cx);
+            cx.update_global::<settings::SettingsStore, _>(|store, cx| {
+                store.update_user_settings(cx, |settings| {
+                    settings.theme.ui_density = Some(density);
+                });
+            });
+        });
+        let (_, cx) = cx.add_window_view(|_, _| ComboBoxProbe);
+        cx.update(|window, cx| {
+            let border_color = cx.theme().colors().border;
+            let scale = window.scale_factor();
+            // The fill and the border are painted as separate quads, so look for the border alone.
+            window
+                .painted_quads()
+                .into_iter()
+                .find(|quad| quad.border_color == border_color && quad.border_widths.top.0 > 0.)
+                .map(|quad| quad.corner_radii.top_left.0 / scale)
+                .expect("the combo box paints its bordered field")
+        })
+    }
+
+    #[gpui::test]
+    fn combo_box_uses_the_islands_component_arc(cx: &mut TestAppContext) {
+        let radius = painted_trigger_radius(settings::UiDensity::Default, cx);
+        assert!(
+            (radius - 4.).abs() < 0.01,
+            "Component.arc 8 is a 4 px radius, got {radius}"
+        );
+    }
+
+    #[gpui::test]
+    fn combo_box_uses_the_islands_compact_component_arc_in_compact_density(
+        cx: &mut TestAppContext,
+    ) {
+        let radius = painted_trigger_radius(settings::UiDensity::Compact, cx);
+        assert!(
+            (radius - 3.).abs() < 0.01,
+            "Component.arc.compact 6 is a 3 px radius, got {radius}"
+        );
     }
 }

@@ -1507,9 +1507,12 @@ impl Render for Dock {
     }
 }
 
+/// `show_names_entry` adds IntelliJ's "Show Tool Window Names", which only the stripe button menu
+/// offers, not the tool window header's.
 pub(crate) fn panel_context_menu(
     panel: Arc<dyn PanelHandle>,
     dock: Entity<Dock>,
+    show_names_entry: bool,
     window: &mut Window,
     cx: &mut App,
 ) -> Entity<ContextMenu> {
@@ -1524,6 +1527,9 @@ pub(crate) fn panel_context_menu(
     let supports_flexible = panel.supports_flexible_size(cx);
     let currently_flexible = panel.has_flexible_size(window, cx);
     let panel_hide = panel.hide_button_setting(cx);
+    let show_names = WorkspaceSettings::get_global(cx)
+        .tool_window_bars
+        .show_names;
     ContextMenu::build(window, cx, |mut menu, _, cx| {
         let mut has_position_entries = false;
         for position in POSITIONS {
@@ -1598,8 +1604,31 @@ pub(crate) fn panel_context_menu(
         if let Some(hide) = panel_hide {
             menu = add_hide_button_entry(menu.separator(), hide);
         }
+        if show_names_entry {
+            menu = add_show_tool_window_names_entry(menu.separator(), show_names);
+        }
         menu
     })
+}
+
+/// Appends IntelliJ's `ToolWindowShowNamesAction` toggle, which flips `tool_window_bars.show_names`
+/// in the user settings file.
+pub(crate) fn add_show_tool_window_names_entry(menu: ContextMenu, show_names: bool) -> ContextMenu {
+    menu.toggleable_entry(
+        "Show Tool Window Names",
+        show_names,
+        IconPosition::Start,
+        None,
+        move |_window, cx| {
+            update_settings_file(<dyn fs::Fs>::global(cx), cx, move |settings, _cx| {
+                settings
+                    .workspace
+                    .tool_window_bars
+                    .get_or_insert_default()
+                    .show_names = Some(!show_names);
+            });
+        },
+    )
 }
 
 /// Describes how a panel button can be hidden by the user, so that its
@@ -1653,6 +1682,7 @@ pub mod test {
         pub pane: Option<Entity<Pane>>,
         pub header_actions: Vec<PanelHeaderAction>,
         pub header_content: Option<AnyView>,
+        pub icon_tooltip: &'static str,
     }
     actions!(test_only, [ToggleTestPanel]);
 
@@ -1673,6 +1703,7 @@ pub mod test {
                 pane: None,
                 header_actions: Vec::new(),
                 header_content: None,
+                icon_tooltip: "Test Panel",
             }
         }
 
@@ -1799,7 +1830,7 @@ pub mod test {
         }
 
         fn icon_tooltip(&self, _window: &Window, _cx: &App) -> Option<&'static str> {
-            self.icon.map(|_| "Test Panel")
+            self.icon.map(|_| self.icon_tooltip)
         }
 
         fn toggle_action(&self) -> Box<dyn Action> {

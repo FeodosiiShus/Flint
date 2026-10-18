@@ -2825,6 +2825,47 @@ mod tests {
         });
     }
 
+    #[gpui::test]
+    fn menu_rows_have_intellij_popup_menu_pitch(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            let settings_store = settings::SettingsStore::test(cx);
+            cx.set_global(settings_store);
+            theme_settings::init(theme::LoadThemes::JustBase, cx);
+        });
+        let (_menu, cx) = cx.add_window_view(|window, cx| {
+            ContextMenu::new(window, cx, |menu, _, _| {
+                menu.entry("First", None, |_, _| {})
+                    .entry("Second", None, |_, _| {})
+            })
+        });
+        cx.run_until_parked();
+
+        let first = cx
+            .debug_bounds("MENU_ITEM-First")
+            .expect("the first entry is painted");
+        let second = cx
+            .debug_bounds("MENU_ITEM-Second")
+            .expect("the second entry is painted");
+        assert_eq!(
+            second.top() - first.top(),
+            px(26.),
+            "rows are List.rowHeight 24 plus the 1 px PopupMenu.Selection.outerInsets above and below"
+        );
+
+        let row = PopupRowMetrics::for_style(PopupRowStyle::Menu);
+        assert_eq!(row.pill_height, px(24.));
+        assert_eq!(
+            POPUP_MENU_METRICS.vertical_padding,
+            px(6.),
+            "PopupMenu.borderInsets top and bottom"
+        );
+        assert_eq!(
+            POPUP_MENU_METRICS.vertical_padding + row.pill_inset_y,
+            px(7.),
+            "the first pill still starts 7 px below the border"
+        );
+    }
+
     #[test]
     fn icon_column_is_reserved_only_when_an_entry_or_submenu_has_a_start_icon() {
         let plain = || ContextMenuItem::Entry(ContextMenuEntry::new("Plain"));

@@ -57,6 +57,13 @@ pub(crate) const NOTIFICATION_FOREGROUND_DARK: u32 = 0xDFE1E5;
 pub(crate) const NOTIFICATION_BACKGROUND_LIGHT: u32 = 0xFFF6E9;
 pub(crate) const NOTIFICATION_BORDER_LIGHT: u32 = 0xF4CD9A;
 pub(crate) const NOTIFICATION_FOREGROUND_LIGHT: u32 = 0x000000;
+pub(crate) const ERROR_NOTIFICATION_BACKGROUND_DARK: u32 = 0x56272B;
+pub(crate) const ERROR_NOTIFICATION_BORDER_DARK: u32 = 0x80383E;
+pub(crate) const ERROR_NOTIFICATION_BACKGROUND_LIGHT: u32 = 0xFFF6F5;
+pub(crate) const ERROR_NOTIFICATION_BORDER_LIGHT: u32 = 0xFFC4C5;
+pub(crate) const CONFLICT_INVALID_TEXT: &str =
+    "Conflict is not valid and no longer can be resolved.";
+pub(crate) const ABORT_RESOLVE_LABEL: &str = "Abort Resolve";
 const BALLOON_TOP_OFFSET: f32 = 5.0;
 const BALLOON_TITLE: &str = "All changes have been processed";
 const BALLOON_LINK: &str = "Apply Changes";
@@ -468,6 +475,66 @@ impl MergeViewer {
         )
     }
 
+    fn render_invalid_conflict_notification(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if !self.conflict_invalid {
+            return None;
+        }
+        let dark = current_palette(cx).kind.is_dark();
+        let (background, border, foreground) = if dark {
+            (
+                ERROR_NOTIFICATION_BACKGROUND_DARK,
+                ERROR_NOTIFICATION_BORDER_DARK,
+                NOTIFICATION_FOREGROUND_DARK,
+            )
+        } else {
+            (
+                ERROR_NOTIFICATION_BACKGROUND_LIGHT,
+                ERROR_NOTIFICATION_BORDER_LIGHT,
+                NOTIFICATION_FOREGROUND_LIGHT,
+            )
+        };
+        Some(
+            h_flex()
+                .w_full()
+                .flex_none()
+                .items_center()
+                .px(px(NOTIFICATION_HORIZONTAL_INSET))
+                .py(px(NOTIFICATION_VERTICAL_INSET))
+                .bg(hex_color(background))
+                .border_t_1()
+                .border_b_1()
+                .border_color(hex_color(border))
+                .text_color(hex_color(foreground))
+                .child(
+                    h_flex()
+                        .flex_1()
+                        .min_w_0()
+                        .gap(px(NOTIFICATION_ICON_GAP))
+                        .pr(px(NOTIFICATION_TEXT_TRAILING_GAP))
+                        .items_center()
+                        .child(themed_image(
+                            ThemedImage::BannerError,
+                            NOTIFICATION_ICON_SIZE,
+                            cx,
+                        ))
+                        .child(
+                            Label::new(CONFLICT_INVALID_TEXT)
+                                .color(Color::Custom(hex_color(foreground))),
+                        ),
+                )
+                .child(
+                    div()
+                        .id("merge-notification-abort-resolve")
+                        .flex_none()
+                        .cursor_pointer()
+                        .text_color(cx.theme().colors().text_accent)
+                        .child(ABORT_RESOLVE_LABEL)
+                        .on_click(cx.listener(|viewer, _, _, cx| viewer.abort_resolve(cx))),
+                )
+                .into_any_element(),
+        )
+    }
+
     fn render_panes(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let total_width = Self::window_width(window);
         let widths = calc_component_widths(total_width, self.proportions);
@@ -651,6 +718,7 @@ impl MergeViewer {
 impl Render for MergeViewer {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let header = self.render_header(window, cx).into_any_element();
+        let invalid_conflict = self.render_invalid_conflict_notification(cx);
         let error_content = self.has_error_content();
         let notification = if error_content {
             None
@@ -682,6 +750,7 @@ impl Render for MergeViewer {
             );
         self.registered_viewer_actions(root, cx)
             .child(header)
+            .when_some(invalid_conflict, |root, banner| root.child(banner))
             .when_some(notification, |root, notification| root.child(notification))
             .child(body)
     }

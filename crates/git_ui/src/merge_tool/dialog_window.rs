@@ -193,7 +193,6 @@ fn watch_owner_activation(
 
 pub(crate) struct DialogWindow<V> {
     pub window: WindowHandle<DialogWindowShell>,
-    #[cfg_attr(not(test), allow(dead_code))]
     pub content: Entity<V>,
 }
 
@@ -426,6 +425,11 @@ impl DialogWindowShell {
             _subscriptions: subscriptions,
             _owner_activation: owner_activation,
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn content<V: 'static>(&self) -> Option<Entity<V>> {
+        self.content.clone().downcast::<V>().ok()
     }
 
     fn focus_content(&mut self, window: &mut Window, cx: &mut App) {

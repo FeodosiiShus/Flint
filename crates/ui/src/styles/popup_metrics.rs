@@ -1,8 +1,13 @@
 use gpui::{Pixels, px};
 
 const MENU_VERTICAL_PADDING: f32 = 7.;
+// IntelliJ menu rows are `List.rowHeight` plus the 1 px `PopupMenu.Selection.outerInsets` above
+// and below the pill, inside the 6 px `PopupMenu.borderInsets`, so the first pill still starts
+// 7 px below the border.
+const MENU_ROW_INSET_Y: f32 = 1.;
 
 pub const POPOVER_Y_PADDING: Pixels = px(MENU_VERTICAL_PADDING * 2.);
+pub const POPOVER_VERTICAL_PADDING: Pixels = px(MENU_VERTICAL_PADDING);
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PopupSurfaceMetrics {
@@ -44,7 +49,7 @@ impl PopupRowMetrics {
             PopupRowStyle::Menu => Self {
                 pill_height: px(24.),
                 pill_inset_x: px(7.),
-                pill_inset_y: px(0.),
+                pill_inset_y: px(MENU_ROW_INSET_Y),
                 pill_radius: px(4.),
                 content_padding_x: px(6.),
             },
@@ -68,7 +73,7 @@ pub struct PopupMenuMetrics {
 }
 
 pub const POPUP_MENU_METRICS: PopupMenuMetrics = PopupMenuMetrics {
-    vertical_padding: px(MENU_VERTICAL_PADDING),
+    vertical_padding: px(MENU_VERTICAL_PADDING - MENU_ROW_INSET_Y),
     icon_column_width: px(18.),
     icon_column_gap: px(4.),
     separator_height: px(9.),

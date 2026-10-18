@@ -567,6 +567,10 @@ impl DialogState {
         self.selected = vec![id];
     }
 
+    pub(crate) fn selected_row_count(&self) -> usize {
+        self.selected.len()
+    }
+
     pub(crate) fn toggle_selection(&mut self, id: RowId) {
         if let Some(position) = self.selected.iter().position(|selected| selected == &id) {
             self.selected.remove(position);

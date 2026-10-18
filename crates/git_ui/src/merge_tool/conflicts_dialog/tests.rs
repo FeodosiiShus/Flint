@@ -1,7 +1,7 @@
 use std::{cell::RefCell, path::Path, rc::Rc, sync::Arc};
 
 use git::repository::repo_path;
-use gpui::{AnyWindowHandle, App, Entity, Task, TestAppContext, VisualTestContext};
+use gpui::{AnyWindowHandle, App, Entity, Task, TestAppContext, VisualTestContext, point, px};
 use merge_diff::Side;
 use project::{FakeFs, Project, git_store::Repository};
 use serde_json::json;
@@ -10,9 +10,11 @@ use theme::LoadThemes;
 use util::path;
 use workspace::{MultiWorkspace, Workspace};
 
+use super::interaction::SPEED_SEARCH_DEBUG_SELECTOR;
 use super::overlay::Overlay;
 use super::state::{DefaultButton, GroupKind, RowId, RowViewKind};
 use super::test_driver::{OpenConflictsDialog, find_open_dialog};
+use super::tree_table::HEADER_DEBUG_SELECTOR;
 use super::{ConflictsDialogRequest, ConflictsDialogResult, open_conflicts_dialog};
 use crate::merge_tool::conflict_resolution::dialog_texts::{
     DialogTexts, PaneTitleText, PaneTitleTexts,
@@ -364,6 +366,23 @@ fn select_file(open: &mut OpenDialog, path: &str) {
         dialog.state.select_only(file_row(path));
         cx.notify();
     });
+}
+
+fn right_click_row(open: &mut OpenDialog, id: RowId) {
+    open.dialog.update_in(|dialog, window, cx| {
+        dialog.handle_row_context_menu(id, point(px(40.), px(80.)), window, cx);
+    });
+}
+
+fn has_context_menu(open: &OpenDialog) -> bool {
+    open.dialog.read(|dialog| dialog.context_menu.is_some())
+}
+
+fn assert_close(actual: f32, expected: f32, what: &str) {
+    assert!(
+        (actual - expected).abs() <= 0.5,
+        "{what}: expected {expected}, got {actual}"
+    );
 }
 
 #[gpui::test]
@@ -903,4 +922,130 @@ async fn merge_tool_enter_resolves_manually_and_closing_the_merge_window_marks_t
     assert!(!open.harness.cx.windows().contains(&merge_window));
     assert!(is_dialog_open(&open));
     assert!(is_conflicted(&open, "a.txt"));
+}
+
+#[gpui::test]
+async fn merge_tool_right_click_selects_the_file_under_the_pointer_so_the_menu_acts_on_it_alone(
+    cx: &mut TestAppContext,
+) {
+    let mut open = open_dialog(
+        &[
+            conflict("a.txt", AUTO_BASE, AUTO_OURS, AUTO_THEIRS),
+            conflict("b.txt", CONFLICT_BASE, CONFLICT_OURS, CONFLICT_THEIRS),
+        ],
+        cx,
+    )
+    .await;
+    let untouched_conflict = read_file(&open.harness.fs, path!("/project/a.txt"));
+    assert_eq!(
+        selected_row_ids(&open),
+        vec![group_row(GroupKind::Unresolved)]
+    );
+
+    right_click_row(&mut open, file_row("b.txt"));
+
+    assert!(has_context_menu(&open));
+    assert_eq!(selected_row_ids(&open), vec![file_row("b.txt")]);
+
+    open.dialog.accept(Side::Right);
+
+    assert_eq!(open.dialog.resolved_files(), vec!["b.txt".to_string()]);
+    assert_eq!(open.dialog.unresolved_files(), vec!["a.txt".to_string()]);
+    assert_eq!(
+        read_file(&open.harness.fs, path!("/project/b.txt")),
+        CONFLICT_THEIRS
+    );
+    assert_eq!(
+        read_file(&open.harness.fs, path!("/project/a.txt")),
+        untouched_conflict
+    );
+}
+
+#[gpui::test]
+async fn merge_tool_right_click_keeps_a_selection_of_several_rows(cx: &mut TestAppContext) {
+    let mut open = open_dialog(
+        &[
+            conflict("a.txt", AUTO_BASE, AUTO_OURS, AUTO_THEIRS),
+            conflict("b.txt", CONFLICT_BASE, CONFLICT_OURS, CONFLICT_THEIRS),
+            conflict("c.txt", CONFLICT_BASE, CONFLICT_OURS, CONFLICT_THEIRS),
+        ],
+        cx,
+    )
+    .await;
+    open.dialog.update_in(|dialog, _, cx| {
+        dialog.state.select_only(file_row("a.txt"));
+        dialog.state.toggle_selection(file_row("b.txt"));
+        cx.notify();
+    });
+
+    right_click_row(&mut open, file_row("c.txt"));
+
+    assert!(has_context_menu(&open));
+    assert_eq!(
+        selected_row_ids(&open),
+        vec![file_row("a.txt"), file_row("b.txt")]
+    );
+}
+
+#[gpui::test]
+async fn merge_tool_table_header_is_twenty_five_pixels_and_carries_the_speed_search_chip(
+    cx: &mut TestAppContext,
+) {
+    let mut open = open_dialog(
+        &[
+            conflict("a.txt", AUTO_BASE, AUTO_OURS, AUTO_THEIRS),
+            conflict("b.txt", CONFLICT_BASE, CONFLICT_OURS, CONFLICT_THEIRS),
+        ],
+        cx,
+    )
+    .await;
+    open.dialog.update_in(|dialog, _, cx| {
+        dialog.speed_search = Some("b".to_string());
+        cx.notify();
+    });
+
+    let header = open
+        .dialog
+        .debug_bounds(HEADER_DEBUG_SELECTOR)
+        .expect("the table header should be drawn");
+    let chip = open
+        .dialog
+        .debug_bounds(SPEED_SEARCH_DEBUG_SELECTOR)
+        .expect("the speed search chip should be drawn");
+
+    assert_close(header.size.height.as_f32(), 25., "header height");
+    assert_close(
+        chip.left().as_f32(),
+        header.left().as_f32(),
+        "chip left edge",
+    );
+    assert_close(
+        chip.bottom().as_f32(),
+        header.bottom().as_f32(),
+        "chip bottom edge",
+    );
+}
+
+#[gpui::test]
+async fn merge_tool_all_resolved_description_keeps_four_pixels_between_the_icon_and_the_text(
+    cx: &mut TestAppContext,
+) {
+    let mut open = open_dialog(&[conflict("a.txt", AUTO_BASE, AUTO_OURS, AUTO_THEIRS)], cx).await;
+    open.dialog.accept(Side::Right);
+    assert_eq!(default_button(&open), DefaultButton::AcceptAndFinish);
+
+    let icon = open
+        .dialog
+        .debug_bounds(super::ALL_RESOLVED_ICON_DEBUG_SELECTOR)
+        .expect("the success icon should be drawn");
+    let text = open
+        .dialog
+        .debug_bounds(super::ALL_RESOLVED_TEXT_DEBUG_SELECTOR)
+        .expect("the description text should be drawn");
+
+    assert_close(
+        (text.left() - icon.right()).as_f32(),
+        4.,
+        "gap between the icon and the text",
+    );
 }

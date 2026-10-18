@@ -8,7 +8,6 @@ extend-exclude = [
     ".mailmap",
 
     # File suffixes aren't typos.
-    "crates/extension_suggest/src/extension_suggest.rs",
     "crates/theme/src/icon_theme.rs",
 
     # Some mock data is flagged as typos.
@@ -78,6 +77,10 @@ extend-ignore-re = [
     "NOTHINGmATCHEStHIS",
     # Commit-hash-like test fragments intentionally contain `ba`.
     "f00ba47",
+    # Expected project avatar initials from IntelliJ's `RecentProjectsTest` cases
+    '"OT"',
+    # Caret offsets after a multi-byte character, as in café
+    'caf\\u\{e9\}',
 ]
 check-filename = true
 

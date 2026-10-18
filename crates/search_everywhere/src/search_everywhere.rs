@@ -46,17 +46,17 @@ impl SearchEverywhere {
         workspace.register_action(|workspace, action: &Toggle, window, cx| {
             if let Some(search_everywhere) = workspace.active_modal::<Self>(cx) {
                 search_everywhere.update(cx, |search_everywhere, cx| {
-                    search_everywhere
-                        .picker
-                        .update(cx, |picker, cx| match action.tab {
-                            Some(tab) if tab != picker.delegate.tab() => {
+                    search_everywhere.picker.update(cx, |picker, cx| {
+                        match action.tab.unwrap_or_default() {
+                            tab if tab != picker.delegate.tab() => {
                                 activate_tab(picker, tab, window, cx);
                             }
                             _ => {
                                 picker.delegate.toggle_non_project_items();
                                 picker.refresh(window, cx);
                             }
-                        });
+                        }
+                    });
                 });
                 return;
             }

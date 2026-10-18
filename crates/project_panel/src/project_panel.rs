@@ -8118,14 +8118,19 @@ impl Panel for ProjectPanel {
         }))
     }
 
-    fn header_actions(&self, _: &Window, _: &App) -> Vec<workspace::PanelHeaderAction> {
-        vec![
-            workspace::PanelHeaderAction {
+    fn header_actions(&self, _: &Window, cx: &App) -> Vec<workspace::PanelHeaderAction> {
+        let mut actions = Vec::with_capacity(3);
+        // Like IntelliJ's isSelectOpenedFileEnabled: the button is hidden while the tree already
+        // follows the active editor.
+        if !ProjectPanelSettings::get_global(cx).auto_reveal_entries {
+            actions.push(workspace::PanelHeaderAction {
                 id: "select-opened-file",
                 icon: IconName::Locate,
                 tooltip: "Select Opened File",
                 action: Box::new(SelectOpenedFile),
-            },
+            });
+        }
+        actions.extend([
             workspace::PanelHeaderAction {
                 id: "expand-all",
                 icon: IconName::ExpandAll,
@@ -8138,7 +8143,8 @@ impl Panel for ProjectPanel {
                 tooltip: "Collapse All",
                 action: Box::new(CollapseAllEntries),
             },
-        ]
+        ]);
+        actions
     }
 }
 

@@ -1,5 +1,15 @@
 use super::*;
+use project::project_settings::GoToDiagnosticSeverity;
 use std::cell::Cell;
+
+// IntelliJ's GotoNextErrorHandler tries the severities from the highest down and navigates
+// within the first one that has a highlight. Hints are left out like IntelliJ's INFORMATION
+// severity, which it never navigates to.
+const HIGHLIGHTED_ERROR_SEVERITIES: [lsp::DiagnosticSeverity; 3] = [
+    lsp::DiagnosticSeverity::ERROR,
+    lsp::DiagnosticSeverity::WARNING,
+    lsp::DiagnosticSeverity::INFORMATION,
+];
 
 pub trait DiagnosticRenderer {
     fn render_group(
@@ -166,6 +176,55 @@ impl Editor {
         }
 
         self.go_to_diagnostic_at_cursor(Direction::Prev, action.severity, window, cx);
+    }
+
+    pub fn go_to_next_highlighted_error(
+        &mut self,
+        _: &GoToNextHighlightedError,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.go_to_highlighted_error(Direction::Next, window, cx);
+    }
+
+    pub fn go_to_previous_highlighted_error(
+        &mut self,
+        _: &GoToPreviousHighlightedError,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.go_to_highlighted_error(Direction::Prev, window, cx);
+    }
+
+    fn go_to_highlighted_error(
+        &mut self,
+        direction: Direction,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.diagnostics_enabled() {
+            return;
+        }
+        let Some(severity) = self.highlighted_error_severity(cx) else {
+            return;
+        };
+        self.go_to_diagnostic_at_cursor(direction, severity, window, cx);
+    }
+
+    fn highlighted_error_severity(&self, cx: &App) -> Option<GoToDiagnosticSeverityFilter> {
+        let max_severity = self.diagnostics_max_severity.into_lsp()?;
+        let buffer = self.buffer.read(cx).snapshot(cx);
+        HIGHLIGHTED_ERROR_SEVERITIES
+            .into_iter()
+            .filter(|severity| *severity <= max_severity)
+            .map(|severity| {
+                GoToDiagnosticSeverityFilter::Only(GoToDiagnosticSeverity::from(severity))
+            })
+            .find(|severity| {
+                Self::diagnostics_after_cursor(&buffer, MultiBufferOffset(0), *severity)
+                    .next()
+                    .is_some()
+            })
     }
 
     fn diagnostics_before_cursor<'a>(

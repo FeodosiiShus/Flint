@@ -39,14 +39,18 @@ use crate::{
 
 const KEY_CONTEXT: &str = "ShowUsagesPopup";
 
-const HEADER_HEIGHT: Pixels = px(34.);
-const HEADER_PADDING: Pixels = px(12.);
+const HEADER_HEIGHT: Pixels = px(41.);
+const HEADER_PADDING_LEFT: Pixels = px(20.);
+const HEADER_PADDING_RIGHT: Pixels = px(15.);
 const HEADER_TITLE_GAP: Pixels = px(12.);
 const HEADER_STATUS_GAP: Pixels = px(8.);
 const SPINNER_GAP: Pixels = px(6.);
 
-const TOOLBAR_HEIGHT: Pixels = px(30.);
-const TOOLBAR_PADDING: Pixels = px(8.);
+const TOOLBAR_HEIGHT: Pixels = px(39.);
+const TOOLBAR_ROW_HEIGHT: Pixels = px(35.);
+const TOOLBAR_LINE_INSET: Pixels = px(12.);
+const TOOLBAR_PADDING: Pixels = px(3.);
+const TOOLBAR_BOTTOM_GAP: Pixels = px(4.);
 const TOOLBAR_GAP: Pixels = px(2.);
 const TOOLBAR_SPACER: Pixels = px(8.);
 const TOOLBAR_BUTTON_SIZE: Pixels = px(22.);
@@ -152,9 +156,9 @@ enum FilterToggle {
 
 impl FilterToggle {
     const ALL: [FilterToggle; 4] = [
-        FilterToggle::Imports,
         FilterToggle::ReadAccess,
         FilterToggle::WriteAccess,
+        FilterToggle::Imports,
         FilterToggle::Comments,
     ];
 
@@ -1141,7 +1145,8 @@ impl ShowUsagesPopup {
         } else {
             Pixels::ZERO
         };
-        HEADER_PADDING * 2.
+        HEADER_PADDING_LEFT
+            + HEADER_PADDING_RIGHT
             + title
             + spinner
             + HEADER_TITLE_GAP
@@ -1169,7 +1174,7 @@ impl ShowUsagesPopup {
             BUTTON_EDGE * 2. + SCOPE_BUTTON_PADDING * 2. + scope_label + SCOPE_BUTTON_GAP + chevron;
         let separator = SEPARATOR_WIDTH + SEPARATOR_MARGIN * 2.;
         let usages_label = label_width(window, USAGES_LABEL, style.label_font_size, &style.base);
-        TOOLBAR_PADDING * 2.
+        (TOOLBAR_LINE_INSET + TOOLBAR_PADDING) * 2.
             + TOOLBAR_BUTTON_SIZE * TOOLBAR_ICON_BUTTONS
             + options
             + separator
@@ -1215,7 +1220,8 @@ impl ShowUsagesPopup {
             .flex_none()
             .w_full()
             .h(HEADER_HEIGHT)
-            .px(HEADER_PADDING)
+            .pl(HEADER_PADDING_LEFT)
+            .pr(HEADER_PADDING_RIGHT)
             .border_b_1()
             .border_color(border_color)
             .on_mouse_down(
@@ -1225,26 +1231,37 @@ impl ShowUsagesPopup {
                 }),
             )
             .on_drag(DragHandle, |_, _, _, cx| cx.new(|_| gpui::Empty))
+            .debug_selector(|| "show-usages-header".into())
             .child(
                 div()
+                    .debug_selector(|| "show-usages-title".into())
                     .min_w_0()
                     .truncate()
                     .text_size(style.label_font_size)
                     .child(self.title_line(style).into_styled_text()),
             )
+            .child(div().flex_1().min_w(HEADER_TITLE_GAP))
             .when(self.is_searching(), |this| {
                 this.child(
-                    div().flex_none().ml(SPINNER_GAP).child(
-                        Icon::new(IconName::LoadCircle)
-                            .size(IconSize::Small)
-                            .color(Color::Muted)
-                            .with_rotate_animation(2),
-                    ),
+                    div()
+                        .debug_selector(|| "show-usages-spinner".into())
+                        .flex_none()
+                        .mr(SPINNER_GAP)
+                        .child(
+                            Icon::new(IconName::LoadCircle)
+                                .size(IconSize::Small)
+                                .color(Color::Muted)
+                                .with_rotate_animation(2),
+                        ),
                 )
             })
-            .child(div().flex_1().min_w(HEADER_TITLE_GAP))
             .children(status.map(|status| Label::new(status).color(Color::Muted).single_line()))
-            .child(div().flex_none().w(HEADER_STATUS_GAP))
+            .child(
+                div()
+                    .debug_selector(|| "show-usages-status-gap".into())
+                    .flex_none()
+                    .w(HEADER_STATUS_GAP),
+            )
             .child(
                 toolbar_button(
                     "show-usages-open-in-find-window",
@@ -1263,10 +1280,11 @@ impl ShowUsagesPopup {
 
     fn render_toolbar(&self, border_color: Hsla, cx: &Context<Self>) -> impl IntoElement {
         let filters = self.state.filters;
-        h_flex()
+        let row = h_flex()
+            .debug_selector(|| "show-usages-toolbar-row".into())
             .flex_none()
             .w_full()
-            .h(TOOLBAR_HEIGHT)
+            .h(TOOLBAR_ROW_HEIGHT)
             .px(TOOLBAR_PADDING)
             .gap(TOOLBAR_GAP)
             .border_b_1()
@@ -1323,7 +1341,17 @@ impl ShowUsagesPopup {
                             },
                         )),
                     ),
-            )
+            );
+        // IntelliJ insets the toolbar's separator line from the popup edges and
+        // leaves a gap below it (ShowUsagesAction.createComplexPopupToolbarBorder).
+        v_flex()
+            .debug_selector(|| "show-usages-toolbar".into())
+            .flex_none()
+            .w_full()
+            .h(TOOLBAR_HEIGHT)
+            .px(TOOLBAR_LINE_INSET)
+            .pb(TOOLBAR_BOTTOM_GAP)
+            .child(row)
     }
 
     fn render_filter_toggle(

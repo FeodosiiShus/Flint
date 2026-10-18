@@ -46,7 +46,8 @@ use crate::{
     ScrollUp, ScrollUpByItem,
 };
 
-const REPARSE_DEBOUNCE: Duration = Duration::from_millis(200);
+// IntelliJ's Markdown preview debounces content updates by 20 ms (MarkdownUpdateHandler.Debounced).
+const REPARSE_DEBOUNCE: Duration = Duration::from_millis(20);
 
 fn reset_persisted_font_size(settings: &mut settings::SettingsContent) {
     if let Some(markdown_preview) = settings.markdown_preview.as_mut() {
@@ -64,6 +65,7 @@ pub struct MarkdownPreview {
     source_path: Option<PathBuf>,
     source_project_path: Option<ProjectPath>,
     pending_update_task: Option<Task<Result<()>>>,
+    pending_update_waits_for_debounce: bool,
     is_stale: bool,
     last_synced_source_index: Option<usize>,
     hovered_url: Option<SharedString>,
@@ -104,6 +106,7 @@ impl MarkdownPreview {
                 source_path,
                 source_project_path,
                 pending_update_task: None,
+                pending_update_waits_for_debounce: false,
                 is_stale: false,
                 last_synced_source_index: None,
                 hovered_url: None,
@@ -161,9 +164,16 @@ impl MarkdownPreview {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if wait_for_debounce && self.pending_update_task.is_some() {
+        // Replacing a debounced update restarts its wait, so the preview renders once the edits
+        // pause, as IntelliJ does. An immediate update already reads the latest text, so an edit
+        // must not postpone it.
+        if wait_for_debounce
+            && self.pending_update_task.is_some()
+            && !self.pending_update_waits_for_debounce
+        {
             return;
         }
+        self.pending_update_waits_for_debounce = wait_for_debounce;
         self.pending_update_task = Some(cx.spawn_in(window, async move |this, cx| {
             if wait_for_debounce {
                 cx.background_executor().timer(REPARSE_DEBOUNCE).await;
@@ -1152,7 +1162,7 @@ mod tests {
     }
 
     #[gpui::test]
-    async fn edits_reach_the_preview_after_the_reparse_debounce(cx: &mut TestAppContext) {
+    async fn edits_reach_the_preview_20_ms_after_the_last_edit(cx: &mut TestAppContext) {
         let previews = capture_previews(cx);
         let (project, _, multi_workspace) =
             markdown_workspace(cx, json!({ "note.md": "# Note\n" })).await;
@@ -1163,7 +1173,7 @@ mod tests {
         editor.update(cx, |editor, cx| {
             editor.edit([(MultiBufferOffset(7)..MultiBufferOffset(7), "Body\n")], cx);
         });
-        cx.executor().advance_clock(REPARSE_DEBOUNCE / 2);
+        cx.executor().advance_clock(Duration::from_millis(15));
         cx.run_until_parked();
         assert_eq!(
             preview_source(cx, &preview),
@@ -1171,9 +1181,27 @@ mod tests {
             "the preview should wait for the typing debounce before reparsing"
         );
 
-        cx.executor().advance_clock(REPARSE_DEBOUNCE);
+        editor.update(cx, |editor, cx| {
+            editor.edit(
+                [(MultiBufferOffset(12)..MultiBufferOffset(12), "More\n")],
+                cx,
+            );
+        });
+        cx.executor().advance_clock(Duration::from_millis(15));
         cx.run_until_parked();
-        assert_eq!(preview_source(cx, &preview), "# Note\nBody\n");
+        assert_eq!(
+            preview_source(cx, &preview),
+            "# Note\n",
+            "another edit restarts the wait, like IntelliJ's debounced preview updates"
+        );
+
+        cx.executor().advance_clock(Duration::from_millis(5));
+        cx.run_until_parked();
+        assert_eq!(
+            preview_source(cx, &preview),
+            "# Note\nBody\nMore\n",
+            "IntelliJ renders 20 ms after the last edit"
+        );
     }
 
     #[gpui::test]

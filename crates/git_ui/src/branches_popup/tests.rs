@@ -188,6 +188,19 @@ impl Fixture {
         })
     }
 
+    fn selected_index(&self) -> usize {
+        let picker = self.picker();
+        picker.read_with(&self.cx, |picker, _| picker.delegate.selected_index)
+    }
+
+    fn rows_after(&self, line: &str) -> Vec<String> {
+        let rows = self.rows();
+        let start = self.index_of(line) + 1;
+        rows.get(start..)
+            .map(<[String]>::to_vec)
+            .unwrap_or_default()
+    }
+
     fn index_of(&self, line: &str) -> usize {
         self.rows()
             .iter()
@@ -296,21 +309,20 @@ async fn select_child_and_select_parent_walk_the_tree(cx: &mut TestAppContext) {
 
     fixture.select("section:Local:closed");
     fixture.select_child();
-    assert!(fixture.rows().contains(&"section:Local:open".to_string()));
-    assert!(
-        fixture
-            .rows()
-            .contains(&"  folder:feature:closed".to_string())
+    assert_eq!(
+        fixture.rows_after("section:Local:open"),
+        vec!["  ref:main", "  folder:feature:closed", "  ref:topic"]
     );
-    assert!(fixture.rows().contains(&"  ref:topic".to_string()));
     assert_eq!(fixture.selected().as_deref(), Some("section:Local:open"));
 
     fixture.select_child();
     assert_eq!(
-        fixture.selected().as_deref(),
-        Some("  folder:feature:closed")
+        fixture.selected_index(),
+        fixture.index_of("section:Local:open") + 1
     );
+    assert_eq!(fixture.selected().as_deref(), Some("  ref:main"));
 
+    fixture.select("  folder:feature:closed");
     fixture.select_child();
     assert!(fixture.rows().contains(&"    ref:login".to_string()));
     assert_eq!(fixture.selected().as_deref(), Some("  folder:feature:open"));
@@ -477,14 +489,15 @@ async fn toggling_favorites_reorders_refs_and_records_the_change(cx: &mut TestAp
 
     fixture.select("section:Local:closed");
     fixture.select_child();
-    let local_refs: Vec<String> = fixture
-        .rows()
-        .into_iter()
-        .filter(|row| row.starts_with("  ref:"))
-        .collect();
     assert_eq!(
-        local_refs,
-        vec!["  ref:main", "  ref:alpha", "  ref:beta", "  ref:topic"]
+        fixture.rows_after("section:Local:open"),
+        vec![
+            "  ref:main",
+            "  ref:alpha",
+            "  ref:beta",
+            "  ref:topic",
+            "section:Tags:closed"
+        ]
     );
     assert!(fixture.ref_row("main").is_favorite);
     assert!(!fixture.ref_row("beta").is_favorite);
@@ -497,12 +510,16 @@ async fn toggling_favorites_reorders_refs_and_records_the_change(cx: &mut TestAp
     });
     assert!(toggled);
     assert!(fixture.ref_row("beta").is_favorite);
-    let rows = fixture.rows();
-    let local_section = rows
-        .iter()
-        .position(|row| row == "section:Local:open")
-        .expect("local section is open");
-    assert_eq!(rows[local_section + 1], "  ref:beta");
+    assert_eq!(
+        fixture.rows_after("section:Local:open"),
+        vec![
+            "  ref:main",
+            "  ref:beta",
+            "  ref:alpha",
+            "  ref:topic",
+            "section:Tags:closed"
+        ]
+    );
 
     let main_index = fixture.index_of("  ref:main");
     fixture.update_picker(|picker, window, cx| {
@@ -519,21 +536,57 @@ async fn toggling_favorites_reorders_refs_and_records_the_change(cx: &mut TestAp
 }
 
 #[gpui::test]
-async fn tags_cannot_be_marked_as_favorites(cx: &mut TestAppContext) {
-    let mut fixture = Fixture::open(
-        cx,
-        path!("/branches-popup-tag-favorite"),
-        standard_repository,
-    )
+async fn tags_can_be_marked_as_favorites(cx: &mut TestAppContext) {
+    let mut fixture = Fixture::open(cx, path!("/branches-popup-tag-favorite"), |fs, dot_git| {
+        standard_repository(fs, dot_git);
+        fs.insert_tags(dot_git, &[("v0.9", "aaa000")]);
+    })
     .await;
 
     fixture.select("section:Tags:closed");
     fixture.select_child();
+    assert_eq!(
+        fixture.rows_after("section:Tags:open"),
+        vec!["  ref:v0.9", "  ref:v1.0"]
+    );
     let tag_index = fixture.index_of("  ref:v1.0");
-    let toggled =
-        fixture.update_picker(|picker, _, cx| picker.delegate.toggle_favorite_at(tag_index, cx));
-    assert!(!toggled);
-    assert!(!fixture.ref_row("v1.0").is_favorite);
+    let toggled = fixture.update_picker(|picker, window, cx| {
+        let toggled = picker.delegate.toggle_favorite_at(tag_index, cx);
+        picker.refresh(window, cx);
+        toggled
+    });
+    assert!(toggled);
+    assert!(fixture.ref_row("v1.0").is_favorite);
+    assert_eq!(
+        fixture.rows_after("section:Tags:open"),
+        vec!["  ref:v1.0", "  ref:v0.9"]
+    );
+}
+
+#[gpui::test]
+async fn the_tag_at_a_detached_head_is_marked_current_but_not_preselected(cx: &mut TestAppContext) {
+    let mut fixture = Fixture::open(cx, path!("/branches-popup-detached-tag"), |fs, dot_git| {
+        fs.insert_branches(dot_git, &["main"]);
+        fs.set_branch_name(dot_git, None::<String>);
+        fs.insert_tags(dot_git, &[("v0.9", "aaa000"), ("v1.0", "deadbeef")]);
+    })
+    .await;
+
+    fixture.select("section:Tags:closed");
+    fixture.select_child();
+    assert_eq!(
+        fixture.rows_after("section:Tags:open"),
+        vec!["  ref:v1.0", "  ref:v0.9"]
+    );
+    assert!(fixture.ref_row("v1.0").is_current);
+    assert!(!fixture.ref_row("v0.9").is_current);
+
+    fixture.reopen();
+    assert!(fixture.rows().contains(&"section:Tags:open".to_string()));
+    assert_eq!(
+        fixture.selected().as_deref(),
+        Some("action:Update Project…")
+    );
 }
 
 #[gpui::test]
@@ -872,6 +925,54 @@ async fn update_project_loses_its_ellipsis_when_the_options_dialog_is_disabled(
             .rows()
             .contains(&"action:Update Project".to_string())
     );
+}
+
+#[gpui::test]
+fn the_jetbrains_keymap_has_no_shortcut_for_the_branches_popup(cx: &mut TestAppContext) {
+    cx.update(|cx| {
+        let bindings = settings::KeymapFile::load_asset_allow_partial_failure(
+            "keymaps/macos/jetbrains.json",
+            cx,
+        )
+        .expect("the JetBrains keymap loads");
+        assert!(
+            !bindings
+                .iter()
+                .any(|binding| binding.action().partial_eq(&zed_actions::git::Branch)),
+            "IntelliJ removes Git.Branches' shift-cmd-` from its macOS keymaps"
+        );
+    });
+}
+
+#[test]
+fn commit_count_tooltip_names_only_the_directions_that_have_commits() {
+    assert_eq!(
+        delegate::commit_counts_tooltip(3, 2),
+        "3 incoming and 2 outgoing commits"
+    );
+    assert_eq!(delegate::commit_counts_tooltip(1, 0), "1 incoming commit");
+    assert_eq!(delegate::commit_counts_tooltip(4, 0), "4 incoming commits");
+    assert_eq!(delegate::commit_counts_tooltip(0, 1), "1 outgoing commit");
+    assert_eq!(delegate::commit_counts_tooltip(0, 7), "7 outgoing commits");
+}
+
+#[test]
+fn popup_metrics_follow_the_intellij_new_ui_header_and_tree_rows() {
+    assert_eq!(delegate::SEPARATOR_HEIGHT_PX, delegate::ROW_HEIGHT_PX);
+    assert_eq!(delegate::ROW_HEIGHT_PX, 24.);
+    assert_eq!(
+        delegate::HEADER_TOP_INSET_PX + delegate::SEARCH_BOX_HEIGHT_PX,
+        40.
+    );
+    assert_eq!(delegate::HEADER_TOP_INSET_PX, 12.);
+    assert_eq!(delegate::HEADER_LEFT_INSET_PX, 10.);
+    assert_eq!(delegate::HEADER_RIGHT_INSET_PX, 8.);
+    assert_eq!(delegate::HEADER_TOOLBAR_GAP_PX, 6.);
+}
+
+#[test]
+fn folder_rows_always_use_the_closed_folder_icon() {
+    assert_eq!(delegate::FOLDER_ICON, IconName::Folder);
 }
 
 #[test]

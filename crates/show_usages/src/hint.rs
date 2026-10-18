@@ -129,11 +129,18 @@ impl Render for UsagesHint {
                             .py(VERTICAL_PADDING)
                             .rounded(POPUP_SURFACE_METRICS.corner_radius)
                             .bg(background)
-                            .child(Label::new(self.content.message.clone()))
+                            .child(
+                                div()
+                                    .debug_selector(|| "usages-hint-message".into())
+                                    .child(Label::new(self.content.message.clone())),
+                            )
                             .when_some(self.content.second_invocation.clone(), |this, text| {
-                                this.child(div().mt(LINE_GAP).child(
-                                    Label::new(text).size(LabelSize::Small).color(Color::Muted),
-                                ))
+                                this.child(
+                                    div()
+                                        .debug_selector(|| "usages-hint-second-invocation".into())
+                                        .mt(LINE_GAP)
+                                        .child(Label::new(text)),
+                                )
                             })
                             .child(
                                 h_flex()
@@ -155,10 +162,7 @@ impl Render for UsagesHint {
                                     .when_some(
                                         self.content.find_options_shortcut.clone(),
                                         |this, shortcut| {
-                                            this.child(
-                                                Label::new(format!("({shortcut})"))
-                                                    .color(Color::Muted),
-                                            )
+                                            this.child(Label::new(format!("({shortcut})")))
                                         },
                                     ),
                             ),

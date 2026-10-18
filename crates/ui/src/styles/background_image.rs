@@ -106,6 +106,11 @@ pub fn has_background_image(target: BackgroundImageTarget, window: &Window, cx: 
     BackgroundImageLayers::layer(window.window_handle().window_id(), target, cx).is_some()
 }
 
+pub fn has_any_background_image(window: &Window, cx: &App) -> bool {
+    BackgroundImageLayers::window(window.window_handle().window_id(), cx)
+        .is_some_and(|images| !images.is_empty())
+}
+
 pub fn background_image_rects(
     area: Bounds<Pixels>,
     visible: Bounds<Pixels>,
@@ -128,9 +133,11 @@ pub fn background_image_rects(
         return rects;
     }
 
+    // WebStorm sizes plain and tiled images in logical pixels, so on a Retina display one
+    // image pixel covers 2x2 screen pixels.
     let natural_size = size(
-        px(image_size.width.0 as f32 / scale_factor),
-        px(image_size.height.0 as f32 / scale_factor),
+        px(image_size.width.0 as f32),
+        px(image_size.height.0 as f32),
     );
     match mode {
         BackgroundImageMode::Plain => {
@@ -140,22 +147,26 @@ pub fn background_image_rects(
             }
         }
         BackgroundImageMode::Scale => {
-            let rect = ObjectFit::Cover.get_bounds(area, image_size);
+            let cover = ObjectFit::Cover.get_bounds(area, image_size);
+            let rect = aligned_bounds(area, cover.size, alignment, scale_factor);
             if rect.intersects(&visible) {
                 rects.push(rect);
             }
         }
         BackgroundImageMode::Tile => {
-            let first_column = ((visible.left() - area.left()) / natural_size.width).floor() as i32;
-            let last_column = ((visible.right() - area.left()) / natural_size.width).ceil() as i32;
-            let first_row = ((visible.top() - area.top()) / natural_size.height).floor() as i32;
-            let last_row = ((visible.bottom() - area.top()) / natural_size.height).ceil() as i32;
+            // Repeating one tile placed at the anchor gives the same grid as WebStorm's
+            // odd-count tile block aligned to the anchor: a centred anchor centres one tile.
+            let origin = aligned_bounds(area, natural_size, alignment, scale_factor).origin;
+            let first_column = ((visible.left() - origin.x) / natural_size.width).floor() as i32;
+            let last_column = ((visible.right() - origin.x) / natural_size.width).ceil() as i32;
+            let first_row = ((visible.top() - origin.y) / natural_size.height).floor() as i32;
+            let last_row = ((visible.bottom() - origin.y) / natural_size.height).ceil() as i32;
             for row in first_row..last_row {
                 for column in first_column..last_column {
                     rects.push(Bounds::new(
                         point(
-                            area.left() + natural_size.width * column as f32,
-                            area.top() + natural_size.height * row as f32,
+                            origin.x + natural_size.width * column as f32,
+                            origin.y + natural_size.height * row as f32,
                         ),
                         natural_size,
                     ));
@@ -346,12 +357,12 @@ mod tests {
     }
 
     #[test]
-    fn plain_mode_maps_one_image_pixel_to_one_device_pixel() {
+    fn plain_mode_maps_one_image_pixel_to_one_logical_pixel() {
         let rects = plain(image(200, 100), 2., BackgroundImageAlignment::TopLeft);
-        assert_eq!(rects.as_slice(), &[rect(0., 0., 100., 50.)]);
+        assert_eq!(rects.as_slice(), &[rect(0., 0., 200., 100.)]);
 
         let rects = plain(image(200, 100), 2., BackgroundImageAlignment::BottomRight);
-        assert_eq!(rects.as_slice(), &[rect(900., 750., 100., 50.)]);
+        assert_eq!(rects.as_slice(), &[rect(800., 700., 200., 100.)]);
     }
 
     #[test]
@@ -373,7 +384,7 @@ mod tests {
             BackgroundImageMode::Scale,
             BackgroundImageAlignment::TopLeft,
         );
-        assert_eq!(rects.as_slice(), &[rect(-1100., 0., 3200., 800.)]);
+        assert_eq!(rects.as_slice(), &[rect(0., 0., 3200., 800.)]);
 
         let rects = background_image_rects(
             area(),
@@ -387,7 +398,30 @@ mod tests {
     }
 
     #[test]
-    fn tile_mode_repeats_from_the_area_origin_and_lets_edge_tiles_overflow() {
+    fn scale_mode_crops_the_side_away_from_the_anchor() {
+        let scaled = |alignment| {
+            background_image_rects(
+                area(),
+                area(),
+                image(400, 100),
+                1.,
+                BackgroundImageMode::Scale,
+                alignment,
+            )
+        };
+        assert_eq!(
+            scaled(BackgroundImageAlignment::Center).as_slice(),
+            &[rect(-1100., 0., 3200., 800.)]
+        );
+        assert_eq!(
+            scaled(BackgroundImageAlignment::BottomRight).as_slice(),
+            &[rect(-2200., 0., 3200., 800.)],
+            "a right anchor keeps the right part of the image"
+        );
+    }
+
+    #[test]
+    fn tile_mode_aligns_the_grid_to_the_anchor_and_lets_edge_tiles_overflow() {
         let rects = background_image_rects(
             area(),
             area(),
@@ -396,11 +430,30 @@ mod tests {
             BackgroundImageMode::Tile,
             BackgroundImageAlignment::Center,
         );
-        assert_eq!(rects.len(), 12);
-        assert_eq!(rects[0], rect(0., 0., 300., 300.));
-        assert_eq!(rects[11], rect(900., 600., 300., 300.));
-        assert!(rects[11].right() > area().right());
-        assert!(rects[11].bottom() > area().bottom());
+        assert_eq!(rects.len(), 15);
+        assert_eq!(rects[0], rect(-250., -50., 300., 300.));
+        assert_eq!(rects[14], rect(950., 550., 300., 300.));
+        assert!(
+            rects.contains(&rect(350., 250., 300., 300.)),
+            "a centred anchor centres one tile, like WebStorm"
+        );
+        assert!(rects[0].left() < area().left());
+        assert!(rects[0].top() < area().top());
+        assert!(rects[14].right() > area().right());
+        assert!(rects[14].bottom() > area().bottom());
+
+        let bottom_right = background_image_rects(
+            area(),
+            area(),
+            image(300, 300),
+            1.,
+            BackgroundImageMode::Tile,
+            BackgroundImageAlignment::BottomRight,
+        );
+        assert!(
+            bottom_right.contains(&rect(700., 500., 300., 300.)),
+            "a bottom right anchor ends the grid at the bottom right corner"
+        );
     }
 
     #[test]
@@ -420,7 +473,7 @@ mod tests {
     }
 
     #[test]
-    fn tile_mode_uses_device_pixel_tile_size_on_high_density_displays() {
+    fn tile_mode_uses_logical_pixel_tile_size_on_high_density_displays() {
         let rects = background_image_rects(
             area(),
             area(),
@@ -429,8 +482,41 @@ mod tests {
             BackgroundImageMode::Tile,
             BackgroundImageAlignment::TopLeft,
         );
-        assert_eq!(rects.len(), 16);
-        assert_eq!(rects[5], rect(250., 200., 250., 200.));
+        assert_eq!(rects.len(), 4);
+        assert_eq!(rects[3], rect(500., 400., 500., 400.));
+    }
+
+    #[gpui::test]
+    fn any_background_image_counts_both_images_of_the_window(cx: &mut gpui::TestAppContext) {
+        let cx = cx.add_empty_window();
+        let layer = BackgroundImagePaintLayer {
+            image: Arc::new(RenderImage::new(vec![::image::Frame::new(
+                ::image::RgbaImage::new(1, 1),
+            )])),
+            mode: BackgroundImageMode::Scale,
+            alignment: BackgroundImageAlignment::Center,
+        };
+        cx.update(|window, cx| {
+            let window_id = window.window_handle().window_id();
+            assert!(!has_any_background_image(window, cx));
+
+            let editor_only = WindowBackgroundImages {
+                editor_and_tools: Some(layer.clone()),
+                empty_frame: None,
+            };
+            BackgroundImageLayers::set_window(window_id, editor_only, cx);
+            assert!(has_any_background_image(window, cx));
+
+            let empty_frame_only = WindowBackgroundImages {
+                editor_and_tools: None,
+                empty_frame: Some(layer.clone()),
+            };
+            BackgroundImageLayers::set_window(window_id, empty_frame_only, cx);
+            assert!(has_any_background_image(window, cx));
+
+            BackgroundImageLayers::set_window(window_id, WindowBackgroundImages::default(), cx);
+            assert!(!has_any_background_image(window, cx));
+        });
     }
 
     #[test]

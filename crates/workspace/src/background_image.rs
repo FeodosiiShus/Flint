@@ -8,7 +8,8 @@ use anyhow::{Context as _, Result, bail};
 use collections::{HashMap, HashSet};
 use fs::{Fs, MTime};
 use gpui::{
-    App, AppContext as _, Context, PathPromptOptions, RenderImage, SharedString, Window, WindowId,
+    App, AppContext as _, Context, PathPromptOptions, RenderImage, SharedString, SvgRenderer,
+    Window, WindowId,
 };
 use image::{DynamicImage, ImageDecoder, ImageFormat, ImageReader, RgbaImage};
 use project::DirectoryLister;
@@ -39,9 +40,28 @@ const BACKGROUND_IMAGE_TARGETS: [BackgroundImageTarget; 2] = [
     BackgroundImageTarget::EditorAndTools,
     BackgroundImageTarget::EmptyFrame,
 ];
+const SVG_EXTENSION: &str = "svg";
 const SUPPORTED_BACKGROUND_IMAGE_EXTENSIONS: &[&str] = &[
-    "png", "jpg", "jpeg", "gif", "webp", "bmp", "tif", "tiff", "ico", "tga", "qoi", "pnm", "pbm",
-    "pgm", "ppm", "hdr", "exr", "dds", "ff",
+    "png",
+    "jpg",
+    "jpeg",
+    "gif",
+    "webp",
+    "bmp",
+    "tif",
+    "tiff",
+    "ico",
+    "tga",
+    "qoi",
+    "pnm",
+    "pbm",
+    "pgm",
+    "ppm",
+    "hdr",
+    "exr",
+    "dds",
+    "ff",
+    SVG_EXTENSION,
 ];
 
 type CoverTarget = (u32, u32);
@@ -314,6 +334,7 @@ impl Workspace {
         };
         let load = cx.background_spawn(load_background_image(
             fs,
+            cx.svg_renderer(),
             layer.clone(),
             cached_key,
             cover_target,
@@ -488,8 +509,15 @@ fn is_supported_background_image(path: &Path) -> bool {
         .any(|supported| extension.eq_ignore_ascii_case(supported))
 }
 
+fn is_svg_background_image(path: &Path) -> bool {
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case(SVG_EXTENSION))
+}
+
 async fn load_background_image(
     fs: Arc<dyn Fs>,
+    svg_renderer: SvgRenderer,
     layer: BackgroundImageLayerSettings,
     cached_key: Option<BackgroundImageKey>,
     cover_target: Option<CoverTarget>,
@@ -519,7 +547,7 @@ async fn load_background_image(
         .load_bytes(&layer.path)
         .await
         .with_context(|| format!("Failed to read background image {}", layer.path.display()))?;
-    let image = decode_background_image(&bytes, &layer, cover_target)
+    let image = decode_background_image(&bytes, &layer, cover_target, &svg_renderer)
         .with_context(|| format!("Failed to decode background image {}", layer.path.display()))?;
     let image = Arc::new(image);
     decoded_images.insert(key.clone(), Arc::downgrade(&image));
@@ -533,17 +561,13 @@ fn decode_background_image(
     bytes: &[u8],
     layer: &BackgroundImageLayerSettings,
     cover_target: Option<CoverTarget>,
+    svg_renderer: &SvgRenderer,
 ) -> Result<RenderImage> {
-    let mut reader = ImageReader::new(Cursor::new(bytes))
-        .with_guessed_format()
-        .context("reading image format")?;
-    if reader.format().is_none()
-        && let Ok(format) = ImageFormat::from_path(&layer.path)
-    {
-        reader.set_format(format);
-    }
-    let decoder = reader.into_decoder().context("creating image decoder")?;
-    let mut image = decode_oriented_image(decoder)?;
+    let mut image = if is_svg_background_image(&layer.path) {
+        rasterize_svg(bytes, svg_renderer)?
+    } else {
+        decode_raster_image(bytes, &layer.path)?
+    };
     if image.width() == 0 || image.height() == 0 {
         bail!("image has no pixels");
     }
@@ -579,6 +603,40 @@ fn decode_background_image(
     Ok(RenderImage::new(vec![image::Frame::new(buffer)]))
 }
 
+fn decode_raster_image(bytes: &[u8], path: &Path) -> Result<DynamicImage> {
+    let mut reader = ImageReader::new(Cursor::new(bytes))
+        .with_guessed_format()
+        .context("reading image format")?;
+    if reader.format().is_none()
+        && let Ok(format) = ImageFormat::from_path(path)
+    {
+        reader.set_format(format);
+    }
+    let decoder = reader.into_decoder().context("creating image decoder")?;
+    decode_oriented_image(decoder)
+}
+
+fn rasterize_svg(bytes: &[u8], svg_renderer: &SvgRenderer) -> Result<DynamicImage> {
+    // render_single_frame multiplies the scale by SMOOTH_SVG_SCALE_FACTOR. Dividing it out
+    // rasterizes the SVG at its own size, like WebStorm's SVGLoader.load(stream, 1).
+    let rendered = svg_renderer
+        .render_single_frame(bytes, 1. / gpui::SMOOTH_SVG_SCALE_FACTOR)
+        .context("rendering SVG")?;
+    let rendered_size = rendered.size(0);
+    let width = u32::try_from(rendered_size.width.0).context("reading SVG width")?;
+    let height = u32::try_from(rendered_size.height.0).context("reading SVG height")?;
+    let mut pixels = rendered
+        .as_bytes(0)
+        .context("SVG rendered no pixels")?
+        .to_vec();
+    // The renderer returns BGRA; the rest of the pipeline works on RGBA.
+    for pixel in pixels.chunks_exact_mut(4) {
+        pixel.swap(0, 2);
+    }
+    let buffer = RgbaImage::from_raw(width, height, pixels).context("reading SVG pixels")?;
+    Ok(DynamicImage::ImageRgba8(buffer))
+}
+
 fn decode_oriented_image(mut decoder: impl ImageDecoder) -> Result<DynamicImage> {
     let orientation = decoder.orientation().context("reading orientation")?;
     let mut image = DynamicImage::from_decoder(decoder).context("decoding image")?;
@@ -602,7 +660,10 @@ fn tiled_length(length: u32) -> u32 {
     if length == 0 || length >= MIN_TILED_BACKGROUND_IMAGE_SIDE {
         return length;
     }
-    length * MIN_TILED_BACKGROUND_IMAGE_SIDE.div_ceil(length)
+    // An odd repeat count keeps one original tile in the middle of the expanded image, so a
+    // centred anchor still centres one tile, as in WebStorm.
+    let repeat = MIN_TILED_BACKGROUND_IMAGE_SIDE.div_ceil(length);
+    length * (repeat | 1)
 }
 
 #[cfg(test)]
@@ -610,9 +671,10 @@ mod tests {
     use std::{
         io::Cursor,
         path::{Path, PathBuf},
+        sync::Arc,
     };
 
-    use gpui::{App, DevicePixels, Size};
+    use gpui::{App, DevicePixels, Size, SvgRenderer};
     use image::{DynamicImage, ImageFormat, Rgba, RgbaImage};
     use settings::{
         BackgroundImageAnchor, BackgroundImageFill, LocalSettingsKind, LocalSettingsPath,
@@ -620,8 +682,15 @@ mod tests {
     };
     use util::rel_path::RelPath;
 
-    use super::{cover_dimensions, decode_background_image, validate_background_image_path};
+    use super::{
+        cover_dimensions, decode_background_image, is_supported_background_image,
+        validate_background_image_path,
+    };
     use crate::{BackgroundImageLayerSettings, BackgroundImageSettings};
+
+    fn svg_renderer() -> SvgRenderer {
+        SvgRenderer::new(Arc::new(()))
+    }
 
     fn layer_settings(
         opacity: u32,
@@ -762,6 +831,7 @@ mod tests {
             &encode_png(source),
             &layer_settings(50, BackgroundImageFill::Scale, true),
             None,
+            &svg_renderer(),
         );
 
         let bytes = image
@@ -772,19 +842,67 @@ mod tests {
     }
 
     #[test]
-    fn test_background_image_tile_expansion_reaches_minimum_side() {
+    fn test_background_image_decode_rasterizes_svg_at_its_own_size() {
+        let svg = br##"<svg xmlns="http://www.w3.org/2000/svg" width="4" height="2" shape-rendering="crispEdges">
+            <rect width="4" height="2" fill="#ff0000"/>
+        </svg>"##;
+        let layer = BackgroundImageLayerSettings {
+            path: util::paths::home_dir().join("background.svg"),
+            ..layer_settings(50, BackgroundImageFill::Plain, false)
+        };
+
+        let image = decode_background_image(svg, &layer, None, &svg_renderer());
+        let image = image.as_ref().ok();
+        assert_eq!(
+            image.map(|image| image.size(0)),
+            Some(Size {
+                width: DevicePixels(4),
+                height: DevicePixels(2),
+            }),
+            "an SVG is rasterized at its own size, like WebStorm's SVGLoader.load(stream, 1)"
+        );
+        let first_pixel = image
+            .and_then(|image| image.as_bytes(0))
+            .and_then(|bytes| bytes.get(..4))
+            .map(<[u8]>::to_vec);
+        assert_eq!(
+            first_pixel,
+            Some(vec![0, 0, 255, 128]),
+            "the SVG goes through the same BGRA conversion and opacity as raster images"
+        );
+    }
+
+    #[test]
+    fn test_background_image_svg_files_can_be_chosen() {
+        assert!(is_supported_background_image(Path::new(
+            "/Users/me/Pictures/logo.svg"
+        )));
+        assert!(is_supported_background_image(Path::new(
+            "/Users/me/Pictures/logo.SVG"
+        )));
+        assert!(is_supported_background_image(Path::new(
+            "/Users/me/Pictures/photo.png"
+        )));
+        assert!(!is_supported_background_image(Path::new(
+            "/Users/me/Pictures/notes.txt"
+        )));
+    }
+
+    #[test]
+    fn test_background_image_tile_expansion_reaches_minimum_side_with_an_odd_repeat_count() {
         let bytes = encode_png(RgbaImage::from_pixel(3, 2, Rgba([10, 20, 30, 255])));
 
         let tiled = decode_background_image(
             &bytes,
             &layer_settings(100, BackgroundImageFill::Tile, false),
             None,
+            &svg_renderer(),
         );
         assert_eq!(
             tiled.as_ref().ok().map(|image| image.size(0)),
             Some(Size {
-                width: DevicePixels(258),
-                height: DevicePixels(256),
+                width: DevicePixels(261),
+                height: DevicePixels(258),
             })
         );
 
@@ -792,6 +910,7 @@ mod tests {
             &bytes,
             &layer_settings(100, BackgroundImageFill::Scale, false),
             None,
+            &svg_renderer(),
         );
         assert_eq!(
             scaled.as_ref().ok().map(|image| image.size(0)),
@@ -864,6 +983,7 @@ mod tests {
             &bytes,
             &layer_settings(100, BackgroundImageFill::Scale, false),
             Some((100, 100)),
+            &svg_renderer(),
         );
         assert_eq!(
             image.as_ref().ok().map(|image| image.size(0)),
@@ -877,6 +997,7 @@ mod tests {
             &bytes,
             &layer_settings(100, BackgroundImageFill::Scale, false),
             Some((400, 200)),
+            &svg_renderer(),
         );
         assert_eq!(
             not_larger.as_ref().ok().map(|image| image.size(0)),
@@ -894,6 +1015,7 @@ mod tests {
             &wide,
             &layer_settings(100, BackgroundImageFill::Plain, false),
             Some((100, 100)),
+            &svg_renderer(),
         );
         assert_eq!(
             plain.as_ref().ok().map(|image| image.size(0)),
@@ -908,12 +1030,13 @@ mod tests {
             &small,
             &layer_settings(100, BackgroundImageFill::Tile, false),
             Some((1, 1)),
+            &svg_renderer(),
         );
         assert_eq!(
             tiled.as_ref().ok().map(|image| image.size(0)),
             Some(Size {
-                width: DevicePixels(258),
-                height: DevicePixels(256),
+                width: DevicePixels(261),
+                height: DevicePixels(258),
             })
         );
     }

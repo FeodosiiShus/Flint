@@ -4,13 +4,16 @@ use gpui::{
 use ui::prelude::*;
 
 use super::ConflictsDialog;
+use super::TABLE_VERTICAL_PADDING;
 use super::actions::{
     ConflictsCollapseRow, ConflictsExpandRow, ConflictsExtendPageDown, ConflictsExtendPageUp,
     ConflictsExtendSelectionDown, ConflictsExtendSelectionUp, ConflictsExtendToFirstRow,
     ConflictsExtendToLastRow, ConflictsPageDown, ConflictsPageUp, ConflictsSelectAllRows,
 };
 use super::state::{DefaultButton, RowId, SelectionMove, TreeRowKind};
-use super::tree_table::ROW_HEIGHT;
+use super::tree_table::{HEADER_HEIGHT, ROW_HEIGHT};
+
+pub(super) const SPEED_SEARCH_DEBUG_SELECTOR: &str = "conflicts-speed-search";
 
 fn page_row_count(viewport_height: f32, forwards: bool) -> usize {
     if forwards {
@@ -64,18 +67,29 @@ impl ConflictsDialog {
     pub(super) fn render_speed_search(&self, cx: &App) -> Option<AnyElement> {
         let query = self.speed_search.as_ref()?;
         let colors = cx.theme().colors();
+        // SpeedSearchBase puts the popup's bottom edge on the top of the table rows at the
+        // table's left edge, so it covers the column header and grows upwards.
         Some(
             div()
                 .absolute()
-                .bottom_2()
-                .left_2()
-                .px_2()
-                .py_1()
-                .rounded_md()
-                .border_1()
-                .border_color(colors.border)
-                .bg(colors.elevated_surface_background)
-                .child(Label::new(query.clone()))
+                .top(px(TABLE_VERTICAL_PADDING))
+                .left_0()
+                .w_full()
+                .h(px(HEADER_HEIGHT))
+                .child(
+                    div()
+                        .debug_selector(|| SPEED_SEARCH_DEBUG_SELECTOR.into())
+                        .absolute()
+                        .bottom_0()
+                        .left_0()
+                        .px_2()
+                        .py_1()
+                        .rounded_md()
+                        .border_1()
+                        .border_color(colors.border)
+                        .bg(colors.elevated_surface_background)
+                        .child(Label::new(query.clone())),
+                )
                 .into_any_element(),
         )
     }
@@ -371,12 +385,18 @@ impl ConflictsDialog {
 
     pub(super) fn handle_row_context_menu(
         &mut self,
+        id: RowId,
         position: Point<Pixels>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         if self.input_blocked() {
             return;
+        }
+        // JBTable moves a single selection to the row under the pointer, but keeps a
+        // multi-row selection, so the menu acts on what the user right-clicked.
+        if self.state.selected_row_count() < 2 {
+            self.state.select_only(id);
         }
         self.deploy_context_menu(position, window, cx);
     }

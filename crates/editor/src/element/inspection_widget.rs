@@ -2,19 +2,16 @@ use gpui::{
     AnyElement, App, AvailableSpace, Context, Div, Edges, Entity, Focusable as _, Hitbox, Pixels,
     Render, SharedString, Size, Stateful, WeakEntity, Window, point, px,
 };
-use project::{
-    ProjectItem as _,
-    project_settings::{GoToDiagnosticSeverity, GoToDiagnosticSeverityFilter},
-};
+use project::ProjectItem as _;
 use settings::Settings as _;
 use smallvec::SmallVec;
-use ui::{Tooltip, prelude::*};
+use ui::{TOOLBAR_ICON_SIDE, Tooltip, exact_icon_size, prelude::*};
 use util::ResultExt as _;
 
 use super::{EditorElement, EditorLayout};
 use crate::{
     DiagnosticCounts, Editor, EditorSettings, HighlightLevel,
-    actions::{GoToDiagnostic, GoToPreviousDiagnostic},
+    actions::{GoToNextHighlightedError, GoToPreviousHighlightedError},
 };
 
 const STATUS_ICON_CELL_SIZE: Pixels = px(18.);
@@ -103,30 +100,16 @@ enum StatusContent {
 struct InspectionWidgetModel {
     status: StatusContent,
     shows_navigation: bool,
-    navigation_severity: GoToDiagnosticSeverityFilter,
-}
-
-fn navigation_severity(counts: DiagnosticCounts) -> GoToDiagnosticSeverityFilter {
-    if counts.errors > 0 {
-        GoToDiagnosticSeverityFilter::Only(GoToDiagnosticSeverity::Error)
-    } else {
-        GoToDiagnosticSeverityFilter::Range {
-            min: GoToDiagnosticSeverity::Information,
-            max: GoToDiagnosticSeverity::Error,
-        }
-    }
 }
 
 fn inspection_widget_model(
     level: HighlightLevel,
     counts: DiagnosticCounts,
 ) -> InspectionWidgetModel {
-    let navigation_severity = navigation_severity(counts);
     if level == HighlightLevel::None {
         return InspectionWidgetModel {
             status: StatusContent::Text(SharedString::new_static(STATUS_OFF)),
             shows_navigation: false,
-            navigation_severity,
         };
     }
 
@@ -151,13 +134,11 @@ fn inspection_widget_model(
                 color: Color::Success,
             },
             shows_navigation: false,
-            navigation_severity,
         }
     } else {
         InspectionWidgetModel {
             status: StatusContent::Severities(severities),
             shows_navigation: true,
-            navigation_severity,
         }
     }
 }
@@ -386,7 +367,12 @@ fn status_count_font_size(rem_size: Pixels, cx: &App) -> Pixels {
     TextSize::Default.rems(cx).to_pixels(rem_size) - COUNT_FONT_SIZE_REDUCTION
 }
 
-fn render_status_content(status: &StatusContent, count_font_size: Pixels, cx: &App) -> AnyElement {
+fn render_status_content(
+    status: &StatusContent,
+    count_font_size: Pixels,
+    rem_size: Pixels,
+    cx: &App,
+) -> AnyElement {
     let count_color = Color::Muted.color(cx);
     match status {
         StatusContent::Text(text) => div()
@@ -405,7 +391,11 @@ fn render_status_content(status: &StatusContent, count_font_size: Pixels, cx: &A
             .children(severities.iter().map(|severity| {
                 h_flex()
                     .gap(ICON_COUNT_GAP)
-                    .child(icon_cell(severity.icon, severity.color))
+                    .child(
+                        Icon::new(severity.icon)
+                            .size(exact_icon_size(TOOLBAR_ICON_SIDE, rem_size))
+                            .color(severity.color),
+                    )
                     .child(
                         div()
                             .text_size(count_font_size)
@@ -422,10 +412,10 @@ fn render_inspection_widget(
     editor: &Entity<Editor>,
     popup: &Entity<InspectionPopup>,
     count_font_size: Pixels,
+    rem_size: Pixels,
     cx: &App,
 ) -> AnyElement {
     let focus_handle = editor.focus_handle(cx);
-    let navigation_severity = model.navigation_severity;
 
     let status_insets = Edges {
         top: BUTTON_INSET,
@@ -440,7 +430,7 @@ fn render_inspection_widget(
     let status_button = toolbar_button(
         "inspection-widget-status",
         status_insets,
-        render_status_content(&model.status, count_font_size, cx),
+        render_status_content(&model.status, count_font_size, rem_size, cx),
         cx,
     )
     .hoverable_tooltip({
@@ -489,7 +479,7 @@ fn render_inspection_widget(
                             move |_window, cx| {
                                 Tooltip::for_action_in(
                                     "Previous Highlighted Error",
-                                    &GoToPreviousDiagnostic::default(),
+                                    &GoToPreviousHighlightedError,
                                     &focus_handle,
                                     cx,
                                 )
@@ -500,10 +490,8 @@ fn render_inspection_widget(
                             move |_event, window, cx| {
                                 window.focus(&editor.focus_handle(cx), cx);
                                 editor.update(cx, |editor, cx| {
-                                    editor.go_to_prev_diagnostic(
-                                        &GoToPreviousDiagnostic {
-                                            severity: navigation_severity,
-                                        },
+                                    editor.go_to_previous_highlighted_error(
+                                        &GoToPreviousHighlightedError,
                                         window,
                                         cx,
                                     );
@@ -528,7 +516,7 @@ fn render_inspection_widget(
                             move |_window, cx| {
                                 Tooltip::for_action_in(
                                     "Next Highlighted Error",
-                                    &GoToDiagnostic::default(),
+                                    &GoToNextHighlightedError,
                                     &focus_handle,
                                     cx,
                                 )
@@ -539,10 +527,8 @@ fn render_inspection_widget(
                             move |_event, window, cx| {
                                 window.focus(&editor.focus_handle(cx), cx);
                                 editor.update(cx, |editor, cx| {
-                                    editor.go_to_diagnostic(
-                                        &GoToDiagnostic {
-                                            severity: navigation_severity,
-                                        },
+                                    editor.go_to_next_highlighted_error(
+                                        &GoToNextHighlightedError,
                                         window,
                                         cx,
                                     );
@@ -585,9 +571,16 @@ impl EditorElement {
             let popup = window.use_keyed_state("inspection-widget-popup", cx, |_, _| {
                 InspectionPopup::new(editor_handle)
             });
-            let count_font_size = status_count_font_size(window.rem_size(), cx);
-            let mut element =
-                render_inspection_widget(&model, &self.editor, &popup, count_font_size, cx);
+            let rem_size = window.rem_size();
+            let count_font_size = status_count_font_size(rem_size, cx);
+            let mut element = render_inspection_widget(
+                &model,
+                &self.editor,
+                &popup,
+                count_font_size,
+                rem_size,
+                cx,
+            );
             let size = element.layout_as_root(AvailableSpace::min_size(), window, cx);
             (size.width <= text_hitbox.size.width)
                 .then_some(InspectionWidgetLayout { element, size })
@@ -630,7 +623,8 @@ impl EditorElement {
 mod tests {
     use super::*;
     use crate::{
-        actions::ToggleDiagnostics, editor_tests::init_test,
+        actions::{GoToDiagnostic, ToggleDiagnostics},
+        editor_tests::init_test,
         test::editor_test_context::EditorTestContext,
     };
     use gpui::{TestAppContext, UpdateGlobal as _};
@@ -638,7 +632,7 @@ mod tests {
     use language::DiagnosticSourceKind;
     use lsp::LanguageServerId;
     use project::project_settings::DiagnosticSeverity;
-    use settings::{DiagnosticSeverityContent, SettingsStore};
+    use settings::{DiagnosticSeverityContent, KeymapFile, SettingsStore};
     use util::path;
 
     fn counts(errors: usize, warnings: usize, weak_warnings: usize) -> DiagnosticCounts {
@@ -850,22 +844,215 @@ mod tests {
         assert_eq!(highlight_link_text(HighlightLevel::None), "Highlight: None");
     }
 
-    #[test]
-    fn inspection_widget_arrows_go_to_errors_first() {
-        assert_eq!(
-            inspection_widget_model(HighlightLevel::AllProblems, counts(1, 2, 3))
-                .navigation_severity,
-            GoToDiagnosticSeverityFilter::Only(GoToDiagnosticSeverity::Error),
-            "with errors in the file the arrows skip warnings, like IntelliJ's errors-first navigation"
+    fn assert_active_diagnostic(
+        cx: &mut EditorTestContext,
+        expected: Option<&str>,
+        explanation: &str,
+    ) {
+        cx.update_editor(|editor, _, _| {
+            assert_eq!(
+                editor.active_diagnostic_message(),
+                expected,
+                "{explanation}"
+            );
+        });
+    }
+
+    #[gpui::test]
+    async fn inspection_widget_arrows_go_to_errors_first(cx: &mut TestAppContext) {
+        let mut cx = editor_with_every_severity(cx).await;
+
+        cx.dispatch_action(GoToNextHighlightedError);
+        assert_active_diagnostic(
+            &mut cx,
+            Some("first error"),
+            "the error at the caret comes first",
         );
-        assert_eq!(
-            inspection_widget_model(HighlightLevel::AllProblems, counts(0, 2, 3))
-                .navigation_severity,
-            GoToDiagnosticSeverityFilter::Range {
-                min: GoToDiagnosticSeverity::Information,
-                max: GoToDiagnosticSeverity::Error,
+        cx.dispatch_action(GoToNextHighlightedError);
+        assert_active_diagnostic(&mut cx, Some("second error"), "the next error follows");
+        cx.dispatch_action(GoToNextHighlightedError);
+        assert_active_diagnostic(
+            &mut cx,
+            Some("first error"),
+            "with errors in the file the warning is skipped and navigation wraps around",
+        );
+        cx.dispatch_action(GoToPreviousHighlightedError);
+        assert_active_diagnostic(
+            &mut cx,
+            Some("second error"),
+            "going back from the first error wraps to the last error",
+        );
+
+        publish_diagnostics(
+            &mut cx,
+            vec![
+                lsp_diagnostic(2, lsp::DiagnosticSeverity::WARNING, "a warning"),
+                lsp_diagnostic(3, lsp::DiagnosticSeverity::INFORMATION, "an information"),
+                lsp_diagnostic(4, lsp::DiagnosticSeverity::HINT, "a hint"),
+            ],
+        );
+        cx.dispatch_action(GoToNextHighlightedError);
+        assert_active_diagnostic(
+            &mut cx,
+            Some("a warning"),
+            "without errors warnings come first",
+        );
+        cx.dispatch_action(GoToNextHighlightedError);
+        assert_active_diagnostic(
+            &mut cx,
+            Some("a warning"),
+            "while the file has warnings the weak warning is skipped",
+        );
+
+        publish_diagnostics(
+            &mut cx,
+            vec![
+                lsp_diagnostic(3, lsp::DiagnosticSeverity::INFORMATION, "an information"),
+                lsp_diagnostic(4, lsp::DiagnosticSeverity::HINT, "a hint"),
+            ],
+        );
+        cx.dispatch_action(GoToNextHighlightedError);
+        assert_active_diagnostic(
+            &mut cx,
+            Some("an information"),
+            "without errors and warnings weak warnings are visited",
+        );
+        cx.dispatch_action(GoToNextHighlightedError);
+        assert_active_diagnostic(&mut cx, Some("an information"), "hints are never visited");
+
+        publish_diagnostics(
+            &mut cx,
+            vec![lsp_diagnostic(4, lsp::DiagnosticSeverity::HINT, "a hint")],
+        );
+        cx.dispatch_action(GoToNextHighlightedError);
+        cx.dispatch_action(GoToPreviousHighlightedError);
+        cx.assert_editor_state(indoc! {"
+            one
+            two
+            three
+            ˇfour
+            five
+        "});
+    }
+
+    #[gpui::test]
+    async fn jetbrains_f2_goes_to_the_next_highlighted_error(cx: &mut TestAppContext) {
+        let mut cx = editor_with_every_severity(cx).await;
+        cx.update(|_, cx| {
+            for asset_path in ["keymaps/default-macos.json", "keymaps/macos/jetbrains.json"] {
+                cx.bind_keys(KeymapFile::load_asset_allow_partial_failure(asset_path, cx).unwrap());
+            }
+        });
+
+        cx.simulate_keystroke("f2");
+        assert_active_diagnostic(
+            &mut cx,
+            Some("first error"),
+            "F2 goes to the error at the caret",
+        );
+        cx.simulate_keystroke("f2");
+        assert_active_diagnostic(&mut cx, Some("second error"), "F2 goes to the next error");
+        cx.simulate_keystroke("f2");
+        assert_active_diagnostic(
+            &mut cx,
+            Some("first error"),
+            "F2 goes to errors first, like the widget's arrows, and skips the warning",
+        );
+        cx.simulate_keystroke("shift-f2");
+        assert_active_diagnostic(
+            &mut cx,
+            Some("second error"),
+            "Shift-F2 goes to the previous error",
+        );
+    }
+
+    #[gpui::test]
+    async fn inspection_widget_arrows_stay_within_the_highlight_level(cx: &mut TestAppContext) {
+        let mut cx = editor_with_every_severity(cx).await;
+        cx.update_editor(|editor, window, cx| {
+            editor.set_highlight_level(HighlightLevel::Syntax, window, cx);
+        });
+        publish_diagnostics(
+            &mut cx,
+            vec![lsp_diagnostic(
+                2,
+                lsp::DiagnosticSeverity::WARNING,
+                "a warning",
+            )],
+        );
+
+        cx.dispatch_action(GoToNextHighlightedError);
+        assert_active_diagnostic(
+            &mut cx,
+            None,
+            "the Syntax level highlights errors only, so there is no warning to go to",
+        );
+        cx.assert_editor_state(indoc! {"
+            ˇone
+            two
+            three
+            four
+            five
+        "});
+    }
+
+    fn status_width(status: StatusContent, window: &mut Window, cx: &mut App) -> f32 {
+        let rem_size = window.rem_size();
+        let count_font_size = status_count_font_size(rem_size, cx);
+        let mut element = render_status_content(&status, count_font_size, rem_size, cx);
+        f32::from(
+            element
+                .layout_as_root(AvailableSpace::min_size(), window, cx)
+                .width,
+        )
+    }
+
+    #[gpui::test]
+    fn inspection_widget_severity_icons_are_16_px_without_padding(cx: &mut TestAppContext) {
+        init_test(cx, |_| {});
+        let cx = cx.add_empty_window();
+        let error = severity(IconName::InspectionsError, Color::Error, 1);
+        let warning = severity(IconName::InspectionsWarning, Color::Warning, 1);
+        let mut widths = None;
+        cx.draw(
+            point(px(0.), px(0.)),
+            AvailableSpace::min_size(),
+            |window, cx| {
+                // At a 15 px rem, IconSize::Medium would be 15 px instead of IntelliJ's 16 px.
+                window.set_rem_size(px(15.));
+                widths = Some((
+                    status_width(
+                        StatusContent::Text(SharedString::new_static("1")),
+                        window,
+                        cx,
+                    ),
+                    status_width(
+                        StatusContent::Severities(SmallVec::from_vec(vec![error.clone()])),
+                        window,
+                        cx,
+                    ),
+                    status_width(
+                        StatusContent::Severities(SmallVec::from_vec(vec![error, warning])),
+                        window,
+                        cx,
+                    ),
+                ));
+                div()
             },
-            "without errors the arrows visit the counted severities and never stop on hints"
+        );
+        let (count_only, one_group, two_groups) =
+            widths.expect("the status content is laid out while drawing");
+        let count_width = count_only - 2. * f32::from(STATUS_EDGE_PADDING);
+
+        assert!(
+            (one_group - count_only - 17.).abs() < 0.5,
+            "a group adds IntelliJ's 16 px icon and a 1 px gap to the count, got {}",
+            one_group - count_only
+        );
+        assert!(
+            (two_groups - one_group - count_width - 23.).abs() < 0.5,
+            "a second group adds the 6 px group gap, the 16 px icon and the 1 px gap, got {}",
+            two_groups - one_group - count_width
         );
     }
 

@@ -1,5 +1,5 @@
 use collections::HashSet;
-use editor::{Editor, EditorEvent};
+use editor::{Editor, EditorEvent, MultiBufferOffset};
 use git::repository::Branch;
 use gpui::{
     App, Context, DismissEvent, Entity, EventEmitter, FocusHandle, Focusable, SharedString,
@@ -17,6 +17,7 @@ use crate::branch_operations::ref_suggestions::{
 use crate::branch_refs::RefTarget;
 
 const HEAD_KEYWORD: &str = "HEAD";
+const BRANCH_NAME_LABEL: &str = "Branch Name:";
 const NAME_REPLACEMENT: char = '-';
 const INVALID_NAME_CHARACTERS: [char; 8] = ['~', ':', '^', '?', '*', '"', '[', '\\'];
 const LOCK_SUFFIX: &str = ".lock";
@@ -129,7 +130,14 @@ pub fn clean_up_branch_name_on_typing(input: &str) -> String {
         }
         match (output.chars().last(), character) {
             (None, '.' | '-' | '/') => continue,
-            (Some('.'), '.' | '/') | (Some('/'), '/' | '.') => continue,
+            // IntelliJ drops the dot before a slash (`\.(?=/)`) and keeps the slash.
+            (Some('.'), '/') => {
+                output.pop();
+                if output.is_empty() || output.ends_with('/') {
+                    continue;
+                }
+            }
+            (Some('.'), '.') | (Some('/'), '/' | '.') => continue,
             (Some('@'), '{') => {
                 output.pop();
                 continue;
@@ -139,6 +147,88 @@ pub fn clean_up_branch_name_on_typing(input: &str) -> String {
         output.push(character);
     }
     output
+}
+
+/// Where the caret goes after cleaning up typed text: IntelliJ cleans the text before the caret
+/// on its own and puts the caret at the end of it, so editing inside a name keeps the caret there.
+pub fn caret_after_clean_up(typed: &str, caret: usize) -> usize {
+    clean_up_branch_name_on_typing(typed.get(..caret).unwrap_or(typed)).len()
+}
+
+pub(crate) fn branch_name_editor(
+    initial_name: &str,
+    window: &mut Window,
+    cx: &mut Context<Editor>,
+) -> Editor {
+    let mut editor = Editor::single_line(window, cx);
+    editor.set_text(initial_name.to_string(), window, cx);
+    editor.select_all(&Default::default(), window, cx);
+    editor
+}
+
+pub(crate) fn clean_up_typed_name_in_editor(
+    editor: &mut Editor,
+    window: &mut Window,
+    cx: &mut Context<Editor>,
+) {
+    let typed = editor.text(cx);
+    let cleaned = clean_up_branch_name_on_typing(&typed);
+    if cleaned == typed {
+        return;
+    }
+    let caret = editor
+        .selections
+        .newest::<MultiBufferOffset>(&editor.display_snapshot(cx))
+        .head()
+        .0;
+    let caret = MultiBufferOffset(caret_after_clean_up(&typed, caret));
+    editor.set_text(cleaned, window, cx);
+    editor.change_selections(Default::default(), window, cx, |selections| {
+        selections.select_ranges([caret..caret]);
+    });
+}
+
+pub(crate) fn branch_name_row(editor: &Entity<Editor>, cx: &App) -> Div {
+    let colors = cx.theme().colors();
+    h_flex()
+        .w_full()
+        .gap_1p5()
+        .child(
+            div()
+                .flex_none()
+                .debug_selector(|| "BRANCH_NAME_LABEL".into())
+                .child(Label::new(BRANCH_NAME_LABEL)),
+        )
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .debug_selector(|| "BRANCH_NAME_FIELD".into())
+                .px_2()
+                .py_1()
+                .rounded_md()
+                .border_1()
+                .border_color(colors.border)
+                .bg(colors.editor_background)
+                .child(editor.clone()),
+        )
+}
+
+/// Puts `content` under the Branch Name field, where IntelliJ's UI DSL places the cells of a
+/// `row("")`.
+pub(crate) fn under_branch_name_field(content: impl IntoElement) -> Div {
+    h_flex()
+        .w_full()
+        .gap_1p5()
+        .items_start()
+        // An invisible copy of the label takes exactly the width of the label column.
+        .child(
+            div()
+                .flex_none()
+                .invisible()
+                .child(Label::new(BRANCH_NAME_LABEL)),
+        )
+        .child(div().flex_1().min_w_0().child(content))
 }
 
 pub fn clean_up_branch_name_on_apply(name: &str) -> String {
@@ -164,7 +254,7 @@ pub fn validate_branch_name(
     if name.is_empty() {
         return Some(BranchNameProblem::Empty);
     }
-    if name == HEAD_KEYWORD {
+    if name.eq_ignore_ascii_case(HEAD_KEYWORD) {
         return Some(BranchNameProblem::ReservedHead);
     }
     if existing.has_remote(name) {
@@ -223,12 +313,7 @@ impl NewBranchDialog {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let editor = cx.new(|cx| {
-            let mut editor = Editor::single_line(window, cx);
-            editor.set_text(options.initial_name.clone(), window, cx);
-            editor.select_all(&Default::default(), window, cx);
-            editor
-        });
+        let editor = cx.new(|cx| branch_name_editor(&options.initial_name, window, cx));
         let editor_subscription = cx.subscribe_in(
             &editor,
             window,
@@ -265,16 +350,8 @@ impl NewBranchDialog {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let typed = editor.read(cx).text(cx);
-        let cleaned = clean_up_branch_name_on_typing(&typed);
-        if cleaned == typed {
-            return;
-        }
         editor.update(cx, |editor, cx| {
-            editor.set_text(cleaned, window, cx);
-            editor.change_selections(Default::default(), window, cx, |selections| {
-                selections.select_ranges([editor::Anchor::Max..editor::Anchor::Max]);
-            });
+            clean_up_typed_name_in_editor(editor, window, cx)
         });
     }
 
@@ -420,6 +497,7 @@ impl Render for NewBranchDialog {
         let overwrite_available = self.existing.has_local(&name);
         let can_confirm = problem.is_none();
         let problem_message = problem.map(|problem| problem.message(&name));
+        let has_field_details = !self.suggestions.is_empty() || problem_message.is_some();
         let suggestion_list = (!self.suggestions.is_empty()).then(|| {
             render_suggestion_list(
                 &self.suggestions,
@@ -451,48 +529,54 @@ impl Render for NewBranchDialog {
                     .px_3()
                     .py_2()
                     .gap_2()
-                    .child(Label::new("Branch Name:"))
-                    .child(
-                        div()
-                            .w_full()
-                            .px_2()
-                            .py_1()
-                            .rounded_md()
-                            .border_1()
-                            .border_color(cx.theme().colors().border)
-                            .bg(cx.theme().colors().editor_background)
-                            .child(self.editor.clone()),
-                    )
-                    .children(suggestion_list)
-                    .children(problem_message.map(|message| {
-                        Label::new(message)
-                            .color(Color::Error)
-                            .size(LabelSize::Small)
-                    }))
-                    .when(self.show_checkout_option, |this| {
-                        this.child(
-                            Checkbox::new("new-branch-checkout", self.checkout.into())
-                                .label("Checkout branch")
-                                .on_click(cx.listener(|this, state: &ToggleState, _, cx| {
-                                    this.checkout = state.selected();
-                                    cx.notify();
-                                })),
-                        )
+                    .child(branch_name_row(&self.editor, cx))
+                    .when(has_field_details, |this| {
+                        this.child(under_branch_name_field(
+                            v_flex().gap_2().children(suggestion_list).children(
+                                problem_message.map(|message| {
+                                    Label::new(message)
+                                        .color(Color::Error)
+                                        .size(LabelSize::Small)
+                                }),
+                            ),
+                        ))
                     })
-                    .child(
-                        Checkbox::new(
-                            "new-branch-overwrite",
-                            (self.overwrite && overwrite_available).into(),
-                        )
-                        .label("Overwrite existing branch")
-                        .disabled(!overwrite_available)
-                        .on_click(cx.listener(
-                            |this, state: &ToggleState, _, cx| {
-                                this.overwrite = state.selected();
-                                cx.notify();
-                            },
-                        )),
-                    ),
+                    .child(under_branch_name_field(
+                        h_flex()
+                            .gap_4()
+                            .when(self.show_checkout_option, |this| {
+                                this.child(
+                                    div().debug_selector(|| "NEW_BRANCH_CHECKOUT".into()).child(
+                                        Checkbox::new("new-branch-checkout", self.checkout.into())
+                                            .label("Checkout branch")
+                                            .on_click(cx.listener(
+                                                |this, state: &ToggleState, _, cx| {
+                                                    this.checkout = state.selected();
+                                                    cx.notify();
+                                                },
+                                            )),
+                                    ),
+                                )
+                            })
+                            .child(
+                                div()
+                                    .debug_selector(|| "NEW_BRANCH_OVERWRITE".into())
+                                    .child(
+                                        Checkbox::new(
+                                            "new-branch-overwrite",
+                                            (self.overwrite && overwrite_available).into(),
+                                        )
+                                        .label("Overwrite existing branch")
+                                        .disabled(!overwrite_available)
+                                        .on_click(
+                                            cx.listener(|this, state: &ToggleState, _, cx| {
+                                                this.overwrite = state.selected();
+                                                cx.notify();
+                                            }),
+                                        ),
+                                    ),
+                            ),
+                    )),
             )
             .child(
                 h_flex()
@@ -517,12 +601,51 @@ impl Render for NewBranchDialog {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use gpui::{TestAppContext, VisualTestContext};
+    use settings::SettingsStore;
 
     fn existing(local: &[&str], remote: &[&str]) -> ExistingBranches {
         ExistingBranches {
             local: local.iter().map(|name| name.to_string()).collect(),
             remote: remote.iter().map(|name| name.to_string()).collect(),
         }
+    }
+
+    fn init_test(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            let settings_store = SettingsStore::test(cx);
+            cx.set_global(settings_store);
+            cx.set_global(db::AppDatabase::test_new());
+            theme_settings::init(theme::LoadThemes::JustBase, cx);
+            editor::init(cx);
+        });
+    }
+
+    fn open_dialog<'a>(
+        cx: &'a mut TestAppContext,
+        initial_name: &str,
+    ) -> (Entity<NewBranchDialog>, &'a mut VisualTestContext) {
+        init_test(cx);
+        let options = NewBranchDialogOptions {
+            title: SharedString::new_static("Create New Branch"),
+            confirm_label: SharedString::new_static("Create"),
+            initial_name: initial_name.to_string(),
+            show_checkout_option: true,
+        };
+        cx.add_window_view(|window, cx| {
+            NewBranchDialog::new(options, existing(&["main"], &[]), |_, _, _| {}, window, cx)
+        })
+    }
+
+    fn text_and_caret(editor: &Entity<Editor>, cx: &mut VisualTestContext) -> (String, usize) {
+        editor.update(cx, |editor, cx| {
+            let caret = editor
+                .selections
+                .newest::<MultiBufferOffset>(&editor.display_snapshot(cx))
+                .head()
+                .0;
+            (editor.text(cx), caret)
+        })
     }
 
     #[test]
@@ -544,7 +667,8 @@ mod tests {
         assert_eq!(clean_up_branch_name_on_typing("a..b"), "a.b");
         assert_eq!(clean_up_branch_name_on_typing("a//b"), "a/b");
         assert_eq!(clean_up_branch_name_on_typing("a/.b"), "a/b");
-        assert_eq!(clean_up_branch_name_on_typing("a./b"), "a.b");
+        assert_eq!(clean_up_branch_name_on_typing("a./b"), "a/b");
+        assert_eq!(clean_up_branch_name_on_typing("release./x"), "release/x");
         assert_eq!(clean_up_branch_name_on_typing("a@{b"), "ab");
         assert_eq!(clean_up_branch_name_on_typing("a@{1}"), "a1}");
     }
@@ -587,7 +711,84 @@ mod tests {
             validate_branch_name("HEAD", &existing, true),
             Some(BranchNameProblem::ReservedHead)
         );
-        assert_eq!(validate_branch_name("head", &existing, false), None);
+        assert_eq!(
+            validate_branch_name("head", &existing, false),
+            Some(BranchNameProblem::ReservedHead)
+        );
+        assert_eq!(
+            validate_branch_name("Head", &existing, false),
+            Some(BranchNameProblem::ReservedHead)
+        );
+        assert_eq!(validate_branch_name("heads", &existing, false), None);
+    }
+
+    #[test]
+    fn the_caret_stays_where_it_was_relative_to_the_cleaned_text() {
+        assert_eq!(caret_after_clean_up("feature x", 8), 8);
+        assert_eq!(caret_after_clean_up("ab//cd", 4), 3);
+        assert_eq!(caret_after_clean_up("a..b.c", 3), 2);
+        assert_eq!(caret_after_clean_up("feature x", 9), 9);
+        assert_eq!(caret_after_clean_up("caf\u{e9} x", 6), 6);
+    }
+
+    #[gpui::test]
+    fn cleaning_up_a_name_typed_in_the_middle_keeps_the_caret_there(cx: &mut TestAppContext) {
+        let (dialog, cx) = open_dialog(cx, "featurex");
+        let editor = dialog.read_with(cx, |dialog, _| dialog.editor.clone());
+        editor.update_in(cx, |editor, window, cx| {
+            editor.change_selections(Default::default(), window, cx, |selections| {
+                selections.select_ranges([MultiBufferOffset(7)..MultiBufferOffset(7)]);
+            });
+            editor.insert(" ", window, cx);
+        });
+        cx.run_until_parked();
+        assert_eq!(text_and_caret(&editor, cx), ("feature-x".to_string(), 8));
+    }
+
+    #[gpui::test]
+    fn branch_name_editors_start_with_the_whole_name_selected(cx: &mut TestAppContext) {
+        init_test(cx);
+        let (editor, cx) =
+            cx.add_window_view(|window, cx| branch_name_editor("feature", window, cx));
+        editor.update_in(cx, |editor, window, cx| editor.insert("topic", window, cx));
+        assert_eq!(text_and_caret(&editor, cx), ("topic".to_string(), 5));
+    }
+
+    #[gpui::test]
+    fn the_branch_name_label_sits_left_of_the_field_with_the_options_in_one_row_below(
+        cx: &mut TestAppContext,
+    ) {
+        let (_dialog, cx) = open_dialog(cx, "feature");
+        cx.run_until_parked();
+        let label = cx
+            .debug_bounds("BRANCH_NAME_LABEL")
+            .expect("the label is painted");
+        let field = cx
+            .debug_bounds("BRANCH_NAME_FIELD")
+            .expect("the field is painted");
+        let checkout = cx
+            .debug_bounds("NEW_BRANCH_CHECKOUT")
+            .expect("the checkout option is painted");
+        let overwrite = cx
+            .debug_bounds("NEW_BRANCH_OVERWRITE")
+            .expect("the overwrite option is painted");
+
+        assert!(label.right() <= field.left(), "{label:?} vs {field:?}");
+        assert!(
+            label.top() >= field.top() && label.bottom() <= field.bottom(),
+            "the label shares the row of the field: {label:?} vs {field:?}"
+        );
+        assert!(checkout.top() >= field.bottom());
+        assert_eq!(
+            checkout.top(),
+            overwrite.top(),
+            "both options share one row"
+        );
+        assert!(checkout.right() <= overwrite.left());
+        assert!(
+            f32::from(checkout.left() - field.left()).abs() < 0.5,
+            "the options start under the field: {checkout:?} vs {field:?}"
+        );
     }
 
     #[test]

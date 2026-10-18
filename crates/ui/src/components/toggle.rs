@@ -10,7 +10,9 @@ use crate::{ElevationIndex, KeyBinding, prelude::*};
 
 const CHECKBOX_BOX_SIZE: Pixels = px(16.);
 const CHECKBOX_FOCUS_RING_WIDTH: Pixels = px(2.);
-const CHECKBOX_LABEL_GAP: Pixels = px(4.);
+// IntelliJ measures `CheckBox.textIconGap` 4 from its 24 px `CheckBox.iconSize`, whose visible box
+// sits 4 px inside; with the 2 px focus ring the label then starts 8 px after the box.
+const CHECKBOX_LABEL_GAP: Pixels = px(6.);
 const CHECKBOX_PLACEHOLDER_DOT_SIZE: Pixels = px(4.);
 const CHECKBOX_MARK_SIZE: f32 = 14.;
 const SWITCH_WIDTH: Pixels = px(32.);
@@ -1167,5 +1169,55 @@ impl Component for Switch {
                 ),
             ])
             .into_any_element()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gpui::{Context, Render, TestAppContext};
+
+    struct CheckboxLabelProbe;
+
+    impl Render for CheckboxLabelProbe {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            v_flex()
+                .items_start()
+                .child(
+                    h_flex()
+                        .debug_selector(|| "checkbox_with_label".to_string())
+                        .child(Checkbox::new("checkbox", ToggleState::Unselected).label("Label")),
+                )
+                .child(
+                    h_flex()
+                        .debug_selector(|| "label_alone".to_string())
+                        .child(Label::new("Label").color(Color::Muted)),
+                )
+        }
+    }
+
+    #[gpui::test]
+    fn checkbox_label_starts_eight_pixels_after_the_visible_box(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            let settings_store = settings::SettingsStore::test(cx);
+            cx.set_global(settings_store);
+            theme_settings::init(theme::LoadThemes::JustBase, cx);
+        });
+        let (_, cx) = cx.add_window_view(|_, _| CheckboxLabelProbe);
+        let with_label = cx
+            .debug_bounds("checkbox_with_label")
+            .expect("the checkbox with its label is painted");
+        let label_alone = cx
+            .debug_bounds("label_alone")
+            .expect("the label is painted");
+
+        let label_start = f32::from(with_label.size.width - label_alone.size.width);
+        let visible_box_end = f32::from(Checkbox::container_size() - CHECKBOX_FOCUS_RING_WIDTH);
+        assert!(
+            (label_start - visible_box_end - 8.).abs() < 0.5,
+            "the label starts {} px after the visible box, IntelliJ's 4 px icon margin plus \
+             CheckBox.textIconGap 4",
+            label_start - visible_box_end
+        );
     }
 }

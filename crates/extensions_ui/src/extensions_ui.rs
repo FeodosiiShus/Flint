@@ -1,5 +1,4 @@
 mod components;
-mod extension_suggestions;
 
 use std::{any::TypeId, ops::Range, sync::Arc};
 
@@ -99,7 +98,6 @@ pub fn init(cx: &mut App) {
         update_rebuild_dev_extension_visibility(&store, cx);
     })
     .detach();
-    extension_suggestions::init(cx);
 
     cx.observe_new(move |workspace: &mut Workspace, window, _cx| {
         if window.is_none() {

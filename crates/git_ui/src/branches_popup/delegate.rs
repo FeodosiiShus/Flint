@@ -33,12 +33,18 @@ use crate::branch_refs::{RefKind, RefTarget};
 const MAX_RECENT_BRANCHES: usize = 5;
 const SHORT_SHA_LENGTH: usize = 8;
 const MAX_COMMIT_COUNT_LABEL: u32 = 99;
-const ROW_HEIGHT_PX: f32 = 24.;
-const HEADER_HEIGHT_PX: f32 = 40.;
-const SEARCH_BOX_HEIGHT_PX: f32 = 28.;
+pub(super) const ROW_HEIGHT_PX: f32 = 24.;
+// IntelliJ's new UI header puts an 8 px drag area with 2 px top and bottom borders above the field.
+pub(super) const HEADER_TOP_INSET_PX: f32 = 12.;
+pub(super) const HEADER_LEFT_INSET_PX: f32 = 10.;
+pub(super) const HEADER_RIGHT_INSET_PX: f32 = 8.;
+pub(super) const HEADER_TOOLBAR_GAP_PX: f32 = 6.;
+pub(super) const SEARCH_BOX_HEIGHT_PX: f32 = 28.;
 const ICON_SLOT_PX: f32 = 16.;
 const INDENT_STEP_PX: f32 = 16.;
-const SEPARATOR_HEIGHT_PX: f32 = 9.;
+// Separators are tree rows of the full row height in IntelliJ, with the line half a row down.
+pub(super) const SEPARATOR_HEIGHT_PX: f32 = ROW_HEIGHT_PX;
+pub(super) const FOLDER_ICON: IconName = IconName::Folder;
 const ROW_GROUP: &str = "list_item";
 const SEARCH_PLACEHOLDER_WITH_ACTIONS: &str = "Search for branches and actions";
 const SEARCH_PLACEHOLDER_WITHOUT_ACTIONS: &str = "Search for branches";
@@ -187,6 +193,17 @@ pub fn commit_count_label(count: u32) -> String {
     }
 }
 
+pub fn commit_counts_tooltip(incoming: u32, outgoing: u32) -> String {
+    let commits = |count: u32| if count == 1 { "commit" } else { "commits" };
+    match (incoming, outgoing) {
+        (incoming, outgoing) if incoming > 0 && outgoing > 0 => {
+            format!("{incoming} incoming and {outgoing} outgoing commits")
+        }
+        (incoming, _) if incoming > 0 => format!("{incoming} incoming {}", commits(incoming)),
+        (_, outgoing) => format!("{outgoing} outgoing {}", commits(outgoing)),
+    }
+}
+
 pub fn ref_icon(is_current: bool, is_favorite: bool, is_tag: bool) -> IconName {
     match (is_current, is_favorite) {
         (true, true) => IconName::CurrentBranchFavoriteLabel,
@@ -223,7 +240,7 @@ pub struct BranchesDelegate {
     pub(super) query: String,
     pub(super) fetching: bool,
     update_project_shows_options: bool,
-    menu_handles: HashMap<RefTarget, PopoverMenuHandle<ContextMenu>>,
+    menu_handles: HashMap<(SectionKind, RefTarget), PopoverMenuHandle<ContextMenu>>,
     edits_before_load: Vec<StateEdit>,
     pub(super) gear_menu_handle: PopoverMenuHandle<ContextMenu>,
     _full_load_task: Task<()>,
@@ -512,6 +529,18 @@ impl BranchesDelegate {
             .cloned()
     }
 
+    fn head_tag(&self) -> Option<&str> {
+        if self.data.current_branch.is_some() {
+            return None;
+        }
+        let head_sha = self.data.head_sha.as_deref()?;
+        self.data
+            .tags
+            .iter()
+            .find(|tag| &*tag.commit_sha == head_sha)
+            .map(|tag| &*tag.name)
+    }
+
     fn rebuild_rows(&mut self, cx: &App) {
         if self.repository.is_none() {
             self.rows.clear();
@@ -528,6 +557,7 @@ impl BranchesDelegate {
             tags: &self.data.tags,
             recent: &self.data.recent,
             current_branch: self.data.current_branch.as_deref(),
+            head_tag: self.head_tag(),
             favorites: &favorites,
             options: self.state.toggles.tree_options(),
             expanded: &expanded,
@@ -627,9 +657,6 @@ impl BranchesDelegate {
             return false;
         };
         let target = entry.row.target.clone();
-        if target.kind == RefKind::Tag {
-            return false;
-        }
         let favorite = !self.state.is_favorite(&target, &self.favorite_defaults());
         self.record_edit(StateEdit::Favorite(target, favorite), cx);
         true
@@ -830,11 +857,6 @@ fn render_section_row(ix: usize, selected: bool, section: &SectionRow) -> AnyEle
 }
 
 fn render_folder_row(ix: usize, selected: bool, folder: &FolderRow) -> AnyElement {
-    let folder_icon = if folder.expanded {
-        IconName::FolderOpen
-    } else {
-        IconName::Folder
-    };
     base_row(ix, selected)
         .start_slot(
             h_flex()
@@ -842,7 +864,7 @@ fn render_folder_row(ix: usize, selected: bool, folder: &FolderRow) -> AnyElemen
                 .child(indent(folder.depth))
                 .child(icon_slot(Some(chevron(folder.expanded))))
                 .child(icon_slot(Some(
-                    Icon::new(folder_icon)
+                    Icon::new(FOLDER_ICON)
                         .size(IconSize::Small)
                         .color(Color::Muted),
                 ))),
@@ -948,8 +970,7 @@ impl BranchesDelegate {
     ) -> AnyElement {
         let row: &RefRow = &entry.row;
         let is_tag = row.target.kind == RefKind::Tag;
-        let favorite_toggle_enabled = !is_tag;
-        let offers_favorite_on_hover = favorite_toggle_enabled && !row.is_favorite;
+        let offers_favorite_on_hover = !row.is_favorite;
         let icon_name = ref_icon(row.is_current, row.is_favorite, is_tag);
         let icon_color = if row.is_current || row.is_favorite {
             Color::Warning
@@ -987,15 +1008,13 @@ impl BranchesDelegate {
                         ),
                 )
             })
-            .when(favorite_toggle_enabled, |this| {
-                this.cursor_pointer()
-                    .on_click(cx.listener(move |picker, _, window, cx| {
-                        cx.stop_propagation();
-                        if picker.delegate.toggle_favorite_at(ix, cx) {
-                            picker.refresh(window, cx);
-                        }
-                    }))
-            });
+            .cursor_pointer()
+            .on_click(cx.listener(move |picker, _, window, cx| {
+                cx.stop_propagation();
+                if picker.delegate.toggle_favorite_at(ix, cx) {
+                    picker.refresh(window, cx);
+                }
+            }));
 
         let label = HighlightedLabel::new(
             row.label.clone(),
@@ -1004,10 +1023,7 @@ impl BranchesDelegate {
         .flex_none();
 
         let has_commit_counts = row.incoming > 0 || row.outgoing > 0;
-        let counters_tooltip = format!(
-            "{} incoming and {} outgoing commits",
-            row.incoming, row.outgoing
-        );
+        let counters_tooltip = commit_counts_tooltip(row.incoming, row.outgoing);
         let counters = h_flex()
             .id(("branches-popup-ref-counters", ix))
             .flex_none()
@@ -1389,9 +1405,9 @@ impl PickerDelegate for BranchesDelegate {
         Some(
             v_flex().w_full().child(
                 h_flex()
-                    .h(rems_from_px(HEADER_HEIGHT_PX))
-                    .px_2()
-                    .gap_1()
+                    .pt(rems_from_px(HEADER_TOP_INSET_PX))
+                    .pl(rems_from_px(HEADER_LEFT_INSET_PX))
+                    .pr(rems_from_px(HEADER_RIGHT_INSET_PX))
                     .flex_none()
                     .child(
                         h_flex()
@@ -1410,8 +1426,13 @@ impl PickerDelegate for BranchesDelegate {
                             )
                             .child(div().flex_1().min_w_0().child(editor.render(window, cx))),
                     )
-                    .child(self.render_fetch_button(cx))
-                    .child(self.render_gear_button(cx)),
+                    .child(
+                        h_flex()
+                            .flex_none()
+                            .ml(rems_from_px(HEADER_TOOLBAR_GAP_PX))
+                            .child(self.render_fetch_button(cx))
+                            .child(self.render_gear_button(cx)),
+                    ),
             ),
         )
     }

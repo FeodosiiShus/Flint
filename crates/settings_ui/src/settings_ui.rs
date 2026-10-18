@@ -75,9 +75,15 @@ const SEARCH_ICON_GAP: Pixels = px(4.);
 
 const NAV_ROW_VERTICAL_PADDING: Pixels = px(3.);
 const NAV_ROW_RIGHT_PADDING: Pixels = px(10.);
+// IntelliJ's tree renderer is inset by 10 px; the row's 1 px focus border is part of that inset.
+const NAV_ROW_LEFT_PADDING: Pixels = px(9.);
 const NAV_LEFT_MARGIN: Pixels = px(3.);
 const NAV_INDENT_PER_LEVEL: Pixels = px(16.);
 const NAV_CHEVRON_GAP: Pixels = px(4.);
+const NAV_PAGE_ROW_DEBUG_SELECTOR: &str = "settings-ui-nav-page-row";
+const NAV_SECTION_ROW_DEBUG_SELECTOR: &str = "settings-ui-nav-section-row";
+const NAV_PAGE_ICON_DEBUG_SELECTOR: &str = "settings-ui-nav-page-icon";
+const NAV_SECTION_ICON_DEBUG_SELECTOR: &str = "settings-ui-nav-section-icon";
 
 const HEADER_PADDING_TOP: Pixels = px(11.);
 const HEADER_PADDING_LEFT: Pixels = px(11.);
@@ -2724,6 +2730,7 @@ impl SettingsWindow {
         let is_focused = self.search_bar.focus_handle(cx).is_focused(window);
         let (a11y_value, a11y_text_runs) =
             text_field_a11y_state("settings-ui-search", &self.search_bar, window, cx);
+        let corner_radius = ui::component_corner_radii(cx).input;
         let colors = cx.theme().colors();
         let border_color = if is_focused {
             colors.border_focused
@@ -2748,7 +2755,7 @@ impl SettingsWindow {
                     .pl(SEARCH_ICON_PADDING)
                     .pr_0p5()
                     .gap(SEARCH_ICON_GAP)
-                    .rounded(COMPONENT_CORNER_RADII.input)
+                    .rounded(corner_radius)
                     .bg(colors.panel_background)
                     .border_1()
                     .border_color(border_color)
@@ -2787,9 +2794,17 @@ impl SettingsWindow {
         };
         let selection_background = cx.theme().colors().ghost_element_selected;
         let focused_border = cx.theme().colors().border_focused;
+        let is_root = entry.is_root;
 
         h_flex()
             .id(("settings-ui-navbar-entry", entry_index))
+            .debug_selector(|| {
+                if is_root {
+                    NAV_PAGE_ROW_DEBUG_SELECTOR.into()
+                } else {
+                    NAV_SECTION_ROW_DEBUG_SELECTOR.into()
+                }
+            })
             .role(Role::TreeItem)
             .aria_label(entry.title)
             .aria_selected(selected)
@@ -2799,7 +2814,7 @@ impl SettingsWindow {
             .w_full()
             .min_w_0()
             .py(NAV_ROW_VERTICAL_PADDING)
-            .pl(left_padding)
+            .pl(left_padding + NAV_ROW_LEFT_PADDING)
             .pr(NAV_ROW_RIGHT_PADDING)
             .gap(NAV_CHEVRON_GAP)
             .cursor_pointer()
@@ -2811,6 +2826,7 @@ impl SettingsWindow {
                 this.child(
                     div()
                         .id(("settings-ui-navbar-disclosure", entry_index))
+                        .debug_selector(|| NAV_PAGE_ICON_DEBUG_SELECTOR.into())
                         .flex_none()
                         .child(
                             Icon::new(if expanded {
@@ -2818,13 +2834,24 @@ impl SettingsWindow {
                             } else {
                                 IconName::ChevronRight
                             })
-                            .size(IconSize::Small)
+                            .size(IconSize::Medium)
                             .color(Color::Muted),
                         )
                         .on_click(cx.listener(move |this, _, window, cx| {
                             cx.stop_propagation();
                             this.toggle_and_focus_navbar_entry(entry_index, window, cx);
                         })),
+                )
+            })
+            // IntelliJ gives leaf rows an empty icon as wide as the chevron, so a section's
+            // text starts one indent level right of its page's text.
+            .when(!entry.is_root, |this| {
+                this.child(
+                    div()
+                        .debug_selector(|| NAV_SECTION_ICON_DEBUG_SELECTOR.into())
+                        .flex_none()
+                        .w(IconSize::Medium.rems())
+                        .h(IconSize::Medium.rems()),
                 )
             })
             .child(
@@ -5128,6 +5155,63 @@ pub mod test {
                 cx,
             ));
         });
+    }
+
+    #[gpui::test]
+    fn navbar_rows_use_intellij_tree_insets(cx: &mut gpui::TestAppContext) {
+        let (_settings_window, cx) = cx.add_window_view(|window, cx| {
+            register_settings(cx);
+            let mut settings_window = parse(
+                r"
+                v General*
+                - Privacy
+                ",
+                window,
+                cx,
+            );
+            settings_window.build_content_handles(window, cx);
+            settings_window
+        });
+        cx.run_until_parked();
+
+        let page_row = cx
+            .debug_bounds(NAV_PAGE_ROW_DEBUG_SELECTOR)
+            .expect("the page row should be rendered");
+        let page_icon = cx
+            .debug_bounds(NAV_PAGE_ICON_DEBUG_SELECTOR)
+            .expect("the page row should show a chevron");
+        let section_row = cx
+            .debug_bounds(NAV_SECTION_ROW_DEBUG_SELECTOR)
+            .expect("the section row should be rendered");
+        let section_icon = cx
+            .debug_bounds(NAV_SECTION_ICON_DEBUG_SELECTOR)
+            .expect("the section row should keep an empty icon slot");
+        let chevron_width =
+            cx.update(|window, _| IconSize::Medium.rems().to_pixels(window.rem_size()));
+
+        assert_eq!(
+            page_icon.left() - page_row.left(),
+            px(13.),
+            "IntelliJ's row margin of 3 px plus its 10 px renderer inset puts the chevron at 13 px"
+        );
+        assert_eq!(
+            page_icon.size.width, chevron_width,
+            "the chevron is IntelliJ's 16 px tree icon"
+        );
+        assert_eq!(
+            section_icon.size.width, chevron_width,
+            "a section row reserves an empty icon as wide as the chevron"
+        );
+        assert_eq!(
+            section_icon.left() - section_row.left(),
+            px(29.),
+            "a section row starts one 16 px level deeper"
+        );
+        assert_eq!(
+            section_icon.left() - page_icon.left(),
+            NAV_INDENT_PER_LEVEL,
+            "so a section's text sits 16 px right of its page's text"
+        );
     }
 
     #[gpui::test]

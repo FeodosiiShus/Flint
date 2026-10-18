@@ -7,6 +7,11 @@ use settings::SettingsStore;
 use super::{
     Appearance, MergeViewer, RediffState, ViewerNotification,
     operations::PopupAction,
+    panes::{
+        ABORT_RESOLVE_LABEL, CONFLICT_INVALID_TEXT, ERROR_NOTIFICATION_BACKGROUND_DARK,
+        ERROR_NOTIFICATION_BACKGROUND_LIGHT, ERROR_NOTIFICATION_BORDER_DARK,
+        ERROR_NOTIFICATION_BORDER_LIGHT,
+    },
     selection::{CaretSnapshot, EditorSelection, SelectedLines},
     viewer_settings,
 };
@@ -214,6 +219,39 @@ fn merge_tool_viewer_notification_texts_match_the_diff_bundle() {
         ViewerNotification::ReadOnlyFile.text(),
         "Cannot resolve conflicts in a read-only file"
     );
+}
+
+#[test]
+fn merge_tool_viewer_invalid_conflict_notice_matches_the_diff_bundle_and_islands_error_banner() {
+    assert_eq!(
+        CONFLICT_INVALID_TEXT,
+        "Conflict is not valid and no longer can be resolved."
+    );
+    assert_eq!(ABORT_RESOLVE_LABEL, "Abort Resolve");
+    assert_eq!(ERROR_NOTIFICATION_BACKGROUND_DARK, 0x56272B);
+    assert_eq!(ERROR_NOTIFICATION_BORDER_DARK, 0x80383E);
+    assert_eq!(ERROR_NOTIFICATION_BACKGROUND_LIGHT, 0xFFF6F5);
+    assert_eq!(ERROR_NOTIFICATION_BORDER_LIGHT, 0xFFC4C5);
+}
+
+#[gpui::test]
+async fn merge_tool_viewer_invalid_conflict_notice_survives_a_merge_restart(
+    cx: &mut TestAppContext,
+) {
+    let (viewer, cx) = settled_viewer(cx, LEFT_ONLY_CHANGE, BASE, BASE);
+    assert!(!viewer.read_with(cx, |viewer, _| viewer.conflict_invalid()));
+
+    viewer.update(cx, |viewer, cx| viewer.mark_conflict_invalid(cx));
+    viewer.update_in(cx, |viewer, window, cx| {
+        viewer.restart_merge(ComparisonPolicy::TrimWhitespaces, window, cx);
+    });
+    cx.run_until_parked();
+
+    assert_eq!(
+        viewer.read_with(cx, |viewer, _| viewer.rediff_state()),
+        RediffState::Finished
+    );
+    assert!(viewer.read_with(cx, |viewer, _| viewer.conflict_invalid()));
 }
 
 #[gpui::test]

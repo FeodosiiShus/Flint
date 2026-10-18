@@ -95,6 +95,7 @@ pub(crate) struct MergeViewer {
     error_content: bool,
     notification: Option<ViewerNotification>,
     notification_hidden: bool,
+    conflict_invalid: bool,
     inner_fragments: Vec<Option<MergeInnerDifferences>>,
     inner_worker: InnerDiffWorker,
     sync_scroll_enabled: bool,
@@ -146,9 +147,10 @@ impl MergeViewer {
             error_content: false,
             notification: None,
             notification_hidden: false,
+            conflict_invalid: false,
             inner_fragments: Vec::new(),
             inner_worker: InnerDiffWorker::default(),
-            sync_scroll_enabled: true,
+            sync_scroll_enabled: viewer_settings::session_sync_scroll(cx),
             expand_by_default: stored_settings.expand_by_default,
             ignore_policy,
             deferred_ignore_policy: None,
@@ -323,6 +325,21 @@ impl MergeViewer {
             self.balloon_visible = false;
             cx.notify();
         }
+    }
+
+    pub(crate) fn conflict_invalid(&self) -> bool {
+        self.conflict_invalid
+    }
+
+    pub(crate) fn mark_conflict_invalid(&mut self, cx: &mut Context<Self>) {
+        if !self.conflict_invalid {
+            self.conflict_invalid = true;
+            cx.notify();
+        }
+    }
+
+    pub(crate) fn abort_resolve(&mut self, cx: &mut Context<Self>) {
+        cx.emit(MergeViewerEvent::FinishRequested(MergeResult::Cancel));
     }
 
     pub(crate) fn request_finish_from_balloon(&mut self, cx: &mut Context<Self>) {

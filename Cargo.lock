@@ -2548,13 +2548,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "extension_suggest"
-version = "0.1.0"
-dependencies = [
- "path",
-]
-
-[[package]]
 name = "extensions_ui"
 version = "0.1.0"
 dependencies = [
@@ -2562,33 +2555,23 @@ dependencies = [
  "cloud_api_types",
  "command_palette_hooks",
  "component",
- "db",
  "editor",
  "extension",
  "extension_host",
- "extension_suggest",
- "fs",
  "fuzzy",
  "git",
  "gpui",
- "language",
  "log",
- "markdown",
- "paths",
  "picker",
  "project",
- "release_channel",
  "schemars",
- "semver",
  "serde",
- "serde_json",
  "settings",
  "strum",
  "theme_settings",
  "ui",
  "util",
  "workspace",
- "worktree",
  "zed_actions",
 ]
 
@@ -9623,11 +9606,13 @@ checksum = "1f3ccbac311fea05f86f61904b462b55fb3df8837a366dfc601a0161d0532f20"
 name = "title_bar"
 version = "0.1.0"
 dependencies = [
+ "editor",
  "git",
  "git_ui_core",
  "gpui",
  "platform_title_bar",
  "project",
+ "recent_projects",
  "schemars",
  "serde",
  "settings",

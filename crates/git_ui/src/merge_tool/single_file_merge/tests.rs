@@ -14,7 +14,7 @@ use super::open_single_file_merge;
 use super::registry::{self, MergeKey};
 use crate::merge_tool::dialog_window::DialogWindowShell;
 use crate::merge_tool::merge_viewer::actions::{AcceptLeft, SaveAndClose};
-use crate::merge_tool::merge_window::MergeResult;
+use crate::merge_tool::merge_window::{MergeResult, MergeWindow};
 
 const FILE: &str = "a.txt";
 const BASE: &str = "x\n";
@@ -155,6 +155,50 @@ fn is_conflicted(harness: &Harness) -> bool {
         })
 }
 
+fn merge_window_content(harness: &mut Harness, cx: &TestAppContext) -> Entity<MergeWindow> {
+    let window = merge_window(harness).expect("the merge window should be open");
+    window
+        .read_with(cx, |shell, _| shell.content::<MergeWindow>())
+        .expect("the merge window should be readable")
+        .expect("the dialog window should show a merge")
+}
+
+fn shows_invalid_conflict_notice(content: &Entity<MergeWindow>, cx: &TestAppContext) -> bool {
+    content.read_with(cx, |merge_window, cx| {
+        merge_window.viewer().read(cx).conflict_invalid()
+    })
+}
+
+fn emit_git_event(harness: &mut Harness) {
+    harness
+        .fs
+        .with_git_state(dot_git(), true, |_| {})
+        .expect("repository state should exist");
+    harness.workspace_cx.run_until_parked();
+}
+
+fn resolve_outside_the_merge_window(harness: &mut Harness, staged_text: &str) {
+    harness
+        .fs
+        .with_git_state(dot_git(), true, |state| {
+            state.unmerged_paths.remove(&repo_path(FILE));
+            state
+                .index_contents
+                .insert(repo_path(FILE), staged_text.as_bytes().to_vec());
+        })
+        .expect("repository state should exist");
+    harness.workspace_cx.run_until_parked();
+}
+
+fn abort_resolve(harness: &mut Harness, content: &Entity<MergeWindow>, cx: &mut TestAppContext) {
+    let window = merge_window(harness).expect("the merge window should be open");
+    let viewer = content.read_with(cx, |merge_window, _| merge_window.viewer().clone());
+    let mut merge_cx = VisualTestContext::from_window(window.into(), cx);
+    viewer.update(&mut merge_cx, |viewer, cx| viewer.abort_resolve(cx));
+    merge_cx.run_until_parked();
+    harness.workspace_cx.run_until_parked();
+}
+
 #[test]
 fn merge_tool_single_file_git_side_follows_the_result_and_the_reversal() {
     assert_eq!(
@@ -250,4 +294,32 @@ async fn merge_tool_single_file_second_open_reuses_the_existing_window(cx: &mut 
     let second = merge_window(&mut harness).expect("the merge window should stay registered");
     assert!(first == second);
     assert_eq!(dialog_window_count(cx), 1);
+}
+
+#[gpui::test]
+async fn merge_tool_single_file_conflict_resolved_elsewhere_shows_the_invalid_notice_and_abort_keeps_the_file(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = open_harness(Some(BASE), Some(OURS), Some(THEIRS), None, cx).await;
+    let conflicted_text = working_text(&harness);
+    open_merge(&mut harness);
+    let content = merge_window_content(&mut harness, cx);
+    assert!(!shows_invalid_conflict_notice(&content, cx));
+
+    emit_git_event(&mut harness);
+    assert!(is_conflicted(&harness));
+    assert!(!shows_invalid_conflict_notice(&content, cx));
+
+    resolve_outside_the_merge_window(&mut harness, THEIRS);
+    assert!(!is_conflicted(&harness));
+    assert!(shows_invalid_conflict_notice(&content, cx));
+    assert!(merge_window(&mut harness).is_some());
+
+    abort_resolve(&mut harness, &content, cx);
+
+    assert!(merge_window(&mut harness).is_none());
+    assert_eq!(dialog_window_count(cx), 0);
+    assert_eq!(working_text(&harness), conflicted_text);
+    assert_eq!(index_text(&harness).as_deref(), Some(THEIRS));
+    assert!(!is_conflicted(&harness));
 }

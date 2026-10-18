@@ -14,7 +14,9 @@ use super::content_tabs::{
     CONSOLE_TAB_ORDER_WEIGHT, ContentTabKey, ContentTabs, TabSlot, layout_tab_strip,
     order_weight_for_tab_name,
 };
-use super::header::{pill_vertical_geometry, tab_decoration, tab_width};
+use super::header::{
+    TabMenuCommand, TabMenuItem, pill_vertical_geometry, tab_decoration, tab_menu_items, tab_width,
+};
 use super::persistence::{self, PersistedLogTab, PersistedTabs, restore_plan, uuid_from_random};
 use super::*;
 
@@ -150,6 +152,137 @@ fn next_and_previous_tab_wrap_around() {
     assert_eq!(tabs.previous_key(), Some(ContentTabKey::Console));
     tabs.select(&ContentTabKey::Console);
     assert_eq!(tabs.next_key(), Some(main_key()));
+}
+
+#[test]
+fn tab_menu_lists_the_intellij_content_actions_and_shows_their_shortcuts() {
+    let several_tabs = TabMenuState {
+        closeable: true,
+        can_close_all: true,
+        can_close_others: true,
+        can_navigate: true,
+    };
+    let command =
+        |command: TabMenuCommand, enabled: bool| TabMenuItem::Command { command, enabled };
+    assert_eq!(
+        tab_menu_items(&several_tabs),
+        vec![
+            command(TabMenuCommand::CloseTab, true),
+            command(TabMenuCommand::CloseAllTabs, true),
+            command(TabMenuCommand::CloseOtherTabs, true),
+            TabMenuItem::Separator,
+            command(TabMenuCommand::SelectNextTab, true),
+            command(TabMenuCommand::SelectPreviousTab, true),
+            command(TabMenuCommand::ShowListOfTabs, true),
+        ]
+    );
+    assert_eq!(TabMenuCommand::ShowListOfTabs.label(), "Show List of Tabs");
+
+    let single_tab = TabMenuState {
+        closeable: false,
+        can_close_all: false,
+        can_close_others: false,
+        can_navigate: false,
+    };
+    assert_eq!(
+        tab_menu_items(&single_tab),
+        vec![
+            command(TabMenuCommand::CloseAllTabs, false),
+            command(TabMenuCommand::CloseOtherTabs, false),
+            TabMenuItem::Separator,
+            command(TabMenuCommand::SelectNextTab, false),
+            command(TabMenuCommand::SelectPreviousTab, false),
+        ],
+        "IntelliJ's ShowContent is hidden with a single tab"
+    );
+
+    let shortcut_of = |command: TabMenuCommand| command.shortcut_action();
+    assert!(
+        shortcut_of(TabMenuCommand::CloseTab)
+            .is_some_and(|action| action.partial_eq(&CloseActiveTab))
+    );
+    assert!(
+        shortcut_of(TabMenuCommand::SelectNextTab)
+            .is_some_and(|action| action.partial_eq(&SelectNextTab))
+    );
+    assert!(
+        shortcut_of(TabMenuCommand::SelectPreviousTab)
+            .is_some_and(|action| action.partial_eq(&SelectPreviousTab))
+    );
+    assert!(
+        shortcut_of(TabMenuCommand::ShowListOfTabs)
+            .is_some_and(|action| action.partial_eq(&ShowListOfTabs))
+    );
+    assert!(shortcut_of(TabMenuCommand::CloseAllTabs).is_none());
+    assert!(shortcut_of(TabMenuCommand::CloseOtherTabs).is_none());
+}
+
+#[gpui::test]
+fn jetbrains_keymap_shows_the_list_of_tabs_on_ctrl_shift_down(cx: &mut TestAppContext) {
+    cx.update(|cx| {
+        let bindings = settings::KeymapFile::load_asset_allow_partial_failure(
+            "keymaps/macos/jetbrains.json",
+            cx,
+        )
+        .expect("the JetBrains keymap loads");
+        let binding = bindings
+            .iter()
+            .find(|binding| binding.action().partial_eq(&ShowListOfTabs))
+            .expect("Show List of Tabs has a binding");
+        let keystrokes: Vec<String> = binding
+            .keystrokes()
+            .iter()
+            .map(|keystroke| keystroke.unparse())
+            .collect();
+        assert_eq!(keystrokes, vec!["ctrl-shift-down".to_string()]);
+        assert_eq!(
+            binding
+                .predicate()
+                .map(|predicate| predicate.to_string())
+                .as_deref(),
+            Some("GitToolWindow")
+        );
+    });
+}
+
+#[gpui::test]
+fn the_tab_menu_shows_the_first_intellij_shortcut_of_each_tab_action(cx: &mut TestAppContext) {
+    cx.update(|cx| {
+        let bindings = settings::KeymapFile::load_asset_allow_partial_failure(
+            "keymaps/macos/jetbrains.json",
+            cx,
+        )
+        .expect("the JetBrains keymap loads");
+        let shown_shortcut = |action: &dyn gpui::Action| {
+            bindings
+                .iter()
+                .rev()
+                .find(|binding| binding.action().partial_eq(action))
+                .map(|binding| {
+                    binding
+                        .keystrokes()
+                        .iter()
+                        .map(|keystroke| keystroke.unparse())
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                })
+        };
+        assert_eq!(
+            shown_shortcut(&SelectPreviousTab).as_deref(),
+            Some("cmd-{"),
+            "IntelliJ's PreviousTab lists ⇧⌘[ before ⌃←"
+        );
+        assert_eq!(
+            shown_shortcut(&SelectNextTab).as_deref(),
+            Some("cmd-}"),
+            "IntelliJ's NextTab lists ⇧⌘] before ⌃→"
+        );
+        assert_eq!(
+            shown_shortcut(&CloseActiveTab).as_deref(),
+            Some("ctrl-shift-f4"),
+            "IntelliJ's CloseActiveTab is ⌃⇧F4; ⌘W is CloseContent"
+        );
+    });
 }
 
 #[test]
@@ -448,4 +581,30 @@ async fn header_tab_titles_follow_log_tab_titles(cx: &mut TestAppContext) {
     });
     assert_eq!(header_title, Some(log_title.clone()));
     assert_eq!(log_title.as_ref(), "Log: HEAD");
+}
+
+#[gpui::test]
+async fn show_list_of_tabs_opens_the_tab_list_only_when_there_are_several_tabs(
+    cx: &mut TestAppContext,
+) {
+    let (_fs, tool_window, mut cx) = tool_window_for_repository(cx).await;
+    let header = tool_window.read_with(&cx, |tool_window, _| tool_window.header.clone());
+    tool_window.update_in(&mut cx, |tool_window, window, cx| {
+        tool_window.show_list_of_tabs(window, cx)
+    });
+    assert!(
+        !header.read_with(&cx, |header, _| header.has_open_menu()),
+        "a single tab has no list"
+    );
+
+    tool_window.update_in(&mut cx, |tool_window, window, cx| {
+        tool_window.open_another_log_tab(window, cx);
+        tool_window.run_tab_menu_command(TabMenuCommand::ShowListOfTabs, &main_key(), window, cx)
+    });
+    assert!(header.read_with(&cx, |header, _| header.has_open_menu()));
+
+    tool_window.update_in(&mut cx, |tool_window, window, cx| {
+        tool_window.run_tab_menu_command(TabMenuCommand::SelectNextTab, &main_key(), window, cx)
+    });
+    assert_eq!(selected_key(&tool_window, &cx), Some(main_key()));
 }

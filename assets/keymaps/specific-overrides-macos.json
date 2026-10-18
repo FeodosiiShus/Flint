@@ -20,8 +20,10 @@
     "bindings": {
       "tab": "search_everywhere::NextTab",
       "shift-tab": "search_everywhere::PreviousTab",
-      "ctrl-down": "search_everywhere::NextSection",
-      "ctrl-up": "search_everywhere::PreviousSection",
+      "cmd-down": "search_everywhere::NextSection",
+      "cmd-up": "search_everywhere::PreviousSection",
+      "pagedown": "search_everywhere::NextSection",
+      "pageup": "search_everywhere::PreviousSection",
       "cmd-shift-a": ["search_everywhere::Toggle", { "tab": "actions" }],
     },
   },

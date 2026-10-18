@@ -34,9 +34,9 @@ const RESOLVE_CONFLICTS_LABEL: &str = "Resolve conflicts\u{2026}";
 const SHOW_WINDOW_LABEL: &str = "Show resolve conflicts window";
 const CANCEL_RESOLVE_LABEL: &str = "Cancel resolve";
 const NOTIFICATION_LINK_GAP: f32 = 16.0;
-const INFO_BACKGROUND_DARK: u32 = 0x233558;
+pub(crate) const INFO_BACKGROUND_DARK: u32 = 0x233558;
 const INFO_BORDER_DARK: u32 = 0x2E4D89;
-const INFO_BACKGROUND_LIGHT: u32 = 0xF7F8FF;
+pub(crate) const INFO_BACKGROUND_LIGHT: u32 = 0xF7F8FF;
 const INFO_BORDER_LIGHT: u32 = 0xBDD3FF;
 
 pub(crate) fn init(cx: &mut App) {

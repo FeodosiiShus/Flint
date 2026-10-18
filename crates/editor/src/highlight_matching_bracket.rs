@@ -1,6 +1,6 @@
-use crate::{Editor, HighlightKey, RangeToAnchorExt, display_map::DisplaySnapshot};
+use crate::{BufferOffset, Editor, HighlightKey, RangeToAnchorExt, display_map::DisplaySnapshot};
 use gpui::{AppContext, Context, HighlightStyle};
-use language::CursorShape;
+use language::{BufferSnapshot, CursorShape};
 use multi_buffer::{MultiBufferOffset, MultiBufferSnapshot};
 use std::ops::Range;
 use theme::ActiveTheme;
@@ -127,7 +127,7 @@ fn bracket_ranges_touching(
     range: Range<MultiBufferOffset>,
 ) -> Option<(Range<MultiBufferOffset>, Range<MultiBufferOffset>)> {
     buffer_snapshot
-        .innermost_enclosing_bracket_ranges(range, None)
+        .innermost_enclosing_bracket_ranges(range, Some(&is_brace_pair))
         .filter(|(opening_range, closing_range)| {
             [
                 opening_range.start,
@@ -137,6 +137,20 @@ fn bracket_ranges_touching(
             ]
             .contains(&offset)
         })
+}
+
+// Grammars list string quotes as bracket pairs, but IntelliJ's brace matchers never treat
+// quotes as braces. The closing delimiter is checked because grammars alias prefixed openers
+// such as Rust's `b"` to a quote, while the closer is always the bare quote.
+fn is_brace_pair(
+    buffer: &BufferSnapshot,
+    _pair: Range<BufferOffset>,
+    closing: Range<BufferOffset>,
+) -> bool {
+    !matches!(
+        buffer.chars_at(closing.start.0).next(),
+        Some('"' | '\'' | '`')
+    )
 }
 
 fn is_blank(character: char) -> bool {
@@ -150,47 +164,51 @@ mod tests {
     use indoc::indoc;
     use language::{BracketPair, BracketPairConfig, Language, LanguageConfig, LanguageMatcher};
 
+    fn rust_language(brackets_query: &str) -> Language {
+        Language::new(
+            LanguageConfig {
+                name: "Rust".into(),
+                matcher: (LanguageMatcher {
+                    path_suffixes: vec!["rs".to_string()],
+                    ..Default::default()
+                })
+                .into(),
+                brackets: BracketPairConfig {
+                    pairs: vec![
+                        BracketPair {
+                            start: "{".to_string(),
+                            end: "}".to_string(),
+                            close: false,
+                            surround: false,
+                            newline: true,
+                        },
+                        BracketPair {
+                            start: "(".to_string(),
+                            end: ")".to_string(),
+                            close: false,
+                            surround: false,
+                            newline: true,
+                        },
+                    ],
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            Some(tree_sitter_rust::LANGUAGE.into()),
+        )
+        .with_brackets_query(brackets_query)
+        .unwrap()
+    }
+
     #[gpui::test]
     async fn test_matching_bracket_highlights(cx: &mut gpui::TestAppContext) {
         init_test(cx, |_| {});
 
         let mut cx = EditorLspTestContext::new(
-            Language::new(
-                LanguageConfig {
-                    name: "Rust".into(),
-                    matcher: (LanguageMatcher {
-                        path_suffixes: vec!["rs".to_string()],
-                        ..Default::default()
-                    })
-                    .into(),
-                    brackets: BracketPairConfig {
-                        pairs: vec![
-                            BracketPair {
-                                start: "{".to_string(),
-                                end: "}".to_string(),
-                                close: false,
-                                surround: false,
-                                newline: true,
-                            },
-                            BracketPair {
-                                start: "(".to_string(),
-                                end: ")".to_string(),
-                                close: false,
-                                surround: false,
-                                newline: true,
-                            },
-                        ],
-                        ..Default::default()
-                    },
-                    ..Default::default()
-                },
-                Some(tree_sitter_rust::LANGUAGE.into()),
-            )
-            .with_brackets_query(indoc! {r#"
+            rust_language(indoc! {r#"
                 ("{" @open "}" @close)
                 ("(" @open ")" @close)
-                "#})
-            .unwrap(),
+                "#}),
             Default::default(),
             cx,
         )
@@ -315,6 +333,84 @@ mod tests {
             indoc! {r#"
             pub fn test«("Test argument") {
                 another_test(1, 2, 3);
+            }
+        "#},
+        );
+    }
+
+    #[gpui::test]
+    async fn test_matching_bracket_highlights_skip_quotes(cx: &mut gpui::TestAppContext) {
+        init_test(cx, |_| {});
+
+        let mut cx = EditorLspTestContext::new(
+            rust_language(indoc! {r#"
+                ("{" @open "}" @close)
+                ("(" @open ")" @close)
+                ("\"" @open "\"" @close)
+                "#}),
+            Default::default(),
+            cx,
+        )
+        .await;
+
+        // after a closing quote the enclosing parenthesis wins over the quote pair
+        cx.set_state(indoc! {r#"
+            pub fn test("a"ˇ) {
+                let x = "b";
+            }
+        "#});
+        cx.run_until_parked();
+        cx.assert_editor_text_highlights(
+            HighlightKey::MatchingBracket,
+            indoc! {r#"
+            pub fn test«(»"a"«)» {
+                let x = "b";
+            }
+        "#},
+        );
+
+        cx.set_state(indoc! {r#"
+            pub fn test(ˇ"a") {
+                let x = "b";
+            }
+        "#});
+        cx.run_until_parked();
+        cx.assert_editor_text_highlights(
+            HighlightKey::MatchingBracket,
+            indoc! {r#"
+            pub fn test«(»"a"«)» {
+                let x = "b";
+            }
+        "#},
+        );
+
+        // quotes alone are never highlighted as braces
+        cx.set_state(indoc! {r#"
+            pub fn test("a") {
+                let x = "b"ˇ;
+            }
+        "#});
+        cx.run_until_parked();
+        cx.assert_editor_text_highlights(
+            HighlightKey::MatchingBracket,
+            indoc! {r#"
+            pub fn test("a") {
+                let x = "b";
+            }
+        "#},
+        );
+
+        cx.set_state(indoc! {r#"
+            pub fn test("a") {
+                let x = ˇb"b";
+            }
+        "#});
+        cx.run_until_parked();
+        cx.assert_editor_text_highlights(
+            HighlightKey::MatchingBracket,
+            indoc! {r#"
+            pub fn test("a") {
+                let x = b"b";
             }
         "#},
         );

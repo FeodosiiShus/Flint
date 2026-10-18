@@ -40,9 +40,7 @@ pub(crate) fn init_test(cx: &mut TestAppContext) -> Arc<AppState> {
                     "context": "SearchEverywhere > Picker > Editor",
                     "bindings": {
                         "tab": "search_everywhere::NextTab",
-                        "shift-tab": "search_everywhere::PreviousTab",
-                        "ctrl-down": "search_everywhere::NextSection",
-                        "ctrl-up": "search_everywhere::PreviousSection"
+                        "shift-tab": "search_everywhere::PreviousTab"
                     }
                 }
             ]"#,
@@ -95,6 +93,18 @@ pub(crate) fn settle(cx: &mut VisualTestContext) {
 pub(crate) fn type_query(cx: &mut VisualTestContext, query: &str) {
     cx.simulate_input(query);
     settle(cx);
+}
+
+fn bind_shipped_jetbrains_keymaps(cx: &mut VisualTestContext) {
+    cx.update(|_, cx| {
+        for asset_path in [
+            "keymaps/default-macos.json",
+            "keymaps/macos/jetbrains.json",
+            "keymaps/specific-overrides-macos.json",
+        ] {
+            cx.bind_keys(KeymapFile::load_asset_allow_partial_failure(asset_path, cx).unwrap());
+        }
+    });
 }
 
 fn describe_entry(delegate: &SearchEverywhereDelegate, entry: Entry) -> String {
@@ -599,6 +609,54 @@ async fn test_actions_run_on_previously_focused_editor(cx: &mut TestAppContext) 
 }
 
 #[gpui::test]
+async fn test_alt_enter_on_action_opens_keymap_editor_for_it(cx: &mut TestAppContext) {
+    let app_state = init_test(cx);
+    let project = Project::test(app_state.fs.clone(), [], cx).await;
+    let (workspace, cx) = build_workspace(project, cx);
+
+    let editor = cx.new_window_entity(|window, cx| {
+        let mut editor = Editor::single_line(window, cx);
+        editor.set_text("abc", window, cx);
+        editor
+    });
+    let requested_keybindings: Rc<RefCell<Vec<String>>> = Rc::default();
+    workspace.update_in(cx, |workspace, window, cx| {
+        workspace.add_item_to_active_pane(Box::new(editor.clone()), None, true, window, cx);
+        editor.update(cx, |editor, cx| window.focus(&editor.focus_handle(cx), cx));
+        let requested_keybindings = requested_keybindings.clone();
+        workspace.register_action(move |_, action: &zed_actions::ChangeKeybinding, _, _| {
+            requested_keybindings
+                .borrow_mut()
+                .push(action.action.clone());
+        });
+        cx.notify();
+    });
+    cx.run_until_parked();
+
+    let picker = open_search_everywhere(Some(Tab::Actions), &workspace, cx);
+    type_query(cx, "bcksp");
+    assert_eq!(selected_entry(&picker, cx), "editor: backspace");
+
+    bind_shipped_jetbrains_keymaps(cx);
+    cx.simulate_keystrokes("alt-enter");
+    cx.run_until_parked();
+
+    assert_eq!(
+        *requested_keybindings.borrow(),
+        vec!["editor::Backspace".to_string()],
+        "Alt-Enter on an action opens the keymap editor for it, like IntelliJ's assign shortcut"
+    );
+    workspace.update(cx, |workspace, cx| {
+        assert!(workspace.active_modal::<SearchEverywhere>(cx).is_none());
+        assert_eq!(
+            editor.read(cx).text(cx),
+            "abc",
+            "Alt-Enter does not run the action"
+        );
+    });
+}
+
+#[gpui::test]
 async fn test_tab_keys_cycle_tabs_and_keep_query(cx: &mut TestAppContext) {
     let app_state = init_test(cx);
     let project = Project::test(app_state.fs.clone(), [], cx).await;
@@ -671,13 +729,50 @@ async fn test_toggle_with_tab_preselects_and_repeat_toggles_non_project_items(
     file_entries.sort();
     assert_eq!(file_entries, vec!["qzignored.txt", "qzvisible.txt"]);
 
-    cx.dispatch_action(Toggle { tab: None });
+    cx.dispatch_action(Toggle {
+        tab: Some(Tab::Files),
+    });
     settle(cx);
     assert_eq!(
         entries(&picker, cx),
         vec!["qzvisible.txt"],
         "toggling again excludes non-project items"
     );
+}
+
+#[gpui::test]
+async fn test_toggle_without_tab_switches_to_all_before_toggling_non_project_items(
+    cx: &mut TestAppContext,
+) {
+    let app_state = init_test(cx);
+    let project = Project::test(app_state.fs.clone(), [], cx).await;
+    let (workspace, cx) = build_workspace(project, cx);
+
+    let picker = open_search_everywhere(Some(Tab::Files), &workspace, cx);
+
+    cx.dispatch_action(Toggle { tab: None });
+    settle(cx);
+    picker.read_with(cx, |picker, _| {
+        assert_eq!(
+            picker.delegate.tab(),
+            Tab::All,
+            "double Shift on another tab switches to the All tab"
+        );
+        assert!(
+            !picker.delegate.include_non_project_items,
+            "switching to the All tab does not toggle non-project items"
+        );
+    });
+
+    cx.dispatch_action(Toggle { tab: None });
+    settle(cx);
+    picker.read_with(cx, |picker, _| {
+        assert_eq!(picker.delegate.tab(), Tab::All);
+        assert!(
+            picker.delegate.include_non_project_items,
+            "double Shift on the All tab toggles non-project items"
+        );
+    });
 }
 
 #[gpui::test]
@@ -817,14 +912,29 @@ async fn test_section_navigation_jumps_between_sections(cx: &mut TestAppContext)
     type_query(cx, "qzwid");
     assert_eq!(selected_entry(&picker, cx), "QzWidget");
 
-    cx.simulate_keystrokes("ctrl-down");
+    bind_shipped_jetbrains_keymaps(cx);
+
+    cx.simulate_keystrokes("cmd-down");
     assert_eq!(selected_entry(&picker, cx), "qz_widget_factory");
-    cx.simulate_keystrokes("ctrl-down");
+    cx.simulate_keystrokes("cmd-down");
     assert_eq!(
         selected_entry(&picker, cx),
         "QzWidget",
         "jumping past the last section wraps to the first"
     );
-    cx.simulate_keystrokes("ctrl-up");
+    cx.simulate_keystrokes("cmd-up");
     assert_eq!(selected_entry(&picker, cx), "qz_widget_factory");
+
+    cx.simulate_keystrokes("pageup");
+    assert_eq!(
+        selected_entry(&picker, cx),
+        "QzWidget",
+        "PageUp jumps to the previous section like IntelliJ's macOS keymap"
+    );
+    cx.simulate_keystrokes("pagedown");
+    assert_eq!(
+        selected_entry(&picker, cx),
+        "qz_widget_factory",
+        "PageDown jumps to the next section like IntelliJ's macOS keymap"
+    );
 }

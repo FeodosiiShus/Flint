@@ -24,7 +24,7 @@ use self::content_tabs::{
     CONSOLE_TAB_NAME, CONSOLE_TAB_ORDER_WEIGHT, ContentTabKey, ContentTabs,
     order_weight_for_tab_name,
 };
-use self::header::GitToolWindowHeader;
+use self::header::{GitToolWindowHeader, TabListEntry, TabMenuCommand};
 use self::persistence::{PersistedLogTab, PersistedTabs};
 use crate::git_log::log_tab::{GitLogTab, GitLogTabEvent, forget_log_tab_state};
 use crate::git_log::properties::{LogFilterState, MAIN_LOG_TAB_ID};
@@ -40,6 +40,7 @@ actions!(
         CloseAllTabs,
         SelectNextTab,
         SelectPreviousTab,
+        ShowListOfTabs,
         ToggleConsoleSoftWraps,
         ScrollConsoleToEnd,
         ClearConsole
@@ -361,6 +362,45 @@ impl GitToolWindow {
         }
     }
 
+    pub(crate) fn show_list_of_tabs(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.tabs.len() < 2 {
+            return;
+        }
+        let selected = self.tabs.selected();
+        let tabs: Vec<TabListEntry> = self
+            .tabs
+            .keys()
+            .map(|key| TabListEntry {
+                key: key.clone(),
+                title: self.tab_title(key, cx),
+                selected: selected == Some(key),
+            })
+            .collect();
+        self.header
+            .update(cx, |header, cx| header.deploy_tab_list(tabs, window, cx));
+    }
+
+    pub(crate) fn run_tab_menu_command(
+        &mut self,
+        command: TabMenuCommand,
+        key: &ContentTabKey,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match command {
+            TabMenuCommand::CloseTab => self.close_tab(key, window, cx),
+            TabMenuCommand::CloseAllTabs => self.close_all_tabs(window, cx),
+            TabMenuCommand::CloseOtherTabs => self.close_other_tabs(key, window, cx),
+            TabMenuCommand::SelectNextTab => self.select_next_tab(window, cx),
+            TabMenuCommand::SelectPreviousTab => self.select_previous_tab(window, cx),
+            TabMenuCommand::ShowListOfTabs => self.show_list_of_tabs(window, cx),
+        }
+    }
+
+    pub(crate) fn shortcut_focus_handle(&self) -> FocusHandle {
+        self.focus_handle.clone()
+    }
+
     fn has_repositories(&self, cx: &App) -> bool {
         !self.git_store.read(cx).repositories().is_empty()
     }
@@ -648,6 +688,9 @@ impl Render for GitToolWindow {
             )
             .on_action(cx.listener(|this, _: &SelectPreviousTab, window, cx| {
                 this.select_previous_tab(window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &ShowListOfTabs, window, cx| {
+                this.show_list_of_tabs(window, cx)
             }))
             .child(div().flex_1().min_h_0().w_full().children(content))
     }

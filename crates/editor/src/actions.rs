@@ -588,12 +588,18 @@ actions!(
         GoToNextBookmark,
         /// Goes to the next change in the file.
         GoToNextChange,
+        /// Goes to the next highlighted error, errors first: warnings are skipped while the
+        /// file has errors, weak warnings while it has warnings, and hints are never visited.
+        GoToNextHighlightedError,
         /// Goes to the parent module of the current file.
         GoToParentModule,
         /// Goes to the previous bookmark in the file.
         GoToPreviousBookmark,
         /// Goes to the previous change in the file.
         GoToPreviousChange,
+        /// Goes to the previous highlighted error, errors first: warnings are skipped while the
+        /// file has errors, weak warnings while it has warnings, and hints are never visited.
+        GoToPreviousHighlightedError,
         /// Goes to the next symbol.
         GoToNextSymbol,
         /// Goes to the previous symbol.

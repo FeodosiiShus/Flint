@@ -15,7 +15,7 @@ use editor::{
     actions::ShowUsages,
     hover_links::{ShowUsagesOfLocations, UsageLocations, UsageLocationsKind},
 };
-use futures::{FutureExt as _, future::Fuse};
+use futures::{FutureExt as _, channel::oneshot, future::Fuse};
 use gpui::{
     Action, App, AsyncWindowContext, Context, DispatchPhase, Entity, EntityId, FocusHandle,
     Focusable, Global, KeyBinding, Modifiers, Pixels, Point, SharedString, Task, TaskExt as _,
@@ -596,10 +596,17 @@ async fn search(mut session: UsagesSession, cx: &mut AsyncWindowContext) {
                 close_popup(&session, popup.as_ref(), window, cx);
                 target.and_then(|target| start_navigation(&session, target, window, cx))
             });
+            let mut position = session.popup_position;
             if let Ok(Some(navigation)) = navigation {
                 navigation.await.log_err();
+                wait_for_painted_frame(cx).await;
+                if let Ok(Some(caret_position)) =
+                    cx.update(|window, cx| caret_position_after_navigation(&session, window, cx))
+                {
+                    position = caret_position;
+                }
             }
-            cx.update(|window, cx| show_hint(&session, message, warning, window, cx))
+            cx.update(|window, cx| show_hint(&session, message, warning, position, window, cx))
                 .log_err();
         }
         Finish::Popup => {
@@ -878,10 +885,49 @@ fn dismiss_usages_modals(workspace: &WeakEntity<Workspace>, window: &mut Window,
     });
 }
 
+// The editor applies the navigation's autoscroll and records the caret's window
+// position while painting, so that position is only current once the frame after
+// the navigation has been drawn.
+async fn wait_for_painted_frame(cx: &mut AsyncWindowContext) {
+    let (painted_sender, painted) = oneshot::channel::<()>();
+    let scheduled = cx.update(|window, _| {
+        window.on_next_frame(move |window, _| {
+            window.on_next_frame(move |_, _| {
+                painted_sender.send(()).ok();
+            });
+        });
+    });
+    if scheduled.is_ok() {
+        painted.await.log_err();
+    }
+}
+
+// Like IntelliJ's cancelAndShowHint: the hint follows the caret of the editor that
+// navigated, and keeps the original popup position once that editor is not shown.
+fn caret_position_after_navigation(
+    session: &UsagesSession,
+    window: &mut Window,
+    cx: &mut App,
+) -> Option<Point<Pixels>> {
+    let origin_editor = session.origin_editor.upgrade()?;
+    let active_editor = session
+        .workspace
+        .upgrade()?
+        .read(cx)
+        .active_item_as::<Editor>(cx)?;
+    if active_editor != origin_editor {
+        return None;
+    }
+    origin_editor.update(cx, |editor, cx| {
+        editor.popup_origin_below_cursor(window, cx)
+    })
+}
+
 fn show_hint(
     session: &UsagesSession,
     message: String,
     warning: bool,
+    position: Point<Pixels>,
     window: &mut Window,
     cx: &mut App,
 ) {
@@ -917,7 +963,6 @@ fn show_hint(
         find_options_shortcut,
         session: session.clone(),
     };
-    let position = session.popup_position;
     workspace.update(cx, |workspace, cx| {
         if workspace.active_modal::<UsagesHint>(cx).is_some() {
             workspace.hide_modal(window, cx);

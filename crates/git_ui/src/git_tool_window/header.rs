@@ -2,7 +2,7 @@ use std::cell::Cell;
 use std::rc::Rc;
 
 use gpui::{
-    Anchor, AnyElement, Context, DismissEvent, Entity, Focusable, Hsla, MouseButton,
+    Action, Anchor, AnyElement, Context, DismissEvent, Entity, Focusable, Hsla, MouseButton,
     MouseDownEvent, MouseUpEvent, Pixels, Point, SharedString, Subscription, WeakEntity, Window,
     anchored, canvas, deferred, px, rgb, rgba,
 };
@@ -13,7 +13,10 @@ use ui::{
 use util::ResultExt as _;
 
 use super::content_tabs::{ContentTabKey, TabSlot, TabStripLayout, layout_tab_strip};
-use super::{CloseActiveTab, GitToolWindow, HeaderSnapshot, HeaderTab};
+use super::{
+    CloseActiveTab, GitToolWindow, HeaderSnapshot, HeaderTab, SelectNextTab, SelectPreviousTab,
+    ShowListOfTabs, TabMenuState,
+};
 
 const TAB_HORIZONTAL_INSET: Pixels = px(12.);
 const CLOSE_ICON_SIZE: Pixels = px(16.);
@@ -106,6 +109,82 @@ pub(crate) fn pill_vertical_geometry(tab_height: Pixels) -> (Pixels, Pixels) {
     )
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum TabMenuCommand {
+    CloseTab,
+    CloseAllTabs,
+    CloseOtherTabs,
+    SelectNextTab,
+    SelectPreviousTab,
+    ShowListOfTabs,
+}
+
+impl TabMenuCommand {
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            TabMenuCommand::CloseTab => "Close Tab",
+            TabMenuCommand::CloseAllTabs => "Close All Tabs",
+            TabMenuCommand::CloseOtherTabs => "Close Other Tabs",
+            TabMenuCommand::SelectNextTab => "Select Next Tab",
+            TabMenuCommand::SelectPreviousTab => "Select Previous Tab",
+            TabMenuCommand::ShowListOfTabs => "Show List of Tabs",
+        }
+    }
+
+    /// The action whose key binding the entry shows, like IntelliJ's content menu, which copies the
+    /// shortcuts of CloseActiveTab, NextTab, PreviousTab and ShowContent.
+    pub(crate) fn shortcut_action(self) -> Option<Box<dyn Action>> {
+        match self {
+            TabMenuCommand::CloseTab => Some(Box::new(CloseActiveTab)),
+            TabMenuCommand::SelectNextTab => Some(Box::new(SelectNextTab)),
+            TabMenuCommand::SelectPreviousTab => Some(Box::new(SelectPreviousTab)),
+            TabMenuCommand::ShowListOfTabs => Some(Box::new(ShowListOfTabs)),
+            TabMenuCommand::CloseAllTabs | TabMenuCommand::CloseOtherTabs => None,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum TabMenuItem {
+    Separator,
+    Command {
+        command: TabMenuCommand,
+        enabled: bool,
+    },
+}
+
+pub(crate) fn tab_menu_items(state: &TabMenuState) -> Vec<TabMenuItem> {
+    let command =
+        |command: TabMenuCommand, enabled: bool| TabMenuItem::Command { command, enabled };
+    let mut items = Vec::new();
+    if state.closeable {
+        items.push(command(TabMenuCommand::CloseTab, true));
+    }
+    items.push(command(TabMenuCommand::CloseAllTabs, state.can_close_all));
+    items.push(command(
+        TabMenuCommand::CloseOtherTabs,
+        state.can_close_others,
+    ));
+    items.push(TabMenuItem::Separator);
+    items.push(command(TabMenuCommand::SelectNextTab, state.can_navigate));
+    items.push(command(
+        TabMenuCommand::SelectPreviousTab,
+        state.can_navigate,
+    ));
+    // IntelliJ's ShowContent is only visible while the tool window has more than one tab.
+    if state.can_navigate {
+        items.push(command(TabMenuCommand::ShowListOfTabs, true));
+    }
+    items
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct TabListEntry {
+    pub key: ContentTabKey,
+    pub title: SharedString,
+    pub selected: bool,
+}
+
 pub(crate) fn tab_width(text_width: Pixels, closeable: bool) -> Pixels {
     let width = if closeable {
         TAB_HORIZONTAL_INSET * 2. + text_width + CLOSE_ICON_SIZE + CLOSE_ICONS_GAP
@@ -118,6 +197,7 @@ pub(crate) fn tab_width(text_width: Pixels, closeable: bool) -> Pixels {
 pub(crate) struct GitToolWindowHeader {
     tool_window: WeakEntity<GitToolWindow>,
     measured_width: Rc<Cell<Option<Pixels>>>,
+    tab_list_anchor: Rc<Cell<Option<Point<Pixels>>>>,
     context_menu: Option<(Entity<ContextMenu>, Point<Pixels>, Subscription)>,
 }
 
@@ -126,8 +206,61 @@ impl GitToolWindowHeader {
         Self {
             tool_window,
             measured_width: Rc::new(Cell::new(None)),
+            tab_list_anchor: Rc::new(Cell::new(None)),
             context_menu: None,
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn has_open_menu(&self) -> bool {
+        self.context_menu.is_some()
+    }
+
+    fn show_menu(
+        &mut self,
+        menu: Entity<ContextMenu>,
+        position: Point<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        window.focus(&menu.focus_handle(cx), cx);
+        let subscription = cx.subscribe_in(&menu, window, |this, _, _: &DismissEvent, _, cx| {
+            this.context_menu = None;
+            cx.notify();
+        });
+        self.context_menu = Some((menu, position, subscription));
+        cx.notify();
+    }
+
+    pub(crate) fn deploy_tab_list(
+        &mut self,
+        tabs: Vec<TabListEntry>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let position = self.tab_list_anchor.get().unwrap_or_default();
+        let weak_tool_window = self.tool_window.clone();
+        let menu = ContextMenu::build(window, cx, move |menu, _, _| {
+            tabs.into_iter().fold(menu, |menu, tab| {
+                let tool_window = weak_tool_window.clone();
+                let key = tab.key;
+                menu.toggleable_entry(
+                    tab.title,
+                    tab.selected,
+                    IconPosition::Start,
+                    None,
+                    move |window, cx| {
+                        tool_window
+                            .update(cx, |tool_window, cx| {
+                                tool_window.select_tab(&key, true, window, cx)
+                            })
+                            .log_err();
+                    },
+                )
+            })
+        });
+        menu.update(cx, |menu, cx| menu.select_toggled_or_first(window, cx));
+        self.show_menu(menu, position, window, cx);
     }
 
     fn update_tool_window(
@@ -171,76 +304,35 @@ impl GitToolWindowHeader {
         let Some(tool_window) = self.tool_window.upgrade() else {
             return;
         };
-        let menu_state = tool_window.read(cx).tab_menu_state(&key);
+        let tool_window = tool_window.read(cx);
+        let items = tab_menu_items(&tool_window.tab_menu_state(&key));
+        let shortcut_context = tool_window.shortcut_focus_handle();
         let weak_tool_window = self.tool_window.clone();
         let menu = ContextMenu::build(window, cx, move |menu, _, _| {
-            let close_key = key.clone();
-            let close_tool_window = weak_tool_window.clone();
-            let others_key = key.clone();
-            let others_tool_window = weak_tool_window.clone();
-            let all_tool_window = weak_tool_window.clone();
-            let next_tool_window = weak_tool_window.clone();
-            let previous_tool_window = weak_tool_window.clone();
-            menu.when(menu_state.closeable, move |menu| {
-                menu.entry("Close Tab", None, move |window, cx| {
-                    close_tool_window
-                        .update(cx, |tool_window, cx| {
-                            tool_window.close_tab(&close_key, window, cx)
-                        })
-                        .log_err();
+            items
+                .into_iter()
+                .fold(menu.context(shortcut_context), |menu, item| match item {
+                    TabMenuItem::Separator => menu.separator(),
+                    TabMenuItem::Command { command, enabled } => {
+                        let tool_window = weak_tool_window.clone();
+                        let key = key.clone();
+                        let entry = ContextMenuEntry::new(command.label())
+                            .disabled(!enabled)
+                            .handler(move |window, cx| {
+                                tool_window
+                                    .update(cx, |tool_window, cx| {
+                                        tool_window.run_tab_menu_command(command, &key, window, cx)
+                                    })
+                                    .log_err();
+                            });
+                        match command.shortcut_action() {
+                            Some(action) => menu.item(entry.action(action)),
+                            None => menu.item(entry),
+                        }
+                    }
                 })
-            })
-            .item(
-                ContextMenuEntry::new("Close All Tabs")
-                    .disabled(!menu_state.can_close_all)
-                    .handler(move |window, cx| {
-                        all_tool_window
-                            .update(cx, |tool_window, cx| tool_window.close_all_tabs(window, cx))
-                            .log_err();
-                    }),
-            )
-            .item(
-                ContextMenuEntry::new("Close Other Tabs")
-                    .disabled(!menu_state.can_close_others)
-                    .handler(move |window, cx| {
-                        others_tool_window
-                            .update(cx, |tool_window, cx| {
-                                tool_window.close_other_tabs(&others_key, window, cx)
-                            })
-                            .log_err();
-                    }),
-            )
-            .separator()
-            .item(
-                ContextMenuEntry::new("Select Next Tab")
-                    .disabled(!menu_state.can_navigate)
-                    .handler(move |window, cx| {
-                        next_tool_window
-                            .update(cx, |tool_window, cx| {
-                                tool_window.select_next_tab(window, cx)
-                            })
-                            .log_err();
-                    }),
-            )
-            .item(
-                ContextMenuEntry::new("Select Previous Tab")
-                    .disabled(!menu_state.can_navigate)
-                    .handler(move |window, cx| {
-                        previous_tool_window
-                            .update(cx, |tool_window, cx| {
-                                tool_window.select_previous_tab(window, cx)
-                            })
-                            .log_err();
-                    }),
-            )
         });
-        window.focus(&menu.focus_handle(cx), cx);
-        let subscription = cx.subscribe_in(&menu, window, |this, _, _: &DismissEvent, _, cx| {
-            this.context_menu = None;
-            cx.notify();
-        });
-        self.context_menu = Some((menu, position, subscription));
-        cx.notify();
+        self.show_menu(menu, position, window, cx);
     }
 
     fn render_tab(
@@ -575,6 +667,7 @@ impl Render for GitToolWindowHeader {
             .collect();
 
         let measured = self.measured_width.clone();
+        let tab_list_anchor = self.tab_list_anchor.clone();
         let header = cx.weak_entity();
         let open_log_tab = snapshot.can_open_log_tab.then(|| {
             h_flex()
@@ -615,6 +708,7 @@ impl Render for GitToolWindowHeader {
             .child(
                 canvas(
                     move |bounds, window, _| {
+                        tab_list_anchor.set(Some(bounds.bottom_left()));
                         let width = bounds.size.width;
                         let changed = measured.get().is_none_or(|previous| {
                             (f32::from(previous) - f32::from(width)).abs() > WIDTH_CHANGE_TOLERANCE

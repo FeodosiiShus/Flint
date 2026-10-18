@@ -1,9 +1,8 @@
 use std::cmp::Ordering;
-use std::collections::BTreeMap;
 use std::iter::Peekable;
 use std::str::Chars;
 
-use collections::HashSet;
+use collections::{HashMap, HashSet};
 use git::repository::{Branch, Tag, Upstream};
 use gpui::SharedString;
 
@@ -108,6 +107,7 @@ pub struct TreeInput<'a> {
     pub tags: &'a [Tag],
     pub recent: &'a [SharedString],
     pub current_branch: Option<&'a str>,
+    pub head_tag: Option<&'a str>,
     pub favorites: &'a HashSet<RefTarget>,
     pub options: TreeOptions,
     pub expanded: &'a HashSet<SharedString>,
@@ -149,7 +149,7 @@ pub fn ancestor_node_ids(
     group_by_directory: bool,
 ) -> Vec<SharedString> {
     let mut ids = vec![node_id_for_section(section)];
-    if !group_by_directory || section == SectionKind::Recent {
+    if !group_by_directory {
         return ids;
     }
     let mut segments: Vec<&str> = name.split('/').collect();
@@ -173,9 +173,10 @@ pub fn build_rows(input: &TreeInput<'_>) -> Vec<TreeRow> {
     } else {
         Vec::new()
     };
+    let group_by_directory = input.options.group_by_directory;
     let mut rows = Vec::new();
     for kind in SectionKind::ALL {
-        let entries = section_entries(kind, input, query, &recent_names);
+        let mut entries = section_entries(kind, input, query, &recent_names);
         if entries.is_empty() {
             continue;
         }
@@ -184,16 +185,15 @@ pub fn build_rows(input: &TreeInput<'_>) -> Vec<TreeRow> {
         if !expanded {
             continue;
         }
-        if kind == SectionKind::Recent {
-            for entry in entries {
-                let label = entry.target.name.to_string();
-                rows.push(ref_row(&Leaf { label, entry }, 1, kind));
-            }
-            continue;
+        // Like IntelliJ's `LazyRefsSubtreeHolder`, the refs are sorted before the tree is built and
+        // every folder takes the place of its first ref, so a folder holding the current branch or
+        // a favorite moves up with it. Recent keeps the reflog order (`emptyBranchComparator`).
+        if kind != SectionKind::Recent {
+            sort_entries(&mut entries, group_by_directory);
         }
         let mut root = FolderNode::default();
         for entry in entries {
-            root.insert(entry, input.options.group_by_directory);
+            root.insert(entry, group_by_directory);
         }
         let context = EmitContext {
             section: kind,
@@ -454,7 +454,7 @@ fn tag_entry(tag: &Tag, input: &TreeInput<'_>, query: Option<&str>) -> Option<En
     let (score, match_positions) = match_entry(query, &tag.name)?;
     let target = RefTarget::tag(tag.name.clone());
     Some(Entry {
-        is_current: false,
+        is_current: input.head_tag == Some(&*tag.name),
         is_favorite: input.favorites.contains(&target),
         tracked: None,
         incoming: 0,
@@ -482,10 +482,12 @@ fn section_entries(
                     .and_then(|branch| local_entry(branch, input, query))
             })
             .collect(),
+        // IntelliJ's except-filter only takes recent branches out of Local while a search pattern
+        // is set (`match` returns every node when the matcher is null).
         SectionKind::Local => input
             .local
             .iter()
-            .filter(|branch| !recent_names.contains(&branch.name()))
+            .filter(|branch| query.is_none() || !recent_names.contains(&branch.name()))
             .filter_map(|branch| local_entry(branch, input, query))
             .collect(),
         SectionKind::Remote => input
@@ -507,31 +509,78 @@ fn section_entries(
     }
 }
 
+fn sort_entries(entries: &mut [Entry], group_by_directory: bool) {
+    entries.sort_by(|left, right| {
+        entry_order_key(left, group_by_directory)
+            .cmp(&entry_order_key(right, group_by_directory))
+            .then_with(|| natural_compare(&left.target.name, &right.target.name))
+    });
+}
+
+fn entry_order_key(entry: &Entry, group_by_directory: bool) -> (bool, bool, bool) {
+    (
+        !entry.is_current,
+        !entry.is_favorite,
+        !(group_by_directory && entry.target.name.contains('/')),
+    )
+}
+
 struct Leaf {
     label: String,
     entry: Entry,
 }
 
+enum FolderChild {
+    Leaf(Leaf),
+    Folder { label: String, node: FolderNode },
+}
+
 #[derive(Default)]
 struct FolderNode {
-    folders: BTreeMap<String, FolderNode>,
-    leaves: Vec<Leaf>,
+    children: Vec<FolderChild>,
+    folder_positions: HashMap<String, usize>,
 }
 
 impl FolderNode {
     fn insert(&mut self, entry: Entry, group_by_directory: bool) {
         let name = entry.target.name.to_string();
         if !group_by_directory {
-            self.leaves.push(Leaf { label: name, entry });
+            self.children
+                .push(FolderChild::Leaf(Leaf { label: name, entry }));
             return;
         }
         let mut segments: Vec<&str> = name.split('/').collect();
         let label = segments.pop().unwrap_or_default().to_string();
-        let mut node = self;
-        for segment in segments {
-            node = node.folders.entry(segment.to_string()).or_default();
+        self.insert_below(&segments, Leaf { label, entry });
+    }
+
+    fn insert_below(&mut self, folders: &[&str], leaf: Leaf) {
+        let Some((folder, rest)) = folders.split_first() else {
+            self.children.push(FolderChild::Leaf(leaf));
+            return;
+        };
+        let next_position = self.children.len();
+        let position = *self
+            .folder_positions
+            .entry(folder.to_string())
+            .or_insert(next_position);
+        if position == next_position {
+            self.children.push(FolderChild::Folder {
+                label: folder.to_string(),
+                node: FolderNode::default(),
+            });
         }
-        node.leaves.push(Leaf { label, entry });
+        if let Some(FolderChild::Folder { node, .. }) = self.children.get_mut(position) {
+            node.insert_below(rest, leaf);
+        }
+    }
+}
+
+fn subtree_group(child: &FolderChild) -> u8 {
+    match child {
+        FolderChild::Leaf(leaf) if leaf.entry.is_current || leaf.entry.is_favorite => 0,
+        FolderChild::Folder { .. } => 1,
+        FolderChild::Leaf(_) => 2,
     }
 }
 
@@ -548,26 +597,20 @@ fn emit_node(
     context: &EmitContext<'_>,
     rows: &mut Vec<TreeRow>,
 ) {
-    let (mut highlighted, mut plain): (Vec<&Leaf>, Vec<&Leaf>) = node
-        .leaves
-        .iter()
-        .partition(|leaf| leaf.entry.is_current || leaf.entry.is_favorite);
-    highlighted.sort_by(|left, right| {
-        right
-            .entry
-            .is_current
-            .cmp(&left.entry.is_current)
-            .then_with(|| natural_compare(&left.label, &right.label))
-    });
-    plain.sort_by(|left, right| natural_compare(&left.label, &right.label));
-
-    for leaf in highlighted {
-        rows.push(ref_row(leaf, depth, context.section));
+    let mut children: Vec<&FolderChild> = node.children.iter().collect();
+    // The section level keeps the insertion order; inside a folder IntelliJ stably re-sorts the
+    // children into current and favorite refs, then folders, then the rest (`getSubTreeComparator`).
+    if depth > 1 {
+        children.sort_by_key(|child| subtree_group(child));
     }
-
-    let mut folders: Vec<(&String, &FolderNode)> = node.folders.iter().collect();
-    folders.sort_by(|left, right| natural_compare(left.0, right.0));
-    for (label, child) in folders {
+    for child in children {
+        let (label, child_node) = match child {
+            FolderChild::Leaf(leaf) => {
+                rows.push(ref_row(leaf, depth, context.section));
+                continue;
+            }
+            FolderChild::Folder { label, node } => (label, node),
+        };
         let path = if folder_path.is_empty() {
             label.clone()
         } else {
@@ -583,12 +626,8 @@ fn emit_node(
             expanded,
         }));
         if expanded {
-            emit_node(child, &path, depth + 1, context, rows);
+            emit_node(child_node, &path, depth + 1, context, rows);
         }
-    }
-
-    for leaf in plain {
-        rows.push(ref_row(leaf, depth, context.section));
     }
 }
 
@@ -657,6 +696,10 @@ mod tests {
         }
     }
 
+    fn tags(names: &[&str]) -> Vec<Tag> {
+        names.iter().map(|name| tag(name)).collect()
+    }
+
     fn locals(names: &[&str]) -> Vec<Branch> {
         names.iter().map(|name| local_branch(name)).collect()
     }
@@ -679,6 +722,7 @@ mod tests {
         tags: Vec<Tag>,
         recent: Vec<SharedString>,
         current: Option<String>,
+        head_tag: Option<String>,
         favorites: HashSet<RefTarget>,
         options: TreeOptions,
         expanded: HashSet<SharedString>,
@@ -693,6 +737,7 @@ mod tests {
                 tags: &self.tags,
                 recent: &self.recent,
                 current_branch: self.current.as_deref(),
+                head_tag: self.head_tag.as_deref(),
                 favorites: &self.favorites,
                 options: self.options,
                 expanded: &self.expanded,
@@ -755,6 +800,7 @@ mod tests {
                 "S:Recent",
                 "  R:dev",
                 "S:Local",
+                "  R:dev",
                 "  R:main",
                 "S:Remote",
                 "  D:origin",
@@ -786,9 +832,10 @@ mod tests {
         let rows = fixture.rows();
         assert_eq!(
             describe(&rows),
-            ["S:Recent", "  R:main", "S:Remote", "S:Tags"]
+            ["S:Recent", "  R:main", "S:Local", "S:Remote", "S:Tags"]
         );
         assert_eq!(section_expanded(&rows, SectionKind::Recent), Some(true));
+        assert_eq!(section_expanded(&rows, SectionKind::Local), Some(false));
         assert_eq!(section_expanded(&rows, SectionKind::Remote), Some(false));
         assert_eq!(section_expanded(&rows, SectionKind::Tags), Some(false));
     }
@@ -804,14 +851,14 @@ mod tests {
         assert_eq!(
             describe(&fixture.rows()),
             [
-                "S:Recent", "  R:c", "  R:main", "  R:a", "  R:b", "  R:d", "S:Local", "  R:e",
-                "  R:f", "  R:g",
+                "S:Recent", "  R:c", "  R:main", "  R:a", "  R:b", "  R:d", "S:Local", "  R:a",
+                "  R:b", "  R:c", "  R:d", "  R:e", "  R:f", "  R:g", "  R:main",
             ]
         );
     }
 
     #[test]
-    fn recent_rows_are_flat_keep_reflog_order_and_ignore_favorites_and_current() {
+    fn recent_rows_keep_reflog_order_and_are_grouped_by_directory() {
         let mut fixture = Fixture {
             local: locals(&["feature/x", "main", "zzz"]),
             recent: shared_strings(&["zzz", "feature/x", "main"]),
@@ -820,15 +867,66 @@ mod tests {
         };
         fixture.favorites.insert(RefTarget::local("feature/x"));
         fixture.expand_sections(&[SectionKind::Recent]);
+        // Without a query Local still lists the recent branches, so its collapsed header follows.
+        assert_eq!(
+            describe(&fixture.rows()),
+            ["S:Recent", "  R:zzz", "  D:feature", "  R:main", "S:Local"]
+        );
+
+        fixture.expand_folder(SectionKind::Recent, "feature");
         let rows = fixture.rows();
         assert_eq!(
             describe(&rows),
-            ["S:Recent", "  R:zzz", "  R:feature/x", "  R:main"]
+            [
+                "S:Recent",
+                "  R:zzz",
+                "  D:feature",
+                "    R:x",
+                "  R:main",
+                "S:Local"
+            ]
         );
         let refs = ref_rows(&rows);
+        assert_eq!(refs[1].target, RefTarget::local("feature/x"));
         assert!(refs[1].is_favorite);
         assert!(refs[2].is_current);
         assert!(refs.iter().all(|row| row.section == SectionKind::Recent));
+
+        fixture.options.group_by_directory = false;
+        assert_eq!(
+            describe(&fixture.rows()),
+            [
+                "S:Recent",
+                "  R:zzz",
+                "  R:feature/x",
+                "  R:main",
+                "S:Local"
+            ]
+        );
+    }
+
+    #[test]
+    fn recent_folders_keep_reflog_order_but_lead_with_favorites_inside() {
+        let mut fixture = Fixture {
+            local: locals(&["feature/b", "feature/a", "feature/c", "main"]),
+            recent: shared_strings(&["feature/b", "main", "feature/a", "feature/c"]),
+            ..Fixture::default()
+        };
+        fixture.favorites.insert(RefTarget::local("feature/c"));
+        fixture.expand_sections(&[SectionKind::Recent]);
+        fixture.expand_folder(SectionKind::Recent, "feature");
+        assert_eq!(
+            describe(&fixture.rows()),
+            [
+                "S:Recent",
+                "  D:feature",
+                "    R:c",
+                "    R:b",
+                "    R:a",
+                "  R:main",
+                "S:Local"
+            ]
+        );
     }
 
     #[test]
@@ -850,13 +948,27 @@ mod tests {
     }
 
     #[test]
-    fn a_section_emptied_by_recent_extraction_disappears() {
+    fn recent_branches_are_repeated_in_local_without_a_query() {
         let mut fixture = Fixture {
             local: locals(&["main"]),
             recent: shared_strings(&["main"]),
             ..Fixture::default()
         };
         fixture.expand_sections(&SectionKind::ALL);
+        assert_eq!(
+            describe(&fixture.rows()),
+            ["S:Recent", "  R:main", "S:Local", "  R:main"]
+        );
+    }
+
+    #[test]
+    fn a_section_emptied_by_recent_extraction_while_searching_disappears() {
+        let fixture = Fixture {
+            local: locals(&["main"]),
+            recent: shared_strings(&["main"]),
+            query: "main".to_string(),
+            ..Fixture::default()
+        };
         assert_eq!(describe(&fixture.rows()), ["S:Recent", "  R:main"]);
     }
 
@@ -1126,6 +1238,62 @@ mod tests {
     }
 
     #[test]
+    fn a_folder_holding_the_current_branch_comes_before_favorite_leaves() {
+        let mut fixture = Fixture {
+            local: locals(&["main", "feature/x", "aaa"]),
+            current: Some("feature/x".to_string()),
+            ..Fixture::default()
+        };
+        fixture.favorites.insert(RefTarget::local("main"));
+        fixture.expand_sections(&[SectionKind::Local]);
+        assert_eq!(
+            describe(&fixture.rows()),
+            ["S:Local", "  D:feature", "  R:main", "  R:aaa"]
+        );
+    }
+
+    #[test]
+    fn folders_holding_favorites_come_before_other_folders_and_favorite_leaves() {
+        let mut fixture = Fixture {
+            local: locals(&["aaa/b", "zzz/y", "main", "dev"]),
+            ..Fixture::default()
+        };
+        fixture.favorites.insert(RefTarget::local("zzz/y"));
+        fixture.expand_sections(&[SectionKind::Local]);
+        assert_eq!(
+            describe(&fixture.rows()),
+            ["S:Local", "  D:zzz", "  D:aaa", "  R:dev", "  R:main"]
+        );
+
+        fixture.favorites.insert(RefTarget::local("main"));
+        assert_eq!(
+            describe(&fixture.rows()),
+            ["S:Local", "  D:zzz", "  R:main", "  D:aaa", "  R:dev"]
+        );
+    }
+
+    #[test]
+    fn nested_folders_holding_favorites_come_first_among_folders() {
+        let mut fixture = Fixture {
+            local: locals(&["team/alpha/one", "team/zeta/two", "team/plain"]),
+            ..Fixture::default()
+        };
+        fixture.favorites.insert(RefTarget::local("team/zeta/two"));
+        fixture.expand_sections(&[SectionKind::Local]);
+        fixture.expand_folder(SectionKind::Local, "team");
+        assert_eq!(
+            describe(&fixture.rows()),
+            [
+                "S:Local",
+                "  D:team",
+                "    D:team/zeta",
+                "    D:team/alpha",
+                "    R:plain"
+            ]
+        );
+    }
+
+    #[test]
     fn favorites_lead_inside_a_nested_folder() {
         let mut fixture = Fixture {
             local: locals(&["feature/a", "feature/b", "feature/c"]),
@@ -1138,6 +1306,26 @@ mod tests {
             describe(&fixture.rows()),
             ["S:Local", "  D:feature", "    R:c", "    R:a", "    R:b"]
         );
+    }
+
+    #[test]
+    fn in_a_detached_head_the_tag_at_head_is_marked_current_and_sorted_first() {
+        let mut fixture = Fixture {
+            tags: tags(&["v1", "v2", "v3"]),
+            head_tag: Some("v2".to_string()),
+            ..Fixture::default()
+        };
+        fixture.expand_sections(&[SectionKind::Tags]);
+        let rows = fixture.rows();
+        assert_eq!(describe(&rows), ["S:Tags", "  R:v2", "  R:v1", "  R:v3"]);
+        let refs = ref_rows(&rows);
+        assert!(refs[0].is_current);
+        assert!(refs[1..].iter().all(|row| !row.is_current));
+
+        fixture.head_tag = None;
+        let rows = fixture.rows();
+        assert_eq!(describe(&rows), ["S:Tags", "  R:v1", "  R:v2", "  R:v3"]);
+        assert!(ref_rows(&rows).iter().all(|row| !row.is_current));
     }
 
     #[test]
@@ -1405,6 +1593,10 @@ mod tests {
         );
         assert_eq!(
             ancestor_node_ids(SectionKind::Recent, "feature/x", true),
+            ["section:Recent", "folder:Recent:feature"]
+        );
+        assert_eq!(
+            ancestor_node_ids(SectionKind::Recent, "feature/x", false),
             ["section:Recent"]
         );
         assert_eq!(

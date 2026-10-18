@@ -1,5 +1,5 @@
 use crate::dock::{Dock, DockPosition, PanelHandle, PanelHeaderAction, panel_context_menu};
-use gpui::{Action, Anchor, ElementId, Entity, FocusHandle};
+use gpui::{Action, Anchor, ElementId, Entity, FocusHandle, FontWeight};
 use std::sync::Arc;
 use theme::UiDensity;
 use ui::{ChromeRegion, IconButtonShape, PopoverMenu, Tooltip, prelude::*, right_click_menu};
@@ -15,9 +15,25 @@ const HEADER_ACTION_ICON_SIZE: Pixels = px(16.);
 const HEADER_ACTION_ICON_MARGIN: Pixels = px(3.);
 const HEADER_LABEL_COMPACT_FONT_SIZE_OFFSET: Pixels = px(-1.);
 const HEADER_BORDER_WIDTH: Pixels = px(1.);
+// The New UI creates the header id label as `BaseLabel(ui, ExperimentalUI.isNewUI())`, which
+// derives `Font.BOLD`.
+const HEADER_TITLE_WEIGHT: FontWeight = FontWeight::BOLD;
 
 pub(crate) fn tool_window_title(name: &str) -> &str {
     name.strip_suffix(PANEL_NAME_SUFFIX).unwrap_or(name)
+}
+
+// The header's Hide button copies IntelliJ's `HideActiveWindow` (⇧⎋), so its tooltip shows that
+// shortcut rather than the dock toggle's.
+fn header_hide_tooltip_action() -> Box<dyn Action> {
+    crate::CloseActiveDock.boxed_clone()
+}
+
+// At rest IntelliJ draws the header's bottom line only for bottom-anchored tool windows and for
+// tabbed ones with more than one content (`ToolWindowHeader.paintComponent`). Header content is
+// where a panel puts such tabs, like the Git tool window's.
+fn draws_bottom_line(position: DockPosition, has_header_content: bool) -> bool {
+    position == DockPosition::Bottom || has_header_content
 }
 
 fn header_label_size(window: &Window, cx: &App) -> LabelSize {
@@ -76,17 +92,27 @@ pub(crate) fn render_tool_window_header(
             .icon_tooltip(window, cx)
             .unwrap_or_else(|| panel.persistent_name()),
     );
-    let hide_tooltip_action = hide_action.boxed_clone();
+    let hide_tooltip_action = header_hide_tooltip_action();
     let label_size = header_label_size(window, cx);
     let (icon_size, button_side) = header_action_metrics(window, cx);
-    let bottom_border_color = cx.theme().colors().border_variant;
+    // `ToolWindow.Header.borderColor` resolves to the main window background, gray-30 in Islands
+    // Dark and gray-150 in Islands Light.
+    let bottom_border_color = cx.theme().colors().background;
 
     let options_button = PopoverMenu::new(("tool-window-header-options", panel_id))
         .anchor(Anchor::TopRight)
         .menu({
             let panel = panel.clone();
             let dock = dock.clone();
-            move |window, cx| Some(panel_context_menu(panel.clone(), dock.clone(), window, cx))
+            move |window, cx| {
+                Some(panel_context_menu(
+                    panel.clone(),
+                    dock.clone(),
+                    false,
+                    window,
+                    cx,
+                ))
+            }
         })
         .trigger_with_tooltip(
             header_action_button(
@@ -160,6 +186,7 @@ pub(crate) fn render_tool_window_header(
         );
 
     let header_content = panel.header_content(window, cx);
+    let has_bottom_line = draws_bottom_line(position, header_content.is_some());
     let leading = match header_content {
         Some(content) => h_flex()
             .flex_1()
@@ -171,7 +198,11 @@ pub(crate) fn render_tool_window_header(
                 div()
                     .debug_selector(move || format!("tool_window_header_title_{position_key}"))
                     .flex_none()
-                    .child(Label::new(title).size(label_size)),
+                    .child(
+                        Label::new(title)
+                            .size(label_size)
+                            .weight(HEADER_TITLE_WEIGHT),
+                    ),
             )
             .child(
                 div()
@@ -190,7 +221,12 @@ pub(crate) fn render_tool_window_header(
             .child(
                 div()
                     .debug_selector(move || format!("tool_window_header_title_{position_key}"))
-                    .child(Label::new(title).size(label_size).truncate()),
+                    .child(
+                        Label::new(title)
+                            .size(label_size)
+                            .weight(HEADER_TITLE_WEIGHT)
+                            .truncate(),
+                    ),
             )
             .into_any_element(),
     };
@@ -205,18 +241,20 @@ pub(crate) fn render_tool_window_header(
         .gap(HEADER_TOOLBAR_LEFT_INSET)
         .child(leading)
         .child(actions)
-        .child(
-            div()
-                .absolute()
-                .left_0()
-                .right_0()
-                .bottom_0()
-                .h(HEADER_BORDER_WIDTH)
-                .bg(bottom_border_color),
-        );
+        .when(has_bottom_line, |this| {
+            this.child(
+                div()
+                    .absolute()
+                    .left_0()
+                    .right_0()
+                    .bottom_0()
+                    .h(HEADER_BORDER_WIDTH)
+                    .bg(bottom_border_color),
+            )
+        });
 
     right_click_menu(("tool-window-header-menu", panel_id))
-        .menu(move |window, cx| panel_context_menu(panel.clone(), dock.clone(), window, cx))
+        .menu(move |window, cx| panel_context_menu(panel.clone(), dock.clone(), false, window, cx))
         .trigger(move |_is_menu_open, _window, _cx| header)
         .into_any_element()
 }
@@ -238,5 +276,44 @@ mod tests {
             px(30.),
             "a larger icon keeps 3 px around it"
         );
+    }
+
+    #[test]
+    fn tool_window_header_title_is_bold_like_the_new_ui_id_label() {
+        assert_eq!(HEADER_TITLE_WEIGHT, FontWeight::BOLD);
+    }
+
+    #[test]
+    fn tool_window_header_hide_tooltip_shows_the_hide_active_window_shortcut() {
+        let action = header_hide_tooltip_action();
+        assert!(
+            action.partial_eq(&crate::CloseActiveDock),
+            "the Hide tooltip shows the binding of IntelliJ's HideActiveWindow, got {}",
+            action.name()
+        );
+        for toggle in [
+            crate::ToggleLeftDock.boxed_clone(),
+            crate::ToggleBottomDock.boxed_clone(),
+            crate::ToggleRightDock.boxed_clone(),
+        ] {
+            assert!(
+                !action.partial_eq(toggle.as_ref()),
+                "the Hide tooltip does not show the {} shortcut",
+                toggle.name()
+            );
+        }
+    }
+
+    #[test]
+    fn tool_window_header_bottom_line_is_drawn_only_for_the_bottom_dock_or_header_tabs() {
+        assert!(draws_bottom_line(DockPosition::Bottom, false));
+        assert!(draws_bottom_line(DockPosition::Bottom, true));
+        assert!(!draws_bottom_line(DockPosition::Left, false));
+        assert!(!draws_bottom_line(DockPosition::Right, false));
+        assert!(
+            draws_bottom_line(DockPosition::Left, true),
+            "a side tool window with header tabs keeps the line, like IntelliJ's tabbed headers"
+        );
+        assert!(draws_bottom_line(DockPosition::Right, true));
     }
 }

@@ -2,8 +2,8 @@ use std::time::{Duration, Instant};
 
 use db::kvp::KeyValueStore;
 use gpui::{
-    Action, AnyView, ClickEvent, DragMoveEvent, EntityId, FocusHandle, KeyDownEvent, MouseButton,
-    MouseMoveEvent, MouseUpEvent, Subscription, Task, WeakFocusHandle,
+    Action, AnyView, ClickEvent, DragMoveEvent, EntityId, FocusHandle, Hsla, KeyDownEvent,
+    MouseButton, MouseMoveEvent, MouseUpEvent, Subscription, Task, WeakFocusHandle,
 };
 use settings::Settings as _;
 use ui::{IconButtonShape, Tooltip, prelude::*};
@@ -663,11 +663,7 @@ impl Editor {
                 .py(px(FLOATING_TOOLBAR_VERTICAL_PADDING))
                 .px(px(FLOATING_TOOLBAR_HORIZONTAL_PADDING))
                 .rounded(px(FLOATING_TOOLBAR_RADIUS))
-                .bg(cx
-                    .theme()
-                    .colors()
-                    .elevated_surface_background
-                    .alpha(FLOATING_TOOLBAR_BACKGROUND_ALPHA))
+                .bg(floating_toolbar_background(cx))
                 .occlude()
                 .on_hover(cx.listener(|editor, hovered: &bool, _, cx| {
                     editor.floating_toolbar_hovered(*hovered, cx)
@@ -705,11 +701,22 @@ impl Editor {
     }
 }
 
+// IntelliJ fills the floating toolbar with Toolbar.Floating.background, which the Islands
+// themes map to the same grey as element.background, so it reads as a lighter pill over the
+// editor.
+fn floating_toolbar_background(cx: &App) -> Hsla {
+    cx.theme()
+        .colors()
+        .element_background
+        .alpha(FLOATING_TOOLBAR_BACKGROUND_ALPHA)
+}
+
 #[cfg(test)]
 mod tests {
     use std::{cell::Cell, rc::Rc};
 
-    use gpui::{Entity, Focusable, Render, TestAppContext, VisualTestContext};
+    use gpui::{Background, Entity, Focusable, Render, TestAppContext, VisualTestContext};
+    use settings::SettingsStore;
 
     use super::*;
     use crate::{EditorMode, MultiBuffer, editor_tests::init_test};
@@ -1030,6 +1037,51 @@ mod tests {
                 "after detaching, focusing the editor no longer forwards focus anywhere"
             );
         });
+    }
+
+    #[gpui::test]
+    async fn text_editor_with_preview_floating_toolbar_is_a_lighter_pill_over_the_editor(
+        cx: &mut TestAppContext,
+    ) {
+        let (editor, cx) = build_focused_editor(cx);
+        cx.update(|_, cx| {
+            cx.update_global::<SettingsStore, _>(|store, cx| {
+                store.update_user_settings(cx, |settings| {
+                    settings.tab_bar.get_or_insert_default().show = Some(false);
+                });
+            });
+        });
+        attach_test_preview(&editor, cx);
+        editor.update(cx, |editor, cx| {
+            editor.schedule_floating_toolbar_hide(true, cx)
+        });
+        draw(cx);
+
+        let (element_fill, elevated_fill) = cx.update(|_, cx| {
+            let colors = cx.theme().colors();
+            (
+                Background::from(colors.element_background.alpha(0.55)),
+                Background::from(colors.elevated_surface_background.alpha(0.55)),
+            )
+        });
+        assert_ne!(
+            element_fill, elevated_fill,
+            "the test theme must tell the two fills apart"
+        );
+        let painted_quads = cx.update(|window, _| window.painted_quads());
+        assert!(
+            painted_quads
+                .iter()
+                .any(|quad| quad.background == element_fill),
+            "IntelliJ fills the floating toolbar with Toolbar.Floating.background at 55%, \
+             the element grey in the Islands themes"
+        );
+        assert!(
+            !painted_quads
+                .iter()
+                .any(|quad| quad.background == elevated_fill),
+            "the floating toolbar no longer uses the darker elevated surface"
+        );
     }
 
     #[gpui::test]

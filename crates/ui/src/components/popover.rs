@@ -1,5 +1,5 @@
 use crate::prelude::*;
-use crate::{POPUP_MENU_METRICS, v_flex};
+use crate::{POPOVER_VERTICAL_PADDING, v_flex};
 use gpui::{AnyElement, App, Element, IntoElement, ParentElement, RenderOnce, Styled, Window, div};
 use smallvec::SmallVec;
 
@@ -44,7 +44,7 @@ impl RenderOnce for Popover {
             .child(
                 v_flex()
                     .elevation_2(cx)
-                    .py(POPUP_MENU_METRICS.vertical_padding)
+                    .py(POPOVER_VERTICAL_PADDING)
                     .child(div().children(self.children)),
             )
             .when_some(self.aside, |this, aside| {

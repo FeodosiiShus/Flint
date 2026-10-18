@@ -4,7 +4,7 @@ use gpui::{App, FocusHandle, Focusable, Hsla, Length};
 use std::sync::Arc;
 
 use ui::prelude::*;
-use ui::{COMPONENT_CORNER_RADII, Tooltip};
+use ui::{Tooltip, component_corner_radii};
 
 use crate::ErasedEditor;
 
@@ -151,6 +151,7 @@ impl Render for InputField {
             self.editor.set_masked(masked, window, cx);
         }
 
+        let corner_radius = component_corner_radii(cx).input;
         let theme_color = cx.theme().colors();
 
         let style = InputFieldStyle {
@@ -189,7 +190,7 @@ impl Render for InputField {
                     .py_1p5()
                     .flex_grow_1()
                     .text_color(style.text_color)
-                    .rounded(COMPONENT_CORNER_RADII.input)
+                    .rounded(corner_radius)
                     .bg(style.background_color)
                     .border_1()
                     .border_color(style.border_color)

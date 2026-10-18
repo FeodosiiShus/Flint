@@ -1394,7 +1394,7 @@ fn appearance_page() -> SettingsPage {
             }),
             SettingsPageItem::SettingItem(SettingItem {
                 title: "Editor Image Anchor",
-                description: "Where the image is placed when Fill is plain.",
+                description: "Where the image is aligned: plain places it there, tile aligns the grid to it, scale keeps that part.",
                 field: Box::new(SettingField {
                     json_path: Some("background_image.editor_and_tools.anchor"),
                     pick: |settings_content| {
@@ -1575,7 +1575,7 @@ fn appearance_page() -> SettingsPage {
             }),
             SettingsPageItem::SettingItem(SettingItem {
                 title: "Empty Frame Image Anchor",
-                description: "Where the image is placed when Fill is plain.",
+                description: "Where the image is aligned: plain places it there, tile aligns the grid to it, scale keeps that part.",
                 field: Box::new(SettingField {
                     json_path: Some("background_image.empty_frame.anchor"),
                     pick: |settings_content| {
@@ -1661,14 +1661,27 @@ fn appearance_page() -> SettingsPage {
                 title: "Clear Background Images".into(),
                 description: Some("Remove the configured background images.".into()),
                 button_text: "Clear".into(),
-                on_click: Arc::new(|settings_window, _, cx| {
+                on_click: Arc::new(|settings_window, window, cx| {
                     dispatch_to_original_window(
                         settings_window,
                         workspace::ClearBackgroundImage.boxed_clone(),
                         cx,
                     );
+                    // WebStorm's Clear also removes the project's own value, so a project path
+                    // cannot keep the image on screen after the user paths are cleared.
+                    let file = settings_window.current_file.clone();
+                    if matches!(file, crate::SettingsUiFile::Project(_)) {
+                        // Writing a project file reads the settings window, which is being
+                        // updated while this runs.
+                        window.defer(cx, move |window, cx| {
+                            crate::update_settings_file(file, window, cx, |settings, _| {
+                                clear_background_image_paths(settings)
+                            })
+                            .log_err();
+                        });
+                    }
                 }),
-                files: USER,
+                files: USER | PROJECT,
             }),
         ]
     }
@@ -9430,6 +9443,19 @@ fn show_scrollbar_or_editor(
         .and_then(|scrollbar| scrollbar.show.as_ref()))
 }
 
+fn clear_background_image_paths(settings: &mut SettingsContent) {
+    let Some(background_image) = settings.project.background_image.as_mut() else {
+        return;
+    };
+    let layers = [
+        background_image.editor_and_tools.as_mut(),
+        background_image.empty_frame.as_mut(),
+    ];
+    for layer in layers.into_iter().flatten() {
+        layer.path = None;
+    }
+}
+
 fn dispatch_to_original_window(
     settings_window: &SettingsWindow,
     action: Box<dyn Action>,
@@ -9523,6 +9549,69 @@ mod tests {
         write_vim_mode_inner(&mut settings, Some(true));
         assert_eq!(settings.vim_mode, Some(true));
         assert_eq!(settings.helix_mode, Some(false));
+    }
+
+    #[test]
+    fn test_clear_background_images_is_offered_for_user_and_project_settings() {
+        let page = appearance_page();
+        let clear = page
+            .items
+            .iter()
+            .find_map(|item| match item {
+                SettingsPageItem::ActionLink(link) if link.title == "Clear Background Images" => {
+                    Some(link)
+                }
+                _ => None,
+            })
+            .expect("the Background Image section should offer Clear");
+        assert!(clear.files.contains(USER));
+        assert!(
+            clear.files.contains(PROJECT),
+            "a project's own image path must be clearable, like WebStorm's Clear"
+        );
+    }
+
+    #[test]
+    fn test_clearing_project_background_images_removes_only_the_paths() {
+        let mut content = SettingsContent::default();
+        clear_background_image_paths(&mut content);
+        assert!(
+            content.project.background_image.is_none(),
+            "nothing is written into a project file without background image settings"
+        );
+
+        let background_image = content.project.background_image.get_or_insert_default();
+        let editor_and_tools = background_image.editor_and_tools.get_or_insert_default();
+        editor_and_tools.path = Some("~/project.png".to_string());
+        editor_and_tools.fill = Some(settings::BackgroundImageFill::Tile);
+        background_image.empty_frame.get_or_insert_default().path = Some(String::new());
+
+        clear_background_image_paths(&mut content);
+        let background_image = content
+            .project
+            .background_image
+            .as_ref()
+            .expect("the background image object stays in the file");
+        let editor_and_tools = background_image
+            .editor_and_tools
+            .as_ref()
+            .expect("the editor image object stays in the file");
+        assert_eq!(
+            editor_and_tools.path, None,
+            "removing the project path lets the cleared user path apply"
+        );
+        assert_eq!(
+            editor_and_tools.fill,
+            Some(settings::BackgroundImageFill::Tile),
+            "settings other than the path are kept"
+        );
+        assert_eq!(
+            background_image
+                .empty_frame
+                .as_ref()
+                .and_then(|layer| layer.path.as_ref()),
+            None
+        );
     }
 
     #[gpui::test]

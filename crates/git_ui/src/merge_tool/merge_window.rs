@@ -13,6 +13,7 @@ use gpui::{
     SharedString, Subscription, Window, px, size,
 };
 use merge_diff::{Side, ThreeSide};
+use project::git_store::{GitStore, GitStoreEvent};
 use ui::{DialogButton, prelude::*};
 use util::ResultExt as _;
 
@@ -232,6 +233,41 @@ impl MergeWindow {
     #[cfg(test)]
     pub(crate) fn viewer(&self) -> &Entity<MergeViewer> {
         &self.viewer
+    }
+
+    pub(crate) fn watch_conflict_validity(
+        &mut self,
+        git_store: &Entity<GitStore>,
+        conflict_exists: impl Fn(&App) -> bool + 'static,
+        cx: &mut Context<Self>,
+    ) {
+        let app: &App = cx;
+        if !conflict_exists(app) {
+            self.mark_conflict_invalid(cx);
+            return;
+        }
+        let subscription = cx.subscribe(
+            git_store,
+            move |merge_window, _git_store, _: &GitStoreEvent, cx| {
+                let app: &App = cx;
+                // Like WebStorm's `myIsValid`, the state is sticky: a conflict that came back
+                // after being resolved elsewhere does not hide the banner again.
+                let became_invalid =
+                    !merge_window.viewer.read(app).conflict_invalid() && !conflict_exists(app);
+                if became_invalid {
+                    merge_window.mark_conflict_invalid(cx);
+                }
+            },
+        );
+        self._subscriptions.push(subscription);
+    }
+
+    fn mark_conflict_invalid(&mut self, cx: &mut Context<Self>) {
+        if self.finished {
+            return;
+        }
+        self.viewer
+            .update(cx, |viewer, cx| viewer.mark_conflict_invalid(cx));
     }
 
     #[cfg(test)]

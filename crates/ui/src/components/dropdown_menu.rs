@@ -2,8 +2,8 @@ use gpui::{Anchor, AnyView, Entity, Pixels, Point, Role};
 use theme::UiDensity;
 
 use crate::{
-    ButtonLike, COMPONENT_CORNER_RADII, ContextMenu, PopoverMenu, TOOLBAR_ICON_SIDE,
-    exact_icon_size, prelude::*, ui_density,
+    ButtonLike, ComponentCornerRadii, ContextMenu, PopoverMenu, TOOLBAR_ICON_SIDE, exact_icon_size,
+    prelude::*, ui_density,
 };
 
 use super::PopoverMenuHandle;
@@ -11,7 +11,6 @@ use super::PopoverMenuHandle;
 const LABEL_LEFT_PADDING: Pixels = px(9.);
 const COMPACT_LABEL_LEFT_PADDING: Pixels = px(6.);
 const ARROW_RIGHT_PADDING: Pixels = px(6.);
-const COMPACT_CORNER_RADIUS: Pixels = px(3.);
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum DropdownStyle {
@@ -196,17 +195,13 @@ impl RenderOnce for DropdownMenu {
 
         let full_width = self.full_width;
         let trigger_size = self.trigger_size;
-        let compact = ui_density(cx) == UiDensity::Compact;
-        let left_padding = if compact {
+        let density = ui_density(cx);
+        let left_padding = if density == UiDensity::Compact {
             COMPACT_LABEL_LEFT_PADDING
         } else {
             LABEL_LEFT_PADDING
         };
-        let corner_radius = if compact {
-            COMPACT_CORNER_RADIUS
-        } else {
-            COMPONENT_CORNER_RADII.input
-        };
+        let corner_radius = ComponentCornerRadii::for_density(density).input;
         let arrow_color = if self.disabled {
             cx.theme().colors().icon_disabled
         } else {

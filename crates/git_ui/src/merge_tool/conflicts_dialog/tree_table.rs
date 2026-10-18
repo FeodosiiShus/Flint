@@ -9,9 +9,12 @@ use ui::{Tooltip, WithScrollbar, prelude::*};
 use super::ConflictsDialog;
 use super::messages;
 use super::state::{BadgeView, GroupKind, RowView, RowViewKind};
+use crate::merge_tool::conflict_banner::{INFO_BACKGROUND_DARK, INFO_BACKGROUND_LIGHT};
+use crate::merge_tool::palette::{current_palette, hex_color};
 
 pub(super) const ROW_HEIGHT: f32 = 28.;
-const HEADER_HEIGHT: f32 = 24.;
+pub(super) const HEADER_HEIGHT: f32 = 25.;
+pub(super) const HEADER_DEBUG_SELECTOR: &str = "conflicts-table-header";
 const STATUS_COLUMN_WIDTH: f32 = 160.;
 const STATUS_LEFT_PADDING: f32 = 6.;
 const STATUS_BUTTON_GAP: f32 = 16.;
@@ -56,6 +59,14 @@ fn group_icon_color(group: GroupKind, light: bool) -> u32 {
         (GroupKind::Resolved, true) => 0x369650,
         (GroupKind::Unresolved, false) => 0xDB5C5C,
         (GroupKind::Unresolved, true) => 0xDB3B4B,
+    }
+}
+
+fn disabled_overlay_background(dark: bool) -> u32 {
+    if dark {
+        INFO_BACKGROUND_DARK
+    } else {
+        INFO_BACKGROUND_LIGHT
     }
 }
 
@@ -114,11 +125,9 @@ impl ConflictsDialog {
         let scroll_handle = self.table_scroll.clone();
         let item_count = self.state.visible_indices().len();
         let enabled = self.table_enabled();
-        let overlay_color = cx
-            .theme()
-            .status()
-            .info_background
-            .alpha(DISABLED_OVERLAY_ALPHA);
+        let dark = current_palette(cx).kind.is_dark();
+        let overlay_color =
+            hex_color(disabled_overlay_background(dark)).alpha(DISABLED_OVERLAY_ALPHA);
         let header = self.render_tree_header(cx);
         let rows = uniform_list(
             "conflicts-tree-rows",
@@ -171,6 +180,7 @@ impl ConflictsDialog {
     fn render_tree_header(&self, cx: &mut Context<Self>) -> AnyElement {
         let border_color = cx.theme().colors().border;
         h_flex()
+            .debug_selector(|| HEADER_DEBUG_SELECTOR.into())
             .w_full()
             .h(px(HEADER_HEIGHT))
             .flex_none()
@@ -209,6 +219,7 @@ impl ConflictsDialog {
             .state
             .accept_button_visible(&row.id, self.hovered_row.as_ref());
         let left_click_id = row.id.clone();
+        let context_id = row.id.clone();
         let hover_id = row.id.clone();
         h_flex()
             .id(("conflicts-row", index))
@@ -231,7 +242,7 @@ impl ConflictsDialog {
             .on_mouse_down(
                 MouseButton::Right,
                 cx.listener(move |this, event: &MouseDownEvent, window, cx| {
-                    this.handle_row_context_menu(event.position, window, cx);
+                    this.handle_row_context_menu(context_id.clone(), event.position, window, cx);
                 }),
             )
             .on_hover(cx.listener(move |this, is_hovered: &bool, _window, cx| {
@@ -478,6 +489,12 @@ mod tests {
         assert_eq!(group_icon_color(GroupKind::Resolved, true), 0x369650);
         assert_eq!(group_icon_color(GroupKind::Unresolved, false), 0xDB5C5C);
         assert_eq!(group_icon_color(GroupKind::Unresolved, true), 0xDB3B4B);
+    }
+
+    #[test]
+    fn merge_tool_disabled_overlay_uses_the_islands_banner_info_background() {
+        assert_eq!(disabled_overlay_background(true), 0x233558);
+        assert_eq!(disabled_overlay_background(false), 0xF7F8FF);
     }
 
     #[test]

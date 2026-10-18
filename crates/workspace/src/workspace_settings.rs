@@ -55,8 +55,8 @@ const TOOL_WINDOW_BAR_ICON_SIZE_RANGE: (u32, u32) = (12, 32);
 /// Below this icon size the bar uses IntelliJ's Compact Mode artwork and metrics.
 pub(crate) const COMPACT_TOOL_WINDOW_ICON_SIZE_LIMIT: Pixels = px(18.);
 /// IntelliJ's `StripeToolbar.Button.size` is "37,40" at the default 20 px icon and "32,32" in
-/// Compact Mode with a 16 px icon, so the bar is 17 px wider than the icon, or 16 px in Compact
-/// Mode.
+/// Compact Mode with a 16 px icon, so a stripe button is 17 px wider than the icon, or 16 px in
+/// Compact Mode. The bar adds the stripe's 1 px border to that.
 const TOOL_WINDOW_BAR_BUTTON_PADDING: Pixels = px(17.);
 const TOOL_WINDOW_BAR_BUTTON_PADDING_COMPACT: Pixels = px(16.);
 pub const INACTIVE_FRAME_CONTENT_OPACITY: f32 = 0.56;
@@ -139,6 +139,7 @@ impl ToolWindowBarsSettings {
         self.icon_size < COMPACT_TOOL_WINDOW_ICON_SIZE_LIMIT
     }
 
+    /// The width of a stripe button; the rendered bar is 1 px wider for its border.
     pub fn bar_width(&self) -> Pixels {
         self.icon_size
             + if self.uses_compact_icons() {

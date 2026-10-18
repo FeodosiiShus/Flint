@@ -69,14 +69,6 @@ fn action(kind: TopActionKind, label: &str, icon: Option<IconName>) -> TopAction
     }
 }
 
-fn ongoing_icon(action: OngoingOperationAction) -> IconName {
-    match action {
-        OngoingOperationAction::AbortRebase | OngoingOperationAction::AbortMerge => IconName::Stop,
-        OngoingOperationAction::ContinueRebase => IconName::PlayFilled,
-        OngoingOperationAction::SkipCommit => IconName::ArrowRight,
-    }
-}
-
 pub fn top_actions_plan(input: &TopActionsInput) -> Vec<TopActionItem> {
     let mut items = vec![
         TopActionItem::Action(action(
@@ -97,11 +89,12 @@ pub fn top_actions_plan(input: &TopActionsInput) -> Vec<TopActionItem> {
         TopActionItem::Separator,
     ];
 
+    // IntelliJ gives the ongoing-operation actions an icon only in the merge/rebase toolbar widget.
     for ongoing_action in ongoing::ongoing_actions(input.operation) {
         items.push(TopActionItem::Action(action(
             TopActionKind::Ongoing(ongoing_action),
             ongoing_action.label(),
-            Some(ongoing_icon(ongoing_action)),
+            None,
         )));
     }
 
@@ -237,6 +230,29 @@ mod tests {
                 "Checkout Tag or Revision…",
             ]
         );
+    }
+
+    #[test]
+    fn ongoing_operation_rows_have_no_icon() {
+        for operation in [RepositoryOperation::Rebase, RepositoryOperation::Merge] {
+            let items = plan(true, Some(operation));
+            let ongoing: Vec<&TopAction> = items
+                .iter()
+                .filter_map(|item| match item {
+                    TopActionItem::Action(action)
+                        if matches!(action.kind, TopActionKind::Ongoing(_)) =>
+                    {
+                        Some(action)
+                    }
+                    _ => None,
+                })
+                .collect();
+            assert!(!ongoing.is_empty(), "{operation:?} adds ongoing rows");
+            assert!(
+                ongoing.iter().all(|action| action.icon.is_none()),
+                "{operation:?} rows must not carry an icon"
+            );
+        }
     }
 
     #[test]

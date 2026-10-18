@@ -6,7 +6,7 @@ use gpui::{
 };
 use merge_diff::{Side, ThreeSide};
 use project::{FakeFs, Project};
-use settings::SettingsStore;
+use settings::{KeybindSource, KeymapFile, SettingsStore};
 use workspace::{CloseWindow, MultiWorkspace};
 
 use super::{
@@ -26,7 +26,7 @@ use crate::merge_tool::{
             AcceptLeft, AcceptLeftSide, AcceptRight, AcceptRightSide, ApplyChanges,
             ApplyNonConflictingAll, ApplyNonConflictingLeft, ApplyNonConflictingRight,
             IgnoreLeftSide, NextDifference, PreviousDifference, ResolveUsingLeft,
-            RevertConflictResolution, SaveAndClose,
+            RevertConflictResolution, SaveAndClose, ToggleSynchronizeScrolling,
         },
     },
 };
@@ -42,6 +42,7 @@ const TEN_SIXTH_EDITED: &str = "a\nb\nc\nd\ne\nf\nG\nh\ni\nj\n";
 const TEN_BOTH_EDITED: &str = "a\nB\nc\nd\ne\nf\nG\nh\ni\nj\n";
 
 struct Harness {
+    owner: DialogOwner,
     window: WindowHandle<DialogWindowShell>,
     content: WeakEntity<MergeWindow>,
     model: Entity<MergeConflictModel>,
@@ -81,6 +82,17 @@ async fn open_merge_unsettled(
         .read_with(cx, |multi_workspace, _| multi_workspace.workspace().clone())
         .expect("the owner window is open");
     let owner = DialogOwner::workspace(workspace.downgrade(), owner_window.into());
+    open_merge_for_owner(owner, cx, left, base, right, iterative)
+}
+
+fn open_merge_for_owner(
+    owner: DialogOwner,
+    cx: &mut TestAppContext,
+    left: &str,
+    base: &str,
+    right: &str,
+    iterative: bool,
+) -> Harness {
     let texts = MergeTexts::new(left, base, right);
     let model = cx.update(|cx| {
         let buffers = MergeBuffers::detached(&texts, None, cx);
@@ -102,7 +114,7 @@ async fn open_merge_unsettled(
     cx.update(|cx| {
         open_merge_window_with(
             request,
-            owner,
+            owner.clone(),
             cx,
             Some(Box::new(move |dialog, _| {
                 *opened_slot.borrow_mut() = Some(dialog);
@@ -111,6 +123,7 @@ async fn open_merge_unsettled(
     });
     let dialog = opened.take().expect("the merge window opened");
     Harness {
+        owner,
         window: dialog.window,
         content: dialog.content.downgrade(),
         model,
@@ -206,6 +219,31 @@ fn viewer_of(harness: &Harness, cx: &TestAppContext) -> Entity<MergeViewer> {
 
 fn rediff_state(harness: &Harness, cx: &TestAppContext) -> RediffState {
     viewer_of(harness, cx).read_with(cx, |viewer, _| viewer.rediff_state())
+}
+
+fn bind_shipped_keymaps(base_keymap: Option<&'static str>, cx: &mut TestAppContext) {
+    let mut sources = vec![("keymaps/default-macos.json", KeybindSource::Default)];
+    sources.extend(base_keymap.map(|path| (path, KeybindSource::Base)));
+    cx.update(|cx| {
+        for (path, source) in sources {
+            let mut bindings = KeymapFile::load_asset_allow_partial_failure(path, cx)
+                .expect("the shipped keymap should load");
+            for binding in &mut bindings {
+                binding.set_meta(source.meta());
+            }
+            cx.bind_keys(bindings);
+        }
+    });
+}
+
+fn press(harness: &Harness, keystrokes: &str, cx: &mut TestAppContext) {
+    let mut dialog_cx = VisualTestContext::from_window(harness.window.into(), cx);
+    dialog_cx.simulate_keystrokes(keystrokes);
+    dialog_cx.run_until_parked();
+}
+
+fn sync_scroll_enabled(harness: &Harness, cx: &TestAppContext) -> bool {
+    viewer_of(harness, cx).read_with(cx, |viewer, _| viewer.sync_scroll_enabled())
 }
 
 fn caret_line(harness: &Harness, cx: &mut TestAppContext) -> i64 {
@@ -659,4 +697,61 @@ async fn merge_tool_window_removed_without_a_decision_reports_cancel_and_restore
     assert_eq!(finished_results(&harness), vec![MergeResult::Cancel]);
     assert_eq!(result_text(&harness, cx), ORIGINAL);
     assert!(!is_window_open(&harness, cx));
+}
+
+#[gpui::test]
+async fn merge_tool_window_synchronize_scrolling_choice_carries_over_to_later_windows(
+    cx: &mut TestAppContext,
+) {
+    let first = open_merge(cx, LEFT_CONFLICT, BASE, RIGHT_CONFLICT, true).await;
+    assert!(sync_scroll_enabled(&first, cx));
+    dispatch(&first, ToggleSynchronizeScrolling, cx);
+    assert!(!sync_scroll_enabled(&first, cx));
+    dispatch(&first, SaveAndClose, cx);
+    assert!(!is_window_open(&first, cx));
+
+    let second = open_merge_for_owner(first.owner, cx, LEFT_CONFLICT, BASE, RIGHT_CONFLICT, true);
+    settle(&second, cx);
+    assert!(!sync_scroll_enabled(&second, cx));
+    dispatch(&second, ToggleSynchronizeScrolling, cx);
+    dispatch(&second, SaveAndClose, cx);
+    assert!(!is_window_open(&second, cx));
+
+    let third = open_merge_for_owner(second.owner, cx, LEFT_CONFLICT, BASE, RIGHT_CONFLICT, true);
+    settle(&third, cx);
+    assert!(sync_scroll_enabled(&third, cx));
+}
+
+#[gpui::test]
+async fn merge_tool_window_default_keymap_moves_between_differences_with_cmd_brackets(
+    cx: &mut TestAppContext,
+) {
+    let harness = open_merge(cx, TEN_BOTH_EDITED, TEN_BASE, TEN_BASE, true).await;
+    bind_shipped_keymaps(None, cx);
+    assert_eq!(caret_line(&harness, cx), 1);
+
+    press(&harness, "cmd-]", cx);
+    assert_eq!(caret_line(&harness, cx), 6);
+    press(&harness, "cmd-[", cx);
+    assert_eq!(caret_line(&harness, cx), 1);
+}
+
+#[gpui::test]
+async fn merge_tool_window_jetbrains_keymap_navigates_differences_only_with_f7(
+    cx: &mut TestAppContext,
+) {
+    let harness = open_merge(cx, TEN_BOTH_EDITED, TEN_BASE, TEN_BASE, true).await;
+    bind_shipped_keymaps(Some("keymaps/macos/jetbrains.json"), cx);
+    assert_eq!(caret_line(&harness, cx), 1);
+
+    press(&harness, "cmd-]", cx);
+    assert_eq!(caret_line(&harness, cx), 1);
+    press(&harness, "f7", cx);
+    assert_eq!(caret_line(&harness, cx), 6);
+
+    press(&harness, "cmd-[", cx);
+    assert_eq!(caret_line(&harness, cx), 6);
+    press(&harness, "shift-f7", cx);
+    assert_eq!(caret_line(&harness, cx), 1);
+    assert_eq!(result_text(&harness, cx), TEN_BASE);
 }

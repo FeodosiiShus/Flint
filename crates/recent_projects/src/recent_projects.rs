@@ -38,6 +38,8 @@ actions!(
     [ToggleActionsMenu, RemoveSelected, AddToWorkspace,]
 );
 
+pub const RECENT_PROJECTS_DEBUG_SELECTOR: &str = "recent_projects";
+
 #[derive(Clone, Debug)]
 pub struct RecentProjectEntry {
     pub name: SharedString,
@@ -328,6 +330,12 @@ pub struct RecentProjects {
     _subscriptions: Vec<Subscription>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RecentProjectsPresentation {
+    Modal,
+    Popover,
+}
+
 impl ModalView for RecentProjects {
     fn on_before_dismiss(
         &mut self,
@@ -345,14 +353,19 @@ impl RecentProjects {
     fn new(
         delegate: RecentProjectsDelegate,
         fs: Arc<dyn Fs>,
+        presentation: RecentProjectsPresentation,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
         let picker = cx.new(|cx| {
-            Picker::list(delegate, window, cx)
+            let picker = Picker::list(delegate, window, cx)
                 .list_measure_all()
                 .initial_width(rems(42.))
-                .show_scrollbar(true)
+                .show_scrollbar(true);
+            match presentation {
+                RecentProjectsPresentation::Modal => picker,
+                RecentProjectsPresentation::Popover => picker.popover().reopenable(false, cx),
+            }
         });
 
         let picker_focus_handle = picker.focus_handle(cx);
@@ -409,8 +422,45 @@ impl RecentProjects {
                 window_project_groups,
             );
 
-            Self::new(delegate, fs, window, cx)
+            Self::new(delegate, fs, RecentProjectsPresentation::Modal, window, cx)
         })
+    }
+
+    /// Recent Projects as a popup under the title bar's project widget, like IntelliJ's
+    /// `ProjectToolbarWidgetAction` (`popup.showUnderneathOf(combo)`).
+    pub fn popover(
+        workspace: WeakEntity<Workspace>,
+        window_project_groups: Vec<ProjectGroupKey>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Option<Entity<Self>> {
+        let (open_folders, fs, focus_handle) = {
+            let workspace_entity = workspace.upgrade()?;
+            let workspace_state = workspace_entity.read(cx);
+            (
+                get_open_folders(workspace_state, cx),
+                workspace_state.app_state().fs.clone(),
+                workspace_state.focus_handle(cx),
+            )
+        };
+        let create_new_window = default_open_in_new_window(cx);
+
+        Some(cx.new(|cx| {
+            let delegate = RecentProjectsDelegate::new(
+                workspace,
+                create_new_window,
+                focus_handle,
+                open_folders,
+                window_project_groups,
+            );
+            Self::new(
+                delegate,
+                fs,
+                RecentProjectsPresentation::Popover,
+                window,
+                cx,
+            )
+        }))
     }
 
     fn handle_toggle_open_menu(
@@ -503,6 +553,7 @@ impl Focusable for RecentProjects {
 impl Render for RecentProjects {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         v_flex()
+            .debug_selector(|| RECENT_PROJECTS_DEBUG_SELECTOR.into())
             .key_context("RecentProjects")
             .on_action(cx.listener(Self::handle_toggle_open_menu))
             .on_action(cx.listener(Self::handle_remove_selected))
@@ -682,7 +733,9 @@ impl PickerDelegate for RecentProjectsDelegate {
             };
 
             if !matched_folders.is_empty() {
-                entries.push(ProjectPickerEntry::Header("Current Folders".into()));
+                entries.push(ProjectPickerEntry::Header(SharedString::new_static(
+                    "Current Folders",
+                )));
                 for (index, positions) in matched_folders {
                     entries.push(ProjectPickerEntry::OpenFolder { index, positions });
                 }
@@ -696,7 +749,9 @@ impl PickerDelegate for RecentProjectsDelegate {
         };
 
         if has_projects_to_show {
-            entries.push(ProjectPickerEntry::Header("This Window".into()));
+            entries.push(ProjectPickerEntry::Header(SharedString::new_static(
+                "This Window",
+            )));
 
             if is_empty_query {
                 for id in 0..self.window_project_groups.len() {
@@ -721,7 +776,9 @@ impl PickerDelegate for RecentProjectsDelegate {
         };
 
         if has_recent_to_show {
-            entries.push(ProjectPickerEntry::Header("Recent Projects".into()));
+            entries.push(ProjectPickerEntry::Header(SharedString::new_static(
+                "Recent Projects",
+            )));
 
             if is_empty_query {
                 for (id, workspace) in self.workspaces.iter().enumerate() {
@@ -833,11 +890,17 @@ impl PickerDelegate for RecentProjectsDelegate {
 
     fn dismissed(&mut self, _window: &mut Window, _: &mut Context<Picker<Self>>) {}
 
+    // Opening the Actions menu moves focus out of the query editor. Without this the popover
+    // under the project widget, which has no `ModalView::on_before_dismiss`, would close.
+    fn has_another_open_menu(&self, window: &Window, cx: &App) -> bool {
+        self.actions_menu_handle.is_deployed() || self.actions_menu_handle.is_focused(window, cx)
+    }
+
     fn no_matches_text(&self, _window: &mut Window, _cx: &mut App) -> Option<SharedString> {
         let text = if self.workspaces.is_empty() && self.open_folders.is_empty() {
-            "Recently opened projects will show up here".into()
+            SharedString::new_static("Recently opened projects will show up here")
         } else {
-            "No matches".into()
+            SharedString::new_static("No matches")
         };
         Some(text)
     }

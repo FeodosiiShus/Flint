@@ -15,7 +15,7 @@ use settings::{
     BackgroundImageOpacity, CenteredPaddingSettings, CodeFade, DelayMs, FontSize,
     FontWeightContent, InactiveOpacity, MinimumContrast, PixelSetting,
 };
-use ui::{COMPONENT_CORNER_RADII, prelude::*};
+use ui::{component_corner_radii, prelude::*};
 
 use crate::components::{
     CONTROL_HEIGHT, CONTROL_TEXT_MARGIN_BOTTOM, CONTROL_TEXT_MARGIN_LEFT,
@@ -514,6 +514,7 @@ impl<T: NumberFieldType> RenderOnce for NumberField<T> {
 
         let field_background = cx.theme().colors().panel_background;
         let hover_background = cx.theme().colors().element_hover;
+        let corner_radius = component_corner_radii(cx).input;
 
         let border_color = cx.theme().colors().border;
         let focus_border_color = cx.theme().colors().border_focused;
@@ -604,7 +605,7 @@ impl<T: NumberFieldType> RenderOnce for NumberField<T> {
                 h_flex()
                     .h(CONTROL_HEIGHT)
                     .min_w(NUMBER_FIELD_MIN_WIDTH)
-                    .rounded(COMPONENT_CORNER_RADII.input)
+                    .rounded(corner_radius)
                     .border_1()
                     .border_color(border_color)
                     .bg(field_background)

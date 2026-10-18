@@ -53,6 +53,10 @@ const BOUNDS_KEY: &str = "MultipleFileMergeDialog";
 const SOUTH_BUTTON_GAP: f32 = 12.;
 const SOUTH_TOP_GAP: f32 = 32.;
 const CONTROLS_GAP: f32 = 16.;
+const TABLE_VERTICAL_PADDING: f32 = 6.;
+const ALL_RESOLVED_ICON_GAP: f32 = 4.;
+const ALL_RESOLVED_ICON_DEBUG_SELECTOR: &str = "conflicts-all-resolved-icon";
+const ALL_RESOLVED_TEXT_DEBUG_SELECTOR: &str = "conflicts-all-resolved-text";
 
 enum Description {
     Loading,
@@ -280,9 +284,10 @@ impl ConflictsDialog {
     fn render_description(&self, all_reviewed: bool, cx: &App) -> AnyElement {
         let content = if all_reviewed {
             h_flex()
-                .gap_2()
+                .gap(px(ALL_RESOLVED_ICON_GAP))
                 .child(
                     div()
+                        .debug_selector(|| ALL_RESOLVED_ICON_DEBUG_SELECTOR.into())
                         .relative()
                         .size(px(16.))
                         .child(
@@ -298,7 +303,11 @@ impl ConflictsDialog {
                             ),
                         ),
                 )
-                .child(Label::new(messages::ALL_RESOLVED_DESCRIPTION))
+                .child(
+                    div()
+                        .debug_selector(|| ALL_RESOLVED_TEXT_DEBUG_SELECTOR.into())
+                        .child(Label::new(messages::ALL_RESOLVED_DESCRIPTION)),
+                )
                 .into_any_element()
         } else {
             match &self.description {
@@ -475,7 +484,7 @@ impl Render for ConflictsDialog {
                     .flex_1()
                     .min_h(px(60.))
                     .w_full()
-                    .py(px(6.))
+                    .py(px(TABLE_VERTICAL_PADDING))
                     .child(self.render_tree_table(window, cx))
                     .children(self.render_speed_search(cx)),
             )

@@ -312,6 +312,16 @@ fn active_editor(cx: &mut EditorLspTestContext) -> Option<Entity<Editor>> {
     cx.update(|_, cx| workspace.read(cx).active_item_as::<Editor>(cx))
 }
 
+// After a jump the hint waits for the editor to paint the moved caret: one frame
+// draws it and the next one reads its position. Tests have no frame loop.
+fn deliver_painted_frames(cx: &mut EditorLspTestContext) {
+    for _ in 0..2 {
+        let callbacks = cx.update(|window, cx| window.simulate_next_frame(cx));
+        assert!(callbacks > 0, "the hint should be waiting for a frame");
+        cx.run_until_parked();
+    }
+}
+
 fn is_focused(editor: &Entity<Editor>, cx: &mut EditorLspTestContext) -> bool {
     cx.update(|window, cx| editor.focus_handle(cx).is_focused(window))
 }
@@ -530,6 +540,139 @@ async fn test_show_usages_lists_sorted_merged_usages_below_the_caret(cx: &mut Te
     );
 }
 
+#[track_caller]
+fn assert_pixels(actual: Pixels, expected: Pixels, message: &str) {
+    assert!(
+        (f32::from(actual) - f32::from(expected)).abs() <= 1.,
+        "{message}: {actual:?}, expected {expected:?}"
+    );
+}
+
+#[gpui::test]
+async fn test_show_usages_popup_chrome_uses_intellij_insets(cx: &mut TestAppContext) {
+    let (mut cx, main_uri, other_uri) = two_file_context(cx).await;
+    let (release_references, references_released) = oneshot::channel::<()>();
+    let mut references_released = Some(references_released);
+    let usages = two_file_usages(&main_uri, &other_uri);
+    cx.lsp
+        .set_request_handler::<lsp::request::References, _, _>(move |_, _| {
+            let released = references_released.take();
+            let usages = usages.clone();
+            async move {
+                if let Some(released) = released {
+                    released.await.unwrap();
+                }
+                Ok(Some(usages))
+            }
+        });
+    cx.run_until_parked();
+
+    cx.dispatch_action(ShowUsages::default());
+    cx.executor().advance_clock(POPUP_DELAY);
+    cx.run_until_parked();
+    let popup = active_popup(&mut cx).expect("a slow search should show the popup after the delay");
+    let searching = popup_state(&popup, &mut cx);
+    assert!(searching.searching);
+    assert_eq!(searching.status, None);
+    let title = cx
+        .debug_bounds("show-usages-title")
+        .expect("the title should be painted");
+    let spinner = cx
+        .debug_bounds("show-usages-spinner")
+        .expect("the spinner should be painted while searching");
+    let status_gap = cx
+        .debug_bounds("show-usages-status-gap")
+        .expect("the status gap should be painted");
+    assert_pixels(
+        status_gap.left() - spinner.right(),
+        px(6.),
+        "the spinner should sit on the right, just before the status, like ShowUsagesHeader",
+    );
+    assert!(
+        spinner.left() - title.right() >= px(11.),
+        "the flexible gap should come between the title and the spinner"
+    );
+
+    release_references.send(()).unwrap();
+    cx.run_until_parked();
+
+    let header = cx
+        .debug_bounds("show-usages-header")
+        .expect("the header should be painted");
+    let title = cx
+        .debug_bounds("show-usages-title")
+        .expect("the title should be painted");
+    let status_gap = cx
+        .debug_bounds("show-usages-status-gap")
+        .expect("the status gap should be painted");
+    assert_pixels(
+        header.size.height,
+        px(41.),
+        "the header should use ComplexPopup.headerInsets (13 above and 11 below the title) and its bottom line",
+    );
+    assert_pixels(
+        title.left() - header.left(),
+        px(20.),
+        "the title should start 20 px from the popup edge",
+    );
+    assert_pixels(
+        header.right() - status_gap.right() - px(22.),
+        px(15.),
+        "the Open in Find Tool Window button should end 15 px from the popup edge",
+    );
+
+    let toolbar = cx
+        .debug_bounds("show-usages-toolbar")
+        .expect("the toolbar should be painted");
+    let toolbar_row = cx
+        .debug_bounds("show-usages-toolbar-row")
+        .expect("the toolbar row should be painted");
+    assert_pixels(
+        toolbar.top(),
+        header.bottom(),
+        "the toolbar follows the header",
+    );
+    assert_pixels(
+        toolbar.size.height,
+        px(39.),
+        "the toolbar should be 6 + 22 + 6 px of buttons, the line and a 4 px gap",
+    );
+    assert_pixels(
+        toolbar_row.size.height,
+        px(35.),
+        "the toolbar buttons should have 6 px above and below them",
+    );
+    assert_pixels(
+        toolbar_row.left() - toolbar.left(),
+        px(12.),
+        "the toolbar line should be inset 12 px from the left popup edge",
+    );
+    assert_pixels(
+        toolbar.right() - toolbar_row.right(),
+        px(12.),
+        "the toolbar line should be inset 12 px from the right popup edge",
+    );
+    assert_pixels(
+        toolbar.bottom() - toolbar_row.bottom(),
+        px(4.),
+        "the list should start 4 px below the toolbar line",
+    );
+}
+
+#[test]
+fn test_show_usages_filter_toggles_follow_intellij_rule_order() {
+    assert_eq!(
+        ShowUsagesPopup::filter_toggle_titles_for_test(),
+        vec![
+            "Show Read Access",
+            "Show Write Access",
+            "Show Import Statements",
+            "Show Usages in Comments",
+        ],
+        "the filters should come in the order of IntelliJ's platformUsageFilteringRules"
+    );
+}
+
 #[gpui::test]
 async fn test_show_usages_navigates_to_the_only_usage(cx: &mut TestAppContext) {
     let mut cx = show_usages_context(references_and_definition_capabilities(), cx).await;
@@ -548,9 +691,14 @@ async fn test_show_usages_navigates_to_the_only_usage(cx: &mut TestAppContext) {
         &cx,
         vec![location(&uri, 0, 3, 9), location(&uri, 5, 16, 22)],
     );
+    cx.run_until_parked();
+    let position_before_jump = cx
+        .update_editor(|editor, window, cx| editor.popup_origin_below_cursor(window, cx))
+        .expect("the caret should be painted before Show Usages starts");
 
     cx.dispatch_action(ShowUsages::default());
     cx.run_until_parked();
+    deliver_painted_frames(&mut cx);
 
     assert!(
         active_popup(&mut cx).is_none(),
@@ -571,6 +719,14 @@ async fn test_show_usages_navigates_to_the_only_usage(cx: &mut TestAppContext) {
     assert_eq!(hint.message, "It's the only usage in Project Files");
     assert!(!hint.warning);
     assert_eq!(hint.scope, UsageScope::ProjectFiles);
+    let position_after_jump = cx
+        .update_editor(|editor, window, cx| editor.popup_origin_below_cursor(window, cx))
+        .expect("the caret should be painted after the jump");
+    assert_ne!(position_after_jump, position_before_jump);
+    assert_eq!(
+        hint.position, position_after_jump,
+        "the hint should follow the caret to the usage it describes, like IntelliJ"
+    );
 }
 
 #[gpui::test]
@@ -603,6 +759,16 @@ async fn test_show_usages_without_usages_restarts_in_all_places(cx: &mut TestApp
         Some("Press ⌥⌘F7 again to search in 'All Places'")
     );
     assert_eq!(first.scope, UsageScope::ProjectFiles);
+    let message_bounds = cx
+        .debug_bounds("usages-hint-message")
+        .expect("the hint message should be painted");
+    let second_invocation_bounds = cx
+        .debug_bounds("usages-hint-second-invocation")
+        .expect("the second invocation line should be painted");
+    assert_eq!(
+        second_invocation_bounds.size.height, message_bounds.size.height,
+        "IntelliJ's new UI draws the restart line as a normal paragraph, not in a smaller font"
+    );
 
     cx.dispatch_action(ShowUsages::default());
     cx.run_until_parked();
@@ -723,6 +889,7 @@ async fn assert_unavailable_access_finishes(fail: bool, cx: &mut TestAppContext)
     }
     cx.dispatch_action(ShowUsages::default());
     cx.run_until_parked();
+    deliver_painted_frames(&mut cx);
     assert!(active_popup(&mut cx).is_none());
     let hint = active_hint(&mut cx).expect("unavailable classification is completed, not pending");
     assert_eq!(

@@ -17,22 +17,27 @@ use crate::application_menu::{
 
 use gpui::{
     AnyElement, App, Context, Entity, Hsla, InteractiveElement, IntoElement, MouseButton,
-    ParentElement, Render, Styled, Subscription, WeakEntity, Window, actions, div, px, rgb,
+    ParentElement, Render, Styled, Subscription, WeakEntity, Window, actions, div, point, px, rgb,
 };
 use project::{
     Project, git_store::GitStoreEvent, project_settings::ProjectSettings,
     trusted_worktrees::TrustedWorktrees,
 };
+use recent_projects::RecentProjects;
 use settings::Settings as _;
 
-use std::path::Path;
+use std::{path::Path, sync::Arc};
 use theme::UiDensity;
 use title_bar_settings::TitleBarSettings;
-use toolbar_widgets::{ToolbarWidget, ToolbarWidgetColors, avatar_initials, upstream_tracking};
-use ui::{
-    IconButton, PopoverMenu, TintColor, Tooltip, prelude::*, utils::platform_title_bar_height,
+use toolbar_widgets::{
+    ToolbarWidget, ToolbarWidgetColors, avatar_initials, toolbar_widget_icon_color,
+    upstream_tracking,
 };
-use util::ResultExt;
+use ui::{
+    ContextMenu, IconButton, PopoverMenu, TintColor, Tooltip, prelude::*,
+    utils::platform_title_bar_height,
+};
+use util::{ResultExt, paths::PathExt as _};
 use workspace::{
     AccessibleMode, MultiWorkspace, ToggleWorktreeSecurity, Workspace, WorkspaceSettings,
 };
@@ -46,6 +51,8 @@ const NAVIGATION_BUTTONS_DEBUG_SELECTOR: &str = "title_bar_navigation_buttons";
 const TITLE_BAR_ACTIONS_DEBUG_SELECTOR: &str = "title_bar_actions";
 const PROJECT_WIDGET_DEBUG_SELECTOR: &str = "title_bar_project_widget";
 const WORKTREE_AND_BRANCH_DEBUG_SELECTOR: &str = "title_bar_worktree_and_branch";
+const VERSION_CONTROL_SETUP_DEBUG_SELECTOR: &str = "title_bar_version_control_setup";
+const DETACHED_HEAD_TOOLTIP: &str = "Git: Detached HEAD doesn't point to any branch";
 const PROJECT_GRADIENT_COLOR: u32 = 0x955AE0;
 const TITLE_BAR_BUTTON_SIDE: Pixels = px(22.);
 const TITLE_BAR_BUTTON_RADIUS: Pixels = px(6.);
@@ -163,6 +170,7 @@ impl Render for TitleBar {
         let show_menus = show_menus(cx);
 
         let mut project_name = None;
+        let mut project_path = None;
         let mut repository = None;
         let mut linked_worktree_name = None;
         if let Some(worktree) = self.effective_active_worktree(cx) {
@@ -172,6 +180,7 @@ impl Render for TitleBar {
                 .root_name()
                 .file_name()
                 .map(|name| SharedString::from(name.to_string()));
+            project_path = Some(worktree.read(cx).abs_path());
             if let Some(repo) = &repository {
                 let repo = repo.read(cx);
                 let identity_fallback =
@@ -195,8 +204,17 @@ impl Render for TitleBar {
             }
         }
 
-        let project_gradient = (project_name.is_some() && title_bar_settings.show_project_gradient)
-            .then(Self::project_gradient_color);
+        // WebStorm's Islands turn the project gradient off while any background image is set.
+        let project_gradient = (project_name.is_some()
+            && title_bar_settings.show_project_gradient
+            && !ui::has_any_background_image(window, cx))
+        .then(Self::project_gradient_color);
+        // IntelliJ keeps its VCS widget in a project without version control, as a
+        // "Version Control" combo that offers to create a repository.
+        let show_version_control_setup = project_name.is_some()
+            && repository.is_none()
+            && is_git_enabled
+            && title_bar_settings.show_branch_name;
 
         let (can_go_back, can_go_forward) = self
             .workspace
@@ -219,7 +237,6 @@ impl Render for TitleBar {
                         can_go_back,
                         can_go_forward,
                         self.workspace.clone(),
-                        window,
                         cx,
                     ))
                     .when_some(
@@ -239,7 +256,8 @@ impl Render for TitleBar {
                     .when(render_project_items, |title_bar| {
                         title_bar
                             .when_some(project_name.clone(), |title_bar, project_name| {
-                                title_bar.child(Self::render_project_widget(project_name))
+                                title_bar
+                                    .child(self.render_project_widget(project_name, project_path))
                             })
                             .when_some(
                                 repository.filter(|_| is_git_enabled),
@@ -251,13 +269,19 @@ impl Render for TitleBar {
                                     ))
                                 },
                             )
+                            .when(show_version_control_setup, |title_bar| {
+                                title_bar.child(Self::render_version_control_setup())
+                            })
                     })
             })
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .into_any_element();
 
-        let title_bar_actions =
-            Self::render_title_bar_actions(title_bar_settings.show_search_button, window, cx);
+        let title_bar_actions = Self::render_title_bar_actions(
+            title_bar_settings.show_search_button,
+            project_gradient.is_some(),
+            cx,
+        );
 
         if show_menus {
             self.platform_titlebar.update(cx, |this, _| {
@@ -485,14 +509,20 @@ impl TitleBar {
         rgb(PROJECT_GRADIENT_COLOR).into()
     }
 
-    fn title_bar_button_metrics(window: &Window, cx: &App) -> (IconSize, Pixels, Pixels) {
+    /// The icon size, the fixed square side and the corner radius of the title bar icon buttons.
+    ///
+    /// `IconSize::Medium` is an exact 16 px icon in a 22 px box (`MainToolbar.Icon`). With
+    /// `title_bar.icon_size` set there is no fixed side, so `IconButton` scales the icon to
+    /// 16·N/14 px and grows the box to at least the icon size plus 8 px.
+    fn title_bar_button_metrics(cx: &App) -> (IconSize, Option<Pixels>, Pixels) {
         let radius = match theme::theme_settings(cx).ui_density(cx) {
             UiDensity::Compact => TITLE_BAR_BUTTON_RADIUS_COMPACT,
             UiDensity::Default | UiDensity::Comfortable => TITLE_BAR_BUTTON_RADIUS,
         };
+        let icon_size_configured = ui::chrome_icon_scale(ui::ChromeRegion::TitleBar, cx).is_some();
         (
-            ui::exact_icon_size(ui::TOOLBAR_ICON_SIDE, window.rem_size()),
-            TITLE_BAR_BUTTON_SIDE,
+            IconSize::Medium,
+            (!icon_size_configured).then_some(TITLE_BAR_BUTTON_SIDE),
             radius,
         )
     }
@@ -501,16 +531,15 @@ impl TitleBar {
         can_go_back: bool,
         can_go_forward: bool,
         workspace: WeakEntity<Workspace>,
-        window: &Window,
         cx: &App,
     ) -> impl IntoElement {
-        let (icon_size, side, radius) = Self::title_bar_button_metrics(window, cx);
+        let (icon_size, side, radius) = Self::title_bar_button_metrics(cx);
         let backward = IconButton::new("title_bar_navigate_backward", IconName::ArrowLeft)
             .shape(ui::IconButtonShape::Square)
             .style(ButtonStyle::Subtle)
             .chrome_region(ui::ChromeRegion::TitleBar)
             .icon_size(icon_size)
-            .box_size(side)
+            .when_some(side, |button, side| button.box_size(side))
             .corner_radius(radius)
             .aria_label("Go Back")
             .disabled(!can_go_back)
@@ -531,7 +560,7 @@ impl TitleBar {
             .style(ButtonStyle::Subtle)
             .chrome_region(ui::ChromeRegion::TitleBar)
             .icon_size(icon_size)
-            .box_size(side)
+            .when_some(side, |button, side| button.box_size(side))
             .corner_radius(radius)
             .aria_label("Go Forward")
             .disabled(!can_go_forward)
@@ -559,42 +588,82 @@ impl TitleBar {
             .child(forward)
     }
 
-    fn render_project_widget(project_name: SharedString) -> impl IntoElement {
+    fn render_project_widget(
+        &self,
+        project_name: SharedString,
+        project_path: Option<Arc<Path>>,
+    ) -> impl IntoElement + use<> {
         let initials: SharedString = avatar_initials(&project_name).into();
         let color = Self::project_gradient_color();
-        let tooltip_label = project_name.clone();
-        let open_recent = zed_actions::OpenRecent {
-            create_new_window: None,
-        };
-        let tooltip_action = open_recent.clone();
+        let tooltip_text = project_widget_tooltip(&project_name, project_path.as_deref());
+        let workspace = self.workspace.clone();
+        let multi_workspace = self.multi_workspace.clone();
 
         h_flex()
             .debug_selector(|| PROJECT_WIDGET_DEBUG_SELECTOR.into())
             .child(
-                ToolbarWidget::avatar("project_widget_trigger", initials, color)
-                    .label(project_name)
-                    .tab_index(0)
-                    .tooltip(move |_window, cx| {
-                        Tooltip::with_meta(
-                            "Recent Projects",
-                            Some(&tooltip_action),
-                            format!("Currently Open: {tooltip_label}"),
+                PopoverMenu::new("project-widget-menu")
+                    .menu(move |window, cx| {
+                        let window_project_groups = multi_workspace
+                            .as_ref()
+                            .and_then(|multi_workspace| multi_workspace.upgrade())
+                            .map(|multi_workspace| multi_workspace.read(cx).project_group_keys())
+                            .unwrap_or_default();
+                        RecentProjects::popover(
+                            workspace.clone(),
+                            window_project_groups,
+                            window,
                             cx,
                         )
                     })
-                    .on_click(move |_, window, cx| {
-                        window.dispatch_action(Box::new(open_recent.clone()), cx)
-                    }),
+                    .trigger(
+                        ToolbarWidget::avatar("project_widget_trigger", initials, color)
+                            .label(project_name)
+                            .tab_index(0)
+                            .tooltip(move |_window, cx| Tooltip::simple(tooltip_text.clone(), cx)),
+                    )
+                    .anchor(gpui::Anchor::TopLeft)
+                    // The default offset lines a context menu's item text up with the trigger;
+                    // IntelliJ's `showUnderneathOf` puts the popup's own edge under the widget's.
+                    .offset(point(px(0.), px(0.))),
+            )
+    }
+
+    fn render_version_control_setup() -> impl IntoElement {
+        h_flex()
+            .debug_selector(|| VERSION_CONTROL_SETUP_DEBUG_SELECTOR.into())
+            .child(
+                PopoverMenu::new("version-control-setup-menu")
+                    .menu(|window, cx| {
+                        Some(ContextMenu::build(window, cx, |menu, _, _| {
+                            menu.action("Create Git Repository…", Box::new(git::Init))
+                        }))
+                    })
+                    .trigger(
+                        ToolbarWidget::text("version_control_setup_trigger", "Version Control")
+                            .tab_index(0)
+                            .tooltip(|_window, cx| {
+                                Tooltip::simple("Configure a version control for the project", cx)
+                            }),
+                    )
+                    .anchor(gpui::Anchor::TopLeft),
             )
     }
 
     fn render_title_bar_actions(
         show_search_button: bool,
-        window: &Window,
+        project_gradient_active: bool,
         cx: &App,
     ) -> impl IntoElement + use<> {
-        let (icon_size, side, radius) = Self::title_bar_button_metrics(window, cx);
+        let (icon_size, side, radius) = Self::title_bar_button_metrics(cx);
         let colors = ToolbarWidgetColors::current(cx);
+        // With the project gradient IntelliJ paints a pushed header button in the same
+        // translucent hover colour (`getHeaderBackgroundColor`).
+        let pressed_background = if project_gradient_active {
+            colors.hover
+        } else {
+            colors.open
+        };
         let search_action = zed_actions::search_everywhere::Toggle { tab: None };
         let action_button = move |id: &'static str, icon: IconName| {
             IconButton::new(id, icon)
@@ -602,16 +671,20 @@ impl TitleBar {
                 .style(ButtonStyle::Subtle)
                 .chrome_region(ui::ChromeRegion::TitleBar)
                 .icon_size(icon_size)
-                .box_size(side)
+                .when_some(side, |button, side| button.box_size(side))
                 .corner_radius(radius)
                 .hover_background(colors.hover)
-                .active_background(colors.open)
+                .active_background(pressed_background)
         };
 
         h_flex()
             .debug_selector(|| TITLE_BAR_ACTIONS_DEBUG_SELECTOR.into())
             .items_center()
             .gap(TITLE_BAR_ACTION_GAP)
+            // Like the widgets on the left, keep a press on these buttons from arming the title
+            // bar's window drag: the buttons stop the release, so the drag would stay armed and
+            // the next mouse move over the title bar would move the window.
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .when(show_search_button, |this| {
                 this.child(
                     div()
@@ -630,15 +703,30 @@ impl TitleBar {
                 )
             })
             .child(
+                // IntelliJ's gear (`SettingsEntryPointAction`) opens the `SettingsEntryPointGroup`
+                // popup rather than the Settings dialog. Its Theme and View Mode entries have no
+                // Flint equivalent.
                 div()
                     .debug_selector(|| SETTINGS_BUTTON_DEBUG_SELECTOR.into())
                     .child(
-                        action_button("title_bar_settings_button", IconName::Settings)
-                            .aria_label("Settings")
-                            .tooltip(Tooltip::for_action_title("Settings", &OpenSettings))
-                            .on_click(|_, window, cx| {
-                                window.dispatch_action(Box::new(OpenSettings), cx)
-                            }),
+                        PopoverMenu::new("title_bar_settings_menu")
+                            .menu(|window, cx| {
+                                Some(ContextMenu::build(window, cx, |menu, _, _| {
+                                    menu.action("Settings…", Box::new(OpenSettings))
+                                        .action(
+                                            "Plugins…",
+                                            Box::new(zed_actions::Extensions::default()),
+                                        )
+                                        .separator()
+                                        .action("Keymap…", Box::new(zed_actions::OpenKeymap))
+                                }))
+                            })
+                            .trigger_with_tooltip(
+                                action_button("title_bar_settings_button", IconName::Settings)
+                                    .aria_label("Settings"),
+                                Tooltip::for_action_title("Settings", &OpenSettings),
+                            )
+                            .anchor(gpui::Anchor::TopRight),
                     ),
             )
     }
@@ -650,8 +738,9 @@ impl TitleBar {
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
         let workspace = self.workspace.upgrade()?;
+        let icon_color = toolbar_widget_icon_color(cx);
 
-        let (branch_name, upstream, icon_info, is_detached_head) = {
+        let (branch_name, upstream, incoming_outgoing, icon_info, is_detached_head) = {
             let repo = repository.read(cx);
 
             let is_detached_head = repo.branch.is_none();
@@ -671,11 +760,14 @@ impl TitleBar {
                     })
                 });
 
-            let upstream = repo
+            let tracking_status = repo
                 .branch
                 .as_ref()
-                .and_then(|branch| branch.tracking_status())
-                .and_then(|status| upstream_tracking(status.ahead, status.behind));
+                .and_then(|branch| branch.tracking_status());
+            let upstream =
+                tracking_status.and_then(|status| upstream_tracking(status.ahead, status.behind));
+            let incoming_outgoing = tracking_status
+                .and_then(|status| incoming_outgoing_tooltip(status.behind, status.ahead));
 
             let status = repo.status_summary();
             let tracked = status.index + status.worktree;
@@ -688,10 +780,16 @@ impl TitleBar {
             } else if tracked.deleted > 0 {
                 (IconName::SquareMinus, Color::VersionControlDeleted)
             } else {
-                (IconName::GitBranch, Color::Muted)
+                (IconName::GitBranch, icon_color)
             };
 
-            (branch_name, upstream, icon_info, is_detached_head)
+            (
+                branch_name,
+                upstream,
+                incoming_outgoing,
+                icon_info,
+                is_detached_head,
+            )
         };
 
         let settings = TitleBarSettings::get_global(cx);
@@ -735,7 +833,7 @@ impl TitleBar {
                 .trigger(
                     ToolbarWidget::new(
                         "worktree_picker_trigger",
-                        Icon::new(IconName::GitWorktree).color(Color::Muted),
+                        Icon::new(IconName::GitWorktree).color(icon_color),
                         display_label,
                     )
                     .tab_index(0)
@@ -758,14 +856,16 @@ impl TitleBar {
                 let (branch_icon, branch_icon_color) = if settings.show_branch_status_icon {
                     icon_info
                 } else {
-                    (IconName::GitBranch, Color::Muted)
+                    (IconName::GitBranch, icon_color)
                 };
 
                 let trigger = if is_detached_head {
+                    // IntelliJ shows the short hash with a warning icon in detached HEAD
+                    // (`GitBranchUtil.getDisplayableBranchText`, `GitCurrentBranchPresenter`).
                     ToolbarWidget::new(
                         "project_branch_trigger",
-                        Icon::new(IconName::GitBranchPlus).color(Color::Muted),
-                        "Create Branch",
+                        Icon::new(IconName::Warning).color(Color::Warning),
+                        branch_name,
                     )
                 } else {
                     ToolbarWidget::new(
@@ -777,12 +877,23 @@ impl TitleBar {
                 }
                 .tab_index(0)
                 .tooltip(move |_window, cx| {
-                    let meta = if is_detached_head {
-                        format!("Detached HEAD: {}", branch_tooltip_label)
-                    } else {
-                        format!("Currently Checked Out: {}", branch_tooltip_label)
-                    };
-                    Tooltip::with_meta("Git Branches", Some(&zed_actions::git::Branch), meta, cx)
+                    if is_detached_head {
+                        return Tooltip::for_action(
+                            DETACHED_HEAD_TOOLTIP,
+                            &zed_actions::git::Branch,
+                            cx,
+                        );
+                    }
+                    let title = branch_widget_tooltip_title(&branch_tooltip_label);
+                    match &incoming_outgoing {
+                        Some(incoming_outgoing) => Tooltip::with_meta(
+                            title,
+                            Some(&zed_actions::git::Branch),
+                            incoming_outgoing.clone(),
+                            cx,
+                        ),
+                        None => Tooltip::for_action(title, &zed_actions::git::Branch, cx),
+                    }
                 });
 
                 PopoverMenu::new("branch-menu")
@@ -824,19 +935,60 @@ impl TitleBar {
     }
 }
 
+/// Like `ProjectToolbarWidgetAction`, the project widget tooltip is the project folder relative
+/// to the home folder.
+fn project_widget_tooltip(
+    project_name: &SharedString,
+    project_path: Option<&Path>,
+) -> SharedString {
+    project_path
+        .map(|path| SharedString::from(path.compact().to_string_lossy().into_owned()))
+        .unwrap_or_else(|| project_name.clone())
+}
+
+/// IntelliJ's VCS widget tooltip title (`tooltip.branch.widget.vcs.branch.name.text`).
+fn branch_widget_tooltip_title(branch_name: &str) -> String {
+    format!("Git Branch: {branch_name}")
+}
+
+/// The incoming and outgoing line of IntelliJ's VCS widget tooltip
+/// (`GitInOutCountersInProject.calcTooltip` for one repository).
+fn incoming_outgoing_tooltip(incoming: u32, outgoing: u32) -> Option<String> {
+    let commits = |count: u32| if count == 1 { "commit" } else { "commits" };
+    match (incoming, outgoing) {
+        (0, 0) => None,
+        (incoming, 0) => Some(format!("{incoming} incoming {}", commits(incoming))),
+        (0, outgoing) => Some(format!("{outgoing} outgoing {}", commits(outgoing))),
+        (incoming, outgoing) => Some(format!(
+            "{incoming} incoming and {outgoing} outgoing commits"
+        )),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use git::repository::{UpstreamTracking, UpstreamTrackingStatus};
     use gpui::{
-        Background, Modifiers, Quad, TestAppContext, UpdateGlobal as _, VisualTestContext, point,
+        Background, Bounds, Modifiers, Quad, ScaledPixels, TestAppContext, UpdateGlobal as _,
+        VisualTestContext, point,
     };
     use settings::{SettingsContent, SettingsStore};
-    use std::{cell::RefCell, rc::Rc};
+    use std::{
+        cell::{Cell, RefCell},
+        rc::Rc,
+    };
     use util::paths::PathStyle;
     use workspace::AppState;
 
     const PROJECT_ROOT: &str = "/flint";
+    const DETACHED_HEAD_SHA: &str = "0123456789abcdef0123456789abcdef01234567";
+
+    struct TestRepository {
+        branch: Option<&'static str>,
+        upstream: Option<UpstreamTrackingStatus>,
+        head_sha: Option<&'static str>,
+    }
 
     async fn open_project_title_bar<'a>(
         cx: &'a mut TestAppContext,
@@ -858,6 +1010,22 @@ mod tests {
         Entity<TitleBar>,
         &'a mut VisualTestContext,
     ) {
+        let repository = checked_out_branch.map(|branch| TestRepository {
+            branch: Some(branch),
+            upstream,
+            head_sha: None,
+        });
+        open_project_title_bar_with_repository(cx, repository).await
+    }
+
+    async fn open_project_title_bar_with_repository<'a>(
+        cx: &'a mut TestAppContext,
+        repository: Option<TestRepository>,
+    ) -> (
+        Entity<Workspace>,
+        Entity<TitleBar>,
+        &'a mut VisualTestContext,
+    ) {
         let app_state = cx.update(|cx| {
             let app_state = AppState::test(cx);
             PlatformTitleBar::init(cx);
@@ -868,7 +1036,7 @@ mod tests {
             .create_dir(Path::new(PROJECT_ROOT))
             .await
             .expect("project root should be created");
-        if let Some(branch) = checked_out_branch {
+        if let Some(repository) = repository {
             let dot_git = Path::new(PROJECT_ROOT).join(".git");
             app_state
                 .fs
@@ -876,14 +1044,19 @@ mod tests {
                 .await
                 .expect("git directory should be created");
             let fake_fs = app_state.fs.as_fake();
-            fake_fs.set_branch_name(&dot_git, Some(branch));
-            if let Some(tracking) = upstream {
-                fake_fs.set_upstream_for_repo(
-                    &dot_git,
-                    branch,
-                    "origin/main",
-                    UpstreamTracking::Tracked(tracking),
-                );
+            if let Some(branch) = repository.branch {
+                fake_fs.set_branch_name(&dot_git, Some(branch));
+                if let Some(tracking) = repository.upstream {
+                    fake_fs.set_upstream_for_repo(
+                        &dot_git,
+                        branch,
+                        "origin/main",
+                        UpstreamTracking::Tracked(tracking),
+                    );
+                }
+            }
+            if let Some(head_sha) = repository.head_sha {
+                fake_fs.set_head_for_repo(&dot_git, &[], head_sha);
             }
         }
         let project = Project::test(app_state.fs.clone(), [Path::new(PROJECT_ROOT)], cx).await;
@@ -949,6 +1122,65 @@ mod tests {
     }
 
     #[gpui::test]
+    async fn project_gradient_is_hidden_while_a_background_image_is_set(cx: &mut TestAppContext) {
+        let (_workspace, _title_bar, cx) = open_project_title_bar(cx, None).await;
+        assert!(cx.debug_bounds("project_gradient").is_some());
+
+        let image = cx
+            .update(|_, cx| cx.svg_renderer())
+            .render_single_frame(
+                br#"<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"><rect width="1" height="1"/></svg>"#,
+                1.,
+            )
+            .expect("a one pixel SVG should render");
+        let layer = ui::BackgroundImagePaintLayer {
+            image,
+            mode: ui::BackgroundImageMode::Scale,
+            alignment: ui::BackgroundImageAlignment::Center,
+        };
+        let publish_images = |images: ui::WindowBackgroundImages, cx: &mut VisualTestContext| {
+            cx.update(|window, cx| {
+                let window_id = window.window_handle().window_id();
+                ui::BackgroundImageLayers::set_window(window_id, images, cx);
+                window.refresh();
+            });
+            cx.run_until_parked();
+        };
+
+        publish_images(
+            ui::WindowBackgroundImages {
+                editor_and_tools: Some(layer.clone()),
+                empty_frame: None,
+            },
+            cx,
+        );
+        assert_eq!(
+            cx.debug_bounds("project_gradient"),
+            None,
+            "an editor image turns the project gradient off, like WebStorm's Islands"
+        );
+
+        publish_images(
+            ui::WindowBackgroundImages {
+                editor_and_tools: None,
+                empty_frame: Some(layer),
+            },
+            cx,
+        );
+        assert_eq!(
+            cx.debug_bounds("project_gradient"),
+            None,
+            "an empty frame image turns the project gradient off too"
+        );
+
+        publish_images(ui::WindowBackgroundImages::default(), cx);
+        assert!(
+            cx.debug_bounds("project_gradient").is_some(),
+            "without background images the gradient comes back"
+        );
+    }
+
+    #[gpui::test]
     async fn project_gradient_is_intellij_violet_for_every_project(cx: &mut TestAppContext) {
         let (_workspace, _title_bar, cx) = open_project_title_bar(cx, None).await;
 
@@ -997,6 +1229,12 @@ mod tests {
             "inactive windows dim their frame content by default"
         );
         let gradient = ui::project_gradient_background(project_color);
+        let avatar_fill = toolbar_widgets::project_avatar_background(project_color);
+        assert_ne!(
+            avatar_fill,
+            Background::from(project_color),
+            "the avatar chip is IntelliJ's Avatar.End to Avatar.Start gradient, not a solid fill"
+        );
 
         assert!(cx.update(|window, _| window.is_window_active()));
         let active_quads = cx.update(|window, _| window.painted_quads());
@@ -1005,7 +1243,7 @@ mod tests {
             "an active window paints the gradient at full strength"
         );
         assert!(
-            avatar_chip_fills(active_quads.as_slice()).contains(&Background::from(project_color)),
+            avatar_chip_fills(active_quads.as_slice()).contains(&avatar_fill),
             "an active window paints the project avatar chip at full strength"
         );
 
@@ -1028,12 +1266,11 @@ mod tests {
         );
         let inactive_avatar_fills = avatar_chip_fills(inactive_quads.as_slice());
         assert!(
-            inactive_avatar_fills
-                .contains(&Background::from(project_color.opacity(inactive_opacity))),
+            inactive_avatar_fills.contains(&avatar_fill.opacity(inactive_opacity)),
             "an inactive window dims the project avatar chip"
         );
         assert!(
-            !inactive_avatar_fills.contains(&Background::from(project_color)),
+            !inactive_avatar_fills.contains(&avatar_fill),
             "no undimmed project avatar chip remains in an inactive window"
         );
         assert!(
@@ -1368,6 +1605,486 @@ mod tests {
         );
     }
 
+    #[track_caller]
+    fn assert_square(bounds: Bounds<Pixels>, expected: f32, label: &str) {
+        for side in [bounds.size.width, bounds.size.height] {
+            assert!(
+                (f32::from(side) - expected).abs() < 0.01,
+                "the {label} is {bounds:?}, expected {expected} px square"
+            );
+        }
+    }
+
+    fn quads_inside(cx: &mut VisualTestContext, bounds: Bounds<Pixels>) -> Vec<Quad> {
+        let (scale_factor, quads) =
+            cx.update(|window, _| (window.scale_factor(), window.painted_quads()));
+        let bounds = bounds.scale(scale_factor);
+        quads
+            .into_iter()
+            .filter(|quad| bounds.contains(&quad.bounds.center()))
+            .collect()
+    }
+
+    #[gpui::test]
+    async fn title_bar_icon_size_grows_the_icon_buttons_around_their_icons(
+        cx: &mut TestAppContext,
+    ) {
+        let (_workspace, _title_bar, cx) = open_project_title_bar(cx, Some("main")).await;
+        let buttons = [
+            "ICON-ArrowLeft",
+            "ICON-ArrowRight",
+            SEARCH_BUTTON_DEBUG_SELECTOR,
+            SETTINGS_BUTTON_DEBUG_SELECTOR,
+        ];
+        for selector in buttons {
+            let button = cx
+                .debug_bounds(selector)
+                .unwrap_or_else(|| panic!("{selector} is rendered in the title bar"));
+            assert_square(button, 22., selector);
+        }
+
+        update_user_settings(cx, |settings| {
+            settings.title_bar.get_or_insert_default().icon_size = Some(20);
+        });
+
+        let title_bar_height = cx.update(|window, cx| platform_title_bar_height(window, cx));
+        for selector in buttons {
+            let button = cx
+                .debug_bounds(selector)
+                .unwrap_or_else(|| panic!("{selector} is rendered in the title bar"));
+            assert_square(button, 28., selector);
+            assert_visible_inside_title_bar(button, title_bar_height, selector);
+        }
+    }
+
+    #[gpui::test]
+    async fn title_bar_height_never_cuts_off_the_toolbar_widgets(cx: &mut TestAppContext) {
+        let (_workspace, _title_bar, cx) = open_project_title_bar(cx, Some("main")).await;
+
+        update_user_settings(cx, |settings| {
+            settings.title_bar.get_or_insert_default().height = Some(24);
+        });
+
+        let title_bar_height = cx.update(|window, cx| platform_title_bar_height(window, cx));
+        assert_eq!(
+            title_bar_height,
+            px(30.),
+            "a 24 px title_bar.height is raised to the 30 px widget pills"
+        );
+        for selector in [
+            PROJECT_WIDGET_DEBUG_SELECTOR,
+            WORKTREE_AND_BRANCH_DEBUG_SELECTOR,
+        ] {
+            let widget = cx
+                .debug_bounds(selector)
+                .unwrap_or_else(|| panic!("{selector} is rendered in the title bar"));
+            assert_visible_inside_title_bar(widget, title_bar_height, selector);
+        }
+    }
+
+    #[gpui::test]
+    async fn toolbar_widgets_are_intellij_combo_pills_in_every_density(cx: &mut TestAppContext) {
+        let (_workspace, _title_bar, cx) = open_project_title_bar(cx, Some("main")).await;
+
+        for (density, expected_height) in [
+            (settings::UiDensity::Default, 30.),
+            (settings::UiDensity::Compact, 26.),
+        ] {
+            update_user_settings(cx, |settings| {
+                settings.theme.ui_density = Some(density);
+            });
+            for selector in [
+                PROJECT_WIDGET_DEBUG_SELECTOR,
+                WORKTREE_AND_BRANCH_DEBUG_SELECTOR,
+            ] {
+                let widget = cx
+                    .debug_bounds(selector)
+                    .unwrap_or_else(|| panic!("{selector} is rendered in the title bar"));
+                assert_eq!(
+                    widget.size.height,
+                    px(expected_height),
+                    "{selector} is a {expected_height} px MainToolbar combo pill in {density:?} density"
+                );
+            }
+
+            let project_widget = cx
+                .debug_bounds(PROJECT_WIDGET_DEBUG_SELECTOR)
+                .expect("the project widget is rendered in the title bar");
+            cx.simulate_mouse_move(project_widget.center(), None, Modifiers::none());
+            cx.run_until_parked();
+            let (hover, scale_factor) = cx.update(|window, cx| {
+                (
+                    ToolbarWidgetColors::current(cx).hover,
+                    window.scale_factor(),
+                )
+            });
+            let hovered_pill = quads_inside(cx, project_widget)
+                .into_iter()
+                .find(|quad| quad.background == Background::from(hover))
+                .expect("a hovered widget paints its pill");
+            assert_eq!(
+                hovered_pill.corner_radii.top_left,
+                ScaledPixels(6. * scale_factor),
+                "MainToolbar.Dropdown.arc 12 has no compact key, so the pill keeps a 6 px radius in {density:?} density"
+            );
+            cx.simulate_mouse_move(point(px(1.), px(300.)), None, Modifiers::none());
+            cx.run_until_parked();
+        }
+    }
+
+    #[gpui::test]
+    async fn an_open_widget_popup_paints_the_hover_colour_and_no_pressed_fill(
+        cx: &mut TestAppContext,
+    ) {
+        let (_workspace, _title_bar, cx) = open_project_title_bar(cx, None).await;
+        let widget = cx
+            .debug_bounds("TOOLBAR_WIDGET-Version Control")
+            .expect("a project without a repository shows the Version Control widget");
+
+        cx.simulate_click(widget.center(), Modifiers::none());
+        cx.run_until_parked();
+        assert!(
+            cx.debug_bounds("MENU_ITEM-Create Git Repository…")
+                .is_some(),
+            "clicking the widget opens its popup"
+        );
+        cx.simulate_mouse_move(point(px(1.), px(300.)), None, Modifiers::none());
+        cx.run_until_parked();
+
+        let colors = cx.update(|_, cx| ToolbarWidgetColors::current(cx));
+        let fills = quads_inside(cx, widget)
+            .into_iter()
+            .map(|quad| quad.background)
+            .collect::<Vec<_>>();
+        assert!(
+            fills.contains(&Background::from(colors.hover)),
+            "while its popup is shown the widget keeps IntelliJ's hover colour"
+        );
+        assert!(
+            !fills.contains(&Background::from(colors.open)),
+            "ToolbarComboButtonUI has no pressed or open colour"
+        );
+    }
+
+    #[gpui::test]
+    async fn pressed_icon_buttons_keep_the_hover_colour_over_the_project_gradient(
+        cx: &mut TestAppContext,
+    ) {
+        let (_workspace, _title_bar, cx) = open_project_title_bar(cx, None).await;
+        let colors = cx.update(|_, cx| ToolbarWidgetColors::current(cx));
+
+        for (show_project_gradient, expected_fill) in [(true, colors.hover), (false, colors.open)] {
+            update_user_settings(cx, |settings| {
+                settings
+                    .title_bar
+                    .get_or_insert_default()
+                    .show_project_gradient = Some(show_project_gradient);
+            });
+            let search_button = cx
+                .debug_bounds(SEARCH_BUTTON_DEBUG_SELECTOR)
+                .expect("the search button is rendered in the title bar");
+            cx.simulate_mouse_move(search_button.center(), None, Modifiers::none());
+            cx.simulate_mouse_down(search_button.center(), MouseButton::Left, Modifiers::none());
+            cx.run_until_parked();
+
+            let fills = quads_inside(cx, search_button)
+                .into_iter()
+                .map(|quad| quad.background)
+                .collect::<Vec<_>>();
+            assert!(
+                fills.contains(&Background::from(expected_fill)),
+                "a pressed header button is filled with {expected_fill:?} when the gradient is {show_project_gradient}"
+            );
+            if show_project_gradient {
+                assert!(
+                    !fills.contains(&Background::from(colors.open)),
+                    "over the project gradient IntelliJ paints a pushed header button in the hover colour"
+                );
+            }
+
+            cx.simulate_mouse_up(search_button.center(), MouseButton::Left, Modifiers::none());
+            cx.simulate_mouse_move(point(px(1.), px(300.)), None, Modifiers::none());
+            cx.run_until_parked();
+        }
+    }
+
+    #[gpui::test]
+    async fn clicking_a_title_bar_action_does_not_arm_the_window_drag(cx: &mut TestAppContext) {
+        let (_workspace, _title_bar, cx) = open_project_title_bar(cx, None).await;
+        let search_button = cx
+            .debug_bounds(SEARCH_BUTTON_DEBUG_SELECTOR)
+            .expect("the search button is rendered in the title bar");
+
+        cx.simulate_mouse_move(search_button.center(), None, Modifiers::none());
+        cx.simulate_mouse_down(search_button.center(), MouseButton::Left, Modifiers::none());
+        cx.simulate_mouse_up(search_button.center(), MouseButton::Left, Modifiers::none());
+        // The test window's `start_window_move` is unimplemented, so a drag left armed by the
+        // press would panic on this move across the title bar.
+        cx.simulate_mouse_move(
+            search_button.center() - point(px(40.), px(0.)),
+            None,
+            Modifiers::none(),
+        );
+        cx.run_until_parked();
+    }
+
+    #[gpui::test]
+    async fn detached_head_shows_the_short_hash_like_intellij(cx: &mut TestAppContext) {
+        let (_workspace, _title_bar, cx) = open_project_title_bar_with_repository(
+            cx,
+            Some(TestRepository {
+                branch: None,
+                upstream: None,
+                head_sha: Some(DETACHED_HEAD_SHA),
+            }),
+        )
+        .await;
+
+        assert!(
+            cx.debug_bounds("TOOLBAR_WIDGET-01234567").is_some(),
+            "a detached HEAD shows its 8 character hash as the widget text"
+        );
+        assert_eq!(
+            cx.debug_bounds("TOOLBAR_WIDGET-Create Branch"),
+            None,
+            "the widget does not turn into a Create Branch button"
+        );
+        assert_eq!(
+            cx.debug_bounds(VERSION_CONTROL_SETUP_DEBUG_SELECTOR),
+            None,
+            "a repository in detached HEAD still has its VCS widget"
+        );
+    }
+
+    #[gpui::test]
+    async fn settings_button_opens_the_settings_entry_point_menu(cx: &mut TestAppContext) {
+        let (_workspace, _title_bar, cx) = open_project_title_bar(cx, None).await;
+        let opened_settings = Rc::new(Cell::new(0));
+        cx.update(|_, cx| {
+            let opened_settings = opened_settings.clone();
+            cx.on_action(move |_: &OpenSettings, _| {
+                opened_settings.set(opened_settings.get() + 1);
+            });
+        });
+
+        let settings_button = cx
+            .debug_bounds(SETTINGS_BUTTON_DEBUG_SELECTOR)
+            .expect("the Settings gear is rendered in the title bar");
+        cx.simulate_click(settings_button.center(), Modifiers::none());
+        cx.run_until_parked();
+
+        assert_eq!(
+            opened_settings.get(),
+            0,
+            "the gear opens its menu instead of the Settings window"
+        );
+        let items = [
+            "MENU_ITEM-Settings…",
+            "MENU_ITEM-Plugins…",
+            "MENU_ITEM-Keymap…",
+        ]
+        .map(|selector| {
+            cx.debug_bounds(selector)
+                .unwrap_or_else(|| panic!("the Settings menu has {selector}"))
+        });
+        assert!(
+            items[0].top() < items[1].top() && items[1].top() < items[2].top(),
+            "the entries follow SettingsEntryPointGroup: {items:?}"
+        );
+
+        cx.simulate_click(items[0].center(), Modifiers::none());
+        cx.run_until_parked();
+        assert_eq!(
+            opened_settings.get(),
+            1,
+            "Settings… opens the Settings window"
+        );
+    }
+
+    #[gpui::test]
+    async fn project_widget_opens_recent_projects_underneath_it(cx: &mut TestAppContext) {
+        let (workspace, _title_bar, cx) = open_project_title_bar(cx, None).await;
+        cx.update(|_, cx| editor::init(cx));
+        let project_widget = cx
+            .debug_bounds(PROJECT_WIDGET_DEBUG_SELECTOR)
+            .expect("the project widget is rendered in the title bar");
+        assert_eq!(
+            cx.debug_bounds(recent_projects::RECENT_PROJECTS_DEBUG_SELECTOR),
+            None
+        );
+
+        cx.simulate_click(project_widget.center(), Modifiers::none());
+        cx.run_until_parked();
+
+        let popup = cx
+            .debug_bounds(recent_projects::RECENT_PROJECTS_DEBUG_SELECTOR)
+            .expect("clicking the project widget opens Recent Projects");
+        assert!(
+            popup.top() >= project_widget.bottom(),
+            "the popup opens underneath the widget: {popup:?}, widget {project_widget:?}"
+        );
+        assert!(
+            (popup.left() - project_widget.left()).abs() <= px(8.),
+            "the popup is left-aligned with the widget: {popup:?}, widget {project_widget:?}"
+        );
+        workspace.read_with(cx, |workspace, cx| {
+            assert!(
+                workspace.active_modal::<RecentProjects>(cx).is_none(),
+                "the widget does not open the centred Recent Projects modal"
+            );
+        });
+    }
+
+    // PopoverMenu focuses a menu two frames after it opens, and tests have no frame loop.
+    fn deliver_popover_focus(cx: &mut VisualTestContext) {
+        cx.run_until_parked();
+        for _ in 0..2 {
+            cx.update(|window, cx| {
+                window.simulate_next_frame(cx);
+            });
+            cx.run_until_parked();
+        }
+    }
+
+    #[gpui::test]
+    async fn recent_projects_popup_stays_open_while_its_actions_menu_is_open(
+        cx: &mut TestAppContext,
+    ) {
+        let (_workspace, _title_bar, cx) = open_project_title_bar(cx, None).await;
+        cx.update(|_, cx| editor::init(cx));
+        let project_widget = cx
+            .debug_bounds(PROJECT_WIDGET_DEBUG_SELECTOR)
+            .expect("the project widget is rendered in the title bar");
+        cx.simulate_click(project_widget.center(), Modifiers::none());
+        deliver_popover_focus(cx);
+
+        cx.dispatch_action(recent_projects::ToggleActionsMenu);
+        deliver_popover_focus(cx);
+
+        assert!(
+            cx.debug_bounds("MENU_ITEM-Open Local Folders").is_some(),
+            "the Actions menu of Recent Projects is open"
+        );
+        assert!(
+            cx.debug_bounds(recent_projects::RECENT_PROJECTS_DEBUG_SELECTOR)
+                .is_some(),
+            "moving focus into the Actions menu keeps the popup open"
+        );
+    }
+
+    #[gpui::test]
+    async fn project_without_a_repository_shows_the_version_control_widget(
+        cx: &mut TestAppContext,
+    ) {
+        let (_workspace, _title_bar, cx) = open_project_title_bar(cx, None).await;
+        let project_widget = cx
+            .debug_bounds(PROJECT_WIDGET_DEBUG_SELECTOR)
+            .expect("the project widget is rendered in the title bar");
+        let version_control = cx
+            .debug_bounds(VERSION_CONTROL_SETUP_DEBUG_SELECTOR)
+            .expect("a project without a repository keeps IntelliJ's VCS widget");
+        assert!(
+            cx.debug_bounds("TOOLBAR_WIDGET-Version Control").is_some(),
+            "the widget reads Version Control"
+        );
+        assert!(
+            project_widget.right() <= version_control.left(),
+            "the VCS widget follows the project widget, like MainToolbarLeft"
+        );
+
+        cx.simulate_click(version_control.center(), Modifiers::none());
+        cx.run_until_parked();
+        assert!(
+            cx.debug_bounds("MENU_ITEM-Create Git Repository…")
+                .is_some(),
+            "its popup offers to create a Git repository"
+        );
+    }
+
+    #[gpui::test]
+    async fn a_repository_shows_the_branch_widget_instead_of_version_control(
+        cx: &mut TestAppContext,
+    ) {
+        let (_workspace, _title_bar, cx) = open_project_title_bar(cx, Some("main")).await;
+
+        assert!(
+            cx.debug_bounds(WORKTREE_AND_BRANCH_DEBUG_SELECTOR)
+                .is_some()
+        );
+        assert_eq!(cx.debug_bounds(VERSION_CONTROL_SETUP_DEBUG_SELECTOR), None);
+    }
+
+    #[gpui::test]
+    async fn toolbar_widget_icons_keep_intellij_logical_sizes(cx: &mut TestAppContext) {
+        let (_workspace, _title_bar, cx) = open_project_title_bar_with_upstream(
+            cx,
+            Some("main"),
+            Some(UpstreamTrackingStatus {
+                ahead: 1,
+                behind: 2,
+            }),
+        )
+        .await;
+        let rem_size = cx.update(|window, _| window.rem_size());
+        assert_ne!(
+            rem_size,
+            px(16.),
+            "the default ui_font_size would shrink rem-based icons"
+        );
+
+        for (icon_size, scale) in [(None, 1.), (Some(21), 1.5)] {
+            update_user_settings(cx, |settings| {
+                settings.title_bar.get_or_insert_default().icon_size = icon_size;
+            });
+            for (selector, side) in [
+                (toolbar_widgets::TOOLBAR_WIDGET_ICON_DEBUG_SELECTOR, 16.),
+                (toolbar_widgets::TOOLBAR_WIDGET_CHEVRON_DEBUG_SELECTOR, 16.),
+                (toolbar_widgets::PROJECT_AVATAR_CHIP_DEBUG_SELECTOR, 16.),
+                ("title_bar_incoming_commits", 12.),
+                ("title_bar_outgoing_commits", 12.),
+            ] {
+                let bounds = cx
+                    .debug_bounds(selector)
+                    .unwrap_or_else(|| panic!("{selector} is rendered in the title bar"));
+                assert_square(bounds, side * scale, selector);
+            }
+        }
+    }
+
+    #[test]
+    fn project_widget_tooltip_is_the_project_folder_relative_to_home() {
+        let project_name = SharedString::new_static("Flint");
+        let project_path = util::paths::home_dir().join("IdeaProjects").join("Flint");
+
+        assert_eq!(
+            project_widget_tooltip(&project_name, Some(project_path.as_path())),
+            "~/IdeaProjects/Flint"
+        );
+        assert_eq!(
+            project_widget_tooltip(&project_name, Some(Path::new("/opt/flint"))),
+            "/opt/flint"
+        );
+        assert_eq!(project_widget_tooltip(&project_name, None), "Flint");
+    }
+
+    #[test]
+    fn branch_tooltip_lists_incoming_and_outgoing_commits_like_intellij() {
+        assert_eq!(branch_widget_tooltip_title("main"), "Git Branch: main");
+        assert_eq!(incoming_outgoing_tooltip(0, 0), None);
+        assert_eq!(
+            incoming_outgoing_tooltip(1, 0).as_deref(),
+            Some("1 incoming commit")
+        );
+        assert_eq!(
+            incoming_outgoing_tooltip(0, 3).as_deref(),
+            Some("3 outgoing commits")
+        );
+        assert_eq!(
+            incoming_outgoing_tooltip(2, 1).as_deref(),
+            Some("2 incoming and 1 outgoing commits")
+        );
+    }
+
     #[test]
     fn project_avatar_initials_follow_intellij_camel_case_and_word_rules() {
         assert_eq!(avatar_initials("Flint"), "F");
@@ -1375,8 +2092,31 @@ mod tests {
         assert_eq!(avatar_initials("My-Project"), "MP");
         assert_eq!(avatar_initials("John Smith"), "JS");
         assert_eq!(avatar_initials("John-Smith-Harris"), "JH");
-        assert_eq!(avatar_initials("VivaQuant.RS1"), "VR");
+        assert_eq!(avatar_initials("VivaQuant.RS1"), "VQ");
         assert_eq!(avatar_initials("  vq.Automation  "), "VA");
+        assert_eq!(avatar_initials("MyApp server"), "MA");
+
+        // IntelliJ's `RecentProjectsTest.projectInitialsMakeSense` cases.
+        for (name, expected) in [
+            ("John Smith", "JS"),
+            ("John Smith-Harris", "JS"),
+            ("John-Smith-Harris", "JH"),
+            ("John-Smith Harris", "JH"),
+            ("MyProject", "MP"),
+            ("My-Project", "MP"),
+            ("My-Project_Strong", "MP"),
+            ("My_Project_Strong", "MS"),
+            ("One,Two-Four", "OT"),
+            ("One.Two.Four", "OF"),
+            ("Project_", "P"),
+            ("_internal-project", "IP"),
+            (".internal-project", "IP"),
+            (".internalProject", "IP"),
+            ("proj_[ver1]", "PV"),
+            ("myProject-0", "MP"),
+        ] {
+            assert_eq!(avatar_initials(name), expected, "initials of {name:?}");
+        }
     }
 
     #[test]

@@ -15279,30 +15279,284 @@ mod tests {
     }
 
     #[gpui::test]
-    async fn tool_window_header_draws_a_bottom_border_for_every_dock(cx: &mut TestAppContext) {
-        let (workspace, _panels, cx) = tool_window_bar_test_workspace(cx).await;
+    async fn tool_window_header_draws_a_bottom_line_only_in_the_bottom_dock_or_under_header_tabs(
+        cx: &mut TestAppContext,
+    ) {
+        let (workspace, [left_panel, _, _], cx) = tool_window_bar_test_workspace(cx).await;
         open_dock_with_center_focus(&workspace, DockPosition::Bottom, cx);
         open_dock_with_center_focus(&workspace, DockPosition::Left, cx);
 
-        let border_color = cx.update(|_, cx| cx.theme().colors().border_variant);
+        let line_color = cx.update(|_, cx| cx.theme().colors().background);
         let scale = cx.update(|window, _| window.scale_factor());
         let close_to = |actual: f32, expected: f32| (actual - expected).abs() < 0.5;
-        for selector in ["tool_window_header_bottom", "tool_window_header_left"] {
+        let header_bottom_line = |selector: &'static str, cx: &mut VisualTestContext| {
             let header = cx
                 .debug_bounds(selector)
                 .expect("the open dock has a header")
                 .scale(scale);
-            let border = cx.update(|window, _| {
+            cx.update(|window, _| {
                 window.painted_quads().into_iter().find(|quad| {
-                    quad.background.as_solid() == Some(border_color)
+                    !quad.background.is_transparent()
                         && close_to(quad.bounds.size.height.0, scale)
                         && close_to(quad.bounds.size.width.0, header.size.width.0)
                         && close_to(quad.bounds.bottom().0, header.bottom().0)
                 })
+            })
+        };
+
+        let bottom_line = header_bottom_line("tool_window_header_bottom", cx)
+            .expect("the bottom dock header draws IntelliJ's 1 px bottom line");
+        assert_eq!(
+            bottom_line.background.as_solid(),
+            Some(line_color),
+            "the line has ToolWindow.Header.borderColor, the main window background"
+        );
+        assert!(
+            header_bottom_line("tool_window_header_left", cx).is_none(),
+            "a left tool window header at rest has no bottom line, like IntelliJ's drawBottomLine"
+        );
+
+        let header_content = cx.new(|_| TestHeaderContent);
+        left_panel.update(cx, |panel, cx| {
+            panel.header_content = Some(header_content.into());
+            cx.notify();
+        });
+        cx.run_until_parked();
+        let tabs_line = header_bottom_line("tool_window_header_left", cx).expect(
+            "a left tool window with header tabs draws the line, like IntelliJ's tabbed header",
+        );
+        assert_eq!(tabs_line.background.as_solid(), Some(line_color));
+    }
+
+    #[gpui::test]
+    async fn tool_window_more_menu_lists_panels_by_their_tool_window_title(
+        cx: &mut TestAppContext,
+    ) {
+        let (_workspace, _panels, cx) = tool_window_bar_test_workspace(cx).await;
+        let more = cx
+            .debug_bounds("tool_window_more_button")
+            .expect("the left bar has a More tool windows button");
+        cx.simulate_click(more.center(), gpui::Modifiers::none());
+        cx.run_until_parked();
+
+        assert!(
+            cx.debug_bounds("MENU_ITEM-Test").is_some(),
+            "the More menu names a panel by its stripe title, like the tool window header"
+        );
+        assert_eq!(
+            cx.debug_bounds("MENU_ITEM-Test Panel"),
+            None,
+            "the More menu drops the \" Panel\" suffix"
+        );
+    }
+
+    #[gpui::test]
+    async fn tool_window_bar_names_drop_the_panel_suffix_and_split_two_word_titles(
+        cx: &mut TestAppContext,
+    ) {
+        let (_workspace, [left_panel, _, _], cx) = tool_window_bar_test_workspace(cx).await;
+        left_panel.update(cx, |panel, cx| {
+            panel.icon_tooltip = "Project Diagnostics Panel";
+            cx.notify();
+        });
+        cx.update(|_, cx| {
+            SettingsStore::update_global(cx, |store, cx| {
+                store.update_user_settings(cx, |settings| {
+                    settings
+                        .workspace
+                        .tool_window_bars
+                        .get_or_insert_default()
+                        .show_names = Some(true);
+                });
             });
+        });
+        cx.run_until_parked();
+
+        let two_word_button = cx
+            .debug_bounds("tool_window_button_left_0")
+            .expect("the left dock panel has a button");
+        let two_word_label = cx
+            .debug_bounds("tool_window_button_left_0_label")
+            .expect("show_names draws the panel name under the icon");
+        assert_eq!(
+            two_word_label.size.height,
+            px(26.),
+            "\"Project Diagnostics\" splits at its first space into two 13 px lines"
+        );
+        assert_eq!(
+            two_word_button.size.height,
+            px(69.),
+            "the named box grows by one label line"
+        );
+
+        let one_word_button = cx
+            .debug_bounds("tool_window_button_bottom_0")
+            .expect("the bottom dock panel has a button");
+        let one_word_label = cx
+            .debug_bounds("tool_window_button_bottom_0_label")
+            .expect("show_names draws the panel name under the icon");
+        assert_eq!(
+            one_word_label.size.height,
+            px(13.),
+            "\"Test Panel\" is shown as \"Test\", one line without the panel suffix"
+        );
+        assert_eq!(one_word_button.size.height, px(56.));
+    }
+
+    #[gpui::test]
+    async fn tool_window_bar_button_menu_toggles_show_tool_window_names(cx: &mut TestAppContext) {
+        let (workspace, _panels, cx) = tool_window_bar_test_workspace(cx).await;
+        let fs = FakeFs::new(cx.executor());
+        let settings_fs: Arc<dyn fs::Fs> = fs.clone();
+        cx.update(|_, cx| <dyn fs::Fs>::set_global(settings_fs.clone(), cx));
+
+        let button = cx
+            .debug_bounds("tool_window_button_left_0")
+            .expect("the left dock panel has a button");
+        cx.simulate_mouse_down(button.center(), MouseButton::Right, gpui::Modifiers::none());
+        cx.simulate_mouse_up(button.center(), MouseButton::Right, gpui::Modifiers::none());
+        cx.run_until_parked();
+
+        let dock_right = cx
+            .debug_bounds("MENU_ITEM-Dock Right")
+            .expect("the stripe button menu moves the panel to another dock");
+        let show_names = cx
+            .debug_bounds("MENU_ITEM-Show Tool Window Names")
+            .expect("the stripe button menu ends with IntelliJ's Show Tool Window Names");
+        assert!(
+            dock_right.top() < show_names.top(),
+            "Show Tool Window Names follows the move entries, like SquareStripeButton's popup"
+        );
+
+        cx.simulate_click(show_names.center(), gpui::Modifiers::none());
+        cx.executor().advance_clock(Duration::from_millis(200));
+        cx.run_until_parked();
+        let settings_text = SettingsStore::load_settings(&settings_fs)
+            .await
+            .expect("the settings file is readable");
+        let parsed: serde_json::Value = settings::parse_json_with_comments(&settings_text)
+            .expect("the settings file is valid JSON");
+        assert_eq!(
+            parsed["tool_window_bars"]["show_names"],
+            serde_json::json!(true),
+            "the entry turns tool window names on in the user settings"
+        );
+
+        open_dock_with_center_focus(&workspace, DockPosition::Left, cx);
+        let header = cx
+            .debug_bounds("tool_window_header_left")
+            .expect("the open left dock has a header");
+        cx.simulate_mouse_move(header.center(), None, gpui::Modifiers::none());
+        let options = cx
+            .debug_bounds("tool_window_header_options_left")
+            .expect("hovering the dock reveals the options button");
+        cx.simulate_click(options.center(), gpui::Modifiers::none());
+        cx.run_until_parked();
+        assert!(
+            cx.debug_bounds("MENU_ITEM-Dock Right").is_some(),
+            "the header options menu is open"
+        );
+        assert_eq!(
+            cx.debug_bounds("MENU_ITEM-Show Tool Window Names"),
+            None,
+            "the tool window header menu has no Show Tool Window Names entry"
+        );
+    }
+
+    fn assert_empty_stripe_menu_offers_only_show_names(
+        selector: &'static str,
+        cx: &mut VisualTestContext,
+    ) {
+        let empty_area = cx
+            .debug_bounds(selector)
+            .expect("the bar has empty stripe space between its button groups");
+        assert!(empty_area.size.height > px(0.));
+        assert_eq!(
+            cx.debug_bounds("MENU_ITEM-Show Tool Window Names"),
+            None,
+            "no menu is open before right-clicking {selector}"
+        );
+
+        cx.simulate_mouse_down(
+            empty_area.center(),
+            MouseButton::Right,
+            gpui::Modifiers::none(),
+        );
+        cx.simulate_mouse_up(
+            empty_area.center(),
+            MouseButton::Right,
+            gpui::Modifiers::none(),
+        );
+        cx.run_until_parked();
+
+        assert!(
+            cx.debug_bounds("MENU_ITEM-Show Tool Window Names")
+                .is_some(),
+            "right-clicking {selector} offers Show Tool Window Names"
+        );
+        assert_eq!(
+            cx.debug_bounds("MENU_ITEM-Dock Right"),
+            None,
+            "the empty stripe menu has no panel entries"
+        );
+    }
+
+    #[gpui::test]
+    async fn tool_window_bar_empty_left_stripe_right_click_offers_only_show_tool_window_names(
+        cx: &mut TestAppContext,
+    ) {
+        let (_workspace, _panels, cx) = tool_window_bar_test_workspace(cx).await;
+        assert_empty_stripe_menu_offers_only_show_names("tool_window_bar_empty_area_left", cx);
+    }
+
+    #[gpui::test]
+    async fn tool_window_bar_empty_right_stripe_right_click_offers_only_show_tool_window_names(
+        cx: &mut TestAppContext,
+    ) {
+        let (_workspace, _panels, cx) = tool_window_bar_test_workspace(cx).await;
+        assert_empty_stripe_menu_offers_only_show_names("tool_window_bar_empty_area_right", cx);
+    }
+
+    #[gpui::test]
+    async fn tool_window_bar_tooltips_show_without_a_delay(cx: &mut TestAppContext) {
+        let (_workspace, _panels, cx) = tool_window_bar_test_workspace(cx).await;
+        let tooltip_background = cx.update(|_, cx| {
+            let colors = cx.theme().colors();
+            colors
+                .elevated_surface_background
+                .blend(colors.element_background)
+        });
+        let tooltip_is_painted = |cx: &mut VisualTestContext| {
+            cx.update(|window, _| {
+                let tooltip_radius =
+                    f32::from(ui::TOOLTIP_METRICS.corner_radius) * window.scale_factor();
+                window.painted_quads().into_iter().any(|quad| {
+                    quad.background.as_solid() == Some(tooltip_background)
+                        && (quad.corner_radii.top_left.0 - tooltip_radius).abs() < 0.5
+                })
+            })
+        };
+        let center = cx
+            .debug_bounds("center_island")
+            .expect("islands are enabled by default");
+
+        for selector in ["tool_window_button_left_0", "tool_window_more_button"] {
+            cx.simulate_mouse_move(center.center(), None, gpui::Modifiers::none());
+            cx.executor().advance_clock(Duration::from_secs(1));
+            cx.run_until_parked();
             assert!(
-                border.is_some(),
-                "{selector} draws IntelliJ's 1 px header bottom line"
+                !tooltip_is_painted(cx),
+                "no tooltip is shown before hovering {selector}"
+            );
+
+            let button = cx
+                .debug_bounds(selector)
+                .expect("the left bar shows the button");
+            cx.simulate_mouse_move(button.center(), None, gpui::Modifiers::none());
+            cx.run_until_parked();
+            assert!(
+                tooltip_is_painted(cx),
+                "{selector} shows its tooltip at once, like IntelliJ's setInitialDelay(0)"
             );
         }
     }

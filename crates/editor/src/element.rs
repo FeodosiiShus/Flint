@@ -529,6 +529,8 @@ impl EditorElement {
         }
         register_action(editor, window, Editor::go_to_diagnostic);
         register_action(editor, window, Editor::go_to_prev_diagnostic);
+        register_action(editor, window, Editor::go_to_next_highlighted_error);
+        register_action(editor, window, Editor::go_to_previous_highlighted_error);
         register_action(editor, window, Editor::go_to_next_hunk);
         register_action(editor, window, Editor::go_to_prev_hunk);
         register_action(editor, window, Editor::go_to_next_document_highlight);

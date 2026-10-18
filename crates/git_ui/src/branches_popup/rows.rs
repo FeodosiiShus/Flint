@@ -5,7 +5,7 @@ use ui::{ContextMenu, PopoverMenuHandle};
 
 use super::top_actions::{self, TopAction, TopActionItem, TopActionKind};
 use super::tree::{self, FolderRow, RefRow, SectionKind, SectionRow, TreeRow};
-use crate::branch_refs::RefTarget;
+use crate::branch_refs::{RefKind, RefTarget};
 
 const CLEAR_FILTER_QUERY: &str = "/";
 
@@ -37,6 +37,7 @@ pub enum PopupRow {
         action: TopAction,
         highlight_positions: Vec<usize>,
         score: i64,
+        matched: bool,
     },
     Repository(RepositoryRow),
     Section(SectionRow),
@@ -112,7 +113,22 @@ pub struct RowsInput<'a> {
     pub top_actions: &'a [TopActionItem],
     pub repositories: &'a [RepositoryChoice],
     pub tree_rows: Vec<TreeRow>,
-    pub menu_handles: &'a mut HashMap<RefTarget, PopoverMenuHandle<ContextMenu>>,
+    pub menu_handles: &'a mut HashMap<(SectionKind, RefTarget), PopoverMenuHandle<ContextMenu>>,
+}
+
+fn unfiltered_action_rows(top_actions: &[TopActionItem], matched: bool) -> Vec<PopupRow> {
+    top_actions
+        .iter()
+        .map(|item| match item {
+            TopActionItem::Action(action) => PopupRow::Action {
+                action: action.clone(),
+                highlight_positions: Vec::new(),
+                score: 0,
+                matched,
+            },
+            TopActionItem::Separator => PopupRow::Separator,
+        })
+        .collect()
 }
 
 pub fn build_popup_rows(input: RowsInput<'_>) -> Vec<PopupRow> {
@@ -130,6 +146,7 @@ pub fn build_popup_rows(input: RowsInput<'_>) -> Vec<PopupRow> {
                         action: matched.action,
                         highlight_positions: matched.highlight_positions,
                         score: matched.score,
+                        matched: true,
                     })
                     .collect(),
             );
@@ -152,22 +169,13 @@ pub fn build_popup_rows(input: RowsInput<'_>) -> Vec<PopupRow> {
                         .collect(),
                 );
             }
+        } else if !input.tree_rows.is_empty() {
+            // IntelliJ does not filter the actions when "Show Actions in Search Results" is off:
+            // the whole list stays above the matching refs and goes away only with them.
+            groups.push(unfiltered_action_rows(input.top_actions, false));
         }
     } else {
-        groups.push(
-            input
-                .top_actions
-                .iter()
-                .map(|item| match item {
-                    TopActionItem::Action(action) => PopupRow::Action {
-                        action: action.clone(),
-                        highlight_positions: Vec::new(),
-                        score: 0,
-                    },
-                    TopActionItem::Separator => PopupRow::Separator,
-                })
-                .collect(),
-        );
+        groups.push(unfiltered_action_rows(input.top_actions, true));
         if multiple_repositories {
             groups.push(
                 input
@@ -194,7 +202,10 @@ pub fn build_popup_rows(input: RowsInput<'_>) -> Vec<PopupRow> {
                 TreeRow::Section(section) => PopupRow::Section(section),
                 TreeRow::Folder(folder) => PopupRow::Folder(folder),
                 TreeRow::Ref(row) => {
-                    let menu_handle = menu_handles.entry(row.target.clone()).or_default().clone();
+                    let menu_handle = menu_handles
+                        .entry((row.section, row.target.clone()))
+                        .or_default()
+                        .clone();
                     PopupRow::Ref(RefEntry { row, menu_handle })
                 }
             })
@@ -209,14 +220,16 @@ pub fn build_popup_rows(input: RowsInput<'_>) -> Vec<PopupRow> {
         rows.extend(group);
     }
 
-    let present: HashSet<&RefTarget> = rows
+    let present: HashSet<(SectionKind, &RefTarget)> = rows
         .iter()
         .filter_map(|row| match row {
-            PopupRow::Ref(entry) => Some(&entry.row.target),
+            PopupRow::Ref(entry) => Some((entry.row.section, &entry.row.target)),
             _ => None,
         })
         .collect();
-    menu_handles.retain(|target, handle| present.contains(target) || handle.is_deployed());
+    menu_handles.retain(|(section, target), handle| {
+        present.contains(&(*section, target)) || handle.is_deployed()
+    });
     rows
 }
 
@@ -228,7 +241,12 @@ const RECENT_MATCH_PRIORITY: u8 = 2;
 
 fn match_rank(row: &PopupRow) -> Option<(u8, i64)> {
     match row {
-        PopupRow::Action { score, .. } => Some((0, *score)),
+        PopupRow::Action {
+            score,
+            matched: true,
+            ..
+        } => Some((0, *score)),
+        PopupRow::Action { matched: false, .. } => None,
         PopupRow::Repository(repository_row) => Some((1, repository_row.score)),
         PopupRow::Ref(entry) => {
             let priority = match entry.row.section {
@@ -266,9 +284,14 @@ pub fn position_of_key(rows: &[PopupRow], key: &RowKey) -> Option<usize> {
     rows.iter().position(|row| row.key().as_ref() == Some(key))
 }
 
+// IntelliJ preselects the current branch, never the tag a detached HEAD sits on.
 pub fn position_of_current_branch(rows: &[PopupRow]) -> Option<usize> {
-    rows.iter()
-        .position(|row| matches!(row, PopupRow::Ref(entry) if entry.row.is_current))
+    rows.iter().position(|row| {
+        matches!(
+            row,
+            PopupRow::Ref(entry) if entry.row.is_current && entry.row.target.kind != RefKind::Tag
+        )
+    })
 }
 
 pub fn parent_index(rows: &[PopupRow], index: usize) -> Option<usize> {
@@ -321,7 +344,7 @@ mod tests {
     use crate::branches_popup::tree::TreeInput;
     use collections::HashSet;
     use git::repository::UpstreamTrackingStatus;
-    use git::repository::{Branch, RepositoryOperation, Upstream, UpstreamTracking};
+    use git::repository::{Branch, RepositoryOperation, Tag, Upstream, UpstreamTracking};
 
     fn local(name: &str) -> Branch {
         Branch {
@@ -367,7 +390,10 @@ mod tests {
     struct Fixture {
         local: Vec<Branch>,
         remote: Vec<Branch>,
+        tags: Vec<Tag>,
         recent: Vec<SharedString>,
+        current_branch: Option<&'static str>,
+        head_tag: Option<&'static str>,
         expanded: HashSet<SharedString>,
         favorites: HashSet<RefTarget>,
         has_commits: bool,
@@ -385,7 +411,10 @@ mod tests {
                     local("topic"),
                 ],
                 remote: vec![remote("origin/main"), remote("origin/HEAD")],
+                tags: Vec::new(),
                 recent: vec![SharedString::from("main"), SharedString::from("topic")],
+                current_branch: Some("main"),
+                head_tag: None,
                 expanded: tree::default_expanded(),
                 favorites: HashSet::default(),
                 has_commits: true,
@@ -402,14 +431,15 @@ mod tests {
         fn rows_with_handles(
             &self,
             query: &str,
-            menu_handles: &mut HashMap<RefTarget, PopoverMenuHandle<ContextMenu>>,
+            menu_handles: &mut HashMap<(SectionKind, RefTarget), PopoverMenuHandle<ContextMenu>>,
         ) -> Vec<PopupRow> {
             let tree_rows = tree::build_rows(&TreeInput {
                 local: &self.local,
                 remote: &self.remote,
-                tags: &[],
+                tags: &self.tags,
                 recent: &self.recent,
-                current_branch: Some("main"),
+                current_branch: self.current_branch,
+                head_tag: self.head_tag,
                 favorites: &self.favorites,
                 options: tree::TreeOptions::default(),
                 expanded: &self.expanded,
@@ -513,16 +543,38 @@ mod tests {
     }
 
     #[test]
-    fn disabling_actions_in_search_results_drops_action_rows_from_query_results() {
+    fn disabling_actions_in_search_results_keeps_every_action_unfiltered_above_matching_refs() {
         let mut fixture = Fixture::new();
         fixture.show_actions_in_search = false;
         assert!(fixture.rows("new").is_empty());
+
         let rows = fixture.rows("top");
-        assert!(
-            rows.iter()
-                .all(|row| !matches!(row, PopupRow::Action { .. }))
+        assert_eq!(
+            summarize(&rows),
+            vec![
+                "action:Update Project…",
+                "action:Commit…",
+                "action:Push…",
+                "---",
+                "action:New Branch…",
+                "action:Checkout Tag or Revision…",
+                "---",
+                "section:Recent:open",
+                "  ref:topic",
+            ]
         );
-        assert!(!rows.is_empty());
+        assert!(rows.iter().all(|row| match row {
+            PopupRow::Action {
+                highlight_positions,
+                ..
+            } => highlight_positions.is_empty(),
+            _ => true,
+        }));
+        let best = best_match(&rows).expect("the topic branch matches");
+        assert!(matches!(
+            &rows[best],
+            PopupRow::Ref(entry) if entry.row.target == RefTarget::local("topic")
+        ));
     }
 
     #[test]
@@ -584,7 +636,7 @@ mod tests {
     }
 
     #[test]
-    fn expanded_local_section_lists_folders_before_plain_refs() {
+    fn expanded_local_section_lists_the_current_branch_then_folders_then_plain_refs() {
         let mut fixture = Fixture::new();
         fixture
             .expanded
@@ -594,7 +646,15 @@ mod tests {
             .iter()
             .position(|line| line == "section:Local:open")
             .unwrap();
-        assert_eq!(summary[local_section + 1], "  folder:feature:closed");
+        assert_eq!(
+            summary[local_section + 1..].to_vec(),
+            vec![
+                "  ref:main",
+                "  folder:feature:closed",
+                "  ref:topic",
+                "section:Remote:closed"
+            ]
+        );
     }
 
     #[test]
@@ -648,6 +708,27 @@ mod tests {
     }
 
     #[test]
+    fn the_tag_of_a_detached_head_is_marked_but_never_preselected() {
+        let mut fixture = Fixture::new();
+        fixture.recent.clear();
+        fixture.current_branch = None;
+        fixture.head_tag = Some("v1.0");
+        fixture.tags = vec![Tag {
+            name: SharedString::new_static("v1.0"),
+            commit_sha: SharedString::new_static("0123abcd"),
+        }];
+        fixture
+            .expanded
+            .insert(tree::node_id_for_section(SectionKind::Tags));
+        let rows = fixture.rows("");
+        assert!(rows.iter().any(|row| matches!(
+            row,
+            PopupRow::Ref(entry) if entry.row.target == RefTarget::tag("v1.0") && entry.row.is_current
+        )));
+        assert_eq!(position_of_current_branch(&rows), None);
+    }
+
+    #[test]
     fn parent_and_child_navigation_follows_tree_depth() {
         let mut fixture = Fixture::new();
         fixture
@@ -662,14 +743,18 @@ mod tests {
             .iter()
             .position(|line| line == "section:Local:open")
             .unwrap();
-        let folder = section + 1;
+        let current = section + 1;
+        let folder = current + 1;
         let leaf = folder + 1;
+        assert_eq!(summary[current], "  ref:main");
+        assert_eq!(summary[folder], "  folder:feature:open");
         assert_eq!(summary[leaf], "    ref:login");
 
         assert_eq!(parent_index(&rows, leaf), Some(folder));
         assert_eq!(parent_index(&rows, folder), Some(section));
+        assert_eq!(parent_index(&rows, current), Some(section));
         assert_eq!(parent_index(&rows, section), None);
-        assert_eq!(first_child_index(&rows, section), Some(folder));
+        assert_eq!(first_child_index(&rows, section), Some(current));
         assert_eq!(first_child_index(&rows, folder), Some(leaf));
         assert_eq!(first_child_index(&rows, leaf), None);
     }
@@ -805,7 +890,20 @@ mod tests {
         fixture.rows_with_handles("top", &mut menu_handles);
         assert_eq!(
             menu_handles.keys().cloned().collect::<Vec<_>>(),
-            vec![RefTarget::local("topic")]
+            vec![(SectionKind::Recent, RefTarget::local("topic"))]
         );
+    }
+
+    #[test]
+    fn a_branch_shown_in_recent_and_local_gets_a_separate_menu_handle_per_row() {
+        let mut fixture = Fixture::new();
+        fixture
+            .expanded
+            .insert(tree::node_id_for_section(SectionKind::Local));
+        let mut menu_handles = HashMap::default();
+        fixture.rows_with_handles("", &mut menu_handles);
+        let main = RefTarget::local("main");
+        assert!(menu_handles.contains_key(&(SectionKind::Recent, main.clone())));
+        assert!(menu_handles.contains_key(&(SectionKind::Local, main)));
     }
 }

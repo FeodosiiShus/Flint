@@ -431,11 +431,6 @@ impl Render for WelcomePage {
         } else {
             BackgroundImageTarget::EditorAndTools
         };
-        let background_image_area = if shows_empty_frame_image {
-            BackgroundImageArea::Element
-        } else {
-            BackgroundImageArea::Window
-        };
 
         h_flex()
             .key_context("Welcome")
@@ -448,7 +443,7 @@ impl Render for WelcomePage {
             .justify_center()
             .child(background_image_layer(
                 background_image_target,
-                background_image_area,
+                BackgroundImageArea::Window,
                 cx.theme().colors().editor_background,
                 true,
                 gpui::Corners::default(),

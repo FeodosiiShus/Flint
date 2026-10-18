@@ -218,10 +218,10 @@ pub fn app_menus() -> Vec<Menu> {
                     editor::actions::FindAllReferences::default(),
                 ),
                 MenuItem::separator(),
-                MenuItem::action("Next Problem", editor::actions::GoToDiagnostic::default()),
+                MenuItem::action("Next Problem", editor::actions::GoToNextHighlightedError),
                 MenuItem::action(
                     "Previous Problem",
-                    editor::actions::GoToPreviousDiagnostic::default(),
+                    editor::actions::GoToPreviousHighlightedError,
                 ),
             ],
         },

@@ -263,6 +263,7 @@ impl MergeViewer {
 
     pub(crate) fn toggle_synchronize_scrolling(&mut self, cx: &mut Context<Self>) {
         self.sync_scroll_enabled = !self.sync_scroll_enabled;
+        viewer_settings::remember_session_sync_scroll(self.sync_scroll_enabled, cx);
         cx.notify();
     }
 

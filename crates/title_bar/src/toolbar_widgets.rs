@@ -1,5 +1,9 @@
-use gpui::{AnyView, ClickEvent, CursorStyle, Hsla, MouseButton, Role, Toggled, hsla};
-use theme::UiDensity;
+use std::rc::Rc;
+
+use gpui::{
+    AnyView, Background, ClickEvent, CursorStyle, Hsla, KeyDownEvent, MouseButton, Role, Toggled,
+    hsla, linear_color_stop, linear_gradient, rgb,
+};
 use ui::{COMPONENT_CORNER_RADII, ChromeRegion, CommonAnimationExt, prelude::*};
 
 const REST: f32 = 0.;
@@ -8,14 +12,25 @@ const HOVER_LIGHT: f32 = 0x12 as f32 / 255.;
 const PRESSED_DARK: f32 = 0x29 as f32 / 255.;
 const PRESSED_LIGHT: f32 = 0x20 as f32 / 255.;
 
-pub(crate) const TOOLBAR_WIDGET_HEIGHT: Pixels = px(28.);
 pub(crate) const PROJECT_AVATAR_CHIP_DEBUG_SELECTOR: &str = "title_bar_project_avatar_chip";
+pub(crate) const TOOLBAR_WIDGET_ICON_DEBUG_SELECTOR: &str = "title_bar_widget_icon";
+pub(crate) const TOOLBAR_WIDGET_CHEVRON_DEBUG_SELECTOR: &str = "title_bar_widget_chevron";
 const PROJECT_AVATAR_SIDE: Pixels = px(16.);
 const PROJECT_AVATAR_ARC_RATIO: f32 = 0.4;
 const PROJECT_AVATAR_FONT_SIZE: Pixels = px(10.);
-pub(crate) const TOOLBAR_WIDGET_PADDING_LEFT: Pixels = px(10.);
-pub(crate) const TOOLBAR_WIDGET_PADDING_RIGHT: Pixels = px(6.);
-pub(crate) const TOOLBAR_WIDGET_ICON_TEXT_GAP: Pixels = px(6.);
+// IntelliJ draws the initials in JetBrains Mono whatever the UI font
+// (`AvatarUtils.getNewUiFont`).
+const PROJECT_AVATAR_FONT_FAMILY: &str = "JetBrains Mono";
+// `RecentProject.Color7` `Avatar.End`, the bottom-left colour of the avatar gradient.
+const PROJECT_AVATAR_GRADIENT_END: u32 = 0xA84DE0;
+const TOOLBAR_WIDGET_ICON_SIDE: Pixels = px(16.);
+const TOOLBAR_WIDGET_ARROW_SIDE: Pixels = px(12.);
+// The focus ring is a permanent `border_2` that is transparent until focused, so the padding
+// shrinks by its width to keep IntelliJ's 10 px and 6 px insets.
+const TOOLBAR_WIDGET_FOCUS_RING_WIDTH: Pixels = px(2.);
+const TOOLBAR_WIDGET_PADDING_LEFT: Pixels = px(10.);
+const TOOLBAR_WIDGET_PADDING_RIGHT: Pixels = px(6.);
+const TOOLBAR_WIDGET_ICON_TEXT_GAP: Pixels = px(6.);
 const TOOLBAR_WIDGET_CHEVRON_GAP: Pixels = px(2.);
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -43,6 +58,22 @@ impl ToolbarWidgetColors {
     }
 }
 
+/// The colour of the widget icons and the chevron: IntelliJ recolours the `#CED0D6` stroke of
+/// the expui icons to `icon-default-stroke`, which is the theme's `icon` colour.
+pub(crate) fn toolbar_widget_icon_color(cx: &App) -> Color {
+    Color::Custom(cx.theme().colors().icon)
+}
+
+/// IntelliJ's generated project avatar: a diagonal gradient from `Avatar.End` at the bottom-left
+/// to `Avatar.Start` (`color`) at the top-right (`AvatarUtils.generateColoredAvatar`).
+pub(crate) fn project_avatar_background(color: Hsla) -> Background {
+    linear_gradient(
+        45.,
+        linear_color_stop(rgb(PROJECT_AVATAR_GRADIENT_END), 0.),
+        linear_color_stop(color, 1.),
+    )
+}
+
 #[derive(IntoElement)]
 pub(crate) struct ToolbarWidget {
     id: ElementId,
@@ -55,7 +86,7 @@ pub(crate) struct ToolbarWidget {
     tab_index: Option<isize>,
     cursor_style: CursorStyle,
     tooltip: Option<Box<dyn Fn(&mut Window, &mut App) -> AnyView>>,
-    on_click: Option<Box<dyn Fn(&ClickEvent, &mut Window, &mut App)>>,
+    on_click: Option<Rc<dyn Fn(&ClickEvent, &mut Window, &mut App)>>,
 }
 
 impl ToolbarWidget {
@@ -65,8 +96,17 @@ impl ToolbarWidget {
         label: impl Into<SharedString>,
     ) -> Self {
         Self {
-            id: id.into(),
             icon: Some(icon),
+            ..Self::text(id, label)
+        }
+    }
+
+    /// A widget with only its text and the chevron, like IntelliJ's VCS widget for a project
+    /// without version control.
+    pub(crate) fn text(id: impl Into<ElementId>, label: impl Into<SharedString>) -> Self {
+        Self {
+            id: id.into(),
+            icon: None,
             avatar: None,
             label: label.into(),
             upstream: None,
@@ -81,17 +121,8 @@ impl ToolbarWidget {
 
     pub(crate) fn avatar(id: impl Into<ElementId>, initials: SharedString, color: Hsla) -> Self {
         Self {
-            id: id.into(),
-            icon: None,
             avatar: Some((initials, color)),
-            label: SharedString::new_static(""),
-            upstream: None,
-            loading: false,
-            toggled: false,
-            tab_index: None,
-            cursor_style: CursorStyle::PointingHand,
-            tooltip: None,
-            on_click: None,
+            ..Self::text(id, SharedString::new_static(""))
         }
     }
 
@@ -126,7 +157,7 @@ impl ToolbarWidget {
 
 impl Clickable for ToolbarWidget {
     fn on_click(mut self, handler: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static) -> Self {
-        self.on_click = Some(Box::new(handler));
+        self.on_click = Some(Rc::new(handler));
         self
     }
 
@@ -147,7 +178,16 @@ impl RenderOnce for ToolbarWidget {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let colors = ToolbarWidgetColors::current(cx);
         let toggled = self.toggled;
-        let icon_size = ui::chrome_icon_size(ChromeRegion::TitleBar, IconSize::Medium, cx);
+        let focus_color = cx.theme().colors().border_focused;
+        let icon_color = toolbar_widget_icon_color(cx);
+        let rem_size = window.rem_size();
+        // The sizes are logical pixels like IntelliJ's, scaled only by `title_bar.icon_size`,
+        // never by `ui_font_size`.
+        let icon_scale = ui::chrome_icon_scale(ChromeRegion::TitleBar, cx).unwrap_or(1.);
+        let icon_size = ui::exact_icon_size(TOOLBAR_WIDGET_ICON_SIDE * icon_scale, rem_size);
+        let arrow_size = ui::exact_icon_size(TOOLBAR_WIDGET_ARROW_SIDE * icon_scale, rem_size);
+        let avatar_side = PROJECT_AVATAR_SIDE * icon_scale;
+        let avatar_font_size = PROJECT_AVATAR_FONT_SIZE * icon_scale;
         let leading_icon = if self.loading {
             Some(
                 Icon::new(IconName::LoadCircle)
@@ -160,29 +200,39 @@ impl RenderOnce for ToolbarWidget {
             self.icon
                 .map(|icon| icon.size(icon_size).into_any_element())
         };
+        let leading_icon = leading_icon.map(|icon| {
+            div()
+                .debug_selector(|| TOOLBAR_WIDGET_ICON_DEBUG_SELECTOR.into())
+                .flex_none()
+                .child(icon)
+                .into_any_element()
+        });
         let avatar = self.avatar.map(|(initials, color)| {
             div()
                 .debug_selector(|| PROJECT_AVATAR_CHIP_DEBUG_SELECTOR.into())
                 .flex_none()
-                .size(PROJECT_AVATAR_SIDE)
-                .rounded(PROJECT_AVATAR_SIDE * (PROJECT_AVATAR_ARC_RATIO / 2.))
-                .bg(color)
+                .size(avatar_side)
+                .rounded(avatar_side * (PROJECT_AVATAR_ARC_RATIO / 2.))
+                .bg(project_avatar_background(color))
+                .font_family(PROJECT_AVATAR_FONT_FAMILY)
                 .flex()
                 .items_center()
                 .justify_center()
                 .child(
                     Label::new(initials)
                         .size(LabelSize::Custom(rems(
-                            f32::from(PROJECT_AVATAR_FONT_SIZE) / f32::from(window.rem_size()),
+                            f32::from(avatar_font_size) / f32::from(rem_size),
                         )))
                         .weight(gpui::FontWeight::SEMIBOLD)
                         .color(Color::Custom(gpui::white())),
                 )
                 .into_any_element()
         });
+        let debug_label = self.label.clone();
 
         h_flex()
             .id(self.id)
+            .debug_selector(move || format!("TOOLBAR_WIDGET-{debug_label}"))
             .role(Role::Button)
             .aria_label(self.label.clone())
             .aria_toggled(if toggled {
@@ -193,23 +243,35 @@ impl RenderOnce for ToolbarWidget {
             .when_some(self.tab_index, |this, tab_index| this.tab_index(tab_index))
             .font_ui(cx)
             .flex_none()
-            .h(TOOLBAR_WIDGET_HEIGHT)
-            .pl(TOOLBAR_WIDGET_PADDING_LEFT)
-            .pr(TOOLBAR_WIDGET_PADDING_RIGHT)
+            .h(ui::utils::title_bar_widget_height(cx))
+            .border_2()
+            .border_color(gpui::transparent_black())
+            .pl(TOOLBAR_WIDGET_PADDING_LEFT - TOOLBAR_WIDGET_FOCUS_RING_WIDTH)
+            .pr(TOOLBAR_WIDGET_PADDING_RIGHT - TOOLBAR_WIDGET_FOCUS_RING_WIDTH)
             .gap(TOOLBAR_WIDGET_ICON_TEXT_GAP)
-            .rounded(toolbar_widget_radius(cx))
-            .bg(if toggled { colors.open } else { colors.rest })
+            .rounded(COMPONENT_CORNER_RADII.toolbar_widget)
+            // IntelliJ's combo paints its hover colour while the popup is shown and has no
+            // pressed state (`ToolbarComboButtonUI.paintBackground`).
+            .bg(if toggled { colors.hover } else { colors.rest })
             .cursor(self.cursor_style)
             .when(!toggled, |this| {
                 this.hover(move |style| style.bg(colors.hover))
             })
-            .focus_visible(move |style| style.bg(colors.hover))
-            .active(move |style| style.bg(colors.open))
+            .focus_visible(move |style| style.border_color(focus_color))
             .when_some(self.on_click, |this, on_click| {
+                let open_on_down_key = on_click.clone();
                 this.on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
                     .on_click(move |event, window, cx| {
                         cx.stop_propagation();
                         on_click(event, window, cx)
+                    })
+                    // GPUI already turns Enter and Space into a click; IntelliJ also opens the
+                    // popup on Down (`ToolbarComboButtonUI.installKeyboardActions`).
+                    .on_key_down(move |event: &KeyDownEvent, window, cx| {
+                        if event.keystroke.key == "down" && !event.keystroke.modifiers.modified() {
+                            cx.stop_propagation();
+                            open_on_down_key(&ClickEvent::default(), window, cx)
+                        }
                     })
             })
             .when_some(self.tooltip.filter(|_| !toggled), |this, tooltip| {
@@ -222,12 +284,17 @@ impl RenderOnce for ToolbarWidget {
                         .gap(TOOLBAR_WIDGET_CHEVRON_GAP)
                         .child(Label::new(self.label))
                         .when_some(self.upstream, |this, upstream| {
-                            this.child(upstream_tracking_icons(upstream))
+                            this.child(upstream_tracking_icons(upstream, arrow_size))
                         })
                         .child(
-                            Icon::new(IconName::ChevronDown)
-                                .size(IconSize::Small)
-                                .color(Color::Muted),
+                            div()
+                                .debug_selector(|| TOOLBAR_WIDGET_CHEVRON_DEBUG_SELECTOR.into())
+                                .flex_none()
+                                .child(
+                                    Icon::new(IconName::ChevronDown)
+                                        .size(icon_size)
+                                        .color(icon_color),
+                                ),
                         ),
                 )
             })
@@ -239,7 +306,7 @@ impl RenderOnce for ToolbarWidget {
 /// outgoing arrow, drawn edge to edge as one `RowIcon` for every direction that has commits,
 /// incoming first, 6 px after the branch name (`iconTextGap`) and 2 px before the chevron
 /// (`BEFORE_CHEVRON_GAP`).
-fn upstream_tracking_icons(upstream: UpstreamTracking) -> impl IntoElement {
+fn upstream_tracking_icons(upstream: UpstreamTracking, arrow_size: IconSize) -> impl IntoElement {
     h_flex()
         .ml(px(4.))
         .when(upstream.incoming, |this| {
@@ -248,7 +315,7 @@ fn upstream_tracking_icons(upstream: UpstreamTracking) -> impl IntoElement {
                     .debug_selector(|| "title_bar_incoming_commits".into())
                     .child(
                         Icon::new(IconName::IncomingCommits)
-                            .size(IconSize::XSmall)
+                            .size(arrow_size)
                             .color(Color::Info),
                     ),
             )
@@ -259,18 +326,11 @@ fn upstream_tracking_icons(upstream: UpstreamTracking) -> impl IntoElement {
                     .debug_selector(|| "title_bar_outgoing_commits".into())
                     .child(
                         Icon::new(IconName::OutgoingCommits)
-                            .size(IconSize::XSmall)
+                            .size(arrow_size)
                             .color(Color::Success),
                     ),
             )
         })
-}
-
-fn toolbar_widget_radius(cx: &App) -> Pixels {
-    match theme::theme_settings(cx).ui_density(cx) {
-        UiDensity::Compact => px(4.),
-        UiDensity::Default | UiDensity::Comfortable => COMPONENT_CORNER_RADII.toolbar_widget,
-    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -279,12 +339,28 @@ pub(crate) struct UpstreamTracking {
     pub(crate) outgoing: bool,
 }
 
+/// IntelliJ's `AvatarUtils.initials`: the camel-case initials when they give two letters,
+/// otherwise the first letters of the first and last words.
 pub(crate) fn avatar_initials(text: &str) -> String {
     let filtered: String = text
         .chars()
         .filter(|character| !character.is_control())
         .collect();
     let filtered = filtered.trim();
+
+    let camel_case_initials: String = filtered
+        .trim_start_matches(|character: char| !character.is_alphabetic())
+        .chars()
+        .take_while(|character| character.is_alphanumeric())
+        .enumerate()
+        .filter(|(index, character)| *index == 0 || character.is_uppercase())
+        .map(|(_, character)| character)
+        .take(2)
+        .collect::<String>()
+        .to_uppercase();
+    if camel_case_initials.chars().count() == 2 {
+        return camel_case_initials;
+    }
 
     for delimiters in [
         &[' '][..],
@@ -303,10 +379,10 @@ pub(crate) fn avatar_initials(text: &str) -> String {
             })
             .filter(|word| !word.is_empty())
             .collect();
-        if words.len() >= 2 {
-            let first = words[0].chars().next();
-            let last = words[words.len() - 1].chars().next();
-            return [first, last]
+        if let (Some(first_word), Some(last_word)) = (words.first(), words.last())
+            && words.len() >= 2
+        {
+            return [first_word.chars().next(), last_word.chars().next()]
                 .into_iter()
                 .flatten()
                 .collect::<String>()
@@ -314,16 +390,7 @@ pub(crate) fn avatar_initials(text: &str) -> String {
         }
     }
 
-    filtered
-        .trim_start_matches(|character: char| !character.is_alphabetic())
-        .chars()
-        .take_while(|character| character.is_alphanumeric())
-        .enumerate()
-        .filter(|(index, character)| *index == 0 || character.is_uppercase())
-        .map(|(_, character)| character)
-        .take(2)
-        .collect::<String>()
-        .to_uppercase()
+    camel_case_initials
 }
 
 /// The arrows shown for a branch that is behind or ahead of its upstream; only the non-zero
@@ -338,8 +405,9 @@ pub(crate) fn upstream_tracking(ahead: u32, behind: u32) -> Option<UpstreamTrack
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gpui::TestAppContext;
+    use gpui::{TestAppContext, VisualTestContext};
     use settings::SettingsStore;
+    use std::cell::Cell;
 
     fn init_test(cx: &mut TestAppContext) {
         cx.update(|cx| {
@@ -445,6 +513,80 @@ mod tests {
 
         assert_eq!(cx.debug_bounds("title_bar_incoming_commits"), None);
         assert!(cx.debug_bounds("title_bar_outgoing_commits").is_some());
+    }
+
+    struct KeyboardWidgetView {
+        clicks: Rc<Cell<usize>>,
+    }
+
+    impl Render for KeyboardWidgetView {
+        fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+            let clicks = self.clicks.clone();
+            ToolbarWidget::new(
+                "keyboard_test_widget",
+                Icon::new(IconName::GitBranch),
+                "main",
+            )
+            .tab_index(0)
+            .on_click(move |_, _, _| clicks.set(clicks.get() + 1))
+        }
+    }
+
+    #[gpui::test]
+    async fn test_focused_widget_opens_on_down_and_draws_a_focus_ring(cx: &mut TestAppContext) {
+        init_test(cx);
+        let clicks = Rc::new(Cell::new(0));
+        let (_view, cx) = cx.add_window_view({
+            let clicks = clicks.clone();
+            move |_window, _cx| KeyboardWidgetView { clicks }
+        });
+        cx.run_until_parked();
+        let focus_color = cx.update(|_, cx| cx.theme().colors().border_focused);
+        let has_focus_ring = |cx: &mut VisualTestContext| {
+            cx.update(|window, _| window.painted_quads())
+                .iter()
+                .any(|quad| quad.border_color == focus_color)
+        };
+
+        cx.update(|window, cx| window.focus_next(cx));
+        cx.run_until_parked();
+        assert!(
+            !has_focus_ring(cx),
+            "a widget focused without the keyboard draws no ring"
+        );
+
+        cx.simulate_keystrokes("down");
+        cx.run_until_parked();
+        assert_eq!(
+            clicks.get(),
+            1,
+            "Down opens the widget popup, like ToolbarComboButtonUI"
+        );
+        assert!(
+            has_focus_ring(cx),
+            "keyboard focus draws IntelliJ's focus ring around the pill"
+        );
+
+        cx.simulate_keystrokes("shift-down");
+        assert_eq!(
+            clicks.get(),
+            1,
+            "a modified Down is left to the key bindings"
+        );
+    }
+
+    #[gpui::test]
+    fn test_widget_icons_use_the_theme_icon_colour(cx: &mut TestAppContext) {
+        init_test(cx);
+        cx.update(|cx| {
+            let icon_color = toolbar_widget_icon_color(cx);
+            assert_ne!(
+                icon_color,
+                Color::Muted,
+                "IntelliJ recolours the widget icons to icon-default-stroke, not the muted text colour"
+            );
+            assert_eq!(icon_color.color(cx), cx.theme().colors().icon);
+        });
     }
 
     #[gpui::test]

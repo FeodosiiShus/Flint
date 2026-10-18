@@ -287,6 +287,9 @@ fn show_merge_window(request: OpenRequest, prepared: PreparedMerge, cx: &mut App
     };
     let finished_key = key.clone();
     let finished_model = model.clone();
+    let git_store = project.read(cx).git_store().clone();
+    let validity_repository = repository.clone();
+    let validity_path = repo_path.clone();
     let merge_request = MergeRequest {
         window_title: SharedString::from(messages::merge_window_title(&system_path)),
         pane_titles: merge_pane_titles(&texts.pane_titles, &title_context),
@@ -328,8 +331,22 @@ fn show_merge_window(request: OpenRequest, prepared: PreparedMerge, cx: &mut App
         cx,
         Some(Box::new(move |opened, cx| {
             registry::mark_open(&key, opened.window, cx);
+            opened.content.update(cx, |merge_window, cx| {
+                merge_window.watch_conflict_validity(
+                    &git_store,
+                    move |cx| conflict_exists(&validity_repository, &validity_path, cx),
+                    cx,
+                );
+            });
         })),
     );
+}
+
+fn conflict_exists(repository: &Entity<Repository>, repo_path: &RepoPath, cx: &App) -> bool {
+    repository
+        .read(cx)
+        .status_for_path(repo_path)
+        .is_some_and(|entry| entry.status.is_conflicted())
 }
 
 fn notify_missing_file(request: &OpenRequest, absolute_path: &Path, cx: &mut AsyncApp) {

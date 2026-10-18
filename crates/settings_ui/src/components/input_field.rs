@@ -5,7 +5,7 @@ use gpui::{
     A11ySubtreeBuilder, AccessibleAction, ElementId, Entity, Focusable, Role,
     accesskit::{self, ActionData},
 };
-use ui::{COMPONENT_CORNER_RADII, prelude::*};
+use ui::{component_corner_radii, prelude::*};
 
 use crate::components::{
     CONTROL_HEIGHT, CONTROL_TEXT_MARGIN_BOTTOM, CONTROL_TEXT_MARGIN_LEFT,
@@ -152,6 +152,7 @@ impl RenderOnce for SettingsInputField {
         let (a11y_value, a11y_text_runs) =
             text_field_a11y_state(self.id.clone(), &editor, window, cx);
 
+        let corner_radius = component_corner_radii(cx).input;
         let theme_colors = cx.theme().colors();
 
         h_flex()
@@ -192,7 +193,7 @@ impl RenderOnce for SettingsInputField {
             .pr(CONTROL_TEXT_MARGIN_RIGHT)
             .h(CONTROL_HEIGHT)
             .min_w(TEXT_FIELD_MIN_WIDTH)
-            .rounded(COMPONENT_CORNER_RADII.input)
+            .rounded(corner_radius)
             .border_1()
             .border_color(theme_colors.border)
             .bg(theme_colors.panel_background)

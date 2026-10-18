@@ -1,13 +1,16 @@
 use crate::WorkspaceSettings;
-use crate::dock::{Dock, PanelHandle, panel_context_menu};
+use crate::dock::{Dock, PanelHandle, add_show_tool_window_names_entry, panel_context_menu};
+use crate::tool_window_header::tool_window_title;
 use crate::workspace_settings::ToolWindowBarsSettings;
 use gpui::{
-    Action, Anchor, AnyElement, App, ClickEvent, Context, CursorStyle, Edges, Entity, FocusHandle,
-    Focusable, Hsla, IntoElement, MouseButton, ParentElement, Render, Role, SharedString, Stateful,
-    Styled, Subscription, Toggled, Window, div, hsla, px, rems, transparent_black,
+    Action, Anchor, AnyElement, App, ClickEvent, Context, CursorStyle, DismissEvent, Edges, Entity,
+    FocusHandle, Focusable, Hsla, IntoElement, MouseButton, MouseDownEvent, ParentElement, Point,
+    Render, Role, SharedString, Stateful, Styled, Subscription, Toggled, Window, anchored,
+    deferred, div, hsla, px, rems, transparent_black,
 };
 use settings::{Settings, SettingsStore, ToolWindowIconStyle};
 use std::sync::Arc;
+use std::time::Duration;
 use theme::ThemeColors;
 use ui::{
     BackgroundImageArea, BackgroundImageTarget, ContextMenu, CountBadge, PopoverMenu, Tooltip,
@@ -48,6 +51,8 @@ const NAMES_FILL_VERTICAL_INSET_COMPACT: Pixels = px(3.);
 const NAMES_FILL_OUTER_INSET: Pixels = px(6.);
 const NAMES_FILL_OUTER_INSET_COMPACT: Pixels = px(4.);
 const NAMES_FILL_INNER_INSET: Pixels = px(2.);
+// UIBundle `tool.window.new.stripe.more.title`.
+const MORE_TOOL_WINDOWS_TOOLTIP: &str = "More tool windows";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ToolWindowBarSide {
@@ -147,6 +152,21 @@ impl ToolWindowButtonMetrics {
             radius,
         }
     }
+
+    /// `SquareStripeButtonLookHorizontalText` grows the named button by one font height per
+    /// line of its split stripe title.
+    pub fn with_label_lines(mut self, lines: usize) -> Self {
+        let extra_height = NAMES_LABEL_HEIGHT * lines.saturating_sub(1) as f32;
+        self.box_height += extra_height;
+        self.fill_height += extra_height;
+        self
+    }
+}
+
+/// IntelliJ splits the stripe title at its first space into at most two lines
+/// (`SquareStripeButtonLookHorizontalText.getStripeSplitText`).
+fn stripe_label_lines(name: &str) -> Vec<&str> {
+    name.trim().splitn(2, ' ').collect()
 }
 
 /// `ToolWindow.Stripe.separatorColor` (`toolbar-border`): `transparent-white-30`, `#FFFFFF21`,
@@ -230,6 +250,7 @@ pub struct ToolWindowBar {
     left_dock: Entity<Dock>,
     bottom_dock: Entity<Dock>,
     right_dock: Entity<Dock>,
+    context_menu: Option<(Entity<ContextMenu>, Point<Pixels>, Subscription)>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -382,7 +403,8 @@ impl RenderOnce for MoreToolWindowsTrigger {
                     })
             })
             .when(!self.toggled, |this| {
-                this.tooltip(Tooltip::text("More Tool Windows"))
+                this.tooltip_show_delay(Duration::ZERO)
+                    .tooltip(Tooltip::text(MORE_TOOL_WINDOWS_TOOLTIP))
             })
             .child(fill)
             .child(
@@ -412,8 +434,42 @@ impl ToolWindowBar {
             left_dock,
             bottom_dock,
             right_dock,
+            context_menu: None,
             _subscriptions: subscriptions,
         }
+    }
+
+    /// Right-clicking the empty stripe shows a popup with only "Show Tool Window Names", like
+    /// IntelliJ's `ResizeStripeManager`.
+    fn deploy_bar_context_menu(
+        &mut self,
+        position: Point<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let show_names = WorkspaceSettings::get_global(cx)
+            .tool_window_bars
+            .show_names;
+        let menu = ContextMenu::build(window, cx, move |menu, _, _| {
+            add_show_tool_window_names_entry(menu, show_names)
+        });
+        let previous_focus = window.focused(cx);
+        window.focus(&menu.focus_handle(cx), cx);
+        let subscription = cx.subscribe_in(
+            &menu,
+            window,
+            move |this, menu, _: &DismissEvent, window, cx| {
+                if menu.focus_handle(cx).contains_focused(window, cx)
+                    && let Some(previous_focus) = previous_focus.as_ref()
+                {
+                    window.focus(previous_focus, cx);
+                }
+                this.context_menu = None;
+                cx.notify();
+            },
+        );
+        self.context_menu = Some((menu, position, subscription));
+        cx.notify();
     }
 
     fn top_dock(&self) -> &Entity<Dock> {
@@ -441,7 +497,7 @@ impl ToolWindowBar {
             .enumerate()
             .filter_map(|(index, panel)| {
                 let icon = panel.icon(window, cx)?;
-                let name = panel.icon_tooltip(window, cx)?;
+                let name = tool_window_title(panel.icon_tooltip(window, cx)?);
                 let panel_visible = dock_open && active_index == Some(index);
                 let panel_focused =
                     panel_visible && panel.panel_focus_handle(cx).contains_focused(window, cx);
@@ -487,16 +543,23 @@ impl ToolWindowBar {
         } else {
             Color::Muted
         };
-        let metrics = ToolWindowButtonMetrics::new(self.side, settings);
+        let show_names = settings.show_names;
+        let name = button.name;
+        let label_lines = if show_names {
+            stripe_label_lines(name)
+        } else {
+            Vec::new()
+        };
+        let metrics =
+            ToolWindowButtonMetrics::new(self.side, settings).with_label_lines(label_lines.len());
         let icon_size = IconSize::Custom(rems(
             f32::from(settings.icon_size) / f32::from(window.rem_size()),
         ));
         let label_size = LabelSize::Custom(rems(
             f32::from(NAMES_LABEL_FONT_SIZE) / f32::from(window.rem_size()),
         ));
-        let show_names = settings.show_names;
-        let name = button.name;
         let icon_selector = format!("{}_icon", button.selector);
+        let label_selector = format!("{}_label", button.selector);
         let selector = button.selector;
         let panel_id = button.panel.panel_id().as_u64();
         let toggle_action = button.toggle_action;
@@ -547,28 +610,37 @@ impl ToolWindowBar {
             )
             .when(show_names, |this| {
                 this.child(
-                    div()
+                    v_flex()
+                        .debug_selector(move || label_selector)
                         .w_full()
-                        .h(NAMES_LABEL_HEIGHT)
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .child(
-                            Label::new(name)
-                                .size(label_size)
-                                .color(label_color)
-                                .truncate(),
-                        ),
+                        .h(NAMES_LABEL_HEIGHT * label_lines.len() as f32)
+                        .children(label_lines.into_iter().map(|line| {
+                            div()
+                                .w_full()
+                                .h(NAMES_LABEL_HEIGHT)
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .child(
+                                    Label::new(line)
+                                        .size(label_size)
+                                        .color(label_color)
+                                        .truncate(),
+                                )
+                        })),
                 )
             })
             .on_click(move |_, window, cx| {
                 window.focus(&dock_focus_handle, cx);
                 window.dispatch_action(click_action.boxed_clone(), cx);
             })
+            .tooltip_show_delay(Duration::ZERO)
             .tooltip(move |_window, cx| Tooltip::for_action(name, &*toggle_action, cx));
 
         right_click_menu(("tool-window-menu", panel_id))
-            .menu(move |window, cx| panel_context_menu(panel.clone(), dock.clone(), window, cx))
+            .menu(move |window, cx| {
+                panel_context_menu(panel.clone(), dock.clone(), true, window, cx)
+            })
             .anchor(menu_anchor)
             .attach(menu_attach)
             .trigger(move |_is_menu_open, _window, _cx| {
@@ -636,10 +708,12 @@ fn more_tool_windows_menu(
             .panel_handles()
             .enumerate()
             .map(|(index, panel)| {
-                let label: SharedString = panel
-                    .icon_tooltip(window, cx)
-                    .unwrap_or_else(|| panel.persistent_name())
-                    .into();
+                let label: SharedString = tool_window_title(
+                    panel
+                        .icon_tooltip(window, cx)
+                        .unwrap_or_else(|| panel.persistent_name()),
+                )
+                .into();
                 let panel_visible = dock_open && active_index == Some(index);
                 let action = if panel_visible {
                     close_action.boxed_clone()
@@ -752,9 +826,33 @@ impl Render for ToolWindowBar {
                         )
                         .child(more_button)
                     })
-                    .child(div().flex_1())
+                    .child(
+                        div()
+                            .debug_selector(move || {
+                                format!("tool_window_bar_empty_area_{}", side.key())
+                            })
+                            .flex_1()
+                            .w_full()
+                            .on_mouse_down(
+                                MouseButton::Right,
+                                cx.listener(|this, event: &MouseDownEvent, window, cx| {
+                                    cx.stop_propagation();
+                                    window.prevent_default();
+                                    this.deploy_bar_context_menu(event.position, window, cx);
+                                }),
+                            ),
+                    )
                     .children(bottom_buttons),
             )
+            .children(self.context_menu.as_ref().map(|(menu, position, _)| {
+                deferred(
+                    anchored()
+                        .position(*position)
+                        .snap_to_window_with_margin(px(8.))
+                        .child(menu.clone()),
+                )
+                .with_priority(1)
+            }))
             .into_any_element()
     }
 }
@@ -982,7 +1080,7 @@ mod tests {
         assert_eq!(
             left.box_width,
             settings.bar_width(),
-            "the bar is exactly as wide as its buttons"
+            "the button is as wide as the setting's bar_width, the bar adds its 1 px border"
         );
 
         let right = ToolWindowButtonMetrics::new(ToolWindowBarSide::Right, &settings);
@@ -1020,7 +1118,7 @@ mod tests {
         assert_eq!(
             left.box_width,
             settings.bar_width(),
-            "the compact bar is exactly as wide as its buttons"
+            "the compact button is as wide as the setting's bar_width, the bar adds its 1 px border"
         );
     }
 
@@ -1084,6 +1182,59 @@ mod tests {
             }
         );
         assert_eq!(compact.radius, px(4.));
+    }
+
+    #[test]
+    fn more_tool_windows_tooltip_uses_the_intellij_sentence_case_title() {
+        assert_eq!(MORE_TOOL_WINDOWS_TOOLTIP, "More tool windows");
+    }
+
+    #[test]
+    fn stripe_label_splits_the_title_at_its_first_space_like_intellij() {
+        assert_eq!(stripe_label_lines("Project"), vec!["Project"]);
+        assert_eq!(
+            stripe_label_lines("Project Diagnostics"),
+            vec!["Project", "Diagnostics"]
+        );
+        assert_eq!(
+            stripe_label_lines("Language Services"),
+            vec!["Language", "Services"]
+        );
+        assert_eq!(
+            stripe_label_lines("Find in Files"),
+            vec!["Find", "in Files"],
+            "only the first space splits, so the label has at most two lines"
+        );
+        assert_eq!(
+            stripe_label_lines(" Terminal "),
+            vec!["Terminal"],
+            "the title is trimmed before it is split"
+        );
+    }
+
+    #[test]
+    fn tool_window_button_metrics_grow_by_one_label_height_per_extra_line() {
+        for icon_size in [20., 16.] {
+            let one_line =
+                ToolWindowButtonMetrics::new(ToolWindowBarSide::Left, &names_settings(icon_size));
+            assert_eq!(
+                one_line.with_label_lines(1),
+                one_line,
+                "a one-line title keeps the named box at {icon_size} px"
+            );
+            let two_lines = one_line.with_label_lines(2);
+            assert_eq!(two_lines.box_height, one_line.box_height + px(13.));
+            assert_eq!(two_lines.fill_height, one_line.fill_height + px(13.));
+            assert_eq!(two_lines.box_width, one_line.box_width);
+            assert_eq!(two_lines.fill_width, one_line.fill_width);
+            assert_eq!(two_lines.fill_insets, one_line.fill_insets);
+        }
+        let default = ToolWindowButtonMetrics::new(ToolWindowBarSide::Left, &names_settings(20.));
+        assert_eq!(
+            default.with_label_lines(2).box_height,
+            px(69.),
+            "the 40 px box plus a 3 px gap and two 13 px label lines"
+        );
     }
 
     #[test]

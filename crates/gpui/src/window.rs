@@ -2779,6 +2779,14 @@ impl Window {
         self.rendered_frame.scene.underlines.clone()
     }
 
+    /// Returns the images painted in the most recently rendered frame's scene. Sprite bounds are
+    /// the visible part of each image in scaled pixels, and each tile covers the part of the
+    /// image that is shown there.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn painted_polychrome_sprites(&self) -> Vec<PolychromeSprite> {
+        self.rendered_frame.scene.polychrome_sprites.clone()
+    }
+
     /// Set the content size of the window.
     pub fn resize(&mut self, size: Size<Pixels>) {
         self.platform_window.resize(size);

@@ -4,7 +4,6 @@
       "cmd-{": "pane::ActivatePreviousItem",
       "cmd-}": "pane::ActivateNextItem",
       "shift-escape": null, // Unmap workspace::zoom
-      "cmd-~": "git::Branch",
     },
   },
   {
@@ -43,8 +42,8 @@
       "cmd-alt-b": "editor::GoToImplementation",
       "cmd-shift-b": "editor::GoToTypeDefinition",
       "cmd-alt-shift-b": "editor::GoToTypeDefinitionSplit",
-      "f2": "editor::GoToDiagnostic",
-      "shift-f2": "editor::GoToPreviousDiagnostic",
+      "f2": "editor::GoToNextHighlightedError",
+      "shift-f2": "editor::GoToPreviousHighlightedError",
       "ctrl-alt-shift-down": "editor::GoToHunk",
       "ctrl-alt-shift-up": "editor::GoToPreviousHunk",
       "cmd-home": "editor::MoveToBeginning",
@@ -198,8 +197,9 @@
     "bindings": {
       "f7": "merge_tool::NextDifference",
       "shift-f7": "merge_tool::PreviousDifference",
-      "cmd-]": "merge_tool::NextDifference",
-      "cmd-[": "merge_tool::PreviousDifference",
+      // WebStorm's macOS keymap binds Cmd-] / Cmd-[ to Forward / Back, not to diff navigation.
+      "cmd-]": null,
+      "cmd-[": null,
       "ctrl-cmd-right": "merge_tool::AcceptLeftSide",
       "ctrl-cmd-left": "merge_tool::AcceptRightSide",
       "ctrl-shift-tab": "merge_tool::FocusOppositePane",
@@ -238,10 +238,12 @@
     "bindings": {
       "cmd-w": "git_tool_window::CloseActiveTab",
       "ctrl-shift-f4": "git_tool_window::CloseActiveTab",
-      "cmd-{": "git_tool_window::SelectPreviousTab",
-      "cmd-}": "git_tool_window::SelectNextTab",
       "ctrl-left": "git_tool_window::SelectPreviousTab",
       "ctrl-right": "git_tool_window::SelectNextTab",
+      // Menus show the last binding of an action; IntelliJ lists ⇧⌘[ / ⇧⌘] first for PreviousTab / NextTab.
+      "cmd-{": "git_tool_window::SelectPreviousTab",
+      "cmd-}": "git_tool_window::SelectNextTab",
+      "ctrl-shift-down": "git_tool_window::ShowListOfTabs",
     },
   },
   {

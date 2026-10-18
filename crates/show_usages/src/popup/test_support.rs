@@ -3,7 +3,7 @@ use project::Location;
 
 use crate::model::{DisplayRow, UsageFilters, UsageRow, UsageScope};
 
-use super::ShowUsagesPopup;
+use super::{FilterToggle, ShowUsagesPopup};
 
 impl ShowUsagesPopup {
     pub(crate) fn display_rows_for_test(&self) -> Vec<DisplayRow> {
@@ -51,5 +51,12 @@ impl ShowUsagesPopup {
         cx: &mut Context<Self>,
     ) {
         self.choose_scope(scope, window, cx);
+    }
+
+    pub(crate) fn filter_toggle_titles_for_test() -> Vec<&'static str> {
+        FilterToggle::ALL
+            .into_iter()
+            .map(FilterToggle::title)
+            .collect()
     }
 }
