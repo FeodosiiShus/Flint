@@ -1,7 +1,7 @@
 use std::{cell::RefCell, path::PathBuf, rc::Rc};
 
 use collections::HashSet;
-use gpui::{Entity, TestAppContext};
+use gpui::{BorrowAppContext, Entity, TestAppContext};
 use serde_json::json;
 use settings::SettingsStore;
 use util::path;

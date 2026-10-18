@@ -12332,7 +12332,7 @@ async fn test_focus_follows_mouse_into_blank_area(cx: &mut gpui::TestAppContext)
 
     // Hover over the blank space below the last entry in the project panel,
     // which lives in the right dock by default.
-    let blank_point = panel.read_with(cx, |panel, cx| {
+    let blank_point = panel.read_with(cx, |panel, _cx| {
         let viewport = panel.scroll_handle.viewport();
         viewport.origin + point(viewport.size.width / 2., viewport.size.height - px(20.))
     });
