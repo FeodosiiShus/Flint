@@ -429,13 +429,17 @@ static DEFAULT_ICON_THEME: LazyLock<Arc<IconTheme>> = LazyLock::new(|| {
         name: DEFAULT_ICON_THEME_NAME.into(),
         appearance: Appearance::Dark,
         directory_icons: DirectoryIcons {
-            collapsed: Some("icons/file_icons/folder.svg".into()),
-            expanded: Some("icons/file_icons/folder_open.svg".into()),
+            collapsed: Some(SharedString::new_static("icons/file_icons/folder.svg")),
+            expanded: Some(SharedString::new_static("icons/file_icons/folder_open.svg")),
         },
         named_directory_icons: HashMap::default(),
         chevron_icons: ChevronIcons {
-            collapsed: Some("icons/file_icons/chevron_right.svg".into()),
-            expanded: Some("icons/file_icons/chevron_down.svg".into()),
+            collapsed: Some(SharedString::new_static(
+                "icons/file_icons/chevron_right.svg",
+            )),
+            expanded: Some(SharedString::new_static(
+                "icons/file_icons/chevron_down.svg",
+            )),
         },
         file_stems: icon_keys_by_association(FILE_STEMS_BY_ICON_KEY),
         file_suffixes: icon_keys_by_association(FILE_SUFFIXES_BY_ICON_KEY),

@@ -76,7 +76,7 @@ impl FontFamilyCache {
         let state = self.state.clone();
 
         cx.background_executor()
-            .spawn(async move {
+            .spawn(futures::future::lazy(move |_| {
                 // We take this lock in the background executor to ensure that synchronous calls to `list_font_families` are blocked while we are prefetching,
                 // while not blocking the main thread and risking deadlocks
                 let mut lock = state.write();
@@ -87,7 +87,7 @@ impl FontFamilyCache {
                     .collect();
                 lock.font_families = all_font_names;
                 lock.loaded_at = Some(Instant::now());
-            })
+            }))
             .await;
     }
 }

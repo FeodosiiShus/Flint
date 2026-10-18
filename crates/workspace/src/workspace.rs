@@ -15428,6 +15428,7 @@ mod tests {
         });
 
         workspace.update_in(cx, |workspace, window, cx| {
+            workspace.bounds.size.width = px(1920.);
             workspace.split_pane(
                 workspace.active_pane().clone(),
                 SplitDirection::Right,
@@ -15439,12 +15440,12 @@ mod tests {
             assert_eq!(center_column_count, 2);
 
             let dock = workspace.right_dock().read(cx);
-            assert_eq!(workspace.dock_size(&dock, window, cx).unwrap(), px(626.));
+            assert_eq!(workspace.dock_size(&dock, window, cx).unwrap(), px(640.));
 
             workspace.bounds.size.width = px(2400.);
 
             let dock = workspace.right_dock().read(cx);
-            assert_eq!(workspace.dock_size(&dock, window, cx).unwrap(), px(786.));
+            assert_eq!(workspace.dock_size(&dock, window, cx).unwrap(), px(800.));
         });
     }
 

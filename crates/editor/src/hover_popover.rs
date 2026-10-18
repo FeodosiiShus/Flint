@@ -1578,6 +1578,9 @@ mod tests {
         cx: &mut gpui::TestAppContext,
     ) {
         init_test(cx, |_| {});
+        update_test_editor_settings(cx, &|settings| {
+            settings.hover_popover_enabled = Some(true);
+        });
 
         let mut cx = EditorLspTestContext::new_rust(
             lsp::ServerCapabilities {
@@ -1745,6 +1748,9 @@ mod tests {
     #[gpui::test]
     async fn test_mouse_hover_info_popover(cx: &mut gpui::TestAppContext) {
         init_test(cx, |_| {});
+        update_test_editor_settings(cx, &|settings| {
+            settings.hover_popover_enabled = Some(true);
+        });
 
         let mut cx = EditorLspTestContext::new_rust(
             lsp::ServerCapabilities {
@@ -2906,6 +2912,9 @@ mod tests {
     #[gpui::test]
     async fn test_hover_popover_hiding_delay(cx: &mut gpui::TestAppContext) {
         init_test(cx, |_| {});
+        update_test_editor_settings(cx, &|settings| {
+            settings.hover_popover_enabled = Some(true);
+        });
 
         let custom_delay_ms = 500u64;
         cx.update(|cx| {
@@ -2990,6 +2999,9 @@ mod tests {
     #[gpui::test]
     async fn test_hover_popover_sticky_disabled(cx: &mut gpui::TestAppContext) {
         init_test(cx, |_| {});
+        update_test_editor_settings(cx, &|settings| {
+            settings.hover_popover_enabled = Some(true);
+        });
 
         cx.update(|cx| {
             cx.update_global::<SettingsStore, _>(|settings, cx| {
@@ -3062,6 +3074,9 @@ mod tests {
         cx: &mut gpui::TestAppContext,
     ) {
         init_test(cx, |_| {});
+        update_test_editor_settings(cx, &|settings| {
+            settings.hover_popover_enabled = Some(true);
+        });
 
         let custom_delay_ms = 600u64;
         cx.update(|cx| {
@@ -3175,6 +3190,9 @@ mod tests {
     #[gpui::test]
     async fn test_hover_popover_cancel_hide_on_rehover(cx: &mut gpui::TestAppContext) {
         init_test(cx, |_| {});
+        update_test_editor_settings(cx, &|settings| {
+            settings.hover_popover_enabled = Some(true);
+        });
 
         let custom_delay_ms = 500u64;
         cx.update(|cx| {

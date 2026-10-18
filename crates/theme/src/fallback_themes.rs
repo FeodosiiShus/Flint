@@ -1,6 +1,8 @@
 use std::sync::Arc;
 
-use gpui::{FontStyle, FontWeight, HighlightStyle, Hsla, WindowBackgroundAppearance, hsla};
+use gpui::{
+    FontStyle, FontWeight, HighlightStyle, Hsla, SharedString, WindowBackgroundAppearance, hsla,
+};
 
 use crate::{
     AccentColors, Appearance, DEFAULT_DARK_THEME, PlayerColors, StatusColors,
@@ -15,8 +17,8 @@ use crate::{
 pub fn zed_default_themes() -> ThemeFamily {
     ThemeFamily {
         id: "zed-default".to_string(),
-        name: "Zed Default".into(),
-        author: "".into(),
+        name: SharedString::new_static("Zed Default"),
+        author: SharedString::new_static(""),
         themes: vec![zed_default_dark()],
         scales: default_color_scales(),
     }

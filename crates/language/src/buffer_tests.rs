@@ -3859,7 +3859,7 @@ init({ count: 1 });
             language_names
         );
 
-        // Test languages_at for JavaScript code - should include JavaScript but NOT HTML
+        // Test languages_at for JavaScript code - combined injection keeps both HTML and JavaScript active
         let javascript_point = Point::new(2, 6);
         let languages = buffer.languages_at(javascript_point);
         let language_names: Vec<_> = languages.iter().map(|language| language.name()).collect();
@@ -3872,10 +3872,10 @@ init({ count: 1 });
             language_names
         );
         assert!(
-            !language_names
+            language_names
                 .iter()
                 .any(|language_name| language_name.as_ref() == "HTML"),
-            "Did not expect HTML in languages at {:?}, got {:?}",
+            "Expected HTML in languages at {:?} for combined injection, got {:?}",
             javascript_point,
             language_names
         );

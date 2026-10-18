@@ -3877,6 +3877,9 @@ Sentence ending file2.rs.
     #[gpui::test]
     async fn test_document_link_resolve_on_hover(cx: &mut gpui::TestAppContext) {
         init_test(cx, |_| {});
+        update_test_editor_settings(cx, &|settings| {
+            settings.hover_popover_enabled = Some(true);
+        });
 
         let mut cx = EditorLspTestContext::new_rust(
             lsp::ServerCapabilities {

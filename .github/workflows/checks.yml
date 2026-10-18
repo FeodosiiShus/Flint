@@ -237,6 +237,11 @@ jobs:
           set -o pipefail
           cargo check --locked --tests --package editor --package workspace --package client --package settings_ui --package settings_content --package terminal_view --package language_tools --package diagnostics --package extension_host --package markdown --package markdown_preview 2>&1 | tee -a "${RUNNER_TEMP}/ui-heavy.log"
 
+      - name: Check Flint-changed project test targets compile
+        run: |
+          set -o pipefail
+          cargo check --locked --tests --package project --package project_panel --features fs/test-support,project/test-support 2>&1 | tee -a "${RUNNER_TEMP}/ui-heavy.log"
+
       - name: Failure summary
         if: always()
         env:

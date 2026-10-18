@@ -675,7 +675,7 @@ mod tests {
                 {
                     "features": {
                         "edit_prediction_provider": "zed"
-                    }
+                    },
                 }
             "#}),
         )

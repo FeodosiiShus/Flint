@@ -852,7 +852,9 @@ impl Fs for RealFs {
                 let target = target.to_path_buf();
                 match self
                     .executor
-                    .spawn(async move { rename_without_replace(&source, &target) })
+                    .spawn(futures::future::lazy(move |_| {
+                        rename_without_replace(&source, &target)
+                    }))
                     .await
                 {
                     Ok(()) => return Ok(()),
@@ -974,10 +976,10 @@ impl Fs for RealFs {
     async fn load(&self, path: &Path) -> Result<String> {
         let path = path.to_path_buf();
         self.executor
-            .spawn(async move {
+            .spawn(futures::future::lazy(move |_| {
                 std::fs::read_to_string(&path)
                     .with_context(|| format!("Failed to read file {}", path.display()))
-            })
+            }))
             .await
     }
 
@@ -985,7 +987,7 @@ impl Fs for RealFs {
         let path = path.to_path_buf();
         let bytes = self
             .executor
-            .spawn(async move { std::fs::read(path) })
+            .spawn(futures::future::lazy(move |_| std::fs::read(path)))
             .await?;
         Ok(bytes)
     }
@@ -1063,17 +1065,17 @@ impl Fs for RealFs {
         let path = path.to_owned();
         let contents = content.to_owned();
         self.executor
-            .spawn(async move {
+            .spawn(futures::future::lazy(move |_| {
                 std::fs::write(path, contents)?;
                 Ok(())
-            })
+            }))
             .await
     }
 
     async fn canonicalize(&self, path: &Path) -> Result<PathBuf> {
         let path = path.to_owned();
         self.executor
-            .spawn(async move {
+            .spawn(futures::future::lazy(move |_| {
                 #[cfg(target_os = "windows")]
                 let result = Self::canonicalize(&path);
 
@@ -1081,21 +1083,25 @@ impl Fs for RealFs {
                 let result = std::fs::canonicalize(&path);
 
                 result.with_context(|| format!("canonicalizing {path:?}"))
-            })
+            }))
             .await
     }
 
     async fn is_file(&self, path: &Path) -> bool {
         let path = path.to_owned();
         self.executor
-            .spawn(async move { std::fs::metadata(path).is_ok_and(|metadata| metadata.is_file()) })
+            .spawn(futures::future::lazy(move |_| {
+                std::fs::metadata(path).is_ok_and(|metadata| metadata.is_file())
+            }))
             .await
     }
 
     async fn is_dir(&self, path: &Path) -> bool {
         let path = path.to_owned();
         self.executor
-            .spawn(async move { std::fs::metadata(path).is_ok_and(|metadata| metadata.is_dir()) })
+            .spawn(futures::future::lazy(move |_| {
+                std::fs::metadata(path).is_ok_and(|metadata| metadata.is_dir())
+            }))
             .await
     }
 
@@ -1103,7 +1109,9 @@ impl Fs for RealFs {
         let path_buf = path.to_owned();
         let symlink_metadata = match self
             .executor
-            .spawn(async move { std::fs::symlink_metadata(&path_buf) })
+            .spawn(futures::future::lazy(move |_| {
+                std::fs::symlink_metadata(&path_buf)
+            }))
             .await
         {
             Ok(metadata) => metadata,
@@ -1121,7 +1129,7 @@ impl Fs for RealFs {
             // Read target metadata, if the target exists
             match self
                 .executor
-                .spawn(async move { std::fs::metadata(path_buf) })
+                .spawn(futures::future::lazy(move |_| std::fs::metadata(path_buf)))
                 .await
             {
                 Ok(target_metadata) => target_metadata,
@@ -1181,7 +1189,7 @@ impl Fs for RealFs {
         let path = path.to_owned();
         let path = self
             .executor
-            .spawn(async move { std::fs::read_link(&path) })
+            .spawn(futures::future::lazy(move |_| std::fs::read_link(&path)))
             .await?;
         Ok(path)
     }
@@ -1193,7 +1201,7 @@ impl Fs for RealFs {
         let path = path.to_owned();
         let entries = self
             .executor
-            .spawn(async move { read_dir_entries(path) })
+            .spawn(futures::future::lazy(move |_| read_dir_entries(path)))
             .await?;
         Ok(Box::pin(iter(entries)))
     }
@@ -1389,7 +1397,9 @@ impl Fs for RealFs {
         if load != UNINITIALIZED {
             return load == CASE_SENSITIVE;
         }
-        let temp_dir = self.executor.spawn(async { TempDir::new() });
+        let temp_dir = self
+            .executor
+            .spawn(futures::future::lazy(|_| TempDir::new()));
         let res = maybe!(async {
             let temp_dir = temp_dir.await?;
             let test_file_1 = temp_dir.path().join("case_sensitivity_test.tmp");
