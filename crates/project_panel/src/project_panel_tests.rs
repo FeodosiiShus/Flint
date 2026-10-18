@@ -18,7 +18,9 @@ use menu::Cancel;
 use pretty_assertions::assert_eq;
 use project::{FakeFs, ProjectPath};
 use serde_json::json;
-use settings::{FolderIndicator, ProjectPanelAutoOpenSettings, SettingsStore, SplicingVec};
+use settings::{
+    AutosaveSetting, FolderIndicator, ProjectPanelAutoOpenSettings, SettingsStore, SplicingVec,
+};
 use smallvec::smallvec;
 use std::path::{Path, PathBuf};
 use util::{path, paths::PathStyle, rel_path::rel_path};
@@ -3326,6 +3328,16 @@ async fn test_create_duplicate_items_and_check_history(cx: &mut gpui::TestAppCon
 #[cfg_attr(target_os = "windows", ignore)]
 async fn test_rename_item_and_check_history(cx: &mut gpui::TestAppContext) {
     init_test_with_editor(cx);
+    cx.update(|cx| {
+        cx.update_global::<SettingsStore, _>(|store, cx| {
+            store.update_user_settings(cx, |settings| {
+                settings
+                    .project_panel
+                    .get_or_insert_default()
+                    .auto_reveal_entries = Some(true);
+            });
+        })
+    });
 
     let fs = FakeFs::new(cx.executor());
     fs.insert_tree(
@@ -4622,6 +4634,16 @@ async fn test_collapse_all_entries_with_invisible_worktree(cx: &mut gpui::TestAp
 #[gpui::test]
 async fn test_new_file_move(cx: &mut gpui::TestAppContext) {
     init_test(cx);
+    cx.update(|cx| {
+        cx.update_global::<SettingsStore, _>(|store, cx| {
+            store.update_user_settings(cx, |settings| {
+                settings
+                    .project_panel
+                    .get_or_insert_default()
+                    .auto_reveal_entries = Some(true);
+            });
+        })
+    });
 
     let fs = FakeFs::new(cx.executor());
     fs.as_fake().insert_tree(path!("/root"), json!({})).await;
@@ -12310,7 +12332,11 @@ async fn test_focus_follows_mouse_into_blank_area(cx: &mut gpui::TestAppContext)
 
     // Hover over the blank space below the last entry in the project panel,
     // which lives in the right dock by default.
-    cx.simulate_mouse_move(point(px(1800.), px(600.)), None, Modifiers::none());
+    let blank_point = panel.read_with(cx, |panel, cx| {
+        let viewport = panel.scroll_handle.viewport();
+        viewport.origin + point(viewport.size.width / 2., viewport.size.height - px(20.))
+    });
+    cx.simulate_mouse_move(blank_point, None, Modifiers::none());
     cx.executor().advance_clock(Duration::from_millis(200));
     cx.run_until_parked();
 
@@ -12338,6 +12364,7 @@ pub(crate) fn init_test(cx: &mut TestAppContext) {
                 settings.project.worktree.file_scan_exclusions =
                     Some(SplicingVec::from(Vec::new()));
                 settings.project.worktree.file_scan_depth = Some(0);
+                settings.workspace.autosave = Some(AutosaveSetting::Off);
             });
         });
     });
@@ -12360,6 +12387,7 @@ fn init_test_with_editor(cx: &mut TestAppContext) {
                 settings.project.worktree.file_scan_exclusions =
                     Some(SplicingVec::from(Vec::new()));
                 settings.project.worktree.file_scan_depth = Some(0);
+                settings.workspace.autosave = Some(AutosaveSetting::Off);
             });
         });
     });
@@ -12383,6 +12411,7 @@ fn init_test_with_git_ui(cx: &mut TestAppContext) {
                 settings.project.worktree.file_scan_exclusions =
                     Some(SplicingVec::from(Vec::new()));
                 settings.project.worktree.file_scan_depth = Some(0);
+                settings.workspace.autosave = Some(AutosaveSetting::Off);
             });
         });
     });

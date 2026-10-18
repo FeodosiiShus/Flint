@@ -258,9 +258,12 @@ impl Editor {
                     while row <= range.end.row {
                         if let Some(crease) = display_map.crease_for_buffer_row(MultiBufferRow(row))
                         {
-                            found = true;
-                            row = crease.range().end.row + 1;
-                            to_fold.push(crease);
+                            let crease_end = crease.range().end.row;
+                            if !display_map.is_line_folded(MultiBufferRow(row)) {
+                                found = true;
+                                to_fold.push(crease);
+                            }
+                            row = crease_end + 1;
                         } else {
                             row += 1
                         }
@@ -691,6 +694,7 @@ impl Editor {
         }
 
         let buffer_snapshot = self.buffer.read(cx).snapshot(cx);
+        let display_snapshot = self.display_map.update(cx, |map, cx| map.snapshot(cx));
         let crease_snapshot = self.display_map.read(cx).crease_snapshot();
         let mut registered_ranges = crease_snapshot
             .creases()
@@ -721,6 +725,10 @@ impl Editor {
                 let start = range.start.to_offset(&buffer_snapshot);
                 let end = range.end.to_offset(&buffer_snapshot);
                 if start >= end || !registered_ranges.insert((start, end)) {
+                    return None;
+                }
+                let start_point = buffer_snapshot.offset_to_point(start);
+                if display_snapshot.starts_indent(MultiBufferRow(start_point.row)) {
                     return None;
                 }
                 Some(Crease::simple(

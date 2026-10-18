@@ -1478,7 +1478,7 @@ mod tests {
     use crate::{
         PointForPosition,
         actions::ConfirmCompletion,
-        editor_tests::{handle_completion_request, init_test},
+        editor_tests::{handle_completion_request, init_test, update_test_editor_settings},
         inlays::inlay_hints::tests::{cached_hint_labels, visible_hint_labels},
         test::editor_lsp_test_context::EditorLspTestContext,
     };
@@ -2502,6 +2502,9 @@ mod tests {
                 show_background: Some(false),
                 toggle_on_modifiers_press: None,
             })
+        });
+        update_test_editor_settings(cx, &|settings| {
+            settings.hover_popover_enabled = Some(true);
         });
 
         let mut cx = EditorLspTestContext::new_rust(

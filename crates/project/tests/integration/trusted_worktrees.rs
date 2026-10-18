@@ -16,6 +16,11 @@ fn init_test(cx: &mut TestAppContext) {
             let settings_store = SettingsStore::test(cx);
             cx.set_global(settings_store);
         }
+        cx.update_global::<SettingsStore, _>(|store, cx| {
+            store.update_user_settings(cx, |settings| {
+                settings.session.get_or_insert_default().trust_all_worktrees = Some(false);
+            });
+        });
         if cx.try_global::<TrustedWorktrees>().is_some() {
             cx.remove_global::<TrustedWorktrees>();
         }

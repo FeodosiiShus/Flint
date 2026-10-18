@@ -313,7 +313,7 @@ fn test_dynamic_language_injection(cx: &mut App) {
         &[
             "(document (section (paragraph (inline)) (fenced_code_block (fenced_code_block_delimiter) (info_string (language)) (block_continuation) (code_fence_content (block_continuation)) (fenced_code_block_delimiter))))",
             "(inline (code_span (code_span_delimiter) (code_span_delimiter)))",
-            "...(expression_statement (assignment left: (identifier) right: (identifier))...",
+            "...(ERROR (identifier) (call...",
         ],
     );
     // Replace Python with a language that hasn't been loaded yet.

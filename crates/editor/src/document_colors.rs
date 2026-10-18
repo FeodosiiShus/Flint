@@ -401,7 +401,10 @@ mod tests {
     };
 
     use crate::{
-        Editor, LSP_REQUEST_DEBOUNCE_TIMEOUT, actions::MoveToEnd, editor_tests::init_test,
+        Editor, LSP_REQUEST_DEBOUNCE_TIMEOUT,
+        actions::MoveToEnd,
+        editor_settings::DocumentColorsRenderMode,
+        editor_tests::{init_test, update_test_editor_settings},
     };
 
     fn extract_color_inlays(editor: &Editor, cx: &gpui::App) -> Vec<Rgba> {
@@ -423,6 +426,9 @@ mod tests {
         };
 
         init_test(cx, |_| {});
+        update_test_editor_settings(cx, &|settings| {
+            settings.lsp_document_colors = Some(DocumentColorsRenderMode::Inlay);
+        });
 
         let fs = FakeFs::new(cx.executor());
         fs.insert_tree(

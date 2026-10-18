@@ -10140,6 +10140,11 @@ mod tests {
             cx.set_global(settings_store);
             theme_settings::init(LoadThemes::JustBase, cx);
         });
+        cx.update_global::<SettingsStore, _>(|store, cx| {
+            store.update_user_settings(cx, |settings| {
+                settings.workspace.autosave = Some(AutosaveSetting::Off);
+            });
+        });
     }
 
     fn set_max_tabs(cx: &mut TestAppContext, value: Option<usize>) {

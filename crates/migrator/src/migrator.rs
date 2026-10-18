@@ -673,8 +673,8 @@ mod tests {
             "#},
             Some(indoc! {r#"
                 {
-                    "edit_predictions": {
-                        "provider": "zed"
+                    "features": {
+                        "edit_prediction_provider": "zed"
                     }
                 }
             "#}),
@@ -778,7 +778,7 @@ mod tests {
             Some(
                 r#"
                 {
-                    "agent": {
+                    "assistant": {
                         "profiles": {
                             "custom": {
                                 "name": "Custom",
@@ -816,7 +816,7 @@ mod tests {
             Some(
                 r#"
                 {
-                    "agent": {
+                    "assistant": {
                         "profiles": {
                             "custom": {
                                 "name": "Custom",
@@ -852,24 +852,7 @@ mod tests {
                     }
                 }
             "#,
-            Some(
-                r#"
-                {
-                    "agent": {
-                        "profiles": {
-                            "custom": {
-                                "name": "Custom",
-                                "tools": {
-                                    "diagnostics": true,
-                                    "find_path": true,
-                                    "read_file": true
-                                }
-                            }
-                        }
-                    }
-                }
-            "#,
-            ),
+            None,
         )
     }
 
@@ -893,7 +876,7 @@ mod tests {
             Some(
                 r#"
                 {
-                    "agent": {
+                    "assistant": {
                         "profiles": {
                             "default": {
                                 "tools": {

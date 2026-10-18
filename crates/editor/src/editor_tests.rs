@@ -30126,7 +30126,7 @@ async fn test_completions_default_resolve_data_handling(cx: &mut TestAppContext)
     // Completions that have already been resolved are skipped.
     assert_eq!(
         *resolved_items.lock(),
-        items[items.len() - 17..items.len() - 4]
+        items[items.len() - 16..items.len() - 4]
             .iter()
             .cloned()
             .map(|mut item| {
@@ -45715,6 +45715,13 @@ async fn test_tab_list_indent(cx: &mut TestAppContext) {
 #[gpui::test]
 async fn test_local_worktree_trust(cx: &mut TestAppContext) {
     init_test(cx, |_| {});
+    cx.update(|cx| {
+        SettingsStore::update_global(cx, |store, cx| {
+            store.update_user_settings(cx, |settings| {
+                settings.session.get_or_insert_default().trust_all_worktrees = Some(false);
+            });
+        });
+    });
     cx.update(|cx| project::trusted_worktrees::init(HashMap::default(), cx));
 
     cx.update(|cx| {

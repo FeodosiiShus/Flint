@@ -11117,7 +11117,7 @@ mod tests {
             });
         });
         cx.executor().run_until_parked();
-        assert_eq!(cx.window_title().as_deref(), Some("Zed — root1, root2"));
+        assert_eq!(cx.window_title().as_deref(), Some("Flint — root1, root2"));
 
         let item = cx.new(|cx| {
             TestItem::new(cx).with_project_items(&[TestProjectItem::new_in_worktree(
@@ -11134,7 +11134,7 @@ mod tests {
         let expected_file_path = path!("/root1/src/one.txt");
         assert_eq!(
             cx.window_title().as_deref(),
-            Some(format!("Zed — root1, root2 — one — {expected_file_path}").as_str())
+            Some(format!("Flint — root1, root2 — one — {expected_file_path}").as_str())
         );
     }
 
@@ -15439,12 +15439,12 @@ mod tests {
             assert_eq!(center_column_count, 2);
 
             let dock = workspace.right_dock().read(cx);
-            assert_eq!(workspace.dock_size(&dock, window, cx).unwrap(), px(640.));
+            assert_eq!(workspace.dock_size(&dock, window, cx).unwrap(), px(626.));
 
             workspace.bounds.size.width = px(2400.);
 
             let dock = workspace.right_dock().read(cx);
-            assert_eq!(workspace.dock_size(&dock, window, cx).unwrap(), px(800.));
+            assert_eq!(workspace.dock_size(&dock, window, cx).unwrap(), px(786.));
         });
     }
 
@@ -18937,6 +18937,11 @@ mod tests {
             cx.set_global(settings_store);
             cx.set_global(db::AppDatabase::test_new());
             theme_settings::init(theme::LoadThemes::JustBase, cx);
+        });
+        cx.update_global::<SettingsStore, _>(|store, cx| {
+            store.update_user_settings(cx, |settings| {
+                settings.workspace.autosave = Some(AutosaveSetting::Off);
+            });
         });
     }
 

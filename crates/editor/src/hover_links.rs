@@ -1234,7 +1234,7 @@ mod tests {
     use crate::{
         DisplayPoint,
         display_map::ToDisplayPoint,
-        editor_tests::init_test,
+        editor_tests::{init_test, update_test_editor_settings},
         inlays::inlay_hints::tests::{cached_hint_labels, visible_hint_labels},
         test::editor_lsp_test_context::EditorLspTestContext,
     };
@@ -3782,6 +3782,9 @@ Sentence ending file2.rs.
     #[gpui::test]
     async fn test_document_link_tooltip_popover(cx: &mut gpui::TestAppContext) {
         init_test(cx, |_| {});
+        update_test_editor_settings(cx, &|settings| {
+            settings.hover_popover_enabled = Some(true);
+        });
 
         let mut cx = EditorLspTestContext::new_rust(
             lsp::ServerCapabilities {

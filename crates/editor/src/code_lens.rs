@@ -2869,6 +2869,9 @@ mod tests {
     #[gpui::test]
     async fn test_code_lens_disabled_by_default(cx: &mut TestAppContext) {
         init_test(cx, |_| {});
+        update_test_editor_settings(cx, &|settings| {
+            settings.code_lens = Some(CodeLens::Off);
+        });
 
         let mut cx = EditorLspTestContext::new_typescript(
             lsp::ServerCapabilities {

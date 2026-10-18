@@ -4999,7 +4999,8 @@ fn html_lang() -> Language {
         r#"
         (script_element
             (raw_text) @injection.content
-            (#set! injection.language "javascript"))
+            (#set! injection.language "javascript")
+            (#set! injection.combined))
         "#,
     )
     .unwrap()
@@ -5051,6 +5052,8 @@ fn c_lang() -> Arc<Language> {
         .with_outline_query(include_str!("../../grammars/src/c/outline.scm"))
         .unwrap()
         .with_brackets_query(include_str!("../../grammars/src/c/brackets.scm"))
+        .unwrap()
+        .with_indents_query(include_str!("../../grammars/src/c/indents.scm"))
         .unwrap(),
     )
 }
