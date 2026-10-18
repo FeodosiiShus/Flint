@@ -159,7 +159,7 @@ where
         .scoped(|scope| {
             for (segment_idx, results) in segment_results.iter_mut().enumerate() {
                 let cancel_flag = &cancel_flag;
-                scope.spawn(async move {
+                scope.spawn(futures::future::lazy(move |_| {
                     let segment_start = cmp::min(segment_idx * segment_size, candidates.len());
                     let segment_end = cmp::min(segment_start + segment_size, candidates.len());
                     let mut matcher = Matcher::new(
@@ -185,7 +185,7 @@ where
                             string: candidate.string.to_string(),
                         },
                     );
-                });
+                }));
             }
         })
         .await;

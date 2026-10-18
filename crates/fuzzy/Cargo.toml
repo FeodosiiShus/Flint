@@ -13,6 +13,7 @@ path = "src/fuzzy.rs"
 doctest = false
 
 [dependencies]
+ futures.workspace = true
 gpui.workspace = true
 gpui_util.workspace = true
 path.workspace = true

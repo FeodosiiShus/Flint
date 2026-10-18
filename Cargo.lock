@@ -3042,6 +3042,7 @@ dependencies = [
 name = "fuzzy"
 version = "0.1.0"
 dependencies = [
+ "futures",
  "gpui",
  "gpui_util",
  "log",

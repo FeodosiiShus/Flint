@@ -184,7 +184,7 @@ pub async fn match_path_sets<'a, Set: PathMatchCandidateSet<'a>>(
     executor
         .scoped(|scope| {
             for (segment_idx, results) in segment_results.iter_mut().enumerate() {
-                scope.spawn(async move {
+                scope.spawn(futures::future::lazy(move |_| {
                     let segment_start = segment_idx * segment_size;
                     let segment_end = segment_start + segment_size;
                     let mut matcher =
@@ -246,7 +246,7 @@ pub async fn match_path_sets<'a, Set: PathMatchCandidateSet<'a>>(
                         }
                         tree_start = tree_end;
                     }
-                })
+                }))
             }
         })
         .await;
