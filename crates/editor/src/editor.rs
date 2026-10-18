@@ -1804,7 +1804,7 @@ impl Editor {
         let end_row = (buffer_visible_start.row + 10).min(max_row);
 
         let syntax = self.style(cx).syntax.clone();
-        let background_task = cx.background_spawn(async move {
+        let background_task = cx.background_spawn(futures::future::lazy(move |_| {
             buffer
                 .outline_items_containing(
                     Point::new(start_row, 0)..Point::new(end_row, 0),
@@ -1834,7 +1834,7 @@ impl Editor {
                     })
                 })
                 .collect()
-        });
+        }));
         self.sticky_headers_task = cx.spawn(async move |this, cx| {
             let sticky_headers = background_task.await;
             this.update(cx, |this, cx| {
@@ -3592,14 +3592,14 @@ impl Editor {
         }
 
         let snapshot = cursor_buffer.read(cx).snapshot();
-        let word_ranges = cx.background_spawn(async move {
+        let word_ranges = cx.background_spawn(futures::future::lazy(move |_| {
             // this might look odd to put on the background thread, but
             // `surrounding_word` can be quite expensive as it calls into
             // tree-sitter language scopes
             let (start_word_range, _) = snapshot.surrounding_word(cursor_buffer_position, None);
             let (end_word_range, _) = snapshot.surrounding_word(tail_buffer_position, None);
             (start_word_range, end_word_range)
-        });
+        }));
 
         let debounce = EditorSettings::get_global(cx).lsp_highlight_debounce.0;
         self.document_highlights_task = Some(cx.spawn(async move |this, cx| {
@@ -3846,9 +3846,9 @@ impl Editor {
             cx.notify();
         } else {
             let syntax = cx.theme().syntax().clone();
-            let background_task = cx.background_spawn(async move {
+            let background_task = cx.background_spawn(futures::future::lazy(move |_| {
                 multi_buffer_snapshot.symbols_containing(cursor, Some(&syntax))
-            });
+            }));
             self.refresh_outline_symbols_at_cursor_at_cursor_task =
                 cx.spawn(async move |this, cx| {
                     let symbols = background_task.await;
@@ -4136,7 +4136,7 @@ impl Editor {
                 Tooltip::with_meta_in(
                     "Remove Bookmark",
                     Some(&ToggleBookmark),
-                    SharedString::from("Right-click for more options"),
+                    SharedString::new_static("Right-click for more options"),
                     &focus_handle,
                     cx,
                 )
@@ -4480,13 +4480,13 @@ impl Editor {
         let has_context_menu = self.has_mouse_context_menu();
 
         let meta = if is_rejected {
-            SharedString::from("No executable code is associated with this line.")
+            SharedString::new_static("No executable code is associated with this line.")
         } else if !breakpoint.is_disabled() {
             SharedString::from(format!(
                 "{alt_as_text}-click to disable\nright-click for more options"
             ))
         } else {
-            SharedString::from("Right-click for more options")
+            SharedString::new_static("Right-click for more options")
         };
         IconButton::new(("breakpoint_indicator", row.0 as usize), icon)
             .icon_size(IconSize::XSmall)
@@ -11579,7 +11579,7 @@ impl EditorSnapshot {
                         cursor_shape,
                         line_mode,
                         collaborator_id: CollaboratorId::Agent,
-                        user_name: Some("Agent".into()),
+                        user_name: Some(SharedString::new_static("Agent")),
                         color: cx.theme().players().agent(),
                     })
                 } else {

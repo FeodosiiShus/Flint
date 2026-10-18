@@ -13,7 +13,9 @@ use futures::{
     future::{self, Shared},
     stream::FuturesUnordered,
 };
-use gpui::{AppContext as _, AsyncApp, Context, Entity, EventEmitter, Task, WeakEntity};
+use gpui::{
+    AppContext as _, AsyncApp, Context, Entity, EventEmitter, SharedString, Task, WeakEntity,
+};
 use language::{
     Buffer, LanguageRegistry, LocalFile, OffsetUtf16,
     language_settings::{Formatter, LanguageSettings},
@@ -412,7 +414,7 @@ impl PrettierStore {
             prettier_store
                 .update(cx, |prettier_store, cx| {
                     let name = if is_default {
-                        LanguageServerName("prettier (default)".into())
+                        LanguageServerName(SharedString::new_static("prettier (default)"))
                     } else {
                         let worktree_path = worktree_id
                             .and_then(|id| {

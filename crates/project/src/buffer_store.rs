@@ -696,14 +696,14 @@ impl LocalBufferStore {
                     let reservation = cx.reserve_entity::<Buffer>();
                     let buffer_id = BufferId::from(reservation.entity_id().as_non_zero_u64());
                     let text_buffer = cx
-                        .background_spawn(async move {
+                        .background_spawn(futures::future::lazy(move |_| {
                             text::Buffer::new_normalized(
                                 ReplicaId::LOCAL,
                                 buffer_id,
                                 loaded.line_ending,
                                 loaded.text,
                             )
-                        })
+                        }))
                         .await;
                     cx.insert_entity(reservation, |cx| {
                         let mut buffer =
@@ -1173,14 +1173,12 @@ impl BufferStore {
         let remote_id = buffer.read(cx).remote_id();
         if let Some(entry_id) = file.entry_id {
             if let Some(local) = self.as_local_mut() {
-                match local.local_buffer_ids_by_entry_id.get(&entry_id) {
-                    Some(_) => {
+                match local.local_buffer_ids_by_entry_id.entry(entry_id) {
+                    hash_map::Entry::Occupied(_) => {
                         return None;
                     }
-                    None => {
-                        local
-                            .local_buffer_ids_by_entry_id
-                            .insert(entry_id, remote_id);
+                    hash_map::Entry::Vacant(entry) => {
+                        entry.insert(remote_id);
                     }
                 }
             }
@@ -1650,7 +1648,7 @@ impl BufferStore {
 
             if client.send(initial_state).log_err().is_some() {
                 let client = client.clone();
-                cx.background_spawn(async move {
+                cx.background_spawn(futures::future::lazy(move |_| {
                     let mut chunks = split_operations(operations).peekable();
                     while let Some(chunk) = chunks.next() {
                         let is_last = chunks.peek().is_none();
@@ -1667,7 +1665,7 @@ impl BufferStore {
                         })?;
                     }
                     anyhow::Ok(())
-                })
+                }))
                 .await
                 .log_err();
             }

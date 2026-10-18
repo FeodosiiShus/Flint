@@ -2012,26 +2012,27 @@ impl BufferDiff {
             }
         });
 
-        cx.background_executor().spawn(async move {
-            let hunks = if let Some(unchanged_hunks) = unchanged_hunks {
-                unchanged_hunks
-            } else if let Some(base_text) = base_text {
-                compute_hunks(
-                    Some((base_text, base_text_snapshot.as_rope().clone())),
-                    &buffer,
-                    diff_options,
-                )
-            } else {
-                compute_hunks(None, &buffer, diff_options)
-            };
+        cx.background_executor()
+            .spawn(futures::future::lazy(move |_| {
+                let hunks = if let Some(unchanged_hunks) = unchanged_hunks {
+                    unchanged_hunks
+                } else if let Some(base_text) = base_text {
+                    compute_hunks(
+                        Some((base_text, base_text_snapshot.as_rope().clone())),
+                        &buffer,
+                        diff_options,
+                    )
+                } else {
+                    compute_hunks(None, &buffer, diff_options)
+                };
 
-            BufferDiffUpdate {
-                hunks,
-                base_text: base_text_snapshot,
-                base_text_exists,
-                buffer_snapshot,
-            }
-        })
+                BufferDiffUpdate {
+                    hunks,
+                    base_text: base_text_snapshot,
+                    base_text_exists,
+                    buffer_snapshot,
+                }
+            }))
     }
 
     pub fn set_snapshot_with_secondary(

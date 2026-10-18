@@ -823,7 +823,9 @@ impl Component for SwitchField {
                             SwitchField::new(
                                 "switch_field_unselected",
                                 Some("Enable notifications"),
-                                Some("Receive notifications when new messages arrive.".into()),
+                                Some(SharedString::new_static(
+                                    "Receive notifications when new messages arrive.",
+                                )),
                                 ToggleState::Unselected,
                                 |_, _, _| {},
                             )
@@ -834,7 +836,9 @@ impl Component for SwitchField {
                             SwitchField::new(
                                 "switch_field_selected",
                                 Some("Enable notifications"),
-                                Some("Receive notifications when new messages arrive.".into()),
+                                Some(SharedString::new_static(
+                                    "Receive notifications when new messages arrive.",
+                                )),
                                 ToggleState::Selected,
                                 |_, _, _| {},
                             )
@@ -850,7 +854,9 @@ impl Component for SwitchField {
                             SwitchField::new(
                                 "switch_field_default",
                                 Some("Default color"),
-                                Some("This uses the default switch color.".into()),
+                                Some(SharedString::new_static(
+                                    "This uses the default switch color.",
+                                )),
                                 ToggleState::Selected,
                                 |_, _, _| {},
                             )
@@ -861,7 +867,9 @@ impl Component for SwitchField {
                             SwitchField::new(
                                 "switch_field_accent",
                                 Some("Accent color"),
-                                Some("This uses the accent color scheme.".into()),
+                                Some(SharedString::new_static(
+                                    "This uses the accent color scheme.",
+                                )),
                                 ToggleState::Selected,
                                 |_, _, _| {},
                             )
@@ -877,7 +885,9 @@ impl Component for SwitchField {
                         SwitchField::new(
                             "switch_field_disabled",
                             Some("Disabled field"),
-                            Some("This field is disabled and cannot be toggled.".into()),
+                            Some(SharedString::new_static(
+                                "This field is disabled and cannot be toggled.",
+                            )),
                             ToggleState::Selected,
                             |_, _, _| {},
                         )
@@ -907,7 +917,9 @@ impl Component for SwitchField {
                             SwitchField::new(
                                 "switch_field_tooltip_with_desc",
                                 Some("Nice Feature"),
-                                Some("Enable advanced configuration options.".into()),
+                                Some(SharedString::new_static(
+                                    "Enable advanced configuration options.",
+                                )),
                                 ToggleState::Unselected,
                                 |_, _, _| {},
                             )

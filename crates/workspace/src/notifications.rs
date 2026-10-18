@@ -1240,7 +1240,7 @@ pub mod simple_message_notification {
             struct PreviewError;
             impl WorkspaceError for PreviewError {
                 fn primary_message(&self) -> SharedString {
-                    "Something went wrong while loading your project.".into()
+                    SharedString::new_static("Something went wrong while loading your project.")
                 }
 
                 fn primary_action(&self) -> ErrorAction {
@@ -1248,7 +1248,9 @@ pub mod simple_message_notification {
                 }
 
                 fn secondary_message(&self) -> Option<SharedString> {
-                    Some("Check your network connection and try again.".into())
+                    Some(SharedString::new_static(
+                        "Check your network connection and try again.",
+                    ))
                 }
                 fn severity(&self) -> ErrorSeverity {
                     ErrorSeverity::Error
@@ -1261,7 +1263,7 @@ pub mod simple_message_notification {
                 .new(|cx| MessageNotification::new("Default header with just a close button.", cx));
 
             let copy_and_close = cx.new(|cx| {
-                let msg: SharedString = "This message can be copied to the clipboard.".into();
+                let msg = SharedString::new_static("This message can be copied to the clipboard.");
                 MessageNotification::new(msg.clone(), cx).copy_text(msg)
             });
 
@@ -1278,7 +1280,7 @@ pub mod simple_message_notification {
             struct BasicError;
             impl WorkspaceError for BasicError {
                 fn primary_message(&self) -> SharedString {
-                    "Failed to save the file.".into()
+                    SharedString::new_static("Failed to save the file.")
                 }
                 fn primary_action(&self) -> ErrorAction {
                     ErrorAction::dismiss()
@@ -1291,8 +1293,9 @@ pub mod simple_message_notification {
             struct LanguageServerError;
             impl WorkspaceError for LanguageServerError {
                 fn primary_message(&self) -> SharedString {
-                    "Error: Prepare rename via rust-analyzer failed: No references found at position"
-                        .into()
+                    SharedString::new_static(
+                        "Error: Prepare rename via rust-analyzer failed: No references found at position",
+                    )
                 }
                 fn secondary_message(&self) -> Option<SharedString> {
                     None
@@ -1310,10 +1313,12 @@ pub mod simple_message_notification {
             struct PortalSetupError;
             impl WorkspaceError for PortalSetupError {
                 fn primary_message(&self) -> SharedString {
-                    "Linux desktop portal initialization failed.".into()
+                    SharedString::new_static("Linux desktop portal initialization failed.")
                 }
                 fn secondary_message(&self) -> Option<SharedString> {
-                    Some("Flint needs an xdg-desktop-portal implementation to open files.".into())
+                    Some(SharedString::new_static(
+                        "Flint needs an xdg-desktop-portal implementation to open files.",
+                    ))
                 }
                 fn severity(&self) -> ErrorSeverity {
                     ErrorSeverity::Critical
@@ -1328,7 +1333,7 @@ pub mod simple_message_notification {
             struct UpdateRequiredError;
             impl WorkspaceError for UpdateRequiredError {
                 fn primary_message(&self) -> SharedString {
-                    "An update is required to continue using Zed AI.".into()
+                    SharedString::new_static("An update is required to continue using Zed AI.")
                 }
                 fn severity(&self) -> ErrorSeverity {
                     ErrorSeverity::Critical

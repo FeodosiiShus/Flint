@@ -56,7 +56,9 @@ impl ConfiguredApiCard {
 
 impl RenderOnce for ConfiguredApiCard {
     fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
-        let button_label = self.button_label.unwrap_or("Reset Key".into());
+        let button_label = self
+            .button_label
+            .unwrap_or(SharedString::new_static("Reset Key"));
         let button_id = self.id;
 
         h_flex()

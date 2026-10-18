@@ -81,7 +81,7 @@ impl ErrorAction {
     /// recovery affordance beyond closing the notification.
     pub fn dismiss() -> Self {
         Self {
-            label: "Dismiss".into(),
+            label: SharedString::new_static("Dismiss"),
             icon: None,
             tooltip: None,
             handler: ErrorActionHandler::Dismiss,

@@ -28,7 +28,7 @@ impl Default for List {
 impl List {
     pub fn new() -> Self {
         Self {
-            empty_message: EmptyMessage::Text("No items".into()),
+            empty_message: EmptyMessage::Text(SharedString::new_static("No items")),
             header: None,
             toggle: None,
             children: SmallVec::new(),

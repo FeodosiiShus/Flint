@@ -141,6 +141,12 @@ fn is_blocking_call(cx: &LateContext<'_>, expr: &Expr<'_>) -> bool {
             }
             let receiver_ty = cx.typeck_results().expr_ty(receiver).peel_refs();
             if let Some(adt) = receiver_ty.ty_adt_def() {
+                // Matching on the type name alone would also catch other crates'
+                // types with the same names, such as `parking_lot::Mutex` (whose
+                // ADT is `lock_api::Mutex`), which guard in-memory state and do no IO.
+                if cx.tcx.crate_name(adt.did().krate).as_str() != "std" {
+                    return false;
+                }
                 let type_name = cx.tcx.item_name(adt.did());
                 return BLOCKING_METHODS
                     .iter()

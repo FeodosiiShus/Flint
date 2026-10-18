@@ -474,14 +474,14 @@ pub(crate) fn handle_from(
                 .background_executor()
                 .spawn({
                     let buffer_snapshot = buffer_snapshot.clone();
-                    async move {
+                    futures::future::lazy(move |_| {
                         generate_auto_close_edits(
                             &buffer_snapshot,
                             &edited_ranges,
                             &jsx_tag_auto_close_config,
                             edit_behavior_state,
                         )
-                    }
+                    })
                 })
                 .await;
 

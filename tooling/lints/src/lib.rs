@@ -445,11 +445,15 @@ impl<'tcx> LateLintPass<'tcx> for AsyncBlockWithoutAwait {
             return;
         };
 
-        // Trait impls are constrained by the trait's signature. If the trait
+        // Trait methods are constrained by the trait's signature. If the trait
         // requires a method that returns a future, the implementor must produce
         // an async block even when their implementation has nothing to await.
+        // The same holds for default bodies in the trait itself, which
+        // `#[async_trait]` expands into an `async move` block on the user's span.
         let enclosing_body_owner = cx.tcx.hir_enclosing_body_owner(expr.hir_id);
-        if is_def_id_trait_method(cx, enclosing_body_owner) {
+        if is_def_id_trait_method(cx, enclosing_body_owner)
+            || cx.tcx.def_kind(cx.tcx.local_parent(enclosing_body_owner)) == DefKind::Trait
+        {
             return;
         }
 

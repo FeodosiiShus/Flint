@@ -67,12 +67,10 @@ pub trait ProtoClient: Send + Sync {
         envelope: Envelope,
         request_type: &'static str,
     ) -> BoxFuture<'static, Result<BoxStream<'static, Result<Envelope>>>> {
-        async move {
-            anyhow::bail!(
-                "stream requests are not supported for {request_type}: {:?}",
-                envelope.payload
-            )
-        }
+        futures::future::ready(Err(anyhow::anyhow!(
+            "stream requests are not supported for {request_type}: {:?}",
+            envelope.payload
+        )))
         .boxed()
     }
 
@@ -461,16 +459,14 @@ impl AnyProtoClient {
                     let envelope = envelope.into_any().downcast::<TypedEnvelope<M>>().unwrap();
                     let request_id = envelope.message_id();
                     handler(entity, *envelope, cx)
-                        .then(move |result| async move {
-                            match result {
-                                Ok(response) => {
-                                    client.send_response(request_id, response)?;
-                                    Ok(())
-                                }
-                                Err(error) => {
-                                    client.send_response(request_id, error.to_proto())?;
-                                    Err(error)
-                                }
+                        .map(move |result| match result {
+                            Ok(response) => {
+                                client.send_response(request_id, response)?;
+                                Ok(())
+                            }
+                            Err(error) => {
+                                client.send_response(request_id, error.to_proto())?;
+                                Err(error)
                             }
                         })
                         .boxed_local()
@@ -507,16 +503,14 @@ impl AnyProtoClient {
                     let envelope = envelope.into_any().downcast::<TypedEnvelope<M>>().unwrap();
                     let request_id = envelope.message_id();
                     handler(entity, *envelope, cx)
-                        .then(move |result| async move {
-                            match result {
-                                Ok(response) => {
-                                    client.send_response(request_id, response)?;
-                                    Ok(())
-                                }
-                                Err(error) => {
-                                    client.send_response(request_id, error.to_proto())?;
-                                    Err(error)
-                                }
+                        .map(move |result| match result {
+                            Ok(response) => {
+                                client.send_response(request_id, response)?;
+                                Ok(())
+                            }
+                            Err(error) => {
+                                client.send_response(request_id, error.to_proto())?;
+                                Err(error)
                             }
                         })
                         .boxed_local()

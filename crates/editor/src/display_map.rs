@@ -2251,7 +2251,7 @@ impl DisplaySnapshot {
             if let Some(invisible) = s.chars().next().filter(|&c| is_invisible(c)) {
                 replacement(invisible).map_or_else(|| s.to_owned().into(), SharedString::from)
             } else if s == "\n" {
-                " ".into()
+                SharedString::new_static(" ")
             } else {
                 s.to_owned().into()
             }

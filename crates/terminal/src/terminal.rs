@@ -1100,7 +1100,7 @@ impl TerminalBuilder {
             Ok(signal_mask) => Some(signal_mask),
             Err(error) => return Task::ready(Err(error)),
         };
-        let fut = async move {
+        let fut = futures::future::lazy(move |_| {
             let completion_tx = match mode.0 {
                 TerminalModeKind::Interactive => None,
                 TerminalModeKind::InteractiveWithCompletion(completion_tx) => Some(completion_tx),
@@ -1377,7 +1377,7 @@ impl TerminalBuilder {
                 terminal,
                 events_rx,
             })
-        };
+        });
         cx.background_spawn(fut)
     }
 
@@ -2890,10 +2890,10 @@ impl Terminal {
 
     pub fn find_matches(&self, searcher: Search, cx: &Context<Self>) -> Task<Vec<Range>> {
         let term = self.term.clone();
-        cx.background_spawn(async move {
+        cx.background_spawn(futures::future::lazy(move |_| {
             let term = term.lock();
             search_matches(&term, searcher)
-        })
+        }))
     }
 
     pub fn working_directory(&self) -> Option<PathBuf> {

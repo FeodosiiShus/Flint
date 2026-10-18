@@ -1553,7 +1553,7 @@ impl LanguageServer {
                     RequestId::Int(id),
                     Box::new(move |result| {
                         executor
-                            .spawn(async move {
+                            .spawn(futures::future::lazy(move |_| {
                                 let response = match result {
                                     Ok(response) => match deserialize_result(&response) {
                                         Ok(deserialized) => Ok(deserialized),
@@ -1565,7 +1565,7 @@ impl LanguageServer {
                                     Err(error) => Err(anyhow::Error::new(error)),
                                 };
                                 tx.send(response).ok();
-                            })
+                            }))
                     }),
                 );
             });

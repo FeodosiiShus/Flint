@@ -618,7 +618,7 @@ impl Editor {
             };
 
             let new_inline_diagnostics = cx
-                .background_spawn(async move {
+                .background_spawn(futures::future::lazy(move |_| {
                     let mut inline_diagnostics = Vec::<(Anchor, InlineDiagnostic)>::new();
                     for diagnostic_entry in
                         snapshot.diagnostics_in_range(MultiBufferOffset(0)..snapshot.len())
@@ -655,7 +655,7 @@ impl Editor {
                         );
                     }
                     inline_diagnostics
-                })
+                }))
                 .await;
 
             editor

@@ -802,7 +802,7 @@ impl LocalRepositoryState {
         let backend = cx
             .background_spawn({
                 let fs = fs.clone();
-                async move {
+                futures::future::lazy(move |_| {
                     let system_git_binary_path = search_paths
                         .and_then(|search_paths| {
                             which::which_in("git", Some(search_paths), &work_directory_abs_path)
@@ -811,7 +811,7 @@ impl LocalRepositoryState {
                         .or_else(|| which::which("git").ok());
                     fs.open_repo(&dot_git_abs_path, system_git_binary_path.as_deref())
                         .with_context(|| format!("opening repository at {dot_git_abs_path:?}"))
-                }
+                })
             })
             .await?;
         backend.set_trusted(is_trusted);
@@ -1244,20 +1244,23 @@ impl GitStore {
                             while let Some(update) = updates_rx.next().await {
                                 match update {
                                     DownstreamUpdate::UpdateRepository(snapshot) => {
-                                        if let Some(old_snapshot) = snapshots.get_mut(&snapshot.id)
-                                        {
-                                            let update =
-                                                snapshot.build_update(old_snapshot, project_id);
-                                            *old_snapshot = snapshot;
-                                            for update in split_repository_update(update) {
-                                                client.send(update)?;
+                                        match snapshots.entry(snapshot.id) {
+                                            Entry::Occupied(mut entry) => {
+                                                let old_snapshot = entry.get_mut();
+                                                let update =
+                                                    snapshot.build_update(old_snapshot, project_id);
+                                                *old_snapshot = snapshot;
+                                                for update in split_repository_update(update) {
+                                                    client.send(update)?;
+                                                }
                                             }
-                                        } else {
-                                            let update = snapshot.initial_update(project_id);
-                                            for update in split_repository_update(update) {
-                                                client.send(update)?;
+                                            Entry::Vacant(entry) => {
+                                                let update = snapshot.initial_update(project_id);
+                                                for update in split_repository_update(update) {
+                                                    client.send(update)?;
+                                                }
+                                                entry.insert(snapshot);
                                             }
-                                            snapshots.insert(snapshot.id, snapshot);
                                         }
                                     }
                                     DownstreamUpdate::RemoveRepository(id) => {
@@ -5379,7 +5382,7 @@ impl GitStore {
             let mut tasks = FuturesOrdered::new();
             for (repo_path, repo) in repo_paths.into_iter().rev() {
                 let entries = entries.clone();
-                let task = executor.spawn(async move {
+                let task = executor.spawn(futures::future::lazy(move |_| {
                     // Find all repository paths that belong to this repo
                     let mut ix = entries.partition_point(|path| path < &*repo_path);
                     if ix == entries.len() {
@@ -5401,7 +5404,7 @@ impl GitStore {
                     } else {
                         Some((repo, paths))
                     }
-                });
+                }));
                 tasks.push_back(task);
             }
 
@@ -5535,11 +5538,11 @@ impl BufferGitState {
         self.conflict_updated_futures.push(tx);
         self.reparse_conflict_markers_task = Some(cx.spawn(async move |this, cx| {
             let (snapshot, changed_range) = cx
-                .background_spawn(async move {
+                .background_spawn(futures::future::lazy(move |_| {
                     let new_snapshot = ConflictSet::parse(&buffer);
                     let changed_range = old_snapshot.compare(&new_snapshot, &buffer);
                     (new_snapshot, changed_range)
-                })
+                }))
                 .await;
             this.update(cx, |this, cx| {
                 if let Some(conflict_set) = &this.conflict_set {
@@ -8412,7 +8415,7 @@ impl Repository {
         }
         let receiver = self.send_job(
             "mark_conflicts_resolved",
-            Some("git add".into()),
+            Some(SharedString::new_static("git add")),
             move |state, _| async move {
                 match state {
                     RepositoryState::Local(LocalRepositoryState {
@@ -8484,7 +8487,7 @@ impl Repository {
     pub fn commit_merge(&mut self, cx: &mut Context<Self>) -> Task<Result<()>> {
         let receiver = self.send_job(
             "commit_merge",
-            Some("git commit".into()),
+            Some(SharedString::new_static("git commit")),
             move |state, _| async move {
                 match state {
                     RepositoryState::Local(LocalRepositoryState {
@@ -8670,7 +8673,7 @@ impl Repository {
     pub fn stage_all(&mut self, cx: &mut Context<Self>) -> Task<anyhow::Result<()>> {
         let snapshot = self.snapshot.clone();
         let pending_ops = self.pending_ops.clone();
-        let to_stage = cx.background_spawn(async move {
+        let to_stage = cx.background_spawn(futures::future::lazy(move |_| {
             snapshot
                 .status()
                 .filter_map(|entry| {
@@ -8690,7 +8693,7 @@ impl Repository {
                     }
                 })
                 .collect()
-        });
+        }));
 
         cx.spawn(async move |this, cx| {
             let to_stage = to_stage.await;
@@ -8704,7 +8707,7 @@ impl Repository {
     pub fn unstage_all(&mut self, cx: &mut Context<Self>) -> Task<anyhow::Result<()>> {
         let snapshot = self.snapshot.clone();
         let pending_ops = self.pending_ops.clone();
-        let to_unstage = cx.background_spawn(async move {
+        let to_unstage = cx.background_spawn(futures::future::lazy(move |_| {
             snapshot
                 .status()
                 .filter_map(|entry| {
@@ -8724,7 +8727,7 @@ impl Repository {
                     }
                 })
                 .collect()
-        });
+        }));
 
         cx.spawn(async move |this, cx| {
             let to_unstage = to_unstage.await;
@@ -9103,7 +9106,7 @@ impl Repository {
 
         self.send_job(
             "commit",
-            Some("git commit".into()),
+            Some(SharedString::new_static("git commit")),
             move |git_repo, _cx| async move {
                 match git_repo {
                     RepositoryState::Local(LocalRepositoryState {
@@ -9232,7 +9235,7 @@ impl Repository {
         let this = cx.weak_entity();
         self.send_job(
             "fetch",
-            Some("git fetch".into()),
+            Some(SharedString::new_static("git fetch")),
             move |git_repo, mut cx| async move {
                 match git_repo {
                     RepositoryState::Local(LocalRepositoryState {
@@ -10155,7 +10158,7 @@ impl Repository {
                         // Older servers ignore `includes_worktree` and use the existing fields,
                         // so HEAD keeps this request valid as a committed-only fallback.
                         DiffTreeType::MergeBaseWithWorktree { base } => {
-                            (true, true, base, "HEAD".into())
+                            (true, true, base, SharedString::new_static("HEAD"))
                         }
                         DiffTreeType::Since { base, head } => (false, false, base, head),
                     };
@@ -10551,7 +10554,7 @@ impl Repository {
     pub fn merge_abort(&mut self) -> oneshot::Receiver<Result<()>> {
         self.send_job(
             "merge_abort",
-            Some("git merge --abort".into()),
+            Some(SharedString::new_static("git merge --abort")),
             move |repo, _cx| async move {
                 match repo {
                     RepositoryState::Local(LocalRepositoryState {
@@ -11579,7 +11582,7 @@ impl Repository {
     }
 
     pub fn barrier(&mut self) -> oneshot::Receiver<()> {
-        self.send_job("barrier", None, |_, _| async {})
+        self.send_job("barrier", None, |_, _| futures::future::ready(()))
     }
 
     fn spawn_job_with_tracking<AsyncFn>(
@@ -11683,9 +11686,9 @@ fn format_job_key(key: &GitJobKey) -> SharedString {
                 .collect();
             format!("WriteIndex({})", paths_str.join(", ")).into()
         }
-        GitJobKey::ReloadBufferDiffBases => "ReloadBufferDiffBases".into(),
-        GitJobKey::RefreshStatuses => "RefreshStatuses".into(),
-        GitJobKey::ReloadGitState => "ReloadGitState".into(),
+        GitJobKey::ReloadBufferDiffBases => SharedString::new_static("ReloadBufferDiffBases"),
+        GitJobKey::RefreshStatuses => SharedString::new_static("RefreshStatuses"),
+        GitJobKey::ReloadGitState => SharedString::new_static("ReloadGitState"),
     }
 }
 

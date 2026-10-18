@@ -1003,7 +1003,7 @@ impl LocalLspStore {
                 move |_, cx| {
                     let this = this.clone();
                     let cx = cx.clone();
-                    async move {
+                    futures::future::lazy(move |_| {
                         let Some(server) =
                             this.read_with(&cx, |this, _| this.language_server_for_id(server_id))?
                         else {
@@ -1015,7 +1015,7 @@ impl LocalLspStore {
                                 .map(lsp::workspace_folder_for_uri)
                                 .collect(),
                         ))
-                    }
+                    })
                 }
             })
             .detach();
@@ -1028,7 +1028,7 @@ impl LocalLspStore {
                 move |params, cx| {
                     let this = this.clone();
                     let mut cx = cx.clone();
-                    async move {
+                    futures::future::lazy(move |_| {
                         this.update(&mut cx, |this, _| {
                             if let Some(status) = this.language_server_statuses.get_mut(&server_id)
                             {
@@ -1039,7 +1039,7 @@ impl LocalLspStore {
                         })?;
 
                         Ok(())
-                    }
+                    })
                 }
             })
             .detach();
@@ -1050,7 +1050,7 @@ impl LocalLspStore {
                 move |params, cx| {
                     let lsp_store = lsp_store.clone();
                     let mut cx = cx.clone();
-                    async move {
+                    futures::future::lazy(move |_| {
                         lsp_store
                             .update(&mut cx, |lsp_store, cx| {
                                 if lsp_store.as_local().is_some() {
@@ -1068,7 +1068,7 @@ impl LocalLspStore {
                             })
                             .ok();
                         Ok(())
-                    }
+                    })
                 }
             })
             .detach();
@@ -1079,7 +1079,7 @@ impl LocalLspStore {
                 move |params, cx| {
                     let lsp_store = lsp_store.clone();
                     let mut cx = cx.clone();
-                    async move {
+                    futures::future::lazy(move |_| {
                         lsp_store
                             .update(&mut cx, |lsp_store, cx| {
                                 if lsp_store.as_local().is_some() {
@@ -1097,7 +1097,7 @@ impl LocalLspStore {
                             })
                             .ok();
                         Ok(())
-                    }
+                    })
                 }
             })
             .detach();
@@ -1127,12 +1127,12 @@ impl LocalLspStore {
                 move |(), cx| {
                     let lsp_store = lsp_store.clone();
                     let mut cx = cx.clone();
-                    async move {
+                    futures::future::lazy(move |_| {
                         lsp_store.update(&mut cx, |lsp_store, cx| {
                             lsp_store.refresh_inlay_hints(server_id, cx);
                         })?;
                         Ok(())
-                    }
+                    })
                 }
             })
             .detach();
@@ -1144,7 +1144,7 @@ impl LocalLspStore {
                     let result = lsp_store.update(cx, |lsp_store, cx| {
                         lsp_store.refresh_code_lens(Some(server_id), cx);
                     });
-                    async move { result }
+                    futures::future::ready(result)
                 }
             })
             .detach();
@@ -1155,12 +1155,12 @@ impl LocalLspStore {
                 move |(), cx| {
                     let lsp_store = lsp_store.clone();
                     let mut cx = cx.clone();
-                    async move {
+                    futures::future::lazy(move |_| {
                         lsp_store.update(&mut cx, |lsp_store, cx| {
                             lsp_store.refresh_semantic_tokens(server_id, cx);
                         })?;
                         Ok(())
-                    }
+                    })
                 }
             })
             .detach();
@@ -1171,7 +1171,7 @@ impl LocalLspStore {
                 move |(), cx| {
                     let lsp_store = this.clone();
                     let mut cx = cx.clone();
-                    async move {
+                    futures::future::lazy(move |_| {
                         lsp_store.update(&mut cx, |lsp_store, cx| {
                             lsp_store.pull_workspace_diagnostics(server_id);
                             lsp_store
@@ -1192,7 +1192,7 @@ impl LocalLspStore {
                             anyhow::Ok(())
                         })??;
                         Ok(())
-                    }
+                    })
                 }
             })
             .detach();
@@ -3643,7 +3643,7 @@ impl LocalLspStore {
         cx: &mut Context<LspStore>,
     ) -> Task<Result<Vec<(Range<Anchor>, Arc<str>)>>> {
         let snapshot = self.buffer_snapshot_for_lsp_version(buffer, server_id, version, cx);
-        cx.background_spawn(async move {
+        cx.background_spawn(futures::future::lazy(move |_| {
             let snapshot = snapshot?;
             let mut lsp_edits = lsp_edits
                 .into_iter()
@@ -3714,7 +3714,7 @@ impl LocalLspStore {
             }
 
             Ok(edits)
-        })
+        }))
     }
 
     pub(crate) async fn deserialize_workspace_edit(

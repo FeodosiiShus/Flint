@@ -290,7 +290,7 @@ impl DiffBufferList {
                         committed: repo.diff_tree(
                             DiffTreeType::MergeBase {
                                 base: base_ref.clone(),
-                                head: "HEAD".into(),
+                                head: SharedString::new_static("HEAD"),
                             },
                             cx,
                         ),
@@ -303,7 +303,7 @@ impl DiffBufferList {
                         since: repo.diff_tree(
                             DiffTreeType::Since {
                                 base: base_ref,
-                                head: "HEAD".into(),
+                                head: SharedString::new_static("HEAD"),
                             },
                             cx,
                         ),

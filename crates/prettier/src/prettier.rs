@@ -293,6 +293,7 @@ impl Prettier {
         request_timeout: Duration,
         mut cx: AsyncApp,
     ) -> anyhow::Result<Self> {
+        use gpui::SharedString;
         use lsp::{LanguageServerBinary, LanguageServerName};
 
         let executor = cx.background_executor().clone();
@@ -309,7 +310,7 @@ impl Prettier {
         let node_path = executor
             .spawn(async move { node.binary_path().await })
             .await?;
-        let server_name = LanguageServerName("prettier".into());
+        let server_name = LanguageServerName(SharedString::new_static("prettier"));
         let server_binary = LanguageServerBinary {
             path: node_path,
             arguments: vec![prettier_server.into(), prettier_dir.as_path().into()],

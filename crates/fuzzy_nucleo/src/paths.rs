@@ -304,7 +304,7 @@ pub async fn match_path_sets<'a, Set: PathMatchCandidateSet<'a>>(
             {
                 let query = &query;
                 let relative_to = relative_to.clone();
-                scope.spawn(async move {
+                scope.spawn(futures::future::lazy(move |_| {
                     let segment_start = segment_idx * segment_size;
                     let segment_end = segment_start + segment_size;
 
@@ -340,7 +340,7 @@ pub async fn match_path_sets<'a, Set: PathMatchCandidateSet<'a>>(
                         }
                         tree_start = tree_end;
                     }
-                });
+                }));
             }
         })
         .await;

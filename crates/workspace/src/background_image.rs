@@ -7,7 +7,9 @@ use std::{
 use anyhow::{Context as _, Result, bail};
 use collections::{HashMap, HashSet};
 use fs::{Fs, MTime};
-use gpui::{App, AppContext as _, Context, PathPromptOptions, RenderImage, Window, WindowId};
+use gpui::{
+    App, AppContext as _, Context, PathPromptOptions, RenderImage, SharedString, Window, WindowId,
+};
 use image::{DynamicImage, ImageDecoder, ImageFormat, ImageReader, RgbaImage};
 use project::DirectoryLister;
 use settings::{BackgroundImageAnchor, BackgroundImageFill, Settings as _, SettingsLocation};
@@ -242,7 +244,7 @@ impl Workspace {
                 files: true,
                 directories: false,
                 multiple: false,
-                prompt: Some("Select Background Image".into()),
+                prompt: Some(SharedString::new_static("Select Background Image")),
             },
             DirectoryLister::Local(self.project.clone(), fs.clone()),
             window,

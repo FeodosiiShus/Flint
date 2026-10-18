@@ -429,7 +429,7 @@ fn resolve_open_target_internal(
                 )
             })
             .collect::<Vec<_>>();
-        cx.background_spawn(async move {
+        cx.background_spawn(futures::future::lazy(move |_| {
             for (snapshot, paths_to_check) in worktree_paths_to_check {
                 let traversal = snapshot.traverse_from_path(true, true, false, RelPath::empty());
                 for entry in traversal {
@@ -454,7 +454,7 @@ fn resolve_open_target_internal(
                 }
             }
             None
-        })
+        }))
         .await
     })
 }

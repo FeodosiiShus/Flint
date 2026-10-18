@@ -325,7 +325,7 @@ impl RenderOnce for MoreToolWindowsTrigger {
     fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
         let metrics = self.metrics;
         let interactive = !self.disabled;
-        let group: SharedString = "tool-window-more-fill".into();
+        let group = SharedString::new_static("tool-window-more-fill");
         let (hover_background, pressed_background) = if interactive {
             (self.hover_background, self.pressed_background)
         } else {

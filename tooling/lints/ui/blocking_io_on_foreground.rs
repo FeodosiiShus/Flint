@@ -321,4 +321,31 @@ fn mutex_lock_plain() {
     let _ = m.lock();
 }
 
+// Non-std types that share a name and method with a std blocking type, like
+// `parking_lot::Mutex::lock` or `parking_lot::RwLock::read`.
+mod in_memory {
+    pub struct Mutex<T>(pub T);
+
+    impl<T> Mutex<T> {
+        pub fn lock(&self) -> &T {
+            &self.0
+        }
+    }
+
+    pub struct RwLock<T>(pub T);
+
+    impl<T> RwLock<T> {
+        pub fn read(&self) -> &T {
+            &self.0
+        }
+    }
+}
+
+fn non_std_lock_with_app(cx: &mut App) {
+    let m = in_memory::Mutex(0);
+    let _ = m.lock();
+    let rw = in_memory::RwLock(0);
+    let _ = rw.read();
+}
+
 fn main() {}

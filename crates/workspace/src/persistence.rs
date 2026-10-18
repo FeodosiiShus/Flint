@@ -12,7 +12,7 @@ use chrono::{DateTime, NaiveDateTime, Utc};
 use fs::Fs;
 
 use anyhow::{Context as _, Result, bail};
-use collections::{HashMap, HashSet, IndexSet};
+use collections::{HashMap, HashSet, IndexSet, hash_map::Entry};
 use db::{
     kvp::KeyValueStore,
     query,
@@ -2363,13 +2363,17 @@ fn dedupe_recent_workspaces(
     let mut result: Vec<RecentWorkspace> = Vec::new();
     for workspace in workspaces {
         let key = workspace.identity_paths.paths().to_vec();
-        if let Some(&existing_index) = indices_by_key.get(&key) {
-            if workspace.timestamp > result[existing_index].timestamp {
-                result[existing_index] = workspace;
+        match indices_by_key.entry(key) {
+            Entry::Occupied(entry) => {
+                let existing_index = *entry.get();
+                if workspace.timestamp > result[existing_index].timestamp {
+                    result[existing_index] = workspace;
+                }
             }
-        } else {
-            indices_by_key.insert(key, result.len());
-            result.push(workspace);
+            Entry::Vacant(entry) => {
+                entry.insert(result.len());
+                result.push(workspace);
+            }
         }
     }
 

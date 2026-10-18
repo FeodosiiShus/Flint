@@ -36,7 +36,7 @@ impl Editor {
         }
         let task = cx.background_spawn({
             let buffer_snapshot = buffer_snapshot.clone();
-            async move { bracket_ranges_at_caret(&buffer_snapshot, head, tail) }
+            futures::future::lazy(move |_| bracket_ranges_at_caret(&buffer_snapshot, head, tail))
         });
         self.refresh_matching_bracket_highlights_task = cx.spawn({
             let buffer_snapshot = buffer_snapshot.clone();

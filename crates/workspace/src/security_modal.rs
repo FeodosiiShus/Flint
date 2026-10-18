@@ -78,7 +78,7 @@ impl Render for SecurityModal {
 
         let restricted_count = self.restricted_paths.len();
         let header_label: SharedString = if restricted_count == 1 {
-            "Unrecognized Project".into()
+            SharedString::new_static("Unrecognized Project")
         } else {
             format!("Unrecognized Projects ({})", restricted_count).into()
         };
@@ -502,7 +502,7 @@ fn validate_trust_scope(
 ) -> Result<PathBuf, SharedString> {
     let trimmed = typed.trim();
     if trimmed.is_empty() {
-        return Err("Enter a folder to trust".into());
+        return Err(SharedString::new_static("Enter a folder to trust"));
     }
     let expanded = match (trimmed.strip_prefix('~'), home_dir) {
         (Some(rest), Some(home_dir)) => home_dir.join(
@@ -512,10 +512,12 @@ fn validate_trust_scope(
         _ => PathBuf::from(trimmed),
     };
     if !util::paths::is_absolute(&expanded.to_string_lossy(), path_style) {
-        return Err("Enter an absolute folder path".into());
+        return Err(SharedString::new_static("Enter an absolute folder path"));
     }
     if !project.starts_with(&expanded) {
-        return Err("Must be a parent folder of the project".into());
+        return Err(SharedString::new_static(
+            "Must be a parent folder of the project",
+        ));
     }
     Ok(expanded)
 }

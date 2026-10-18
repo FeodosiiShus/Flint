@@ -26,7 +26,7 @@ use crate::{
 use anyhow::{Context as _, Result};
 use clock::Lamport;
 pub use clock::ReplicaId;
-use collections::HashMap;
+use collections::{HashMap, hash_map::Entry};
 use encoding_rs::Encoding;
 use file_content::{ByteContent, decode_byte_header};
 use fs::MTime;
@@ -1097,7 +1097,7 @@ impl Buffer {
         }
 
         let text_operations = self.text.operations().clone();
-        cx.background_spawn(async move {
+        cx.background_spawn(futures::future::lazy(move |_| {
             let since = since.unwrap_or_default();
             operations.extend(
                 text_operations
@@ -1107,7 +1107,7 @@ impl Buffer {
             );
             operations.sort_unstable_by_key(proto::lamport_timestamp_for_operation);
             operations
-        })
+        }))
     }
 
     /// Assign a language to the buffer, returning the buffer.
@@ -1224,7 +1224,7 @@ impl Buffer {
     ) -> impl Future<Output = BufferSnapshot> + use<> {
         let entity_id = cx.reserve_entity::<Self>().entity_id();
         let buffer_id = entity_id.as_non_zero_u64().into();
-        async move {
+        futures::future::lazy(move |_| {
             let text =
                 TextBuffer::new_normalized(ReplicaId::LOCAL, buffer_id, Default::default(), text);
             let text = text.into_snapshot();
@@ -1247,7 +1247,7 @@ impl Buffer {
                 modeline,
                 resolved_settings: None,
             }
-        }
+        })
     }
 
     pub fn build_empty_snapshot(cx: &mut App) -> BufferSnapshot {
@@ -1378,7 +1378,7 @@ impl Buffer {
         let old_snapshot = self.text.snapshot().clone();
         let mut branch_buffer = self.text.branch();
         let mut syntax_snapshot = self.syntax_map.lock().snapshot();
-        cx.background_spawn(async move {
+        cx.background_spawn(futures::future::lazy(move |_| {
             if !edits.is_empty() {
                 if let Some(language) = language.clone() {
                     syntax_snapshot.reparse(&old_snapshot, registry.clone(), language);
@@ -1397,7 +1397,7 @@ impl Buffer {
                 applied_edits_snapshot: branch_buffer.into_snapshot(),
                 syntax_snapshot,
             }
-        })
+        }))
     }
 
     /// Applies all of the changes in this buffer that intersect any of the
@@ -1964,10 +1964,10 @@ impl Buffer {
         let parse_task = cx.background_spawn({
             let language = language.clone();
             let language_registry = language_registry.clone();
-            async move {
+            futures::future::lazy(move |_| {
                 syntax_snapshot.reparse(&text, language_registry, language);
                 syntax_snapshot
-            }
+            })
         });
 
         self.reparse = Some(cx.spawn(async move |this, cx| {
@@ -2358,7 +2358,7 @@ impl Buffer {
     {
         let old_text = self.as_rope().clone();
         let base_version = self.version();
-        cx.background_spawn(async move {
+        cx.background_spawn(futures::future::lazy(move |_| {
             let old_text = old_text.to_string();
             let mut new_text = new_text.as_ref().to_owned();
             let line_ending = LineEnding::detect(&new_text);
@@ -2369,7 +2369,7 @@ impl Buffer {
                 line_ending,
                 edits,
             }
-        })
+        }))
     }
 
     /// Spawns a background task that returns a `Diff` removing trailing whitespace from line ends.
@@ -2385,7 +2385,7 @@ impl Buffer {
         let line_ending = self.line_ending();
         let base_version = self.version();
         let modified_rows = modified_rows.map(|rows| rows.to_vec());
-        cx.background_spawn(async move {
+        cx.background_spawn(futures::future::lazy(move |_| {
             let ranges = trailing_whitespace_ranges(&old_text, modified_rows.as_deref());
             let empty = Arc::<str>::from("");
             Diff {
@@ -2396,7 +2396,7 @@ impl Buffer {
                     .map(|range| (range, empty.clone()))
                     .collect(),
             }
-        })
+        }))
     }
 
     /// Returns a `Diff` ensuring the buffer ends with a trailing newline.
@@ -3436,20 +3436,15 @@ impl Buffer {
     }
 
     fn restore_encoding_for_transaction(&mut self, transaction_id: TransactionId, was_dirty: bool) {
-        if let Some((old_encoding, old_has_bom)) =
-            self.reload_with_encoding_txns.get(&transaction_id)
-        {
-            let current_encoding = self.encoding;
-            let current_has_bom = self.has_bom;
-            self.encoding = *old_encoding;
-            self.has_bom = *old_has_bom;
+        if let Entry::Occupied(mut entry) = self.reload_with_encoding_txns.entry(transaction_id) {
+            let (old_encoding, old_has_bom) = entry.insert((self.encoding, self.has_bom));
+            self.encoding = old_encoding;
+            self.has_bom = old_has_bom;
             if !was_dirty {
                 self.saved_version = self.version.clone();
                 self.has_unsaved_edits
                     .set((self.saved_version.clone(), false));
             }
-            self.reload_with_encoding_txns
-                .insert(transaction_id, (current_encoding, current_has_bom));
         }
     }
 
@@ -3544,7 +3539,7 @@ impl Buffer {
         let language = self.language().cloned();
         let registry = self.language_registry();
         let new_text = self.text.snapshot_with_edits(edits);
-        cx.background_spawn(async move {
+        cx.background_spawn(futures::future::lazy(move |_| {
             if let Some(language) = language.clone() {
                 syntax.reparse(&text, registry.clone(), language);
             }
@@ -3563,7 +3558,7 @@ impl Buffer {
                 text: new_text,
                 snapshot,
             }
-        })
+        }))
     }
 
     pub fn fast_forward(&mut self, edited: EditedBufferSnapshot, cx: &mut Context<Self>) {

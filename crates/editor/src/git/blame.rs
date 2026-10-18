@@ -753,7 +753,7 @@ impl GitBlame {
                         if this.user_triggered {
                             log::error!("failed to get git blame data: {all_errors}");
                             cx.emit(project::Event::Toast {
-                                notification_id: "git-blame".into(),
+                                notification_id: SharedString::new_static("git-blame"),
                                 message: all_errors,
                                 link: None,
                             });

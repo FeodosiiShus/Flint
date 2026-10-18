@@ -83,7 +83,7 @@ impl ThreadItem {
             title_label_color: None,
             title_generating: false,
             highlight_positions: Vec::new(),
-            timestamp: "".into(),
+            timestamp: SharedString::new_static(""),
             notified: false,
             status: AgentThreadStatus::default(),
             selected: false,
@@ -713,8 +713,8 @@ impl Component for ThreadItem {
                             .icon(IconName::AiClaude)
                             .timestamp("2w")
                             .worktrees(vec![ThreadItemWorktreeInfo {
-                                worktree_name: Some("link-agent-panel".into()),
-                                full_path: "link-agent-panel".into(),
+                                worktree_name: Some(SharedString::new_static("link-agent-panel")),
+                                full_path: SharedString::new_static("link-agent-panel"),
                                 highlight_positions: Vec::new(),
                                 kind: WorktreeKind::Linked,
                                 branch_name: None,
@@ -741,8 +741,8 @@ impl Component for ThreadItem {
                         ThreadItem::new("ti-5b", "Full metadata example")
                             .icon(IconName::AiClaude)
                             .worktrees(vec![ThreadItemWorktreeInfo {
-                                worktree_name: Some("my-project".into()),
-                                full_path: "my-project".into(),
+                                worktree_name: Some(SharedString::new_static("my-project")),
+                                full_path: SharedString::new_static("my-project"),
                                 highlight_positions: Vec::new(),
                                 kind: WorktreeKind::Linked,
                                 branch_name: None,
@@ -760,11 +760,11 @@ impl Component for ThreadItem {
                         ThreadItem::new("ti-5c", "Full metadata with branch")
                             .icon(IconName::AiClaude)
                             .worktrees(vec![ThreadItemWorktreeInfo {
-                                worktree_name: Some("my-project".into()),
-                                full_path: "/worktrees/my-project/zed".into(),
+                                worktree_name: Some(SharedString::new_static("my-project")),
+                                full_path: SharedString::new_static("/worktrees/my-project/zed"),
                                 highlight_positions: Vec::new(),
                                 kind: WorktreeKind::Linked,
-                                branch_name: Some("feature-branch".into()),
+                                branch_name: Some(SharedString::new_static("feature-branch")),
                             }])
                             .added(42)
                             .removed(17)
@@ -779,11 +779,13 @@ impl Component for ThreadItem {
                         ThreadItem::new("ti-5d", "Metadata overflow with long branch name")
                             .icon(IconName::AiClaude)
                             .worktrees(vec![ThreadItemWorktreeInfo {
-                                worktree_name: Some("my-project".into()),
-                                full_path: "/worktrees/my-project/zed".into(),
+                                worktree_name: Some(SharedString::new_static("my-project")),
+                                full_path: SharedString::new_static("/worktrees/my-project/zed"),
                                 highlight_positions: Vec::new(),
                                 kind: WorktreeKind::Linked,
-                                branch_name: Some("fix-very-long-branch-name-here".into()),
+                                branch_name: Some(SharedString::new_static(
+                                    "fix-very-long-branch-name-here",
+                                )),
                             }])
                             .added(108)
                             .removed(53)
@@ -798,11 +800,13 @@ impl Component for ThreadItem {
                         ThreadItem::new("ti-5e", "Main worktree branch with diff stats")
                             .icon(IconName::ZedAgent)
                             .worktrees(vec![ThreadItemWorktreeInfo {
-                                worktree_name: Some("zed".into()),
-                                full_path: "/projects/zed".into(),
+                                worktree_name: Some(SharedString::new_static("zed")),
+                                full_path: SharedString::new_static("/projects/zed"),
                                 highlight_positions: Vec::new(),
                                 kind: WorktreeKind::Main,
-                                branch_name: Some("sidebar-show-branch-name".into()),
+                                branch_name: Some(SharedString::new_static(
+                                    "sidebar-show-branch-name",
+                                )),
                             }])
                             .added(23)
                             .removed(8)
@@ -817,10 +821,12 @@ impl Component for ThreadItem {
                         ThreadItem::new("ti-5f", "Thread with a very long worktree name")
                             .icon(IconName::AiClaude)
                             .worktrees(vec![ThreadItemWorktreeInfo {
-                                worktree_name: Some(
-                                    "very-long-worktree-name-that-should-truncate".into(),
+                                worktree_name: Some(SharedString::new_static(
+                                    "very-long-worktree-name-that-should-truncate",
+                                )),
+                                full_path: SharedString::new_static(
+                                    "/worktrees/very-long-worktree-name/zed",
                                 ),
-                                full_path: "/worktrees/very-long-worktree-name/zed".into(),
                                 highlight_positions: Vec::new(),
                                 kind: WorktreeKind::Linked,
                                 branch_name: None,
@@ -836,11 +842,11 @@ impl Component for ThreadItem {
                         ThreadItem::new("ti-5g", "Filtered thread with highlighted worktree")
                             .icon(IconName::AiClaude)
                             .worktrees(vec![ThreadItemWorktreeInfo {
-                                worktree_name: Some("jade-glen".into()),
-                                full_path: "/worktrees/jade-glen/zed".into(),
+                                worktree_name: Some(SharedString::new_static("jade-glen")),
+                                full_path: SharedString::new_static("/worktrees/jade-glen/zed"),
                                 highlight_positions: vec![0, 1, 2, 3],
                                 kind: WorktreeKind::Linked,
-                                branch_name: Some("fix-scrolling".into()),
+                                branch_name: Some(SharedString::new_static("fix-scrolling")),
                             }])
                             .timestamp("3d"),
                     )
@@ -854,15 +860,17 @@ impl Component for ThreadItem {
                             .icon(IconName::AiClaude)
                             .worktrees(vec![
                                 ThreadItemWorktreeInfo {
-                                    worktree_name: Some("jade-glen".into()),
-                                    full_path: "/worktrees/jade-glen/zed".into(),
+                                    worktree_name: Some(SharedString::new_static("jade-glen")),
+                                    full_path: SharedString::new_static("/worktrees/jade-glen/zed"),
                                     highlight_positions: Vec::new(),
                                     kind: WorktreeKind::Linked,
                                     branch_name: None,
                                 },
                                 ThreadItemWorktreeInfo {
-                                    worktree_name: Some("fawn-otter".into()),
-                                    full_path: "/worktrees/fawn-otter/zed-slides".into(),
+                                    worktree_name: Some(SharedString::new_static("fawn-otter")),
+                                    full_path: SharedString::new_static(
+                                        "/worktrees/fawn-otter/zed-slides",
+                                    ),
                                     highlight_positions: Vec::new(),
                                     kind: WorktreeKind::Linked,
                                     branch_name: None,
@@ -880,18 +888,20 @@ impl Component for ThreadItem {
                             .icon(IconName::ZedAgent)
                             .worktrees(vec![
                                 ThreadItemWorktreeInfo {
-                                    worktree_name: Some("jade-glen".into()),
-                                    full_path: "/worktrees/jade-glen/zed".into(),
+                                    worktree_name: Some(SharedString::new_static("jade-glen")),
+                                    full_path: SharedString::new_static("/worktrees/jade-glen/zed"),
                                     highlight_positions: Vec::new(),
                                     kind: WorktreeKind::Linked,
-                                    branch_name: Some("fix".into()),
+                                    branch_name: Some(SharedString::new_static("fix")),
                                 },
                                 ThreadItemWorktreeInfo {
-                                    worktree_name: Some("fawn-otter".into()),
-                                    full_path: "/worktrees/fawn-otter/zed-slides".into(),
+                                    worktree_name: Some(SharedString::new_static("fawn-otter")),
+                                    full_path: SharedString::new_static(
+                                        "/worktrees/fawn-otter/zed-slides",
+                                    ),
                                     highlight_positions: Vec::new(),
                                     kind: WorktreeKind::Linked,
-                                    branch_name: Some("main".into()),
+                                    branch_name: Some(SharedString::new_static("main")),
                                 },
                             ])
                             .timestamp("15m"),
@@ -906,11 +916,11 @@ impl Component for ThreadItem {
                             .icon(IconName::AiClaude)
                             .project_name("my-remote-server")
                             .worktrees(vec![ThreadItemWorktreeInfo {
-                                worktree_name: Some("jade-glen".into()),
-                                full_path: "/worktrees/jade-glen/zed".into(),
+                                worktree_name: Some(SharedString::new_static("jade-glen")),
+                                full_path: SharedString::new_static("/worktrees/jade-glen/zed"),
                                 highlight_positions: Vec::new(),
                                 kind: WorktreeKind::Linked,
-                                branch_name: Some("feature-branch".into()),
+                                branch_name: Some(SharedString::new_static("feature-branch")),
                             }])
                             .timestamp("1d"),
                     )
@@ -927,11 +937,11 @@ impl Component for ThreadItem {
                                 PathBuf::from("/projects/zed-slides"),
                             ]))
                             .worktrees(vec![ThreadItemWorktreeInfo {
-                                worktree_name: Some("jade-glen".into()),
-                                full_path: "/worktrees/jade-glen/zed".into(),
+                                worktree_name: Some(SharedString::new_static("jade-glen")),
+                                full_path: SharedString::new_static("/worktrees/jade-glen/zed"),
                                 highlight_positions: Vec::new(),
                                 kind: WorktreeKind::Linked,
-                                branch_name: Some("feature".into()),
+                                branch_name: Some(SharedString::new_static("feature")),
                             }])
                             .timestamp("2mo"),
                     )
@@ -945,11 +955,11 @@ impl Component for ThreadItem {
                             .icon(IconName::ZedAgent)
                             .project_name("remote-dev")
                             .worktrees(vec![ThreadItemWorktreeInfo {
-                                worktree_name: Some("my-worktree".into()),
-                                full_path: "/worktrees/my-worktree/zed".into(),
+                                worktree_name: Some(SharedString::new_static("my-worktree")),
+                                full_path: SharedString::new_static("/worktrees/my-worktree/zed"),
                                 highlight_positions: Vec::new(),
                                 kind: WorktreeKind::Linked,
-                                branch_name: Some("main".into()),
+                                branch_name: Some(SharedString::new_static("main")),
                             }])
                             .added(15)
                             .removed(4)

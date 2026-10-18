@@ -51,7 +51,9 @@ impl Editor {
             let buffer_snapshot = buffer.read(cx).snapshot();
             let syntax = cx.theme().syntax().clone();
             cx.background_executor()
-                .spawn(async move { buffer_snapshot.outline(Some(&syntax)).items })
+                .spawn(futures::future::lazy(move |_| {
+                    buffer_snapshot.outline(Some(&syntax)).items
+                }))
         }
     }
 

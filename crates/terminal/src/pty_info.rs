@@ -189,24 +189,26 @@ impl PtyProcessInfo {
             return;
         }
         let this = self.clone();
-        let change_task = cx.background_executor().spawn(async move {
-            let previous = this.current.read().clone();
-            let current = this.load();
-            let has_changed = match (previous.as_ref(), current.as_ref()) {
-                (None, None) => false,
-                (Some(prev), Some(now)) => prev.cwd != now.cwd || prev.name != now.name,
-                _ => true,
-            };
-            if has_changed {
-                *this.current.write() = current.clone();
-            }
-            let changed_cwd = match (previous.as_ref(), current.as_ref()) {
-                (Some(prev), Some(now)) if prev.cwd != now.cwd => Some(now.cwd.clone()),
-                (None, Some(now)) => Some(now.cwd.clone()),
-                _ => None,
-            };
-            (has_changed, changed_cwd)
-        });
+        let change_task = cx
+            .background_executor()
+            .spawn(futures::future::lazy(move |_| {
+                let previous = this.current.read().clone();
+                let current = this.load();
+                let has_changed = match (previous.as_ref(), current.as_ref()) {
+                    (None, None) => false,
+                    (Some(prev), Some(now)) => prev.cwd != now.cwd || prev.name != now.name,
+                    _ => true,
+                };
+                if has_changed {
+                    *this.current.write() = current.clone();
+                }
+                let changed_cwd = match (previous.as_ref(), current.as_ref()) {
+                    (Some(prev), Some(now)) if prev.cwd != now.cwd => Some(now.cwd.clone()),
+                    (None, Some(now)) => Some(now.cwd.clone()),
+                    _ => None,
+                };
+                (has_changed, changed_cwd)
+            }));
         let this = Arc::downgrade(self);
         *self.task.lock() = Some(cx.spawn(async move |term, cx| {
             let (has_changed, new_cwd) = change_task.await;

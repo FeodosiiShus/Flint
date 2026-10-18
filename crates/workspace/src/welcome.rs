@@ -496,7 +496,7 @@ impl Item for WelcomePage {
     type Event = ItemEvent;
 
     fn tab_content_text(&self, _detail: usize, _cx: &App) -> SharedString {
-        "Welcome".into()
+        SharedString::new_static("Welcome")
     }
 
     fn show_toolbar(&self) -> bool {

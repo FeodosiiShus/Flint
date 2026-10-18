@@ -6066,7 +6066,7 @@ impl EditorElement {
                 Some(cx.spawn_in(window, async move |editor, cx| {
                     let scrollbar_size = scrollbar_layout.hitbox.size;
                     let scrollbar_markers = cx
-                        .background_spawn(async move {
+                        .background_spawn(futures::future::lazy(move |_| {
                             let max_point = snapshot.display_snapshot.buffer_snapshot().max_point();
                             let mut marker_quads = Vec::new();
                             if show_git_diff_markers {
@@ -6209,7 +6209,7 @@ impl EditorElement {
                             }
 
                             Arc::from(marker_quads)
-                        })
+                        }))
                         .await;
 
                     editor.update(cx, |editor, cx| {
@@ -6626,7 +6626,7 @@ pub fn render_breadcrumb_text(
         segments.splice(
             prefix_end_ix..suffix_start_ix,
             Some(HighlightedText {
-                text: "⋯".into(),
+                text: SharedString::new_static("⋯"),
                 highlights: vec![],
             }),
         );
@@ -7198,7 +7198,7 @@ impl LineWithInvisibles {
         let font_size = text_style.font_size.to_pixels(window.rem_size());
         let min_contrast = EditorSettings::get_global(cx).minimum_contrast_for_highlights;
 
-        let ellipsis = SharedString::from("⋯");
+        let ellipsis = SharedString::new_static("⋯");
 
         for highlighted_chunk in chunks.chain([HighlightedChunk {
             text: "\n",

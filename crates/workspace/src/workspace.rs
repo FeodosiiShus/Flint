@@ -4928,30 +4928,15 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let mut open_abs_path = |this: &mut Self, path, cx: &mut _| {
-            let url_or_path = url_or_path.to_owned();
-            let task = this.open_abs_path(
-                path,
-                OpenOptions {
-                    visible: Some(OpenVisible::None),
-                    ..Default::default()
-                },
-                window,
-                cx,
-            );
-            (**cx)
-                .spawn(async move |cx| {
-                    if task.await.is_err() {
-                        cx.update(|cx| cx.open_url(&url_or_path));
-                    }
-                })
-                .detach();
-        };
-
         if let Ok(url) = Url::parse(url_or_path) {
             match url.scheme() {
                 "http" | "https" => cx.open_url(url_or_path),
-                "file" => open_abs_path(self, PathBuf::from(url.path()), cx),
+                "file" => self.open_abs_path_or_url(
+                    PathBuf::from(url.path()),
+                    url_or_path.to_owned(),
+                    window,
+                    cx,
+                ),
                 _ => cx.open_url(url_or_path),
             }
             return;
@@ -4964,38 +4949,86 @@ impl Workspace {
 
         // If it's an absolute path, open it directly
         if path_style.is_absolute(url_or_path) {
-            open_abs_path(self, PathBuf::from(url_or_path), cx);
+            self.open_abs_path_or_url(
+                PathBuf::from(url_or_path),
+                url_or_path.to_owned(),
+                window,
+                cx,
+            );
             return;
         }
 
-        let path = Path::new(url_or_path);
         // Try to resolve relative path against base_path first
-        let path_from_base = if let Some(base) = base_path {
-            let resolved_path = path_style.join(base, path).map(PathBuf::from);
-            if project_is_local {
-                if let Some(resolved_path) = resolved_path
-                    && resolved_path.exists()
-                {
-                    open_abs_path(self, resolved_path, cx);
-                    return;
-                }
-                None
-            } else {
-                resolved_path
-            }
-        } else {
-            None
+        let Some(resolved_path) = base_path.and_then(|base| {
+            path_style
+                .join(base, Path::new(url_or_path))
+                .map(PathBuf::from)
+        }) else {
+            self.open_project_path_or_url(None, url_or_path.to_owned(), window, cx);
+            return;
         };
+        if !project_is_local {
+            self.open_project_path_or_url(Some(resolved_path), url_or_path.to_owned(), window, cx);
+            return;
+        }
 
+        // The existence check goes through `Fs` rather than `Path::exists` so it
+        // does not block the UI thread.
+        let fs = self.app_state.fs.clone();
+        let url_or_path = url_or_path.to_owned();
+        cx.spawn_in(window, async move |this, cx| {
+            let exists = matches!(fs.metadata(&resolved_path).await, Ok(Some(_)));
+            this.update_in(cx, |this, window, cx| {
+                if exists {
+                    this.open_abs_path_or_url(resolved_path, url_or_path, window, cx);
+                } else {
+                    this.open_project_path_or_url(None, url_or_path, window, cx);
+                }
+            })
+        })
+        .detach_and_log_err(cx);
+    }
+
+    fn open_abs_path_or_url(
+        &mut self,
+        abs_path: PathBuf,
+        url_or_path: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let task = self.open_abs_path(
+            abs_path,
+            OpenOptions {
+                visible: Some(OpenVisible::None),
+                ..Default::default()
+            },
+            window,
+            cx,
+        );
+        (**cx)
+            .spawn(async move |cx| {
+                if task.await.is_err() {
+                    cx.update(|cx| cx.open_url(&url_or_path));
+                }
+            })
+            .detach();
+    }
+
+    fn open_project_path_or_url(
+        &mut self,
+        path_from_base: Option<PathBuf>,
+        url_or_path: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         // Try to resolve against project worktrees
-        let project_path = project.update(cx, |project, cx| {
+        let project_path = self.project().update(cx, |project, cx| {
             path_from_base
                 .as_deref()
                 .and_then(|base_path| project.find_project_path(base_path, cx))
-                .or_else(|| project.find_project_path(path, cx))
+                .or_else(|| project.find_project_path(Path::new(&url_or_path), cx))
         });
         if let Some(project_path) = project_path {
-            let url_or_path = url_or_path.to_owned();
             let task = self.open_path(project_path, None, true, window, cx);
             (**cx)
                 .spawn(async move |cx| {
@@ -5009,7 +5042,7 @@ impl Workspace {
 
         // Couldn't resolve as a file path - try opening as URL anyway
         // (the OS might be able to handle it)
-        cx.open_url(url_or_path);
+        cx.open_url(&url_or_path);
     }
 
     pub fn split_path(
@@ -18443,6 +18476,60 @@ mod tests {
                 })
                 .await;
             assert!(handle.is_err());
+        }
+
+        #[gpui::test]
+        async fn test_open_url_or_file_resolves_links_against_base_path(cx: &mut TestAppContext) {
+            init_test(cx);
+            cx.update(register_project_item::<TestPngItemView>);
+
+            let fs = FakeFs::new(cx.executor());
+            fs.insert_tree(
+                "/root",
+                json!({
+                    "docs": {
+                        "diagram.png": "",
+                    },
+                }),
+            )
+            .await;
+            let project = Project::test(fs, ["/root".as_ref()], cx).await;
+            let (workspace, cx) =
+                cx.add_window_view(|window, cx| Workspace::test_new(project.clone(), window, cx));
+            let worktree_id = project.update(cx, |project, cx| {
+                project.worktrees(cx).next().unwrap().read(cx).id()
+            });
+
+            workspace.update_in(cx, |workspace, window, cx| {
+                workspace.open_url_or_file(
+                    "diagram.png",
+                    Some(Path::new("/root/docs")),
+                    window,
+                    cx,
+                );
+            });
+            cx.run_until_parked();
+            let active_project_path = workspace.read_with(cx, |workspace, cx| {
+                workspace
+                    .active_item(cx)
+                    .and_then(|item| item.project_path(cx))
+            });
+            assert_eq!(
+                active_project_path,
+                Some((worktree_id, rel_path("docs/diagram.png")).into())
+            );
+            assert_eq!(cx.opened_url(), None);
+
+            workspace.update_in(cx, |workspace, window, cx| {
+                workspace.open_url_or_file(
+                    "missing.txt",
+                    Some(Path::new("/root/docs")),
+                    window,
+                    cx,
+                );
+            });
+            cx.run_until_parked();
+            assert_eq!(cx.opened_url(), Some("missing.txt".to_string()));
         }
 
         #[gpui::test]

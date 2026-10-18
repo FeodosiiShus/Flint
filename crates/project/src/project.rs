@@ -2341,7 +2341,7 @@ impl Project {
     ) {
         if let DapStoreEvent::Notification(message) = event {
             cx.emit(Event::Toast {
-                notification_id: "dap".into(),
+                notification_id: SharedString::new_static("dap"),
                 message: message.clone(),
                 link: None,
             });
@@ -2493,7 +2493,7 @@ impl Project {
                 _ => (),
             },
             LspStoreEvent::Notification(message) => cx.emit(Event::Toast {
-                notification_id: "lsp".into(),
+                notification_id: SharedString::new_static("lsp"),
                 message: message.clone(),
                 link: None,
             }),
@@ -4404,7 +4404,7 @@ impl ProjectGroupKey {
             }
         }
         if names.is_empty() {
-            "Empty Workspace".into()
+            SharedString::new_static("Empty Workspace")
         } else {
             names.join(", ").into()
         }

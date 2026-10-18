@@ -1170,7 +1170,7 @@ impl Editor {
         if snapshot.buffer_snapshot().max_point().row == 0 {
             return;
         }
-        let task = cx.background_spawn(async move {
+        let task = cx.background_spawn(futures::future::lazy(move |_| {
             let new_newlines = snapshot
                 .buffer_chars_at(MultiBufferOffset(0))
                 .filter_map(|(c, i)| {
@@ -1196,7 +1196,7 @@ impl Editor {
                 .collect::<Vec<_>>();
 
             (new_newlines, existing_newlines)
-        });
+        }));
         self.folding_newlines = cx.spawn(async move |this, cx| {
             let (new_newlines, existing_newlines) = task.await;
             if new_newlines == existing_newlines {

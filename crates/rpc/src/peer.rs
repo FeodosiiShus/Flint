@@ -419,7 +419,7 @@ impl Peer {
             Ok((message_id, stream_response_channels))
         });
 
-        async move {
+        futures::future::lazy(move |_| {
             let (message_id, stream_response_channels) = send?;
             let stream_response_channels = Arc::downgrade(&stream_response_channels);
             let cleanup_stream_response_channel = util::defer({
@@ -466,7 +466,7 @@ impl Peer {
                     })
                 })
                 .boxed())
-        }
+        })
     }
 
     pub fn send<T: EnvelopedMessage>(&self, receiver_id: ConnectionId, message: T) -> Result<()> {

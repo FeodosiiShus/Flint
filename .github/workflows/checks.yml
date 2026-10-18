@@ -84,6 +84,8 @@ jobs:
             --package editor --package markdown --package markdown_preview \
             --package languages --package language --package language_core --package grammars --package extensions_ui \
             --package migrator --package util --package settings_ui --package show_usages \
+            --package rpc --package fuzzy --package fuzzy_nucleo --package terminal --package lsp --package prettier \
+            --package dap --package worktree --package multi_buffer --package buffer_diff --package git_ui_core \
             --features fs/test-support,project/test-support \
             2>&1 | tee "${RUNNER_TEMP}/nextest-core.log"
 
@@ -392,6 +394,13 @@ jobs:
           set -o pipefail
           DYLINT_RUSTFLAGS="-D shared_string_from_str_literal -D async_block_without_await -D blocking_io_on_foreground -D map_lookup_then_insert -D notify_in_render -D owned_string_into_shared" \
             cargo dylint --all -- --locked -p title_bar 2>&1 | tee "${RUNNER_TEMP}/dylint.log"
+
+      - name: Run custom lint UI tests
+        if: always()
+        working-directory: tooling/lints
+        run: |
+          set -o pipefail
+          cargo test 2>&1 | tee -a "${RUNNER_TEMP}/dylint.log"
 
       - name: Failure summary
         if: always()

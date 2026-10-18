@@ -135,7 +135,7 @@ where
                 .enumerate()
             {
                 let query = &query;
-                scope.spawn(async move {
+                scope.spawn(futures::future::lazy(move |_| {
                     let segment_start = segment_idx * base_size + segment_idx.min(remainder);
                     let segment_end =
                         (segment_idx + 1) * base_size + (segment_idx + 1).min(remainder);
@@ -149,7 +149,7 @@ where
                         cancel_flag,
                     )
                     .ok();
-                });
+                }));
             }
         })
         .await;

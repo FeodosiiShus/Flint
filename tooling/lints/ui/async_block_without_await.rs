@@ -77,3 +77,11 @@ impl Worker {
         async { 42 }
     }
 }
+
+// Should NOT warn: a default body in the trait is bound by the same
+// signature; `#[async_trait]` default methods expand to this shape.
+trait AsyncWorkWithDefault {
+    fn do_default_work(&self) -> impl Future<Output = i32> {
+        async { 42 }
+    }
+}

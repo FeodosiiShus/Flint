@@ -67,7 +67,7 @@ impl Editor {
             .collect::<HashMap<Range<text::Anchor>, HashSet<Range<BufferRow>>>>();
 
         let accents_count = accents.len();
-        let bracket_matches_by_accent = cx.background_spawn(async move {
+        let bracket_matches_by_accent = cx.background_spawn(futures::future::lazy(move |_| {
             if accents_count == 0 {
                 return (HashMap::default(), fetched_tree_sitter_chunks);
             }
@@ -109,7 +109,7 @@ impl Editor {
                 );
 
             (bracket_matches_by_accent, fetched_tree_sitter_chunks)
-        });
+        }));
 
         self.colorize_brackets_task = cx.spawn(async move |editor, cx| {
             if invalidate {

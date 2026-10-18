@@ -552,7 +552,7 @@ impl LanguageRegistry {
             matcher: language.config.matcher.clone(),
             hidden: language.config.hidden,
             manifest_name: None,
-            load: Arc::new(|| async { Err(anyhow!("already loaded")) }.boxed()),
+            load: Arc::new(|| futures::future::ready(Err(anyhow!("already loaded"))).boxed()),
             loaded: true,
             origin: LanguageOrigin::Native,
         });
@@ -870,7 +870,7 @@ impl LanguageRegistry {
                     let wasm_path = wasm_path.clone();
                     *grammar = AvailableGrammar::Loading(wasm_path.clone(), vec![tx]);
                     self.executor
-                        .spawn(async move {
+                        .spawn(futures::future::lazy(move |_| {
                             let grammar_result = maybe!({
                                 let wasm_bytes = std::fs::read(&wasm_path)?;
                                 let grammar_name = wasm_path
@@ -898,7 +898,7 @@ impl LanguageRegistry {
                                     tx.send(grammar_result.clone()).ok();
                                 }
                             }
-                        })
+                        }))
                         .detach();
                 }
             }

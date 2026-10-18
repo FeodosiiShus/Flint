@@ -704,7 +704,7 @@ pub trait LspInstaller {
         _: Option<Toolchain>,
         _: &AsyncApp,
     ) -> impl Future<Output = Option<LanguageServerBinary>> {
-        async { None }
+        futures::future::ready(None)
     }
 
     fn fetch_latest_server_version(
@@ -720,7 +720,7 @@ pub trait LspInstaller {
         _container_dir: &PathBuf,
         _delegate: &Arc<dyn LspAdapterDelegate>,
     ) -> impl Send + Future<Output = Option<LanguageServerBinary>> + use<Self> {
-        async { None }
+        futures::future::ready(None)
     }
 
     fn fetch_server_binary(

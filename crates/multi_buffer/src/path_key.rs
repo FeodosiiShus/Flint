@@ -195,13 +195,13 @@ impl MultiBuffer {
         async move {
             let snapshot = buffer_snapshot.clone();
             let (ranges, merged_excerpt_ranges) = app
-                .background_spawn(async move {
+                .background_spawn(futures::future::lazy(move |_| {
                     let point_ranges = ranges.iter().map(|range| range.to_point(&snapshot));
                     let excerpt_ranges =
                         build_excerpt_ranges(point_ranges, context_line_count, &snapshot);
                     let merged = Self::merge_excerpt_ranges(&excerpt_ranges);
                     (ranges, merged)
-                })
+                }))
                 .await;
 
             multi_buffer

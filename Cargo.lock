@@ -859,6 +859,7 @@ version = "0.1.0"
 dependencies = [
  "clock",
  "ctor",
+ "futures",
  "gpui",
  "imara-diff",
  "language",
@@ -3054,6 +3055,7 @@ name = "fuzzy_nucleo"
 version = "0.1.0"
 dependencies = [
  "criterion",
+ "futures",
  "fuzzy",
  "gpui",
  "gpui_util",
@@ -5417,6 +5419,7 @@ dependencies = [
  "clock",
  "collections",
  "ctor",
+ "futures",
  "futures-lite",
  "gpui",
  "indoc",

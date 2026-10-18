@@ -563,13 +563,13 @@ impl Editor {
         let mut words = if load_word_completions {
             cx.background_spawn({
                 let buffer_snapshot = buffer_snapshot.clone();
-                async move {
+                futures::future::lazy(move |_| {
                     buffer_snapshot.words_in_range(WordsQuery {
                         fuzzy_contents: None,
                         range: word_search_range,
                         skip_digits,
                     })
-                }
+                })
             })
         } else {
             Task::ready(BTreeMap::default())

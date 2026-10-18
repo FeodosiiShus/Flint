@@ -484,7 +484,7 @@ impl RenderOnce for DiffStyleControls {
                         let message = if is_split_pending {
                             format!("Split when wider than {} columns", min_columns).into()
                         } else {
-                            SharedString::from("Split")
+                            SharedString::new_static("Split")
                         };
 
                         v_flex()

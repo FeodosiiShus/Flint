@@ -5436,14 +5436,14 @@ impl BackgroundScanner {
             .fs
             .read_dir(&job.abs_path)
             .await?
-            .filter_map(|entry| async {
-                match entry {
+            .filter_map(|entry| {
+                futures::future::lazy(move |_| match entry {
                     Ok(entry) => Some(entry),
                     Err(error) => {
                         log::error!("error processing entry {:?}", error);
                         None
                     }
-                }
+                })
             })
             .collect::<Vec<_>>()
             .await;
