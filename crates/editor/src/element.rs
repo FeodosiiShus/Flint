@@ -11382,6 +11382,88 @@ mod tests {
     }
 
     #[gpui::test]
+    fn test_gutter_separator_and_right_margin_use_the_theme_line_colors(cx: &mut TestAppContext) {
+        init_test(cx, |_| {});
+        update_test_language_settings(cx, &|settings| {
+            settings.defaults.preferred_line_length = Some(20);
+        });
+        cx.update(|cx| {
+            settings::SettingsStore::update_global(cx, |store, cx| {
+                store.update_user_settings(cx, |settings| {
+                    settings.theme.experimental_theme_overrides =
+                        Some(settings::ThemeStyleContent {
+                            colors: settings::ThemeColorsContent {
+                                editor_indent_guide: Some("#ff0000ff".into()),
+                                editor_wrap_guide: Some("#00ff00ff".into()),
+                                ..Default::default()
+                            },
+                            ..Default::default()
+                        });
+                });
+            });
+        });
+        cx.run_until_parked();
+
+        let window = cx.add_window(|window, cx| {
+            let buffer = MultiBuffer::build_simple("fn main() {}\n", cx);
+            Editor::new(EditorMode::full(), buffer, None, window, cx)
+        });
+        let (quads, scale_factor, viewport_height, separator_color, margin_color) = cx
+            .update_window(window.into(), |_, window, cx| {
+                window.draw(cx).clear(cx);
+                let colors = cx.theme().colors();
+                (
+                    window.painted_quads(),
+                    window.scale_factor(),
+                    window.viewport_size().height,
+                    colors.editor_indent_guide,
+                    colors.editor_wrap_guide,
+                )
+            })
+            .expect("the editor window draws");
+        assert_eq!(
+            (separator_color, margin_color),
+            (
+                Hsla::from(gpui::rgb(0xff0000)),
+                Hsla::from(gpui::rgb(0x00ff00))
+            ),
+            "the theme overrides apply"
+        );
+
+        let one_pixel_lines = |color: Hsla| {
+            quads
+                .iter()
+                .filter(|quad| {
+                    quad.background == gpui::Background::from(color)
+                        && quad.bounds.size.width == ScaledPixels(scale_factor)
+                        && quad.bounds.size.height >= (viewport_height * 0.5).scale(scale_factor)
+                })
+                .map(|quad| quad.bounds.origin.x)
+                .collect::<Vec<_>>()
+        };
+        let separators = one_pixel_lines(separator_color);
+        let margins = one_pixel_lines(margin_color);
+        assert_eq!(
+            separators.len(),
+            1,
+            "IntelliJ's New UI draws the gutter separator as one line in INDENT_GUIDE, which \
+             Flint's editor.indent_guide carries: {separators:?}"
+        );
+        assert_eq!(
+            margins.len(),
+            1,
+            "the right margin is one line in RIGHT_MARGIN_COLOR, Flint's editor.wrap_guide: \
+             {margins:?}"
+        );
+        assert!(
+            separators[0] < margins[0],
+            "the gutter separator {:?} sits left of the right margin {:?}",
+            separators[0],
+            margins[0]
+        );
+    }
+
+    #[gpui::test]
     fn test_point_diagnostic_stays_in_edited_excerpt(cx: &mut TestAppContext) {
         init_test(cx, |_| {});
 

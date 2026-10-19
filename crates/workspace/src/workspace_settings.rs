@@ -75,7 +75,7 @@ impl IslandsSettings {
         density: Option<settings::UiDensity>,
     ) -> Self {
         let compact = is_compact(density);
-        let default_gap = if compact { 3 } else { 5 };
+        let default_gap = if compact { 4 } else { 6 };
         let default_corner_radius = if compact { 8 } else { 10 };
         Self {
             enabled: content.and_then(|islands| islands.enabled).unwrap_or(true),
@@ -416,12 +416,16 @@ mod tests {
             islands,
             IslandsSettings {
                 enabled: true,
-                gap: px(5.),
+                gap: px(6.),
                 corner_radius: px(10.),
                 dim_inactive_window: true,
             }
         );
-        assert_eq!(islands.half_gap(), px(2.5));
+        assert_eq!(
+            islands.half_gap(),
+            px(3.),
+            "each island keeps IntelliJ's 3 px rim, half of `Island.borderWidth` 6"
+        );
 
         let default_density = IslandsSettings::from_content(
             Some(&IslandsSettingsContent::default()),
@@ -439,9 +443,13 @@ mod tests {
     #[test]
     fn islands_shrink_in_compact_density() {
         let islands = IslandsSettings::from_content(None, Some(UiDensity::Compact));
-        assert_eq!(islands.gap, px(3.));
+        assert_eq!(islands.gap, px(4.));
         assert_eq!(islands.corner_radius, px(8.));
-        assert_eq!(islands.half_gap(), px(1.5));
+        assert_eq!(
+            islands.half_gap(),
+            px(2.),
+            "each island keeps IntelliJ's 2 px compact rim, half of `Island.borderWidth.compact` 4"
+        );
     }
 
     #[test]

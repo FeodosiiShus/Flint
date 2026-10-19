@@ -65,8 +65,16 @@
       "scrollbar.thumb.active_background": "#808080c0",
       "terminal.background": "#191a1c00",
       "tab.test_file_background": "#1c261c",
-      "editor.indent_guide": "#454963",
-      "editor.indent_guide_active": "#454963",
+      // IntelliJ's Islands Dark scheme draws the gutter separator, the breadcrumbs border, the
+      // indent guides and the right margin in `INDENT_GUIDE` and `RIGHT_MARGIN_COLOR`, both a step
+      // above the island colour. It highlights a guide only while the caret sits on its column,
+      // so the guide around the cursor keeps the same colour.
+      "editor.indent_guide": "#323438",
+      "editor.indent_guide_active": "#323438",
+      "editor.wrap_guide": "#323438",
+      "editor.active_wrap_guide": "#323438",
+      // `OnePixelDivider.background`, the frame colour, like the frame between islands.
+      "pane_group.border": "#26282c",
       "editor.document_highlight.bracket_background": "#7b524b",
       "hint.background": "#383c458c",
       "accents": ["#e08855", "#b08b14", "#a1a359", "#3b92b8", "#3574f0", "#c84d8f", "#955ae0", "#24a394", "#5fad65"],

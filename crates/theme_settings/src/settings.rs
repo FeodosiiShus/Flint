@@ -868,8 +868,8 @@ mod default_look_tests {
         )
     }
 
-    /// The editor's island surfaces follow IntelliJ's Islands instead of Eva, so they are checked
-    /// by `default_eva_dark_editor_island_matches_intellij_islands_dark`.
+    /// The editor's island surfaces and lines follow IntelliJ's Islands instead of Eva, so they are
+    /// checked by `default_eva_dark_editor_island_matches_intellij_islands_dark`.
     fn code_palette(colors: &ThemeColors) -> Vec<(&'static str, Hsla)> {
         named_colors!(
             colors,
@@ -880,8 +880,6 @@ mod default_look_tests {
             editor_active_line_number,
             editor_hover_line_number,
             editor_invisible,
-            editor_wrap_guide,
-            editor_active_wrap_guide,
             editor_document_highlight_read_background,
             editor_document_highlight_write_background,
             editor_diff_hunk_added_background,
@@ -1022,6 +1020,22 @@ mod default_look_tests {
             ),
             ("tab_bar_background", colors.tab_bar_background, 0x191a1c),
             ("toolbar_background", colors.toolbar_background, 0x191a1c),
+            // INDENT_GUIDE, which also draws the gutter separator and the breadcrumbs border.
+            ("editor_indent_guide", colors.editor_indent_guide, 0x323438),
+            (
+                "editor_indent_guide_active",
+                colors.editor_indent_guide_active,
+                0x323438,
+            ),
+            // RIGHT_MARGIN_COLOR.
+            ("editor_wrap_guide", colors.editor_wrap_guide, 0x323438),
+            (
+                "editor_active_wrap_guide",
+                colors.editor_active_wrap_guide,
+                0x323438,
+            ),
+            // OnePixelDivider.background between split editors.
+            ("pane_group_border", colors.pane_group_border, 0x26282c),
         ] {
             assert_eq!(color, hex(expected), "{name}");
         }

@@ -4563,7 +4563,7 @@ fn window_and_layout_page() -> SettingsPage {
             }),
             SettingsPageItem::SettingItem(SettingItem {
                 title: "Gap",
-                description: "Distance between islands in pixels (0–16). Unset uses 4, or 3 in compact density.",
+                description: "Distance between islands in pixels (0–16). Unset uses 6, or 4 in compact density, like IntelliJ.",
                 field: Box::new(SettingField {
                     json_path: Some("islands.gap"),
                     pick: |settings_content| {

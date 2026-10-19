@@ -13892,7 +13892,7 @@ mod tests {
         cx.update(|cx| {
             let settings = WorkspaceSettings::get_global(cx);
             assert!(settings.islands.enabled);
-            assert_eq!(settings.islands.gap, px(5.));
+            assert_eq!(settings.islands.gap, px(6.));
             assert_eq!(settings.islands.corner_radius, px(10.));
             assert!(settings.tool_window_bars.show);
             assert!(!settings.tool_window_bars.show_names);
@@ -13910,7 +13910,7 @@ mod tests {
         });
         cx.update(|cx| {
             let settings = WorkspaceSettings::get_global(cx);
-            assert_eq!(settings.islands.gap, px(3.));
+            assert_eq!(settings.islands.gap, px(4.));
             assert_eq!(settings.islands.corner_radius, px(8.));
             assert_eq!(settings.tool_window_bars.icon_size, px(16.));
         });
@@ -14107,7 +14107,7 @@ mod tests {
         let window_width = cx.update(|window, _| window.viewport_size().width);
         assert_eq!(
             window_width - center.right(),
-            px(6.5),
+            px(7.),
             "without the right bar the editor island keeps IntelliJ's 4 px empty gap plus the island rim to the window edge"
         );
     }
@@ -14169,8 +14169,8 @@ mod tests {
         let center = cx
             .debug_bounds("center_island")
             .expect("islands are enabled by default");
-        assert_eq!(center.left() - left_bar.right(), px(2.5));
-        assert_eq!(right_bar.left() - center.right(), px(2.5));
+        assert_eq!(center.left() - left_bar.right(), px(3.));
+        assert_eq!(right_bar.left() - center.right(), px(3.));
 
         cx.update(|_, cx| {
             SettingsStore::update_global(cx, |store, cx| {
@@ -14291,12 +14291,12 @@ mod tests {
 
         assert_eq!(
             center.top() - left_bar.top(),
-            px(2.5),
+            px(3.),
             "the editor island sits the island rim below the frame top"
         );
         assert_eq!(
             left_bar.bottom() - center.bottom(),
-            px(2.5),
+            px(3.),
             "the editor island ends the island rim above the stripe bottom"
         );
         assert_eq!(
@@ -14792,7 +14792,8 @@ mod tests {
         });
         cx.run_until_parked();
 
-        let content_inset = px(0.5);
+        // IntelliJ's 3 px tool window inset is taken up by the island rim at the default gap.
+        let content_inset = px(0.);
         for (header_selector, island_selector, content_selector) in [
             (
                 "tool_window_header_left",
