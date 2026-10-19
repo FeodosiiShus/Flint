@@ -868,15 +868,13 @@ mod default_look_tests {
         )
     }
 
+    /// The editor's island surfaces follow IntelliJ's Islands instead of Eva, so they are checked
+    /// by `default_eva_dark_editor_island_matches_intellij_islands_dark`.
     fn code_palette(colors: &ThemeColors) -> Vec<(&'static str, Hsla)> {
         named_colors!(
             colors,
             editor_foreground,
-            editor_background,
-            editor_gutter_background,
             editor_subheader_background,
-            editor_active_line_background,
-            editor_highlighted_line_background,
             editor_debugger_active_line_background,
             editor_line_number,
             editor_active_line_number,
@@ -968,6 +966,13 @@ mod default_look_tests {
             colors.background.l
         );
         assert!(
+            colors.editor_background.l < colors.background.l,
+            "the editor island must be darker than the frame like the tool window islands, \
+             editor_background lightness {} against background lightness {}",
+            colors.editor_background.l,
+            colors.background.l
+        );
+        assert!(
             colors.ghost_element_hover.a > 0.0,
             "ghost_element_hover must be visible"
         );
@@ -988,6 +993,41 @@ mod default_look_tests {
         assert!(
             colors.text_accent.is_opaque(),
             "text_accent paints the focused tool window button and must be opaque"
+        );
+    }
+
+    #[test]
+    fn default_eva_dark_editor_island_matches_intellij_islands_dark() {
+        let theme = effective_eva_dark();
+        let colors = theme.colors();
+        let hex = |hex: u32| -> Hsla { gpui::rgb(hex).into() };
+
+        // `layer-0-bg` of ManyIslandsDark and the TEXT, CARET_ROW_COLOR of IslandSchemeDark.
+        for (name, color, expected) in [
+            ("editor_background", colors.editor_background, 0x191a1c),
+            (
+                "editor_gutter_background",
+                colors.editor_gutter_background,
+                0x191a1c,
+            ),
+            (
+                "editor_active_line_background",
+                colors.editor_active_line_background,
+                0x1f2024,
+            ),
+            (
+                "editor_highlighted_line_background",
+                colors.editor_highlighted_line_background,
+                0x1f2024,
+            ),
+            ("tab_bar_background", colors.tab_bar_background, 0x191a1c),
+            ("toolbar_background", colors.toolbar_background, 0x191a1c),
+        ] {
+            assert_eq!(color, hex(expected), "{name}");
+        }
+        assert_eq!(
+            colors.editor_background, colors.panel_background,
+            "the editor and the tool windows share one island colour"
         );
     }
 

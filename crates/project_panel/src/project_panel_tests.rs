@@ -14306,8 +14306,7 @@ mod background_image_pixels {
     }
 
     #[test]
-    fn pixels_background_image_shows_through_the_project_panel_like_the_editor_and_reaches_every_window_edge()
-     {
+    fn pixels_background_image_shows_through_the_project_panel_and_reaches_every_window_edge() {
         for window_size in [size(px(1000.), px(700.)), size(px(1728.), px(1080.))] {
             let screenshot = render_workspace(window_size);
             let pixel = |column: u32, row: u32| {
@@ -14327,17 +14326,41 @@ mod background_image_pixels {
                 "no part of the {window_size:?} window is left unpainted and black"
             );
             assert_eq!(
-                count(PANEL) + count(over(IMAGE, PANEL)),
+                count(PANEL),
                 0,
-                "while a background image is set the project panel does not use the panel colour ({window_size:?})"
+                "no part of the project panel shows its bare colour without the background image ({window_size:?})"
             );
-            let panel_with_image = count(over(IMAGE, EDITOR));
+            let panel_with_image = count(over(IMAGE, PANEL));
             assert!(
                 panel_with_image * 10 > pixels.len(),
-                "the project panel shows the background image over the editor's base, so it looks \
-                 as see-through as the editor ({panel_with_image} of {} pixels, {window_size:?})",
+                "the project panel shows the background image over its colour \
+                 ({panel_with_image} of {} pixels, {window_size:?})",
                 pixels.len()
             );
+
+            // Like IntelliJ's Islands, the frame shows between the Project island and the editor
+            // island, so the two never run into each other.
+            let row = height / 2;
+            let panel_right = (0..width)
+                .rev()
+                .find(|&column| near(pixel(column, row), over(IMAGE, PANEL)))
+                .expect("the middle row crosses the project panel");
+            let editor_left = (panel_right..width)
+                .find(|&column| {
+                    let color = pixel(column, row);
+                    near(color, EDITOR) || near(color, over(IMAGE, EDITOR))
+                })
+                .expect("the middle row crosses the editor island right of the project panel");
+            let separator = (panel_right + 1..editor_left)
+                .filter(|&column| near(pixel(column, row), over(IMAGE, FRAME)))
+                .count() as u32;
+            let scale = width / f32::from(window_size.width) as u32;
+            assert!(
+                separator >= 4 * scale,
+                "{separator} device pixels of frame separate the project panel (ends at \
+                 {panel_right}) from the editor (starts at {editor_left}) ({window_size:?})"
+            );
+
             let frame_with_image = over(IMAGE, FRAME);
             for row in 0..height {
                 assert!(

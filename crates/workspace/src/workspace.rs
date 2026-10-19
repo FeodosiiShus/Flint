@@ -14421,7 +14421,70 @@ mod tests {
     }
 
     #[gpui::test]
-    async fn test_open_tool_window_shows_the_background_image_on_the_editor_base(
+    async fn test_open_tool_window_shows_the_background_image_over_the_panel_colour(
+        cx: &mut TestAppContext,
+    ) {
+        let (workspace, _panels, cx) = tool_window_bar_test_workspace(cx).await;
+        workspace.update_in(cx, |workspace, window, cx| {
+            workspace.toggle_dock(DockPosition::Left, window, cx);
+        });
+        cx.run_until_parked();
+
+        let panel_fill =
+            cx.update(|_, cx| gpui::Background::from(cx.theme().colors().panel_background));
+        let tool_window_fills = |cx: &mut VisualTestContext| {
+            let tool_window = cx
+                .debug_bounds("tool_window_left")
+                .expect("the left tool window is open");
+            cx.update(|window, _| {
+                let tool_window = tool_window.scale(window.scale_factor());
+                window
+                    .painted_quads()
+                    .into_iter()
+                    .filter(|quad| quad.bounds == tool_window)
+                    .map(|quad| quad.background)
+                    .collect::<Vec<_>>()
+            })
+        };
+        assert!(tool_window_fills(cx).contains(&panel_fill));
+
+        cx.update(|window, cx| {
+            let images = ui::WindowBackgroundImages {
+                editor_and_tools: Some(ui::BackgroundImagePaintLayer {
+                    image: Arc::new(gpui::RenderImage::new(vec![image::Frame::new(
+                        image::RgbaImage::new(4, 4),
+                    )])),
+                    mode: ui::BackgroundImageMode::Scale,
+                    alignment: ui::BackgroundImageAlignment::Center,
+                }),
+                empty_frame: None,
+            };
+            ui::BackgroundImageLayers::set_window(window.window_handle().window_id(), images, cx);
+            window.refresh();
+        });
+        cx.run_until_parked();
+
+        assert!(
+            tool_window_fills(cx).contains(&panel_fill),
+            "like IntelliJ's Islands, a background image keeps the tool window on its theme colour"
+        );
+        let tool_window = cx
+            .debug_bounds("tool_window_left")
+            .expect("the left tool window is open");
+        let (scale_factor, sprites) =
+            cx.update(|window, _| (window.scale_factor(), window.painted_polychrome_sprites()));
+        let tool_window_center = tool_window.center().scale(scale_factor);
+        assert!(
+            sprites.iter().any(|sprite| {
+                sprite.bounds.contains(&tool_window_center)
+                    && sprite.content_mask.bounds.contains(&tool_window_center)
+            }),
+            "an open tool window shows the Editor and Tools background image, like IntelliJ"
+        );
+    }
+
+    #[gpui::test]
+    async fn test_islands_are_separated_from_each_other_by_the_frame_like_intellij(
         cx: &mut TestAppContext,
     ) {
         let (workspace, _panels, cx) = tool_window_bar_test_workspace(cx).await;
@@ -14431,6 +14494,7 @@ mod tests {
                     settings.theme.experimental_theme_overrides =
                         Some(settings::ThemeStyleContent {
                             colors: settings::ThemeColorsContent {
+                                background: Some("#ff0000ff".into()),
                                 panel_background: Some("#0000ffff".into()),
                                 editor_background: Some("#00ff00ff".into()),
                                 ..Default::default()
@@ -14447,83 +14511,45 @@ mod tests {
         });
         cx.run_until_parked();
 
-        let (panel_fill, editor_fill) = cx.update(|_, cx| {
+        let tool_window = cx
+            .debug_bounds("tool_window_left")
+            .expect("the left tool window is open");
+        let center = cx
+            .debug_bounds("center_island")
+            .expect("islands are enabled by default");
+        assert!(
+            center.left() - tool_window.right() >= px(4.),
+            "a visible frame gap separates the Project island from the editor island, as in \
+             IntelliJ's Islands: tool window {tool_window:?}, editor {center:?}"
+        );
+
+        let (scale_factor, quads, frame_fill, panel_fill, editor_fill) = cx.update(|window, cx| {
             let colors = cx.theme().colors();
             (
+                window.scale_factor(),
+                window.painted_quads(),
+                gpui::Background::from(colors.background),
                 gpui::Background::from(colors.panel_background),
                 gpui::Background::from(colors.editor_background),
             )
         });
-        let island_fills = |cx: &mut VisualTestContext| {
-            let tool_window = cx
-                .debug_bounds("tool_window_left")
-                .expect("the left tool window is open");
-            cx.update(|window, _| {
-                let tool_window = tool_window.scale(window.scale_factor());
-                window
-                    .painted_quads()
-                    .into_iter()
-                    .filter(|quad| quad.bounds == tool_window)
-                    .map(|quad| quad.background)
-                    .collect::<Vec<_>>()
-            })
-        };
-        let set_image = |image: Option<ui::BackgroundImagePaintLayer>,
-                         cx: &mut VisualTestContext| {
-            cx.update(|window, cx| {
-                let images = ui::WindowBackgroundImages {
-                    editor_and_tools: image,
-                    empty_frame: None,
-                };
-                ui::BackgroundImageLayers::set_window(
-                    window.window_handle().window_id(),
-                    images,
-                    cx,
-                );
-                window.refresh();
-            });
-            cx.run_until_parked();
-        };
-
+        let gap = point(
+            (tool_window.right() + center.left()) / 2.,
+            tool_window.center().y,
+        )
+        .scale(scale_factor);
+        let fills_at_gap = quads
+            .iter()
+            .filter(|quad| quad.bounds.contains(&gap) && quad.content_mask.bounds.contains(&gap))
+            .map(|quad| quad.background)
+            .collect::<Vec<_>>();
         assert!(
-            island_fills(cx).contains(&panel_fill),
-            "without a background image the tool window keeps the theme's panel colour"
+            fills_at_gap.contains(&frame_fill),
+            "the frame colour fills the gap between the islands: {fills_at_gap:?}"
         );
-
-        set_image(
-            Some(ui::BackgroundImagePaintLayer {
-                image: Arc::new(gpui::RenderImage::new(vec![image::Frame::new(
-                    image::RgbaImage::new(4, 4),
-                )])),
-                mode: ui::BackgroundImageMode::Scale,
-                alignment: ui::BackgroundImageAlignment::Center,
-            }),
-            cx,
-        );
-        let fills = island_fills(cx);
         assert!(
-            fills.contains(&editor_fill) && !fills.contains(&panel_fill),
-            "with a background image the tool window sits on the editor's base, as IntelliJ's \
-             Islands share one base for tool windows and the editor: {fills:?}"
-        );
-        let tool_window = cx
-            .debug_bounds("tool_window_left")
-            .expect("the left tool window is open");
-        let (scale_factor, sprites) =
-            cx.update(|window, _| (window.scale_factor(), window.painted_polychrome_sprites()));
-        let tool_window_center = tool_window.center().scale(scale_factor);
-        assert!(
-            sprites.iter().any(|sprite| {
-                sprite.bounds.contains(&tool_window_center)
-                    && sprite.content_mask.bounds.contains(&tool_window_center)
-            }),
-            "an open tool window shows the Editor and Tools background image, like IntelliJ"
-        );
-
-        set_image(None, cx);
-        assert!(
-            island_fills(cx).contains(&panel_fill),
-            "removing the background image brings the panel colour back"
+            !fills_at_gap.contains(&panel_fill) && !fills_at_gap.contains(&editor_fill),
+            "no island paints over the gap between them: {fills_at_gap:?}"
         );
     }
 

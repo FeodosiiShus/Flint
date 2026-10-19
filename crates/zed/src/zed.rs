@@ -3051,6 +3051,45 @@ mod tests {
     }
 
     #[gpui::test]
+    fn test_default_theme_separates_the_islands_from_the_frame_like_intellij(
+        cx: &mut TestAppContext,
+    ) {
+        cx.update(|cx| {
+            let settings_store = SettingsStore::new(cx, &settings::default_settings());
+            cx.set_global(settings_store);
+            theme_settings::init(theme::LoadThemes::All(Box::new(Assets)), cx);
+
+            let theme = cx.theme();
+            assert_eq!(theme.name.as_ref(), "Eva Dark", "Flint's default dark theme");
+            let colors = theme.colors();
+            let island = colors.editor_background;
+            for (surface, color) in [
+                ("tool windows", colors.panel_background),
+                ("editor gutter", colors.editor_gutter_background),
+                ("editor tab bar", colors.tab_bar_background),
+                ("inactive editor tabs", colors.tab_inactive_background),
+                ("editor toolbar", colors.toolbar_background),
+            ] {
+                assert_eq!(
+                    color, island,
+                    "IntelliJ's Islands draw the {surface} on the editor's island colour (`layer-0-bg`)"
+                );
+            }
+            let frame = colors.background;
+            assert_eq!(
+                frame, colors.title_bar_background,
+                "the frame and the main toolbar share `MainWindow.background`"
+            );
+            assert!(
+                frame.l - island.l >= 0.05,
+                "the islands are visibly darker than the frame around them, like IntelliJ's \
+                 `layer-0-bg` against `layer-1-bg`, so the editor and the tool windows never run \
+                 into each other: frame {frame:?}, island {island:?}"
+            );
+        });
+    }
+
+    #[gpui::test]
     async fn test_project_window_shows_the_title_bar_widgets(cx: &mut TestAppContext) {
         let app_state = init_test(cx);
         app_state
