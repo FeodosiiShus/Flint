@@ -75,18 +75,10 @@ jobs:
       - name: Run core tests
         run: |
           set -o pipefail
+          # Every workspace crate, so a crate whose tests nobody listed cannot regress unnoticed.
+          # zed and gpui run in the GPUI and app tests job.
           cargo nextest run --locked --profile ci --tests --no-fail-fast \
-            --package settings --package release_channel --package cli --package theme_settings \
-            --package ui --package workspace --package title_bar --package gpui_macos \
-            --package search_everywhere --package file_finder --package project_symbols --package command_palette --package picker \
-            --package search --package merge_diff --package diagnostics --package language_tools \
-            --package git --package fs --package project --package git_ui --package icons --package project_panel \
-            --package editor --package markdown --package markdown_preview \
-            --package languages --package language --package language_core --package grammars --package extensions_ui \
-            --package migrator --package util --package settings_ui --package show_usages \
-            --package rpc --package fuzzy --package fuzzy_nucleo --package terminal --package lsp --package prettier \
-            --package dap --package worktree --package multi_buffer --package buffer_diff --package git_ui_core \
-            --package recent_projects \
+            --workspace --exclude zed --exclude gpui \
             --features fs/test-support,project/test-support \
             2>&1 | tee "${RUNNER_TEMP}/nextest-core.log"
 
@@ -230,10 +222,10 @@ jobs:
           set -o pipefail
           cargo test --locked --no-fail-fast --package gpui 2>&1 | tee "${RUNNER_TEMP}/ui-heavy.log"
 
-      - name: Run zed action, keymap and project window tests
+      - name: Run app tests
         run: |
           set -o pipefail
-          cargo test --locked --no-fail-fast --package zed --bin flint -- test_action_namespaces test_base_keymap test_open_paths test_bundled_languages test_project_window_ 2>&1 | tee -a "${RUNNER_TEMP}/ui-heavy.log"
+          cargo test --locked --no-fail-fast --package zed --bin flint 2>&1 | tee -a "${RUNNER_TEMP}/ui-heavy.log"
 
       - name: Check tests of crates changed by Flint compile
         run: |

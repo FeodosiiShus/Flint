@@ -1070,7 +1070,7 @@ mod tests {
     use super::*;
     use buffer_diff::BufferDiff;
     use fs::FakeFs;
-    use gpui::{AppContext as _, TestAppContext, WindowHandle};
+    use gpui::{TestAppContext, WindowHandle};
     use language::{Buffer, DiskState, Point};
     use serde_json::json;
     use util::path;

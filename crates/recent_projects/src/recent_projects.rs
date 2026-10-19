@@ -1188,7 +1188,6 @@ impl PickerDelegate for RecentProjectsDelegate {
                                 }
                             })
                             .on_click({
-                                let paths_to_add = paths_to_add.clone();
                                 cx.listener(move |picker, _event, window, cx| {
                                     cx.stop_propagation();
                                     window.prevent_default();

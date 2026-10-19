@@ -396,6 +396,7 @@ VALUES {placeholders};
         .await
     }
 
+    #[cfg(test)]
     pub async fn delete_file_folds(
         &self,
         workspace_id: WorkspaceId,

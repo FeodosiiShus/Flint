@@ -312,7 +312,7 @@ async fn test_language_services_panel_rows_group_servers_under_worktree_header(
     let rows = rows_of(&panel, cx);
 
     assert!(
-        matches!(rows.first(), Some(PanelRow::Header(name)) if name.to_string() == "project"),
+        matches!(rows.first(), Some(PanelRow::Header(name)) if &**name == "project"),
         "the first row is the worktree header, got {rows:?}"
     );
     assert_eq!(

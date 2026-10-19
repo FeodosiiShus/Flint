@@ -581,7 +581,7 @@ fn register_actions(
     app_state: Arc<AppState>,
     workspace: &mut Workspace,
     _: &mut Window,
-    cx: &mut Context<Workspace>,
+    _: &mut Context<Workspace>,
 ) {
     workspace.register_action(
         |workspace: &mut Workspace,
@@ -2486,6 +2486,7 @@ mod tests {
     async fn test_window_edit_state_restoring_disabled(cx: &mut TestAppContext) {
         let executor = cx.executor();
         let app_state = init_test(cx);
+        disable_autosave(cx);
 
         cx.update(|cx| {
             SettingsStore::update_global(cx, |store, cx| {
@@ -3855,6 +3856,7 @@ mod tests {
     #[gpui::test]
     async fn test_pane_actions(cx: &mut TestAppContext) {
         let app_state = init_test(cx);
+        disable_autosave(cx);
         app_state
             .fs
             .as_fake()
@@ -3945,6 +3947,63 @@ mod tests {
     }
 
     #[gpui::test]
+    async fn test_closing_a_dirty_item_saves_it_with_the_default_autosave(cx: &mut TestAppContext) {
+        let app_state = init_test(cx);
+        app_state
+            .fs
+            .as_fake()
+            .insert_tree(path!("/root"), json!({ "file.txt": "contents" }))
+            .await;
+
+        let project = Project::test(app_state.fs.clone(), [path!("/root").as_ref()], cx).await;
+        let window = cx.add_window(|window, cx| MultiWorkspace::test_new(project, window, cx));
+        let workspace = window
+            .read_with(cx, |mw, _| mw.workspace().clone())
+            .unwrap();
+        let cx = &mut VisualTestContext::from_window(*window, cx);
+
+        let editor = workspace
+            .update_in(cx, |workspace, window, cx| {
+                workspace.open_abs_path(
+                    PathBuf::from(path!("/root/file.txt")),
+                    OpenOptions::default(),
+                    window,
+                    cx,
+                )
+            })
+            .await
+            .unwrap()
+            .downcast::<Editor>()
+            .unwrap();
+        editor.update_in(cx, |editor, window, cx| {
+            editor.insert("edited ", window, cx)
+        });
+
+        cx.dispatch_action(workspace::CloseActiveItem {
+            save_intent: None,
+            close_pinned: false,
+        });
+        cx.background_executor.run_until_parked();
+
+        assert!(
+            !cx.has_pending_prompt(),
+            "with the default autosave a modified tab closes without asking, like IntelliJ"
+        );
+        workspace.read_with(cx, |workspace, cx| {
+            assert!(workspace.active_item(cx).is_none());
+        });
+        assert_eq!(
+            app_state
+                .fs
+                .load(Path::new(path!("/root/file.txt")))
+                .await
+                .unwrap(),
+            // `ensure_final_newline_on_save` is on by default.
+            "edited contents\n"
+        );
+    }
+
+    #[gpui::test]
     async fn test_editor_zoom_with_scroll_wheel(cx: &mut TestAppContext) {
         let app_state = init_test(cx);
         app_state
@@ -3960,8 +4019,6 @@ mod tests {
             .read_with(cx, |mw, _| mw.workspace().clone())
             .unwrap();
         let cx = &mut VisualTestContext::from_window(*window, cx);
-
-        let mouse_position = point(px(250.), px(250.));
 
         let event_modifiers = {
             #[cfg(target_os = "macos")]
@@ -3981,7 +4038,7 @@ mod tests {
             }
         };
 
-        workspace
+        let editor = workspace
             .update_in(cx, |workspace, window, cx| {
                 workspace.open_abs_path(
                     PathBuf::from(path!("/root/file.txt")),
@@ -3997,6 +4054,16 @@ mod tests {
 
         cx.update(|window, cx| {
             window.draw(cx).clear(cx);
+        });
+
+        // The left dock is open by default, so scroll over the editor itself rather than at a
+        // fixed point that the Project tool window may cover.
+        let mouse_position = cx.update(|_, cx| {
+            editor
+                .read(cx)
+                .last_bounds()
+                .expect("the editor was drawn")
+                .center()
         });
 
         // mouse_wheel_zoom is disabled by default — zoom should not work.
@@ -5213,6 +5280,18 @@ mod tests {
         });
     }
 
+    // Flint's default `autosave` saves a dirty item when it is closed instead of asking, so the
+    // tests of the save prompt turn it off.
+    fn disable_autosave(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            cx.update_global::<SettingsStore, _>(|store, cx| {
+                store.update_user_settings(cx, |settings| {
+                    settings.workspace.autosave = Some(settings::AutosaveSetting::Off);
+                });
+            });
+        });
+    }
+
     fn init_test_with_state(
         cx: &mut TestAppContext,
         mut app_state: Arc<AppState>,
@@ -5767,6 +5846,7 @@ mod tests {
     async fn test_quit_checks_all_workspaces_for_dirty_items(cx: &mut TestAppContext) {
         let app_state = init_test(cx);
         cx.update(init);
+        disable_autosave(cx);
 
         app_state
             .fs
@@ -6070,6 +6150,7 @@ mod tests {
     async fn test_reload_checks_all_workspaces_for_dirty_items(cx: &mut TestAppContext) {
         let app_state = init_test(cx);
         cx.update(init);
+        disable_autosave(cx);
 
         app_state
             .fs

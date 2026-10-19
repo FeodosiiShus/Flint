@@ -455,7 +455,7 @@ impl LanguageServicesPanel {
                     .flex_1()
                     .min_w_0()
                     .gap_0p5()
-                    .child(Label::new(server_name.0.clone()).truncate())
+                    .child(Label::new(server_name.0).truncate())
                     .child(
                         Label::new(details)
                             .size(LabelSize::Small)

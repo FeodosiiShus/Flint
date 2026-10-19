@@ -31,8 +31,8 @@ use git::{
     status::{DiffStat, FileStatus, StatusCode, TrackedStatus},
 };
 use gpui::{
-    App, AppContext, BackgroundExecutor, BorrowAppContext, Entity, FutureExt, SharedString,
-    TestAppContext, UpdateGlobal,
+    App, BackgroundExecutor, BorrowAppContext, Entity, FutureExt, SharedString, TestAppContext,
+    UpdateGlobal,
 };
 use itertools::Itertools;
 use language::{

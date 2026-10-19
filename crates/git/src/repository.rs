@@ -10867,7 +10867,7 @@ exit 2
 
     #[test]
     fn test_parse_commit_summaries_detects_root_commits_and_skips_malformed_lines() {
-        let output = "sha2\0second\0200\0Ann\0sha1\nsha1\0first\0100\0Bob\0\nmalformed\nsha3\0bad time\0abc\0Eve\0sha2\n";
+        let output = "sha2\0second\x00200\0Ann\0sha1\nsha1\0first\x00100\0Bob\0\nmalformed\nsha3\0bad time\0abc\0Eve\0sha2\n";
         let summaries = parse_commit_summaries(output);
         assert_eq!(summaries.len(), 2);
         assert_eq!(&*summaries[0].sha, "sha2");

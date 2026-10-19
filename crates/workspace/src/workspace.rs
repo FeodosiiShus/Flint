@@ -18456,7 +18456,6 @@ mod tests {
         struct TestPngItemView {
             focus_handle: FocusHandle,
             project_item: Entity<TestPngItem>,
-            project_path: ProjectPath,
         }
         // Model
         struct TestPngItem {
@@ -18540,8 +18539,7 @@ mod tests {
             {
                 Self {
                     focus_handle: cx.focus_handle(),
-                    project_item: item.clone(),
-                    project_path: item.read(cx).project_path.clone(),
+                    project_item: item,
                 }
             }
         }

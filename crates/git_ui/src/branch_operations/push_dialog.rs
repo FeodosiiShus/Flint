@@ -51,10 +51,7 @@ pub fn direct_outgoing_base(
     remote_branches: &[String],
 ) -> Option<String> {
     let candidate = format!("{remote}/{remote_branch}");
-    remote_branches
-        .iter()
-        .any(|branch| *branch == candidate)
-        .then_some(candidate)
+    remote_branches.contains(&candidate).then_some(candidate)
 }
 
 pub fn default_outgoing_base(

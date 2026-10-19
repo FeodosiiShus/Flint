@@ -3538,7 +3538,7 @@ fn test_language_scope_at_with_combined_injections(cx: &mut App) {
         language_registry.add(Arc::new(javascript_lang()));
 
         let mut buffer = Buffer::local(text, cx);
-        buffer.set_language_registry(language_registry.clone());
+        buffer.set_language_registry(language_registry);
         buffer.set_language(Some(html_language), cx);
 
         let snapshot = buffer.snapshot();
@@ -3773,7 +3773,7 @@ init({ count: 1 });
         language_registry.add(Arc::new(javascript_lang()));
 
         let mut buffer = Buffer::local(text, cx);
-        buffer.set_language_registry(language_registry.clone());
+        buffer.set_language_registry(language_registry);
         buffer.set_language(Some(html_language), cx);
 
         let snapshot = buffer.snapshot();
@@ -3835,7 +3835,7 @@ init({ count: 1 });
         language_registry.add(Arc::new(javascript_lang()));
 
         let mut buffer = Buffer::local(text, cx);
-        buffer.set_language_registry(language_registry.clone());
+        buffer.set_language_registry(language_registry);
         buffer.set_language(Some(html_language), cx);
 
         // Test languages_at for HTML content - should NOT include JavaScript

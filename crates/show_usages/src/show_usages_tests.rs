@@ -1369,7 +1369,6 @@ async fn test_show_usages_cmd_click_with_caret_elsewhere_opens_the_clicked_prope
     let (reference_position_sender, mut reference_positions) = mpsc::unbounded();
     cx.lsp
         .set_request_handler::<lsp::request::References, _, _>({
-            let uri = uri.clone();
             move |params, _| {
                 reference_position_sender
                     .unbounded_send(params.text_document_position.position)

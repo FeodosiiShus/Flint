@@ -179,7 +179,9 @@ pub struct UsageRow<L> {
     pub match_ranges: Vec<Range<usize>>,
     pub syntax_highlights: Vec<(Range<usize>, HighlightId)>,
     pub access: UsageAccess,
+    #[cfg(test)]
     pub is_import: bool,
+    #[cfg(test)]
     pub is_comment: bool,
     pub is_origin: bool,
     pub in_project: bool,
@@ -645,7 +647,9 @@ fn build_row<L: Clone>(raw_usages: &[RawUsage<L>], group: Vec<usize>) -> Option<
         match_ranges,
         syntax_highlights,
         access,
+        #[cfg(test)]
         is_import: members.iter().all(|usage| usage.is_import),
+        #[cfg(test)]
         is_comment: members.iter().all(|usage| usage.is_comment),
         is_origin: members.iter().any(|usage| usage.is_origin),
         in_project: first.in_project,

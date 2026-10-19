@@ -217,7 +217,7 @@ fn spaced_digits(text: &[u8]) -> Option<(&[u8], &[u8])> {
 }
 
 fn leading_count(bytes: &[u8], predicate: impl Fn(&u8) -> bool) -> usize {
-    bytes.iter().take_while(|byte| predicate(*byte)).count()
+    bytes.iter().take_while(|byte| predicate(byte)).count()
 }
 
 fn decimal_value(digits: &[u8]) -> f32 {

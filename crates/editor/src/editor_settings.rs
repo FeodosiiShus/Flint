@@ -4,7 +4,7 @@ use project::project_settings::DiagnosticSeverity;
 pub use settings::{
     BreadcrumbsPlacement, CodeLens, CompletionDetailAlignment, CompletionMenuItemKind,
     CurrentLineHighlight, DelayMs, DiffViewStyle, DocumentColorsRenderMode,
-    DoubleClickInMultibuffer, GitGutterWidth, GoToDefinitionFallback, GoToDefinitionScrollStrategy,
+    DoubleClickInMultibuffer, GoToDefinitionFallback, GoToDefinitionScrollStrategy,
     MultiCursorModifier, OpenResultsIn, ScrollBeyondLastLine, ScrollbarDiagnostics,
     SeedQuerySetting, SnippetSortOrder,
 };

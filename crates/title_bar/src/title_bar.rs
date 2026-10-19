@@ -569,7 +569,6 @@ impl TitleBar {
                 &workspace::GoForward,
             ))
             .on_click({
-                let workspace = workspace.clone();
                 move |_, window, cx| {
                     if let Some(workspace) = workspace.upgrade() {
                         let pane = workspace.read(cx).active_pane().clone();
@@ -1018,14 +1017,10 @@ mod tests {
         open_project_title_bar_with_repository(cx, repository).await
     }
 
-    async fn open_project_title_bar_with_repository<'a>(
-        cx: &'a mut TestAppContext,
+    async fn open_project_title_bar_with_repository(
+        cx: &mut TestAppContext,
         repository: Option<TestRepository>,
-    ) -> (
-        Entity<Workspace>,
-        Entity<TitleBar>,
-        &'a mut VisualTestContext,
-    ) {
+    ) -> (Entity<Workspace>, Entity<TitleBar>, &mut VisualTestContext) {
         let app_state = cx.update(|cx| {
             let app_state = AppState::test(cx);
             PlatformTitleBar::init(cx);

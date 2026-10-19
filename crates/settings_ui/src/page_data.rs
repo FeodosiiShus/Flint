@@ -9616,8 +9616,6 @@ mod tests {
 
     #[gpui::test]
     fn test_trust_all_projects_json_path_names_the_written_key(cx: &mut gpui::TestAppContext) {
-        use crate::AnySettingField as _;
-
         cx.update(|cx| {
             let page = general_page(cx);
             let field = page
@@ -9650,7 +9648,7 @@ mod tests {
 
     #[gpui::test]
     fn test_reset_is_hidden_when_only_the_fallback_setting_is_set(cx: &mut gpui::TestAppContext) {
-        use crate::{AnySettingField as _, SettingsUiFile};
+        use crate::SettingsUiFile;
         use gpui::BorrowAppContext as _;
 
         cx.update(|cx| {

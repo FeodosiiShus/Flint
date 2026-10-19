@@ -835,7 +835,6 @@ mod tests {
         gpui::Task<()>,
         gpui::VisualTestContext,
     ) {
-        use gpui::AppContext as _;
         use std::path::Path;
         cx.update(|cx| {
             let settings = settings::SettingsStore::test(cx);
@@ -1547,8 +1546,8 @@ mod tests {
 
         let partial = result_notice(
             ApplyOperation::CherryPick,
-            &[first.clone()],
-            &[second.clone()],
+            std::slice::from_ref(&first),
+            std::slice::from_ref(&second),
         );
         assert_eq!(partial.title.as_deref(), Some("Applied 1 commit from 2"));
         assert_eq!(

@@ -532,7 +532,6 @@ impl Component for IconButton {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::prelude::*;
     use gpui::{Render, TestAppContext, VisualTestContext};
 
     struct SizeProbe;

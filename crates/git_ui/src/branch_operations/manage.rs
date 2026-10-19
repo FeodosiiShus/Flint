@@ -922,7 +922,7 @@ mod tests {
     #[test]
     fn delete_details_fall_back_to_head_without_any_reference() {
         let branch = local("feature", None, None, false);
-        let details = capture_delete_details(&branch, &[branch.clone()], None);
+        let details = capture_delete_details(&branch, std::slice::from_ref(&branch), None);
         assert_eq!(&*details.base, "HEAD");
         assert_eq!(details.tip, None);
     }

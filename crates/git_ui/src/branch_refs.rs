@@ -53,7 +53,7 @@ impl RefTarget {
                 .split_once('/')
                 .map(|(_, branch)| branch)
                 .unwrap_or(&*self.name),
-            RefKind::Local | RefKind::Tag => &*self.name,
+            RefKind::Local | RefKind::Tag => &self.name,
         }
     }
 
