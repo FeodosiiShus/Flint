@@ -18,7 +18,7 @@ use git;
 use git::status::GitSummary;
 use git_ui_core::file_diff_view::FileDiffView;
 use gpui::{
-    Action, Anchor, AnyElement, App, AsyncWindowContext, Bounds,
+    Action, Anchor, AnyElement, App, AsyncApp, AsyncWindowContext, Bounds,
     ClipboardEntry as GpuiClipboardEntry, ClipboardItem, Context, CursorStyle, DismissEvent, Div,
     DragMoveEvent, Entity, EventEmitter, ExternalDragPayload, ExternalPaths, FileDragPaths,
     FileDropEvent, FocusHandle, Focusable, FontWeight, Hsla, InteractiveElement, KeyContext,
@@ -44,7 +44,7 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use settings::{
     DockSide, ProjectPanelEntrySpacing, Settings, SettingsStore, ShowDiagnostics, ShowIndentGuides,
-    update_settings_file,
+    SplicingVec, update_settings_file,
 };
 use smallvec::SmallVec;
 use std::{
@@ -79,7 +79,7 @@ use workspace::{
     notifications::{DetachAndPromptErr, NotifyResultExt, NotifyTaskExt},
     open_file_permalink,
 };
-use worktree::CreatedEntry;
+use worktree::{CreatedEntry, WorktreeSettings};
 use zed_actions::{
     project_panel::{Toggle, ToggleFocus},
     workspace::OpenWithSystem,
@@ -445,6 +445,11 @@ actions!(
         Redo,
         /// Opens the context menu for the selected entry.
         OpenContextMenu,
+        /// Excludes the selected directory: it stays in the project tree, but nothing in it is
+        /// scanned, watched, searched or indexed.
+        MarkDirectoryAsExcluded,
+        /// Cancels the exclusion of the selected directory.
+        CancelDirectoryExclusion,
     ]
 );
 
@@ -746,6 +751,70 @@ fn inactive_selection_color(
     } else {
         element_background
     }
+}
+
+fn is_directory_excluded(worktree_id: WorktreeId, path: &RelPath, cx: &App) -> bool {
+    let location = settings::SettingsLocation {
+        worktree_id,
+        path: RelPath::empty(),
+    };
+    WorktreeSettings::get(Some(location), cx).is_directory_excluded(path)
+}
+
+async fn write_directory_exclusion(
+    fs: Arc<dyn Fs>,
+    settings_path: PathBuf,
+    directory: String,
+    excluded: bool,
+    cx: &mut AsyncApp,
+) -> Result<()> {
+    let old_text = if fs.is_file(&settings_path).await {
+        fs.load(&settings_path).await?
+    } else {
+        settings::initial_project_settings_content().into_owned()
+    };
+    let mut listed_before = false;
+    let new_text = cx.update(|cx| {
+        cx.global::<SettingsStore>()
+            .new_text_for_update(old_text, |settings| {
+                listed_before =
+                    set_directory_exclusion(&mut settings.project.worktree, &directory, excluded);
+            })
+    })?;
+    anyhow::ensure!(
+        excluded || listed_before,
+        "`{directory}` is excluded by a pattern outside this project's settings, so remove it from \
+         `excluded_directories` in your user settings"
+    );
+    if let Some(settings_dir) = settings_path.parent() {
+        fs.create_dir(settings_dir).await?;
+    }
+    fs.atomic_write(settings_path, new_text).await
+}
+
+/// Keeps the inherited `excluded_directories` through `"..."` and adds or removes `directory`,
+/// returning whether the project settings listed it before.
+fn set_directory_exclusion(
+    worktree: &mut settings::WorktreeSettingsContent,
+    directory: &str,
+    excluded: bool,
+) -> bool {
+    let directories = worktree
+        .excluded_directories
+        .get_or_insert_with(|| SplicingVec::from(vec![SplicingVec::REST.to_string()]));
+    let listed_before = directories.0.iter().any(|pattern| pattern == directory);
+    directories.0.retain(|pattern| pattern != directory);
+    if excluded {
+        directories.0.push(directory.to_string());
+    }
+    if directories
+        .0
+        .iter()
+        .all(|pattern| pattern == SplicingVec::REST)
+    {
+        worktree.excluded_directories = None;
+    }
+    listed_before
 }
 
 fn get_item_color(is_sticky: bool, has_background_image: bool, cx: &App) -> ItemColors {
@@ -1314,7 +1383,11 @@ impl ProjectPanel {
                 (has_git_repo, has_history)
             };
 
+            let can_mark_directory = is_dir && !is_root && is_local && !is_collab;
+            let is_excluded_directory =
+                can_mark_directory && is_directory_excluded(worktree_id, &entry.path, cx);
             let has_pasteable_content = self.has_pasteable_content(cx);
+            let focus_handle = self.focus_handle.clone();
             let context_menu = ContextMenu::build(window, cx, |menu, _, _| {
                 menu.context(self.focus_handle.clone()).map(|menu| {
                     if is_read_only {
@@ -1423,6 +1496,23 @@ impl ProjectPanel {
                                 menu.separator()
                                     .action("Expand All", Box::new(ExpandAllEntries))
                                     .action("Collapse All", Box::new(CollapseAllEntries))
+                            })
+                            .when(can_mark_directory, |menu| {
+                                menu.separator()
+                                    .submenu("Mark Directory As", move |menu, _, _| {
+                                        let menu = menu.context(focus_handle.clone());
+                                        if is_excluded_directory {
+                                            menu.action(
+                                                "Cancel Exclusion",
+                                                Box::new(CancelDirectoryExclusion),
+                                            )
+                                        } else {
+                                            menu.action(
+                                                "Excluded",
+                                                Box::new(MarkDirectoryAsExcluded),
+                                            )
+                                        }
+                                    })
                             })
                     }
                 })
@@ -2873,6 +2963,63 @@ impl ProjectPanel {
 
             Some(())
         });
+    }
+
+    fn mark_directory_as_excluded(
+        &mut self,
+        _: &MarkDirectoryAsExcluded,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.set_selected_directory_excluded(true, cx);
+    }
+
+    fn cancel_directory_exclusion(
+        &mut self,
+        _: &CancelDirectoryExclusion,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.set_selected_directory_excluded(false, cx);
+    }
+
+    /// Records the exclusion in the worktree's project settings, the way IntelliJ keeps excluded
+    /// folders with the project rather than with the IDE.
+    fn set_selected_directory_excluded(&mut self, excluded: bool, cx: &mut Context<Self>) {
+        let Some((worktree, entry)) = self.selected_sub_entry(cx) else {
+            return;
+        };
+        let worktree = worktree.read(cx);
+        if !entry.is_dir() || entry.path.is_empty() || !worktree.is_local() {
+            return;
+        }
+        if excluded
+            && let Some(expanded_dir_ids) = self.state.expanded_dir_ids.get_mut(&worktree.id())
+            && let Ok(ix) = expanded_dir_ids.binary_search(&entry.id)
+        {
+            expanded_dir_ids.remove(ix);
+        }
+        let directory = entry.path.as_unix_str().to_string();
+        let settings_path = worktree.absolutize(paths::local_settings_file_relative_path());
+        let fs = self.fs.clone();
+        let workspace = self.workspace.clone();
+        cx.spawn(async move |_, cx| {
+            let result =
+                write_directory_exclusion(fs, settings_path, directory, excluded, cx).await;
+            if let Err(error) = result {
+                let message = format!("Failed to update the excluded directories: {error:#}");
+                cx.update(|cx| {
+                    let toast = StatusToast::new(message, cx, |this, _| {
+                        this.icon(Icon::new(IconName::XCircle).color(Color::Error))
+                            .dismiss_button(true)
+                    });
+                    workspace
+                        .update(cx, |workspace, cx| workspace.toggle_status_toast(toast, cx))
+                        .log_err();
+                });
+            }
+        })
+        .detach();
     }
 
     /// Builds the confirmation prompt shared by direct removal and undo/redo.
@@ -6934,7 +7081,11 @@ impl ProjectPanel {
             .get(&worktree_id)
             .map(Vec::as_slice)
             .unwrap_or(&[]);
-        let is_expanded = expanded_entry_ids.binary_search(&entry.id).is_ok();
+        let is_excluded_directory =
+            entry.is_dir() && is_directory_excluded(worktree_id, &entry.path, cx);
+        // An excluded directory is never loaded, so it has nothing to expand into.
+        let is_expanded =
+            !is_excluded_directory && expanded_entry_ids.binary_search(&entry.id).is_ok();
 
         let (chevron, icon) = match entry.kind {
             EntryKind::File => {
@@ -6945,6 +7096,10 @@ impl ProjectPanel {
                 };
                 (None, icon)
             }
+            _ if is_excluded_directory => (
+                None,
+                Some(SharedString::new_static(theme::EXCLUDED_FOLDER_ICON)),
+            ),
             _ => {
                 let indicator = FileIcons::get_folder_indicators(
                     folder_indicator,
@@ -7516,6 +7671,8 @@ impl Render for ProjectPanel {
                         .on_action(cx.listener(Self::duplicate))
                         .on_action(cx.listener(Self::restore_file))
                         .on_action(cx.listener(Self::add_to_gitignore))
+                        .on_action(cx.listener(Self::mark_directory_as_excluded))
+                        .on_action(cx.listener(Self::cancel_directory_exclusion))
                         .on_action(cx.listener(Self::add_to_git_info_exclude))
                         .when(!is_collab, |el| el.on_action(cx.listener(Self::trash)))
                         .when(!is_collab, |el| {

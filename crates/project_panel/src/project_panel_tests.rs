@@ -12771,7 +12771,7 @@ async fn test_folder_indicator_selection(cx: &mut gpui::TestAppContext) {
         "files never take a chevron, so they stay flush in `both`"
     );
 
-    // Expanding must flip the chevron and the icon, not just the icon.
+    // Expanding flips the chevron; IntelliJ's New UI keeps the same folder icon.
     toggle_expand_dir(&panel, "root/dir", cx);
     cx.run_until_parked();
     assert_eq!(
@@ -12781,9 +12781,360 @@ async fn test_folder_indicator_selection(cx: &mut gpui::TestAppContext) {
         Some((
             "dir".to_string(),
             Some("chevron_down.svg".to_string()),
-            Some("folder_open.svg".to_string())
+            Some("folder.svg".to_string())
         )),
     );
+}
+
+fn excluded_directories_in_project_settings(fs: &FakeFs) -> Option<Vec<String>> {
+    let settings_path = Path::new(path!("/root/.zed/settings.json"));
+    let text = String::from_utf8(fs.read_file_sync(settings_path).ok()?).ok()?;
+    let settings: serde_json::Value =
+        settings::parse_json_with_comments(&text).expect("the project settings stay valid JSON");
+    settings
+        .get("excluded_directories")
+        .and_then(|directories| serde_json::from_value(directories.clone()).ok())
+}
+
+fn click_menu_item(selector: &'static str, cx: &mut VisualTestContext) {
+    let item = cx
+        .debug_bounds(selector)
+        .unwrap_or_else(|| panic!("the context menu shows {selector}"));
+    cx.simulate_click(item.center(), gpui::Modifiers::none());
+    cx.run_until_parked();
+}
+
+#[gpui::test]
+async fn test_mark_directory_as_excluded_keeps_the_directory_without_its_contents(
+    cx: &mut gpui::TestAppContext,
+) {
+    init_test(cx);
+    let fs = FakeFs::new(cx.executor());
+    fs.insert_tree(
+        path!("/root"),
+        json!({
+            "node_modules": {
+                "react": { "index.js": "" },
+            },
+            "src": { "main.ts": "" },
+        }),
+    )
+    .await;
+    let project = Project::test(fs.clone(), [path!("/root").as_ref()], cx).await;
+    let window = cx.add_window(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
+    let workspace = window
+        .read_with(cx, |mw, _| mw.workspace().clone())
+        .unwrap();
+    let cx = &mut VisualTestContext::from_window(window.into(), cx);
+    let panel = workspace.update_in(cx, |workspace, window, cx| {
+        let panel = ProjectPanel::new(workspace, window, cx);
+        workspace.add_panel(panel.clone(), window, cx);
+        workspace.open_panel::<ProjectPanel>(window, cx);
+        panel
+    });
+    cx.run_until_parked();
+    toggle_expand_dir(&panel, "root/node_modules", cx);
+    cx.run_until_parked();
+    assert_eq!(
+        visible_entries_as_strings(&panel, 0..10, cx),
+        &[
+            "v root",
+            "    v node_modules  <== selected",
+            "        > react",
+            "    > src",
+        ]
+    );
+
+    let node_modules_entry =
+        find_project_entry(&panel, "root/node_modules", cx).expect("node_modules is in the tree");
+    panel.update_in(cx, |panel, window, cx| {
+        panel.deploy_context_menu(
+            ContextMenuPlacement::AtMouse(point(px(10.), px(10.))),
+            node_modules_entry,
+            window,
+            cx,
+        );
+    });
+    cx.run_until_parked();
+    click_menu_item("MENU_ITEM-Mark Directory As", cx);
+    assert_eq!(
+        cx.debug_bounds("MENU_ITEM-Cancel Exclusion"),
+        None,
+        "a directory that is not excluded can only be excluded"
+    );
+    click_menu_item("MENU_ITEM-Excluded", cx);
+
+    assert_eq!(
+        excluded_directories_in_project_settings(&fs),
+        Some(vec!["...".to_string(), "node_modules".to_string()]),
+        "the exclusion is kept in the project settings and keeps the inherited exclusions"
+    );
+    assert_eq!(
+        visible_entries_as_strings(&panel, 0..10, cx),
+        &[
+            "v root",
+            "    > .zed",
+            "    > node_modules  <== selected",
+            "    > src"
+        ],
+        "the excluded directory stays in the tree, without a chevron and without its contents"
+    );
+    assert!(
+        visible_entry_indicators(&panel, 0..10, cx).contains(&(
+            "node_modules".to_string(),
+            None,
+            Some("folder_excluded.svg".to_string()),
+        )),
+        "the excluded directory gets IntelliJ's excluded folder icon"
+    );
+    toggle_expand_dir(&panel, "root/node_modules", cx);
+    cx.run_until_parked();
+    assert!(
+        find_project_entry(&panel, "root/node_modules/react", cx).is_none(),
+        "expanding an excluded directory does not read it"
+    );
+
+    panel.update_in(cx, |panel, window, cx| {
+        panel.deploy_context_menu(
+            ContextMenuPlacement::AtMouse(point(px(10.), px(10.))),
+            node_modules_entry,
+            window,
+            cx,
+        );
+    });
+    cx.run_until_parked();
+    click_menu_item("MENU_ITEM-Mark Directory As", cx);
+    assert_eq!(
+        cx.debug_bounds("MENU_ITEM-Excluded"),
+        None,
+        "an excluded directory offers to cancel the exclusion instead"
+    );
+    click_menu_item("MENU_ITEM-Cancel Exclusion", cx);
+
+    assert_eq!(
+        excluded_directories_in_project_settings(&fs),
+        None,
+        "cancelling the last exclusion removes the setting"
+    );
+    assert!(
+        find_project_entry(&panel, "root/node_modules/react", cx).is_some(),
+        "cancelling the exclusion loads the directory again"
+    );
+}
+
+#[gpui::test]
+async fn test_background_image_shows_through_the_project_panel(cx: &mut gpui::TestAppContext) {
+    init_test(cx);
+    let fs = FakeFs::new(cx.executor());
+    fs.insert_tree(
+        path!("/root"),
+        json!({
+            "dir": { "file.txt": "" },
+            "file.txt": "",
+        }),
+    )
+    .await;
+    let project = Project::test(fs.clone(), [path!("/root").as_ref()], cx).await;
+    let window = cx.add_window(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
+    let workspace = window
+        .read_with(cx, |mw, _| mw.workspace().clone())
+        .unwrap();
+    let cx = &mut VisualTestContext::from_window(window.into(), cx);
+    workspace.update_in(cx, |workspace, window, cx| {
+        let panel = ProjectPanel::new(workspace, window, cx);
+        workspace.add_panel(panel, window, cx);
+        workspace.open_panel::<ProjectPanel>(window, cx);
+    });
+    // Let the workspace publish its own (empty) images first, so they don't replace the test's.
+    cx.run_until_parked();
+    let image = cx
+        .update(|_, cx| cx.svg_renderer())
+        .render_single_frame(
+            br#"<svg xmlns="http://www.w3.org/2000/svg" width="4" height="4"><rect width="4" height="4"/></svg>"#,
+            1.,
+        )
+        .expect("a four pixel SVG renders");
+    cx.update(|window, cx| {
+        let images = ui::WindowBackgroundImages {
+            editor_and_tools: Some(ui::BackgroundImagePaintLayer {
+                image,
+                mode: ui::BackgroundImageMode::Scale,
+                alignment: ui::BackgroundImageAlignment::Center,
+            }),
+            empty_frame: None,
+        };
+        ui::BackgroundImageLayers::set_window(window.window_handle().window_id(), images, cx);
+        window.refresh();
+    });
+    cx.run_until_parked();
+
+    let tool_window = cx
+        .debug_bounds("tool_window_left")
+        .expect("the project panel is open in the left dock");
+    let (scale_factor, quads, sprites, panel_background) = cx.update(|window, cx| {
+        (
+            window.scale_factor(),
+            window.painted_quads(),
+            window.painted_polychrome_sprites(),
+            gpui::Background::from(cx.theme().colors().panel_background),
+        )
+    });
+    let tool_window = tool_window.scale(scale_factor);
+    let rows_center = gpui::point(
+        tool_window.center().x,
+        tool_window.top() + tool_window.size.height / 4.,
+    );
+    assert!(
+        sprites.iter().any(|sprite| {
+            sprite.bounds.contains(&rows_center)
+                && sprite.content_mask.bounds.contains(&rows_center)
+        }),
+        "the Editor and Tools image is painted under the project panel rows"
+    );
+    let image_order = sprites
+        .iter()
+        .filter(|sprite| sprite.content_mask.bounds.contains(&rows_center))
+        .map(|sprite| sprite.order)
+        .max()
+        .expect("the image covers the rows");
+    assert!(
+        !quads.iter().any(|quad| {
+            quad.order > image_order
+                && quad.background == panel_background
+                && quad.bounds.contains(&rows_center)
+        }),
+        "no opaque panel fill is painted over the image, so it shows through the project panel"
+    );
+}
+
+#[test]
+fn test_directory_exclusion_keeps_inherited_and_other_project_exclusions() {
+    let mut worktree = settings::WorktreeSettingsContent::default();
+
+    assert!(!set_directory_exclusion(
+        &mut worktree,
+        "node_modules",
+        true
+    ));
+    assert!(!set_directory_exclusion(&mut worktree, "dist", true));
+    assert_eq!(
+        worktree
+            .excluded_directories
+            .as_ref()
+            .map(|list| list.0.clone()),
+        Some(vec![
+            "...".to_string(),
+            "node_modules".to_string(),
+            "dist".to_string()
+        ]),
+        "marking keeps the inherited list through \"...\" and appends each directory once"
+    );
+
+    assert!(set_directory_exclusion(
+        &mut worktree,
+        "node_modules",
+        false
+    ));
+    assert_eq!(
+        worktree
+            .excluded_directories
+            .as_ref()
+            .map(|list| list.0.clone()),
+        Some(vec!["...".to_string(), "dist".to_string()]),
+        "cancelling removes only that directory"
+    );
+    assert!(set_directory_exclusion(&mut worktree, "dist", false));
+    assert_eq!(
+        worktree.excluded_directories, None,
+        "cancelling the last project exclusion removes the setting"
+    );
+    assert!(
+        !set_directory_exclusion(&mut worktree, "vendor", false),
+        "a directory the project settings never listed is reported as not listed"
+    );
+}
+
+#[gpui::test]
+async fn test_cancelling_an_exclusion_from_the_user_settings_reports_an_error(
+    cx: &mut gpui::TestAppContext,
+) {
+    init_test(cx);
+    let fs = FakeFs::new(cx.executor());
+    fs.insert_tree(path!("/root"), json!({ "node_modules": {} }))
+        .await;
+    let settings_path = PathBuf::from(path!("/root/.zed/settings.json"));
+
+    let result = write_directory_exclusion(
+        fs.clone(),
+        settings_path.clone(),
+        "node_modules".to_string(),
+        false,
+        &mut cx.to_async(),
+    )
+    .await;
+
+    let error = result.expect_err("the project settings cannot cancel a user-level exclusion");
+    assert!(
+        error.to_string().contains("user settings"),
+        "the error tells where the exclusion comes from: {error:#}"
+    );
+    assert!(
+        !fs.is_file(&settings_path).await,
+        "a failed cancellation writes no project settings"
+    );
+}
+
+#[gpui::test]
+async fn test_mark_directory_as_is_offered_only_for_project_subdirectories(
+    cx: &mut gpui::TestAppContext,
+) {
+    init_test(cx);
+    let fs = FakeFs::new(cx.executor());
+    fs.insert_tree(
+        path!("/root"),
+        json!({
+            "dir": { "file.txt": "" },
+            "file.txt": "",
+        }),
+    )
+    .await;
+    let project = Project::test(fs.clone(), [path!("/root").as_ref()], cx).await;
+    let window = cx.add_window(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
+    let workspace = window
+        .read_with(cx, |mw, _| mw.workspace().clone())
+        .unwrap();
+    let cx = &mut VisualTestContext::from_window(window.into(), cx);
+    let panel = workspace.update_in(cx, |workspace, window, cx| {
+        let panel = ProjectPanel::new(workspace, window, cx);
+        workspace.add_panel(panel.clone(), window, cx);
+        workspace.open_panel::<ProjectPanel>(window, cx);
+        panel
+    });
+    cx.run_until_parked();
+
+    for (path, offered) in [
+        ("root/dir", true),
+        ("root/file.txt", false),
+        ("root", false),
+    ] {
+        let entry = find_project_entry(&panel, path, cx).expect("the entry is in the tree");
+        panel.update_in(cx, |panel, window, cx| {
+            panel.deploy_context_menu(
+                ContextMenuPlacement::AtMouse(point(px(10.), px(10.))),
+                entry,
+                window,
+                cx,
+            );
+        });
+        cx.run_until_parked();
+        assert_eq!(
+            cx.debug_bounds("MENU_ITEM-Mark Directory As").is_some(),
+            offered,
+            "Mark Directory As on {path}"
+        );
+        cx.dispatch_action(menu::Cancel);
+        cx.run_until_parked();
+    }
 }
 
 #[gpui::test]

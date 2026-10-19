@@ -2073,6 +2073,155 @@ async fn test_rescan_fs_change_is_reported_to_language_servers_as_changed(
 }
 
 #[gpui::test]
+async fn test_excluded_directories_are_hidden_from_language_servers_and_search(
+    cx: &mut gpui::TestAppContext,
+) {
+    init_test(cx);
+    cx.update(|cx| {
+        SettingsStore::update_global(cx, |store, cx| {
+            store.update_user_settings(cx, |settings| {
+                settings.project.worktree.excluded_directories =
+                    Some(SplicingVec::from(vec!["vendor".to_string()]));
+            });
+        });
+    });
+
+    let fs = FakeFs::new(cx.executor());
+    fs.insert_tree(
+        path!("/the-root"),
+        json!({
+            "src": { "a.rs": "const NEEDLE: usize = 1;" },
+            "vendor": {
+                "dep": {
+                    "src": { "dep.rs": "const NEEDLE: usize = 2;" }
+                }
+            }
+        }),
+    )
+    .await;
+
+    let project = Project::test(fs.clone(), [path!("/the-root").as_ref()], cx).await;
+    let language_registry = project.read_with(cx, |project, _| project.languages().clone());
+    language_registry.add(rust_lang());
+    let mut fake_servers = language_registry.register_fake_lsp(
+        "Rust",
+        FakeLspAdapter {
+            name: "the-language-server",
+            ..Default::default()
+        },
+    );
+    cx.executor().run_until_parked();
+    project
+        .update(cx, |project, cx| {
+            project.open_local_buffer_with_lsp(path!("/the-root/src/a.rs"), cx)
+        })
+        .await
+        .unwrap();
+    let fake_server = fake_servers.next().await.unwrap();
+    cx.executor().run_until_parked();
+
+    let file_changes = Arc::new(Mutex::new(Vec::new()));
+    fake_server
+        .request::<lsp::request::RegisterCapability>(
+            lsp::RegistrationParams {
+                registrations: vec![lsp::Registration {
+                    id: Default::default(),
+                    method: "workspace/didChangeWatchedFiles".to_string(),
+                    register_options: serde_json::to_value(
+                        lsp::DidChangeWatchedFilesRegistrationOptions {
+                            watchers: vec![
+                                lsp::FileSystemWatcher {
+                                    glob_pattern: lsp::GlobPattern::String(
+                                        path!("/the-root/src/*.rs").to_string(),
+                                    ),
+                                    kind: None,
+                                },
+                                lsp::FileSystemWatcher {
+                                    glob_pattern: lsp::GlobPattern::String(
+                                        path!("/the-root/vendor/dep/**/*.rs").to_string(),
+                                    ),
+                                    kind: None,
+                                },
+                            ],
+                        },
+                    )
+                    .ok(),
+                }],
+            },
+            DEFAULT_LSP_REQUEST_TIMEOUT,
+        )
+        .await
+        .into_response()
+        .unwrap();
+    fake_server.handle_notification::<lsp::notification::DidChangeWatchedFiles, _>({
+        let file_changes = file_changes.clone();
+        move |params, _| {
+            let mut file_changes = file_changes.lock();
+            file_changes.extend(params.changes);
+            file_changes.sort_by(|a, b| a.uri.cmp(&b.uri));
+        }
+    });
+    cx.executor().run_until_parked();
+
+    project.update(cx, |project, cx| {
+        let worktree = project.worktrees(cx).next().unwrap();
+        assert_eq!(
+            worktree
+                .read(cx)
+                .snapshot()
+                .entries(true, 0)
+                .map(|entry| entry.path.as_unix_str())
+                .collect::<Vec<_>>(),
+            &["", "src", "src/a.rs", "vendor"],
+            "a language server watching inside an excluded directory does not load it"
+        );
+    });
+
+    fs.create_file(path!("/the-root/src/b.rs").as_ref(), Default::default())
+        .await
+        .unwrap();
+    fs.create_file(
+        path!("/the-root/vendor/dep/src/new.rs").as_ref(),
+        Default::default(),
+    )
+    .await
+    .unwrap();
+    cx.executor().run_until_parked();
+    assert_eq!(
+        &*file_changes.lock(),
+        &[lsp::FileEvent {
+            uri: lsp::Uri::from_file_path(path!("/the-root/src/b.rs")).unwrap(),
+            typ: lsp::FileChangeType::CREATED,
+        }],
+        "changes inside an excluded directory are not reported to language servers"
+    );
+
+    for include_ignored in [false, true] {
+        assert_eq!(
+            search(
+                &project,
+                SearchQuery::text(
+                    "NEEDLE",
+                    false,
+                    true,
+                    include_ignored,
+                    Default::default(),
+                    Default::default(),
+                    false,
+                    None,
+                )
+                .unwrap(),
+                cx,
+            )
+            .await
+            .unwrap(),
+            HashMap::from_iter([(path!("the-root/src/a.rs").to_string(), vec![6..12])]),
+            "project search skips excluded directories, include_ignored: {include_ignored}"
+        );
+    }
+}
+
+#[gpui::test]
 async fn test_reporting_fs_changes_to_language_servers(cx: &mut gpui::TestAppContext) {
     init_test(cx);
 

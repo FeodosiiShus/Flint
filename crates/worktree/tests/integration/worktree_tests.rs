@@ -2688,6 +2688,123 @@ async fn test_file_scan_exclusions(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+async fn test_excluded_directories_stay_in_the_tree_without_their_contents(
+    cx: &mut TestAppContext,
+) {
+    init_test(cx);
+    cx.executor().allow_parking();
+    let dir = TempTree::new(json!({
+        "node_modules": {
+            "react": {
+                "index.js": "",
+            },
+            "package.json": "{}",
+        },
+        "src": {
+            "main.ts": "",
+        },
+    }));
+    let set_excluded_directories = |directories: Vec<String>, cx: &mut TestAppContext| {
+        cx.update(|cx| {
+            cx.update_global::<SettingsStore, _>(|store, cx| {
+                store.update_user_settings(cx, |settings| {
+                    settings.project.worktree.excluded_directories =
+                        Some(SplicingVec::from(directories));
+                });
+            });
+        });
+    };
+
+    let tree = Worktree::local(
+        dir.path(),
+        true,
+        RealFs::new(None, cx.executor()),
+        Default::default(),
+        true,
+        WorktreeId::from_proto(0),
+        &mut cx.to_async(),
+    )
+    .await
+    .unwrap();
+    cx.read(|cx| tree.read(cx).as_local().unwrap().scan_complete())
+        .await;
+    tree.flush_fs_events(cx).await;
+    tree.read_with(cx, |tree, _| {
+        assert!(
+            tree.entry_for_path(rel_path("node_modules/react/index.js"))
+                .is_some(),
+            "a directory that is neither ignored nor excluded is scanned"
+        );
+    });
+
+    set_excluded_directories(vec!["node_modules".to_string()], cx);
+    tree.flush_fs_events(cx).await;
+    cx.executor().run_until_parked();
+    tree.read_with(cx, |tree, _| {
+        let node_modules = tree
+            .entry_for_path(rel_path("node_modules"))
+            .expect("an excluded directory stays in the tree");
+        assert_eq!(
+            node_modules.kind,
+            EntryKind::UnloadedDir,
+            "an excluded directory is never read"
+        );
+        for path in [
+            "node_modules/react",
+            "node_modules/react/index.js",
+            "node_modules/package.json",
+        ] {
+            assert!(
+                tree.entry_for_path(rel_path(path)).is_none(),
+                "{path} was dropped when its directory became excluded"
+            );
+        }
+        assert!(tree.entry_for_path(rel_path("src/main.ts")).is_some());
+    });
+
+    tree.read_with(cx, |tree, _| {
+        tree.as_local()
+            .unwrap()
+            .refresh_entries_for_paths(vec![rel_path("node_modules").into()])
+    })
+    .recv()
+    .await;
+    std::fs::write(dir.path().join("node_modules/react/new.js"), "")
+        .expect("writing into the excluded directory");
+    std::fs::write(dir.path().join("src/new.ts"), "").expect("writing into src");
+    tree.flush_fs_events(cx).await;
+    cx.executor().run_until_parked();
+    tree.read_with(cx, |tree, _| {
+        assert_eq!(
+            tree.entry_for_path(rel_path("node_modules"))
+                .map(|entry| entry.kind),
+            Some(EntryKind::UnloadedDir),
+            "expanding an excluded directory does not load it"
+        );
+        assert!(
+            tree.entry_for_path(rel_path("node_modules/react/new.js"))
+                .is_none(),
+            "changes inside an excluded directory are not picked up"
+        );
+        assert!(
+            tree.entry_for_path(rel_path("src/new.ts")).is_some(),
+            "changes elsewhere are still picked up"
+        );
+    });
+
+    set_excluded_directories(Vec::new(), cx);
+    tree.flush_fs_events(cx).await;
+    cx.executor().run_until_parked();
+    tree.read_with(cx, |tree, _| {
+        assert!(
+            tree.entry_for_path(rel_path("node_modules/react/new.js"))
+                .is_some(),
+            "cancelling the exclusion scans the directory again"
+        );
+    });
+}
+
+#[gpui::test]
 async fn test_hidden_files(cx: &mut TestAppContext) {
     init_test(cx);
     cx.executor().allow_parking();

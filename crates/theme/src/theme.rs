@@ -27,7 +27,7 @@ use std::sync::Arc;
 use gpui::BorrowAppContext;
 use gpui::Global;
 use gpui::{
-    App, AssetSource, Hsla, Pixels, SharedString, Styled, Tiling, WindowAppearance,
+    App, AssetSource, Corners, Hsla, Pixels, SharedString, Styled, Tiling, WindowAppearance,
     WindowBackgroundAppearance, px,
 };
 use serde::Deserialize;
@@ -77,6 +77,24 @@ pub trait ClientDecorationsExt: Styled {
 }
 
 impl<T: Styled> ClientDecorationsExt for T {}
+
+/// The corner radii that [`ClientDecorationsExt::rounded_client_corners`] gives an element, for
+/// drawing that clips to the same rounded window shape.
+pub fn client_decoration_corner_radii(tiling: Tiling) -> Corners<Pixels> {
+    let radius = |untiled: bool| {
+        if untiled {
+            CLIENT_SIDE_DECORATION_ROUNDING
+        } else {
+            px(0.)
+        }
+    };
+    Corners {
+        top_left: radius(!tiling.top && !tiling.left),
+        top_right: radius(!tiling.top && !tiling.right),
+        bottom_right: radius(!tiling.bottom && !tiling.right),
+        bottom_left: radius(!tiling.bottom && !tiling.left),
+    }
+}
 
 /// The appearance of the theme.
 #[derive(Debug, PartialEq, Clone, Copy, Deserialize)]

@@ -12,6 +12,7 @@ fn make_settings_with_read_only(patterns: &[&str]) -> WorktreeSettings {
         prevent_sharing_in_public_channels: false,
         file_scan_exclusions: PathMatcher::default(),
         file_scan_inclusions: PathMatcher::default(),
+        excluded_directories: PathMatcher::default(),
         parent_dir_scan_inclusions: PathMatcher::default(),
         private_files: PathMatcher::default(),
         hidden_files: PathMatcher::default(),
@@ -76,6 +77,48 @@ fn assert_file_pattern_settings(setting: &str) {
 #[test]
 fn test_invalid_file_scan_exclusions() {
     assert_file_pattern_settings("file_scan_exclusions");
+}
+
+#[test]
+fn test_excluded_directories_keep_the_directory_and_exclude_its_contents() {
+    let settings = settings_with_patterns("excluded_directories", &["...", "web/node_modules"]);
+
+    assert!(settings.is_directory_excluded(rel_path("web/node_modules")));
+    assert!(
+        !settings.is_path_excluded(rel_path("web/node_modules")),
+        "the excluded directory itself stays in the tree"
+    );
+    for path in ["web/node_modules/react", "web/node_modules/react/index.js"] {
+        assert!(
+            settings.is_path_excluded(rel_path(path)),
+            "{path} lies inside an excluded directory"
+        );
+    }
+    for path in ["web", "web/src/index.ts", "node_modules_backup/file.txt"] {
+        assert!(
+            !settings.is_path_excluded(rel_path(path))
+                && !settings.is_directory_excluded(rel_path(path)),
+            "{path} is outside the excluded directory"
+        );
+    }
+    assert!(
+        settings.is_directory_excluded(rel_path(".git")),
+        "\"...\" keeps the inherited excluded directories"
+    );
+    assert!(
+        !settings.is_directory_excluded(RelPath::empty()),
+        "the worktree root is never an excluded directory"
+    );
+}
+
+#[test]
+fn test_excluded_directories_default_to_none() {
+    let content = SettingsContent::parse_json_with_comments(&settings::default_settings())
+        .expect("default settings");
+    let settings = WorktreeSettings::from_settings(&content);
+
+    assert!(!settings.is_directory_excluded(rel_path("node_modules")));
+    assert!(!settings.is_path_excluded(rel_path("node_modules/react/index.js")));
 }
 
 #[test]

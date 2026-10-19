@@ -1,10 +1,12 @@
 use std::rc::Rc;
 
 use gpui::{
-    AnyView, Background, ClickEvent, CursorStyle, Hsla, KeyDownEvent, MouseButton, Role, Toggled,
-    hsla, linear_color_stop, linear_gradient, rgb,
+    Action, AnyView, Background, ClickEvent, CursorStyle, Hsla, KeyDownEvent, MouseButton, Role,
+    Toggled, hsla, linear_color_stop, linear_gradient, rgb,
 };
-use ui::{COMPONENT_CORNER_RADII, ChromeRegion, CommonAnimationExt, prelude::*};
+use ui::{
+    COMPONENT_CORNER_RADII, ChromeRegion, CommonAnimationExt, KeyBinding, Tooltip, prelude::*,
+};
 
 const REST: f32 = 0.;
 const HOVER_DARK: f32 = 0x17 as f32 / 255.;
@@ -32,6 +34,9 @@ const TOOLBAR_WIDGET_PADDING_LEFT: Pixels = px(10.);
 const TOOLBAR_WIDGET_PADDING_RIGHT: Pixels = px(6.);
 const TOOLBAR_WIDGET_ICON_TEXT_GAP: Pixels = px(6.);
 const TOOLBAR_WIDGET_CHEVRON_GAP: Pixels = px(2.);
+pub const SEARCH_FIELD_DEBUG_SELECTOR: &str = "title_bar_search_field";
+const TOOLBAR_SEARCH_FIELD_WIDTH: Pixels = px(260.);
+const TOOLBAR_SEARCH_FIELD_PADDING: Pixels = px(8.);
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct ToolbarWidgetColors {
@@ -298,6 +303,85 @@ impl RenderOnce for ToolbarWidget {
                         ),
                 )
             })
+    }
+}
+
+/// A field-shaped button that opens Search Everywhere, like the main toolbar search field of
+/// `SearchEverywhereRiderMainToolbarAction`: the magnifier, the muted text and the shortcut.
+#[derive(IntoElement)]
+pub(crate) struct ToolbarSearchField {
+    id: ElementId,
+    placeholder: SharedString,
+    action: Box<dyn Action>,
+}
+
+impl ToolbarSearchField {
+    pub(crate) fn new(
+        id: impl Into<ElementId>,
+        placeholder: impl Into<SharedString>,
+        action: Box<dyn Action>,
+    ) -> Self {
+        Self {
+            id: id.into(),
+            placeholder: placeholder.into(),
+            action,
+        }
+    }
+}
+
+impl RenderOnce for ToolbarSearchField {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let colors = ToolbarWidgetColors::current(cx);
+        let focus_color = cx.theme().colors().border_focused;
+        let icon_scale = ui::chrome_icon_scale(ChromeRegion::TitleBar, cx).unwrap_or(1.);
+        let icon_size =
+            ui::exact_icon_size(TOOLBAR_WIDGET_ICON_SIDE * icon_scale, window.rem_size());
+        let tooltip = Tooltip::for_action_title(self.placeholder.clone(), self.action.as_ref());
+        let shortcut = KeyBinding::for_action(self.action.as_ref(), cx);
+        let action = self.action;
+
+        h_flex()
+            .id(self.id)
+            .debug_selector(|| SEARCH_FIELD_DEBUG_SELECTOR.into())
+            .role(Role::Button)
+            .aria_label(self.placeholder.clone())
+            .tab_index(0)
+            .font_ui(cx)
+            .flex_none()
+            .w(TOOLBAR_SEARCH_FIELD_WIDTH * icon_scale)
+            .h(ui::utils::title_bar_widget_height(cx))
+            .px(TOOLBAR_SEARCH_FIELD_PADDING)
+            .gap(TOOLBAR_WIDGET_ICON_TEXT_GAP)
+            .rounded(COMPONENT_CORNER_RADII.toolbar_widget)
+            .border_1()
+            .border_color(colors.open)
+            .bg(colors.hover)
+            .cursor(CursorStyle::IBeam)
+            .hover(move |style| style.bg(colors.open))
+            .focus_visible(move |style| style.border_color(focus_color))
+            // Keep the keyboard focus where it is, so Search Everywhere opens for the focused
+            // editor just like Double Shift does.
+            .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
+            .on_click(move |_, window, cx| {
+                cx.stop_propagation();
+                window.dispatch_action(action.boxed_clone(), cx)
+            })
+            .tooltip(tooltip)
+            .child(
+                div().flex_none().child(
+                    Icon::new(IconName::MagnifyingGlass)
+                        .size(icon_size)
+                        .color(toolbar_widget_icon_color(cx)),
+                ),
+            )
+            .child(
+                div().flex_1().min_w_0().child(
+                    Label::new(self.placeholder)
+                        .color(Color::Placeholder)
+                        .truncate(),
+                ),
+            )
+            .child(div().flex_none().child(shortcut.color(Color::Placeholder)))
     }
 }
 

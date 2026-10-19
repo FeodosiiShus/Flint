@@ -112,8 +112,7 @@ const FILE_SUFFIXES_BY_ICON_KEY: &[(&str, &[&str])] = &[
     (
         "document",
         &[
-            "doc", "docx", "mdx", "odp", "ods", "odt", "pdf", "ppt", "pptx", "rtf", "txt", "xls",
-            "xlsx",
+            "doc", "docx", "mdx", "odp", "ods", "odt", "pdf", "ppt", "pptx", "rtf", "xls", "xlsx",
         ],
     ),
     ("editorconfig", &["editorconfig"]),
@@ -254,7 +253,7 @@ const FILE_SUFFIXES_BY_ICON_KEY: &[(&str, &[&str])] = &[
     ("svelte", &["svelte"]),
     ("swift", &["swift"]),
     ("tcl", &["tcl"]),
-    ("template", &["hbs", "plist", "xml"]),
+    ("template", &["hbs"]),
     (
         "terminal",
         &[
@@ -282,6 +281,7 @@ const FILE_SUFFIXES_BY_ICON_KEY: &[(&str, &[&str])] = &[
         ],
     ),
     ("terraform", &["tf", "tfvars"]),
+    ("text", &["txt"]),
     ("toml", &["toml"]),
     ("typescript", &["cts", "mts", "ts"]),
     ("v", &["v", "vsh", "vv"]),
@@ -306,103 +306,109 @@ const FILE_SUFFIXES_BY_ICON_KEY: &[(&str, &[&str])] = &[
     ("vue", &["vue"]),
     ("vyper", &["vy", "vyi"]),
     ("wgsl", &["wgsl"]),
+    ("xml", &["plist", "xml"]),
     ("yaml", &["yaml", "yml"]),
     ("zig", &["zig"]),
 ];
 
 /// A mapping of a file type identifier to its corresponding icon.
+///
+/// The `images/` icons are IntelliJ's full-colour New UI file type icons; the `icons/` ones are
+/// tinted with the theme's icon colour where IntelliJ Community has no matching icon.
 const FILE_ICONS: &[(&str, &str)] = &[
     ("astro", "icons/file_icons/astro.svg"),
     ("audio", "icons/file_icons/audio.svg"),
     ("ballerina", "icons/file_icons/ballerina.svg"),
     ("bicep", "icons/file_icons/file.svg"),
     ("bun", "icons/file_icons/bun.svg"),
-    ("c", "icons/file_icons/c.svg"),
+    ("c", "images/file_icons/c.svg"),
     ("cairo", "icons/file_icons/cairo.svg"),
     ("code", "icons/file_icons/code.svg"),
     ("coffeescript", "icons/file_icons/coffeescript.svg"),
-    ("cpp", "icons/file_icons/cpp.svg"),
+    ("cpp", "images/file_icons/cpp.svg"),
     ("crystal", "icons/file_icons/file.svg"),
-    ("csharp", "icons/file_icons/file.svg"),
+    ("csharp", "images/file_icons/csharp.svg"),
     ("csproj", "icons/file_icons/file.svg"),
-    ("css", "icons/file_icons/css.svg"),
+    ("css", "images/file_icons/css.svg"),
     ("cue", "icons/file_icons/file.svg"),
     ("dart", "icons/file_icons/dart.svg"),
-    ("default", "icons/file_icons/file.svg"),
-    ("diff", "icons/file_icons/diff.svg"),
-    ("docker", "icons/file_icons/docker.svg"),
+    ("default", "images/file_icons/text.svg"),
+    ("diff", "images/file_icons/patch.svg"),
+    ("docker", "images/file_icons/docker.svg"),
     ("document", "icons/file_icons/book.svg"),
-    ("editorconfig", "icons/file_icons/editorconfig.svg"),
+    ("editorconfig", "images/file_icons/editorconfig.svg"),
     ("elixir", "icons/file_icons/elixir.svg"),
     ("elm", "icons/file_icons/elm.svg"),
     ("erlang", "icons/file_icons/erlang.svg"),
     ("eslint", "icons/file_icons/eslint.svg"),
-    ("font", "icons/file_icons/font.svg"),
+    ("font", "images/file_icons/font.svg"),
     ("fsharp", "icons/file_icons/fsharp.svg"),
     ("fsproj", "icons/file_icons/file.svg"),
     ("gitlab", "icons/file_icons/gitlab.svg"),
     ("gleam", "icons/file_icons/gleam.svg"),
     ("go", "icons/file_icons/go.svg"),
-    ("graphql", "icons/file_icons/graphql.svg"),
+    ("graphql", "images/file_icons/graphql.svg"),
     ("haskell", "icons/file_icons/haskell.svg"),
     ("hcl", "icons/file_icons/hcl.svg"),
     ("helm", "icons/file_icons/helm.svg"),
     ("heroku", "icons/file_icons/heroku.svg"),
-    ("html", "icons/file_icons/html.svg"),
-    ("image", "icons/file_icons/image.svg"),
-    ("ipynb", "icons/file_icons/jupyter.svg"),
-    ("java", "icons/file_icons/java.svg"),
-    ("javascript", "icons/file_icons/javascript.svg"),
-    ("json", "icons/file_icons/code.svg"),
+    ("html", "images/file_icons/html.svg"),
+    ("image", "images/file_icons/image.svg"),
+    ("ipynb", "images/file_icons/jupyter.svg"),
+    ("java", "images/file_icons/java.svg"),
+    ("javascript", "images/file_icons/javascript.svg"),
+    ("json", "images/file_icons/json.svg"),
     ("julia", "icons/file_icons/julia.svg"),
     ("kdl", "icons/file_icons/kdl.svg"),
-    ("kotlin", "icons/file_icons/kotlin.svg"),
+    ("kotlin", "images/file_icons/kotlin.svg"),
     ("lock", "icons/file_icons/lock.svg"),
     ("log", "icons/file_icons/info.svg"),
     ("lua", "icons/file_icons/lua.svg"),
     ("luau", "icons/file_icons/luau.svg"),
-    ("markdown", "icons/file_icons/book.svg"),
+    ("markdown", "images/file_icons/markdown.svg"),
     ("metal", "icons/file_icons/metal.svg"),
     ("nim", "icons/file_icons/nim.svg"),
     ("nix", "icons/file_icons/nix.svg"),
     ("ocaml", "icons/file_icons/ocaml.svg"),
     ("odin", "icons/file_icons/odin.svg"),
     ("phoenix", "icons/file_icons/phoenix.svg"),
-    ("php", "icons/file_icons/php.svg"),
+    ("php", "images/file_icons/php.svg"),
     ("prettier", "icons/file_icons/prettier.svg"),
     ("prisma", "icons/file_icons/prisma.svg"),
     ("puppet", "icons/file_icons/puppet.svg"),
-    ("python", "icons/file_icons/python.svg"),
+    ("python", "images/file_icons/python.svg"),
     ("r", "icons/file_icons/r.svg"),
     ("react", "icons/file_icons/react.svg"),
     ("roc", "icons/file_icons/roc.svg"),
     ("ruby", "icons/file_icons/ruby.svg"),
     ("rust", "icons/file_icons/rust.svg"),
     ("sass", "icons/file_icons/sass.svg"),
-    ("scala", "icons/file_icons/scala.svg"),
-    ("settings", "icons/file_icons/settings.svg"),
+    ("scala", "images/file_icons/scala.svg"),
+    ("settings", "images/file_icons/config.svg"),
     ("solidity", "icons/file_icons/file.svg"),
     ("storage", "icons/file_icons/database.svg"),
     ("stylelint", "icons/file_icons/javascript.svg"),
     ("surrealql", "icons/file_icons/surrealql.svg"),
     ("svelte", "icons/file_icons/html.svg"),
-    ("swift", "icons/file_icons/swift.svg"),
+    ("swift", "images/file_icons/swift.svg"),
     ("tcl", "icons/file_icons/tcl.svg"),
     ("template", "icons/file_icons/html.svg"),
-    ("terminal", "icons/file_icons/terminal.svg"),
-    ("terraform", "icons/file_icons/terraform.svg"),
-    ("toml", "icons/file_icons/toml.svg"),
-    ("typescript", "icons/file_icons/typescript.svg"),
+    ("terminal", "images/file_icons/shell.svg"),
+    ("terraform", "images/file_icons/terraform.svg"),
+    ("text", "images/file_icons/text.svg"),
+    ("toml", "images/file_icons/toml.svg"),
+    ("typescript", "images/file_icons/typescript.svg"),
     ("v", "icons/file_icons/v.svg"),
     ("vbproj", "icons/file_icons/file.svg"),
-    ("vcs", "icons/file_icons/git.svg"),
+    ("vcs", "images/file_icons/gitignore.svg"),
     ("video", "icons/file_icons/video.svg"),
     ("vs_sln", "icons/file_icons/file.svg"),
     ("vs_suo", "icons/file_icons/file.svg"),
-    ("vue", "icons/file_icons/vue.svg"),
+    ("vue", "images/file_icons/vue.svg"),
     ("vyper", "icons/file_icons/vyper.svg"),
     ("wgsl", "icons/file_icons/wgsl.svg"),
-    ("yaml", "icons/file_icons/yaml.svg"),
+    ("xml", "images/file_icons/xml.svg"),
+    ("yaml", "images/file_icons/yaml.svg"),
     ("zig", "icons/file_icons/zig.svg"),
 ];
 
@@ -423,16 +429,29 @@ fn icon_keys_by_association(
 /// The name of the default icon theme.
 pub const DEFAULT_ICON_THEME_NAME: &str = "Zed (Default)";
 
+const FOLDER_ICON: &str = "images/file_icons/folder.svg";
+// IntelliJ's GitHub plugin marks the `.github` folder (`GHIconProvider`).
+const GITHUB_FOLDER_ICON: &str = "images/file_icons/folder_github.svg";
+/// IntelliJ's icon for an excluded folder (`AllIcons.Modules.ExcludeRoot`).
+pub const EXCLUDED_FOLDER_ICON: &str = "images/file_icons/folder_excluded.svg";
+
 static DEFAULT_ICON_THEME: LazyLock<Arc<IconTheme>> = LazyLock::new(|| {
     Arc::new(IconTheme {
         id: "zed".into(),
         name: DEFAULT_ICON_THEME_NAME.into(),
         appearance: Appearance::Dark,
+        // IntelliJ's New UI draws the same folder whether it is expanded or not.
         directory_icons: DirectoryIcons {
-            collapsed: Some(SharedString::new_static("icons/file_icons/folder.svg")),
-            expanded: Some(SharedString::new_static("icons/file_icons/folder_open.svg")),
+            collapsed: Some(SharedString::new_static(FOLDER_ICON)),
+            expanded: Some(SharedString::new_static(FOLDER_ICON)),
         },
-        named_directory_icons: HashMap::default(),
+        named_directory_icons: HashMap::from_iter([(
+            ".github".to_string(),
+            DirectoryIcons {
+                collapsed: Some(SharedString::new_static(GITHUB_FOLDER_ICON)),
+                expanded: Some(SharedString::new_static(GITHUB_FOLDER_ICON)),
+            },
+        )]),
         chevron_icons: ChevronIcons {
             collapsed: Some(SharedString::new_static(
                 "icons/file_icons/chevron_right.svg",
@@ -457,4 +476,73 @@ static DEFAULT_ICON_THEME: LazyLock<Arc<IconTheme>> = LazyLock::new(|| {
 /// Returns the default icon theme.
 pub fn default_icon_theme() -> Arc<IconTheme> {
     DEFAULT_ICON_THEME.clone()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use super::*;
+
+    #[test]
+    fn every_full_colour_default_icon_ships_a_light_and_a_dark_svg() {
+        let theme = default_icon_theme();
+        let assets = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets");
+        let directory_icons = [&theme.directory_icons]
+            .into_iter()
+            .chain(theme.named_directory_icons.values())
+            .flat_map(|icons| [icons.collapsed.clone(), icons.expanded.clone()])
+            .flatten();
+        let paths = theme
+            .file_icons
+            .values()
+            .map(|icon| icon.path.clone())
+            .chain(directory_icons)
+            .chain([SharedString::new_static(EXCLUDED_FOLDER_ICON)])
+            .filter(|path| path.starts_with("images/"))
+            .collect::<Vec<_>>();
+        assert!(
+            paths.len() > 20,
+            "the default theme uses IntelliJ's full-colour file type icons: {paths:?}"
+        );
+        for path in paths {
+            let dark_path = path.replace(".svg", "_dark.svg");
+            for path in [path.as_ref(), dark_path.as_str()] {
+                assert!(assets.join(path).is_file(), "{path} is bundled in assets/");
+            }
+        }
+    }
+
+    #[test]
+    fn intellij_file_types_get_their_intellij_icons() {
+        let theme = default_icon_theme();
+        for (suffix, icon) in [
+            ("ts", "images/file_icons/typescript.svg"),
+            ("js", "images/file_icons/javascript.svg"),
+            ("json", "images/file_icons/json.svg"),
+            ("md", "images/file_icons/markdown.svg"),
+            ("yml", "images/file_icons/yaml.svg"),
+            ("gitignore", "images/file_icons/gitignore.svg"),
+            ("editorconfig", "images/file_icons/editorconfig.svg"),
+            ("xml", "images/file_icons/xml.svg"),
+            ("txt", "images/file_icons/text.svg"),
+            ("hbs", "icons/file_icons/html.svg"),
+            ("pdf", "icons/file_icons/book.svg"),
+        ] {
+            let key = theme
+                .file_suffixes
+                .get(suffix)
+                .unwrap_or_else(|| panic!("{suffix} has an icon key"));
+            assert_eq!(
+                theme.file_icons.get(key).map(|icon| icon.path.as_ref()),
+                Some(icon),
+                "the .{suffix} icon"
+            );
+        }
+        assert_eq!(
+            theme.directory_icons.collapsed.as_deref(),
+            theme.directory_icons.expanded.as_deref(),
+            "IntelliJ's New UI folder icon does not change when the folder opens"
+        );
+    }
 }

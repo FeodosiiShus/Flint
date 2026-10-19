@@ -3976,7 +3976,7 @@ fn window_and_layout_page() -> SettingsPage {
                 files: USER,
             }),
             SettingsPageItem::SettingItem(SettingItem {
-                title: "Show Search Button",
+                title: "Show Search Everywhere Field",
                 description: "Show the Search Everywhere field after the branch picker in the titlebar.",
                 field: Box::new(SettingField {
                     json_path: Some("title_bar.show_search_button"),

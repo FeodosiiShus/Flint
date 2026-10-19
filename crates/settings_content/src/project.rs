@@ -284,6 +284,23 @@ pub struct WorktreeSettingsContent {
     /// occurrence.
     pub file_scan_inclusions: Option<SplicingVec>,
 
+    /// Directories that stay in the project tree but whose contents are never
+    /// scanned, watched or searched, like IntelliJ's excluded folders. Mark a
+    /// directory with "Mark Directory as > Excluded" in the project panel to add
+    /// it here in the project settings.
+    ///
+    /// Default: []
+    ///
+    /// Use `"..."` to add patterns without repeating the inherited list. In
+    /// project settings, it extends the user or parent configuration value.
+    ///
+    /// ```json
+    /// {
+    ///   "excluded_directories": ["...", "node_modules"]
+    /// }
+    /// ```
+    pub excluded_directories: Option<SplicingVec>,
+
     /// When to scan content of linked directories.
     ///
     /// Default: expanded

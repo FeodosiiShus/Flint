@@ -914,7 +914,9 @@ impl PathInclusionMatcher {
         if !self.query.include_ignored() {
             return false;
         }
-        if worktree_settings.is_path_excluded(&entry.path) {
+        if worktree_settings.is_path_excluded(&entry.path)
+            || worktree_settings.is_directory_excluded(&entry.path)
+        {
             return false;
         }
         if !self.query.filters_path() {

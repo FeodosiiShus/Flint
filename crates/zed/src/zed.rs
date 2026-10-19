@@ -3094,27 +3094,27 @@ mod tests {
         cx.update(|window, _| window.refresh());
         cx.run_until_parked();
 
-        let search_button = cx
-            .debug_bounds(title_bar::SEARCH_BUTTON_DEBUG_SELECTOR)
-            .expect("project windows must paint the Search Everywhere button in the title bar");
+        let search_field = cx
+            .debug_bounds(title_bar::SEARCH_FIELD_DEBUG_SELECTOR)
+            .expect("project windows must paint the Search Everywhere field in the title bar");
         let title_bar_height =
             cx.update(|window, cx| ui::utils::platform_title_bar_height(window, cx));
         assert!(
-            search_button.size.width > px(0.) && search_button.size.height > px(0.),
-            "the Search Everywhere button must be visible, not collapsed to zero size"
+            search_field.size.width > px(0.) && search_field.size.height > px(0.),
+            "the Search Everywhere field must be visible, not collapsed to zero size"
         );
         assert!(
-            search_button.top() >= px(0.),
-            "the Search Everywhere button must not start above the title bar"
+            search_field.top() >= px(0.),
+            "the Search Everywhere field must not start above the title bar"
         );
         assert!(
-            search_button.bottom() <= title_bar_height,
-            "the Search Everywhere button must sit inside the title bar strip"
+            search_field.bottom() <= title_bar_height,
+            "the Search Everywhere field must sit inside the title bar strip"
         );
         #[cfg(target_os = "macos")]
         assert!(
-            search_button.left() >= px(ui::utils::TRAFFIC_LIGHT_PADDING),
-            "the Search Everywhere button must start after the traffic lights"
+            search_field.left() >= px(ui::utils::TRAFFIC_LIGHT_PADDING),
+            "the Search Everywhere field must start after the traffic lights"
         );
     }
 

@@ -807,6 +807,10 @@ impl PathMatcher {
         })
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.sources.is_empty() && self.glob.is_empty()
+    }
+
     pub fn sources(&self) -> impl Iterator<Item = &str> + Clone {
         self.sources.iter().map(|(source, ..)| source.as_str())
     }
@@ -1459,7 +1463,9 @@ mod tests {
             });
             assert_eq!(matcher.path_style, path_style);
             assert_eq!(matcher.sources().count(), 0);
+            assert!(matcher.is_empty());
             assert!(!matcher.is_match(RelPath::from_unix_str("file.rs").unwrap()));
+            assert!(!expected.is_empty());
         }
     }
 

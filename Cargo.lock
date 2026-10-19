@@ -7181,6 +7181,7 @@ dependencies = [
  "markdown",
  "menu",
  "notifications",
+ "paths",
  "pretty_assertions",
  "project",
  "rayon",

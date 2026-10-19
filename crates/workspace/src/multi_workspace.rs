@@ -12,6 +12,7 @@ pub use settings::SidebarSide;
 use std::cell::Cell;
 use std::path::PathBuf;
 use std::rc::Rc;
+use theme::ClientDecorationsExt as _;
 use ui::prelude::*;
 use util::ResultExt;
 use util::path_list::PathList;
@@ -1743,6 +1744,8 @@ impl Sidebar for TestSidebar {
     }
 }
 
+pub const WINDOW_FRAME_DEBUG_SELECTOR: &str = "window_frame";
+
 impl Render for MultiWorkspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let multi_workspace_enabled = self.multi_workspace_enabled();
@@ -1801,13 +1804,6 @@ impl Render for MultiWorkspace {
                     .h_full()
                     .w(sidebar_width)
                     .flex_shrink_0()
-                    .child(ui::background_image_layer(
-                        ui::BackgroundImageTarget::EditorAndTools,
-                        ui::BackgroundImageArea::Window,
-                        gpui::transparent_black(),
-                        false,
-                        gpui::Corners::default(),
-                    ))
                     .child(sidebar_handle.to_any())
                     .child(resize_handle)
                     .into_any_element()
@@ -1825,14 +1821,38 @@ impl Render for MultiWorkspace {
         let ui_font = theme_settings::setup_ui_font(window, cx);
         let text_color = cx.theme().colors().text;
 
+        // Like IntelliJ's frame background painter, the window paints the frame colour and the
+        // Editor and Tools image once behind the whole layout, so no space between or around
+        // the islands can show the window's black clear colour, whatever the window size.
+        let frame_background = cx.theme().colors().background;
+        let client_tiling = match window.window_decorations() {
+            gpui::Decorations::Server => None,
+            gpui::Decorations::Client { tiling } => Some(tiling),
+        };
+        let frame_image = ui::background_image_layer(
+            ui::BackgroundImageTarget::EditorAndTools,
+            ui::BackgroundImageArea::Window,
+            frame_background,
+            false,
+            client_tiling
+                .map(theme::client_decoration_corner_radii)
+                .unwrap_or_default(),
+        );
+
         let workspace = self.workspace().clone();
         let workspace_key_context = workspace.update(cx, |workspace, cx| workspace.key_context(cx));
         let root = workspace.update(cx, |workspace, cx| workspace.actions(h_flex(), window, cx));
 
         client_side_decorations(
             root.key_context(workspace_key_context)
+                .debug_selector(|| WINDOW_FRAME_DEBUG_SELECTOR.into())
                 .relative()
                 .size_full()
+                .bg(frame_background)
+                .when_some(client_tiling, |root, tiling| {
+                    root.rounded_client_corners(tiling)
+                })
+                .child(frame_image)
                 .font(ui_font)
                 .text_color(text_color)
                 .on_action(cx.listener(Self::close_window))

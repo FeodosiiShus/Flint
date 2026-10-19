@@ -14307,6 +14307,157 @@ mod tests {
     }
 
     #[gpui::test]
+    async fn test_the_frame_covers_the_whole_window_in_every_layout_and_size(
+        cx: &mut TestAppContext,
+    ) {
+        let (workspace, [_, _, right_panel], cx) = tool_window_bar_test_workspace(cx).await;
+        let set_layout = |islands: bool, tool_window_bars: bool, cx: &mut VisualTestContext| {
+            cx.update(|window, cx| {
+                SettingsStore::update_global(cx, |store, cx| {
+                    store.update_user_settings(cx, |settings| {
+                        settings.workspace.islands.get_or_insert_default().enabled = Some(islands);
+                        settings
+                            .workspace
+                            .tool_window_bars
+                            .get_or_insert_default()
+                            .show = Some(tool_window_bars);
+                    });
+                });
+                window.refresh();
+            });
+            cx.run_until_parked();
+        };
+        let assert_frame_covers_the_window = |layout: &str, cx: &mut VisualTestContext| {
+            let viewport = cx.update(|window, _| window.viewport_size());
+            let window_bounds = Bounds::new(point(px(0.), px(0.)), viewport);
+            assert_eq!(
+                cx.debug_bounds(crate::multi_workspace::WINDOW_FRAME_DEBUG_SELECTOR),
+                Some(window_bounds),
+                "the window frame spans the whole {viewport:?} window ({layout})"
+            );
+            let (scale_factor, quads, frame_fill) = cx.update(|window, cx| {
+                (
+                    window.scale_factor(),
+                    window.painted_quads(),
+                    gpui::Background::from(cx.theme().colors().background),
+                )
+            });
+            let window_bounds = window_bounds.scale(scale_factor);
+            assert!(
+                quads
+                    .iter()
+                    .any(|quad| { quad.background == frame_fill && quad.bounds == window_bounds }),
+                "the frame colour is painted under the whole {viewport:?} window, so no gap \
+                 between or around the islands shows the window's black clear colour ({layout})"
+            );
+        };
+
+        workspace.update_in(cx, |workspace, window, cx| {
+            workspace.remove_panel(&right_panel, window, cx);
+        });
+        cx.run_until_parked();
+        for (islands, tool_window_bars) in [(true, true), (true, false), (false, true)] {
+            set_layout(islands, tool_window_bars, cx);
+            for window_size in [
+                size(px(800.), px(600.)),
+                size(px(1512.), px(945.)),
+                size(px(2560.), px(1440.)),
+                size(px(3024.), px(1890.)),
+            ] {
+                cx.simulate_resize(window_size);
+                cx.run_until_parked();
+                assert_frame_covers_the_window(
+                    &format!("islands {islands}, tool window bars {tool_window_bars}"),
+                    cx,
+                );
+            }
+        }
+
+        cx.update(|window, cx| {
+            let images = ui::WindowBackgroundImages {
+                editor_and_tools: Some(ui::BackgroundImagePaintLayer {
+                    image: Arc::new(gpui::RenderImage::new(vec![image::Frame::new(
+                        image::RgbaImage::new(4, 4),
+                    )])),
+                    mode: ui::BackgroundImageMode::Scale,
+                    alignment: ui::BackgroundImageAlignment::Center,
+                }),
+                empty_frame: None,
+            };
+            ui::BackgroundImageLayers::set_window(window.window_handle().window_id(), images, cx);
+            window.refresh();
+        });
+        cx.run_until_parked();
+        let (scale_factor, viewport, sprites) = cx.update(|window, _| {
+            (
+                window.scale_factor(),
+                window.viewport_size(),
+                window.painted_polychrome_sprites(),
+            )
+        });
+        for (point, label) in [
+            (
+                point(viewport.width - px(1.), viewport.height / 2.),
+                "right edge",
+            ),
+            (
+                point(viewport.width / 2., viewport.height - px(1.)),
+                "bottom edge",
+            ),
+            (point(px(1.), viewport.height / 2.), "left edge"),
+            (
+                point(viewport.width - px(1.), viewport.height - px(1.)),
+                "bottom right corner",
+            ),
+        ] {
+            let point = point.scale(scale_factor);
+            assert!(
+                sprites.iter().any(|sprite| {
+                    sprite.bounds.contains(&point) && sprite.content_mask.bounds.contains(&point)
+                }),
+                "the Editor and Tools image reaches the {label}, so it covers the whole window"
+            );
+        }
+    }
+
+    #[gpui::test]
+    async fn test_open_tool_window_shows_the_background_image(cx: &mut TestAppContext) {
+        let (workspace, _panels, cx) = tool_window_bar_test_workspace(cx).await;
+        workspace.update_in(cx, |workspace, window, cx| {
+            workspace.toggle_dock(DockPosition::Left, window, cx);
+        });
+        cx.update(|window, cx| {
+            let images = ui::WindowBackgroundImages {
+                editor_and_tools: Some(ui::BackgroundImagePaintLayer {
+                    image: Arc::new(gpui::RenderImage::new(vec![image::Frame::new(
+                        image::RgbaImage::new(4, 4),
+                    )])),
+                    mode: ui::BackgroundImageMode::Scale,
+                    alignment: ui::BackgroundImageAlignment::Center,
+                }),
+                empty_frame: None,
+            };
+            ui::BackgroundImageLayers::set_window(window.window_handle().window_id(), images, cx);
+            window.refresh();
+        });
+        cx.run_until_parked();
+
+        let tool_window = cx
+            .debug_bounds("tool_window_left")
+            .expect("the left tool window is open");
+        let scale_factor = cx.update(|window, _| window.scale_factor());
+        let tool_window_center = tool_window.center().scale(scale_factor);
+        let sprites = cx.update(|window, _| window.painted_polychrome_sprites());
+        assert!(
+            sprites.iter().any(|sprite| {
+                sprite.bounds.contains(&tool_window_center)
+                    && sprite.content_mask.bounds.contains(&tool_window_center)
+            }),
+            "an open tool window shows the Editor and Tools background image, like IntelliJ"
+        );
+    }
+
+    #[gpui::test]
     async fn tool_window_bar_buttons_touch_the_stripe_edges_like_intellij(cx: &mut TestAppContext) {
         let (_workspace, _panels, cx) = tool_window_bar_test_workspace(cx).await;
 

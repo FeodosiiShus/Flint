@@ -212,7 +212,7 @@ mod tests {
             assert_eq!(icon_only.chevron, None);
             assert_eq!(
                 icon_only.icon,
-                Some("icons/file_icons/folder.svg".into()),
+                Some("images/file_icons/folder.svg".into()),
                 "`icon` should draw the folder icon and no chevron"
             );
 
@@ -232,7 +232,7 @@ mod tests {
                 both.chevron,
                 Some("icons/file_icons/chevron_right.svg".into())
             );
-            assert_eq!(both.icon, Some("icons/file_icons/folder.svg".into()));
+            assert_eq!(both.icon, Some("images/file_icons/folder.svg".into()));
         });
     }
 
@@ -251,7 +251,7 @@ mod tests {
                 collapsed.chevron,
                 Some("icons/file_icons/chevron_right.svg".into())
             );
-            assert_eq!(collapsed.icon, Some("icons/file_icons/folder.svg".into()));
+            assert_eq!(collapsed.icon, Some("images/file_icons/folder.svg".into()));
 
             let expanded = FileIcons::get_folder_indicators(FolderIndicator::Both, true, &path, cx);
             assert_eq!(
@@ -260,7 +260,8 @@ mod tests {
             );
             assert_eq!(
                 expanded.icon,
-                Some("icons/file_icons/folder_open.svg".into())
+                Some("images/file_icons/folder.svg".into()),
+                "IntelliJ's New UI keeps the same folder icon for an expanded folder"
             );
         });
     }

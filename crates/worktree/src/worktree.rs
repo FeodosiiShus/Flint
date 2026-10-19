@@ -5395,6 +5395,13 @@ impl BackgroundScanner {
                 log::error!("skipping excluded directory {:?}", job.path);
                 return Ok(());
             }
+            if self.settings.is_directory_excluded(&job.path) {
+                log::debug!(
+                    "not reading the contents of excluded directory {:?}",
+                    job.path
+                );
+                return Ok(());
+            }
             log::trace!("scanning directory {:?}", job.path);
             root_abs_path = snapshot.abs_path().clone();
             root_char_bag = snapshot.root_char_bag;
@@ -5632,7 +5639,11 @@ impl BackgroundScanner {
                     log::debug!("defer scanning directory {:?}", entry.path);
                     entry.kind = EntryKind::UnloadedDir;
                     new_jobs[job_ix] = None;
-                    if !entry.is_ignored
+                    // An ignored directory keeps the children it loaded on demand, but an
+                    // excluded one drops them along with their watches.
+                    let drops_loaded_children =
+                        !entry.is_ignored || self.settings.is_directory_excluded(&entry.path);
+                    if drops_loaded_children
                         && !entry.is_external
                         && state.snapshot.child_entries(&entry.path).next().is_some()
                     {
@@ -6263,6 +6274,9 @@ impl BackgroundScanner {
         entry: &Entry,
         in_repo: bool,
     ) -> bool {
+        if self.settings.is_directory_excluded(&entry.path) {
+            return false;
+        }
         let beyond_scan_depth =
             !in_repo && is_beyond_scan_depth(self.settings.file_scan_depth, &entry.path);
         let scannable = state.scanning_enabled

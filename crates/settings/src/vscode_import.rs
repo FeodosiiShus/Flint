@@ -990,6 +990,7 @@ impl VsCodeSettings {
             file_scan_exclusions: Self::enabled_patterns(self.read_value("files.exclude")),
             // `files.watcherInclude` adds watch roots, not Git-ignore overrides
             file_scan_inclusions: None,
+            excluded_directories: None,
             scan_symlinks: None,
             private_files: None,
             hidden_files: None,

@@ -12,6 +12,7 @@ pub struct WorktreeSettings {
     pub prevent_sharing_in_public_channels: bool,
     pub file_scan_exclusions: PathMatcher,
     pub file_scan_inclusions: PathMatcher,
+    pub excluded_directories: PathMatcher,
     /// This field contains all ancestors of the `file_scan_inclusions`. It's used to
     /// determine whether to terminate worktree scanning for a given dir.
     pub parent_dir_scan_inclusions: PathMatcher,
@@ -28,9 +29,25 @@ impl WorktreeSettings {
             .any(|ancestor| self.private_files.is_match(ancestor))
     }
 
+    /// Whether the worktree skips `path` entirely: it matches `file_scan_exclusions`, or it lies
+    /// inside one of the `excluded_directories`.
     pub fn is_path_excluded(&self, path: &RelPath) -> bool {
         path.ancestors()
             .any(|ancestor| self.file_scan_exclusions.is_match(ancestor))
+            || path
+                .ancestors()
+                .skip(1)
+                .any(|ancestor| self.is_directory_excluded(ancestor))
+    }
+
+    /// Whether `path` is one of the `excluded_directories`, which stay in the tree without their
+    /// contents.
+    pub fn is_directory_excluded(&self, path: &RelPath) -> bool {
+        // Checked for every scanned path, so skip the matcher's allocations when nothing is
+        // excluded, which is the default.
+        !self.excluded_directories.is_empty()
+            && !path.is_empty()
+            && self.excluded_directories.is_match(path)
     }
 
     pub fn is_path_always_included(&self, path: &RelPath, is_dir: bool) -> bool {
@@ -60,6 +77,7 @@ impl Settings for WorktreeSettings {
         let worktree = content.project.worktree.clone();
         let file_scan_exclusions = worktree.file_scan_exclusions.unwrap().0;
         let file_scan_inclusions = worktree.file_scan_inclusions.unwrap().0;
+        let excluded_directories = worktree.excluded_directories.unwrap_or_default().0;
         let private_files = worktree.private_files.unwrap().0;
         let hidden_files = worktree.hidden_files.unwrap().0;
         let read_only_files = worktree.read_only_files.unwrap_or_default().0;
@@ -70,6 +88,7 @@ impl Settings for WorktreeSettings {
         Self {
             prevent_sharing_in_public_channels: worktree.prevent_sharing_in_public_channels,
             file_scan_exclusions: valid_path_matchers(file_scan_exclusions, "file_scan_exclusions"),
+            excluded_directories: valid_path_matchers(excluded_directories, "excluded_directories"),
             parent_dir_scan_inclusions,
             file_scan_inclusions,
             private_files: valid_path_matchers(private_files, "private_files"),

@@ -139,6 +139,9 @@ enum IconSource {
     External(Arc<Path>),
     /// An SVG not embedded in the Zed binary.
     ExternalSvg(SharedString),
+    /// A full-colour image embedded in the binary, drawn with its own colours instead of the
+    /// icon colour, like IntelliJ's file type icons.
+    EmbeddedImage(SharedString),
 }
 
 #[derive(Clone, IntoElement, RegisterComponent)]
@@ -160,12 +163,15 @@ impl Icon {
     }
 
     /// Create an icon from a path. Uses a heuristic to determine if it's embedded or external:
-    /// - Paths starting with "icons/" are treated as embedded SVGs
+    /// - Paths starting with "icons/" are treated as embedded SVGs tinted with the icon colour
+    /// - Paths starting with "images/" are treated as embedded full-colour images
     /// - Other paths are treated as external raster images (from icon themes)
     pub fn from_path(path: impl Into<SharedString>) -> Self {
         let path = path.into();
         let source = if path.starts_with("icons/") {
             IconSource::Embedded(path)
+        } else if path.starts_with(EMBEDDED_IMAGE_PREFIX) {
+            IconSource::EmbeddedImage(path)
         } else {
             IconSource::External(Arc::from(PathBuf::from(path.as_ref())))
         };
@@ -238,7 +244,27 @@ impl RenderOnce for Icon {
                 .flex_none()
                 .text_color(self.color.color(cx))
                 .into_any_element(),
+            IconSource::EmbeddedImage(path) => img(themed_embedded_image_path(
+                &path,
+                cx.theme().appearance().is_light(),
+            ))
+            .size(self.size)
+            .flex_none()
+            .into_any_element(),
         }
+    }
+}
+
+const EMBEDDED_IMAGE_PREFIX: &str = "images/";
+
+/// Like IntelliJ's icons, each bundled full-colour SVG has a `_dark` twin drawn for dark themes.
+fn themed_embedded_image_path(path: &SharedString, is_light: bool) -> SharedString {
+    if is_light {
+        return path.clone();
+    }
+    match path.strip_suffix(".svg") {
+        Some(stem) => format!("{stem}_dark.svg").into(),
+        None => path.clone(),
     }
 }
 
@@ -355,5 +381,36 @@ impl Component for Icon {
                 )]),
             ])
             .into_any_element()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn embedded_images_use_their_dark_twin_on_dark_themes() {
+        let path = SharedString::new_static("images/file_icons/json.svg");
+        assert_eq!(themed_embedded_image_path(&path, true), path);
+        assert_eq!(
+            themed_embedded_image_path(&path, false),
+            "images/file_icons/json_dark.svg"
+        );
+    }
+
+    #[test]
+    fn from_path_draws_bundled_images_in_their_own_colours() {
+        assert!(matches!(
+            Icon::from_path("icons/file_icons/chevron_right.svg").source,
+            IconSource::Embedded(_)
+        ));
+        assert!(matches!(
+            Icon::from_path("images/file_icons/json.svg").source,
+            IconSource::EmbeddedImage(_)
+        ));
+        assert!(matches!(
+            Icon::from_path("/extensions/icon-theme/icons/json.svg").source,
+            IconSource::External(_)
+        ));
     }
 }
