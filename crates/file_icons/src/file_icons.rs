@@ -196,7 +196,7 @@ impl FileIcons {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
 
     #[gpui::test]
     fn test_folder_indicators_per_setting(cx: &mut gpui::TestAppContext) {
@@ -262,6 +262,39 @@ mod tests {
                 expanded.icon,
                 Some("images/file_icons/folder.svg".into()),
                 "IntelliJ's New UI keeps the same folder icon for an expanded folder"
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn test_github_folder_gets_intellij_github_folder_icon(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| {
+            theme::init(theme::LoadThemes::JustBase, cx);
+        });
+
+        cx.update(|cx| {
+            for path in [".github", "project/.github"] {
+                assert_eq!(
+                    FileIcons::get_folder_indicators(
+                        FolderIndicator::Both,
+                        false,
+                        Path::new(path),
+                        cx
+                    )
+                    .icon,
+                    Some("images/file_icons/folder_github.svg".into()),
+                    "{path}"
+                );
+            }
+            assert_eq!(
+                FileIcons::get_folder_indicators(
+                    FolderIndicator::Both,
+                    false,
+                    Path::new("src"),
+                    cx
+                )
+                .icon,
+                Some("images/file_icons/folder.svg".into())
             );
         });
     }
