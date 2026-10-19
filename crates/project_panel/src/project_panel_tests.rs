@@ -14165,3 +14165,191 @@ fn painted_pill_color(
         .as_solid()
         .expect("the selection pill has a solid background")
 }
+
+/// Renders a real workspace with the Metal renderer, so these checks see the pixels a user sees.
+#[cfg(target_os = "macos")]
+mod background_image_pixels {
+    use super::*;
+    use gpui::{HeadlessAppContext, NoopTextSystem, UpdateGlobal as _, px, size};
+    use pretty_assertions::assert_eq;
+    use settings::{ThemeColorsContent, ThemeStyleContent};
+
+    const FRAME: [u8; 3] = [255, 0, 0];
+    const PANEL: [u8; 3] = [0, 0, 255];
+    const IMAGE: [u8; 3] = [0, 255, 0];
+    const IMAGE_ALPHA: u8 = 128;
+    const IMAGE_SIDE: u32 = 4096;
+    const TOLERANCE: u8 = 6;
+
+    fn over(image: [u8; 3], surface: [u8; 3]) -> [u8; 3] {
+        let alpha = f32::from(IMAGE_ALPHA) / 255.;
+        std::array::from_fn(|channel| {
+            (f32::from(image[channel]) * alpha + f32::from(surface[channel]) * (1. - alpha)).round()
+                as u8
+        })
+    }
+
+    fn near(actual: [u8; 3], expected: [u8; 3]) -> bool {
+        actual
+            .iter()
+            .zip(expected)
+            .all(|(actual, expected)| actual.abs_diff(expected) <= TOLERANCE)
+    }
+
+    fn render_workspace(window_size: gpui::Size<Pixels>) -> image::RgbaImage {
+        let mut cx = HeadlessAppContext::with_platform(
+            Arc::new(NoopTextSystem::new()),
+            Arc::new(()),
+            gpui_platform::current_headless_renderer,
+        );
+        let app_state = cx.update(|cx| {
+            let app_state = AppState::test(cx);
+            crate::init(cx);
+            SettingsStore::update_global(cx, |store, cx| {
+                store.update_user_settings(cx, |settings| {
+                    settings.theme.experimental_theme_overrides = Some(ThemeStyleContent {
+                        colors: ThemeColorsContent {
+                            background: Some("#ff0000".into()),
+                            panel_background: Some("#0000ff".into()),
+                            ..Default::default()
+                        },
+                        ..Default::default()
+                    });
+                });
+            });
+            theme_settings::reload_theme(cx);
+            app_state
+        });
+        let fs = app_state.fs.as_fake();
+        cx.foreground_executor()
+            .spawn(async move {
+                fs.insert_tree(
+                    path!("/root"),
+                    json!({ "src": { "main.rs": "" }, "README.md": "" }),
+                )
+                .await;
+            })
+            .detach();
+        cx.run_until_parked();
+        let project = cx.update(|cx| {
+            let project = Project::local(
+                app_state.client.clone(),
+                app_state.node_runtime.clone(),
+                app_state.user_store.clone(),
+                app_state.languages.clone(),
+                app_state.fs.clone(),
+                None,
+                project::LocalProjectFlags::default(),
+                cx,
+            );
+            project
+                .update(cx, |project, cx| {
+                    project.find_or_create_worktree(path!("/root"), true, cx)
+                })
+                .detach_and_log_err(cx);
+            project
+        });
+        cx.run_until_parked();
+
+        let window = cx
+            .open_window(window_size, |window, cx| {
+                cx.new(|cx| MultiWorkspace::test_new(project, window, cx))
+            })
+            .expect("the workspace window opens");
+        cx.run_until_parked();
+        cx.update(|cx| {
+            window.update(cx, |multi_workspace, window, cx| {
+                multi_workspace.workspace().update(cx, |workspace, cx| {
+                    let panel = ProjectPanel::new(workspace, window, cx);
+                    workspace.add_panel(panel, window, cx);
+                    workspace.open_panel::<ProjectPanel>(window, cx);
+                });
+            })
+        })
+        .expect("the window is open");
+        cx.run_until_parked();
+
+        // As large as the window in device pixels, like the images Flint scales on load: a tiny
+        // image stretched across the window blends its edge texels with the atlas around it.
+        let [red, green, blue] = IMAGE;
+        let image = image::RgbaImage::from_pixel(
+            IMAGE_SIDE,
+            IMAGE_SIDE,
+            image::Rgba([blue, green, red, IMAGE_ALPHA]),
+        );
+        cx.update(|cx| {
+            window.update(cx, |_, window, cx| {
+                let images = ui::WindowBackgroundImages {
+                    editor_and_tools: Some(ui::BackgroundImagePaintLayer {
+                        image: Arc::new(gpui::RenderImage::new(vec![image::Frame::new(image)])),
+                        mode: ui::BackgroundImageMode::Scale,
+                        alignment: ui::BackgroundImageAlignment::Center,
+                    }),
+                    empty_frame: None,
+                };
+                ui::BackgroundImageLayers::set_window(
+                    window.window_handle().window_id(),
+                    images,
+                    cx,
+                );
+                window.refresh();
+            })
+        })
+        .expect("the window is open");
+        cx.run_until_parked();
+        cx.update_window(window.into(), |_, window, cx| window.draw(cx).clear(cx))
+            .expect("the window draws");
+        cx.capture_screenshot(window.into())
+            .expect("the headless renderer captures the window")
+    }
+
+    #[test]
+    fn pixels_background_image_shows_through_the_project_panel_and_reaches_every_window_edge() {
+        for window_size in [size(px(1000.), px(700.)), size(px(1728.), px(1080.))] {
+            let screenshot = render_workspace(window_size);
+            let pixel = |column: u32, row: u32| {
+                let [red, green, blue, _] = screenshot.get_pixel(column, row).0;
+                [red, green, blue]
+            };
+            let (width, height) = screenshot.dimensions();
+            let pixels = (0..height)
+                .flat_map(|row| (0..width).map(move |column| (column, row)))
+                .map(|(column, row)| pixel(column, row))
+                .collect::<Vec<_>>();
+            let count = |expected: [u8; 3]| pixels.iter().filter(|&&p| near(p, expected)).count();
+
+            assert_eq!(
+                count([0, 0, 0]),
+                0,
+                "no part of the {window_size:?} window is left unpainted and black"
+            );
+            assert_eq!(
+                count(PANEL),
+                0,
+                "no part of the project panel shows its bare colour without the background image ({window_size:?})"
+            );
+            let panel_with_image = count(over(IMAGE, PANEL));
+            assert!(
+                panel_with_image * 10 > pixels.len(),
+                "the project panel shows the background image over its colour, like the editor \
+                 ({panel_with_image} of {} pixels, {window_size:?})",
+                pixels.len()
+            );
+            let frame_with_image = over(IMAGE, FRAME);
+            for row in 0..height {
+                assert!(
+                    near(pixel(width - 1, row), frame_with_image),
+                    "the right edge shows the frame and the background image at row {row}: {:?} ({window_size:?})",
+                    pixel(width - 1, row)
+                );
+            }
+            for column in 0..width {
+                assert!(
+                    near(pixel(column, height - 1), frame_with_image),
+                    "the bottom edge shows the frame and the background image at column {column}: {:?} ({window_size:?})",
+                    pixel(column, height - 1)
+                );
+            }
+        }
+    }
+}

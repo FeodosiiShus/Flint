@@ -7175,6 +7175,8 @@ dependencies = [
  "git_ui",
  "git_ui_core",
  "gpui",
+ "gpui_platform",
+ "image",
  "itertools 0.14.0",
  "language",
  "log",
