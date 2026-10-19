@@ -167,6 +167,7 @@ pub use semantic_tokens::{
     BufferSemanticToken, BufferSemanticTokens, SemanticTokenStylizer, TokenType,
 };
 
+use worktree::IdeExcludedDirectories;
 pub use worktree::{
     Entry, EntryKind, FS_WATCH_LATENCY, File, LocalWorktree, PathChange, ProjectEntryId,
     UpdatedEntriesSet, UpdatedGitRepositoriesSet, Worktree, WorktreeId, WorktreeSettings,
@@ -349,6 +350,9 @@ pub struct LocalLspStore {
     _maintain_server_activation: Task<()>,
     registered_buffers: HashMap<BufferId, usize>,
     buffers_opened_in_servers: HashMap<BufferId, HashSet<LanguageServerId>>,
+    /// Open buffers kept away from language servers because their file is in an excluded
+    /// directory, so they can be opened in the servers once the directory is no longer excluded.
+    buffers_in_excluded_directories: HashSet<BufferId>,
     buffer_pull_diagnostics_result_ids: HashMap<
         LanguageServerId,
         HashMap<Option<SharedString>, HashMap<PathBuf, Option<SharedString>>>,
@@ -3143,6 +3147,21 @@ impl LocalLspStore {
         }
 
         let abs_path = file.abs_path(cx);
+        // Like IntelliJ's LSP client, a file in an excluded directory is never opened in a
+        // language server, so no linter or type checker looks at it.
+        if file
+            .worktree
+            .read(cx)
+            .is_path_in_excluded_directory(&file.path)
+        {
+            log::debug!(
+                "not registering {} with language servers because it is in an excluded directory",
+                abs_path.display(),
+            );
+            self.buffers_in_excluded_directories.insert(buffer_id);
+            return;
+        }
+        self.buffers_in_excluded_directories.remove(&buffer_id);
         if let Some((longest_line_length, maximum_line_length)) =
             Self::language_server_line_length_limit_exceeded(buffer, cx)
         {
@@ -4858,6 +4877,10 @@ impl LspStore {
             .detach();
         cx.observe_global::<SettingsStore>(Self::on_settings_changed)
             .detach();
+        cx.observe_global::<IdeExcludedDirectories>(|this, cx| {
+            this.schedule_excluded_directories_refresh(cx)
+        })
+        .detach();
         let binary_status_task = subscribe_to_binary_statuses(&languages, cx);
 
         let _maintain_workspace_config = {
@@ -4916,6 +4939,7 @@ impl LspStore {
                 toolchain_store,
                 registered_buffers: HashMap::default(),
                 buffers_opened_in_servers: HashMap::default(),
+                buffers_in_excluded_directories: HashSet::default(),
                 buffer_pull_diagnostics_result_ids: HashMap::default(),
                 workspace_pull_diagnostics_result_ids: HashMap::default(),
                 restricted_worktrees_tasks: HashMap::default(),
@@ -5291,6 +5315,7 @@ impl LspStore {
                         local.registered_buffers.remove(&buffer_id);
 
                         local.buffers_opened_in_servers.remove(&buffer_id);
+                        local.buffers_in_excluded_directories.remove(&buffer_id);
                         if let Some(file) = File::from_dyn(buffer.0.read(cx).file()).cloned() {
                             local.unregister_old_buffer_from_language_servers(&buffer.0, &file, cx);
 
@@ -6271,6 +6296,7 @@ impl LspStore {
 
     fn on_settings_changed(&mut self, cx: &mut Context<Self>) {
         self.request_workspace_config_refresh();
+        self.schedule_excluded_directories_refresh(cx);
 
         let new_semantic_token_rules = crate::project_settings::ProjectSettings::get_global(cx)
             .global_lsp_settings
@@ -6302,6 +6328,80 @@ impl LspStore {
         }
 
         cx.notify();
+    }
+
+    /// Runs after the worktrees have applied the change, since they decide what is excluded.
+    fn schedule_excluded_directories_refresh(&mut self, cx: &mut Context<Self>) {
+        if self.as_local().is_some() {
+            let this = cx.weak_entity();
+            cx.defer(move |cx| {
+                this.update(cx, |this, cx| this.refresh_excluded_directories(cx))
+                    .ok();
+            });
+        }
+    }
+
+    /// Like IntelliJ's LSP client, closes the files that became excluded in the language servers
+    /// and drops their diagnostics, and opens the files that are no longer excluded.
+    fn refresh_excluded_directories(&mut self, cx: &mut Context<Self>) {
+        let buffers = self.buffer_store.read(cx).buffers().collect::<Vec<_>>();
+        let Some(local) = self.as_local_mut() else {
+            return;
+        };
+        for buffer in buffers {
+            let buffer_id = buffer.read(cx).remote_id();
+            if !local.registered_buffers.contains_key(&buffer_id) {
+                continue;
+            }
+            let Some(file) = File::from_dyn(buffer.read(cx).file())
+                .filter(|file| file.is_local())
+                .cloned()
+            else {
+                continue;
+            };
+            let excluded = file
+                .worktree
+                .read(cx)
+                .is_path_in_excluded_directory(&file.path);
+            let was_excluded = local.buffers_in_excluded_directories.contains(&buffer_id);
+            if excluded && !was_excluded {
+                if let Some(uri) = file_path_to_lsp_url(&file.abs_path(cx)).log_err() {
+                    local.unregister_buffer_from_language_servers(&buffer, &uri, cx);
+                }
+                local.buffers_in_excluded_directories.insert(buffer_id);
+            } else if !excluded && was_excluded {
+                local.register_buffer_with_language_servers(&buffer, HashSet::default(), cx);
+            }
+        }
+
+        let worktree_store = local.worktree_store.read(cx);
+        let stale_diagnostics = local
+            .diagnostics
+            .iter()
+            .filter_map(|(worktree_id, diagnostics_by_path)| {
+                let worktree = worktree_store.worktree_for_id(*worktree_id, cx)?;
+                let worktree = worktree.read(cx);
+                Some(
+                    diagnostics_by_path
+                        .iter()
+                        .filter(|(path, _)| worktree.is_path_in_excluded_directory(path))
+                        .map(|(path, diagnostics_by_server)| {
+                            (
+                                worktree.absolutize(path),
+                                diagnostics_by_server
+                                    .iter()
+                                    .map(|(server_id, _)| *server_id)
+                                    .collect::<Vec<_>>(),
+                            )
+                        })
+                        .collect::<Vec<_>>(),
+                )
+            })
+            .flatten()
+            .collect::<Vec<_>>();
+        for (abs_path, server_ids) in stale_diagnostics {
+            self.clear_path_diagnostics_for_servers(abs_path, server_ids, |_, _, _| false, cx);
+        }
     }
 
     fn refresh_server_tree(&mut self, cx: &mut Context<Self>) {
@@ -9988,6 +10088,14 @@ impl LspStore {
             };
 
             let worktree_id = worktree.read(cx).id();
+            // Nothing in an excluded directory is linted or type checked, so a server's
+            // diagnostics for such a file are dropped, together with any it reported before.
+            let in_excluded_directory = worktree
+                .read(cx)
+                .is_path_in_excluded_directory(&relative_path);
+            if in_excluded_directory {
+                update.diagnostics.diagnostics.clear();
+            }
             let project_path = ProjectPath {
                 worktree_id,
                 path: relative_path,
@@ -10001,7 +10109,7 @@ impl LspStore {
                 let reused_diagnostics = buffer
                     .buffer_diagnostics(Some(server_id))
                     .iter()
-                    .filter(|v| merge(&document_uri, &v.diagnostic, cx))
+                    .filter(|v| !in_excluded_directory && merge(&document_uri, &v.diagnostic, cx))
                     .map(|v| {
                         (*v).clone().map_coordinates(|range| {
                             Unclipped(range.start.to_point_utf16(&snapshot))
@@ -10037,7 +10145,7 @@ impl LspStore {
                     })
                     .into_iter()
                     .flatten()
-                    .filter(|v| merge(&document_uri, &v.diagnostic, cx));
+                    .filter(|v| !in_excluded_directory && merge(&document_uri, &v.diagnostic, cx));
 
                 update
                     .diagnostics
@@ -13353,7 +13461,12 @@ impl LspStore {
                     Some(language) => language,
                     None => continue,
                 };
-                if LocalLspStore::language_server_line_length_limit_exceeded(buffer, cx).is_some() {
+                if LocalLspStore::language_server_line_length_limit_exceeded(buffer, cx).is_some()
+                    || file
+                        .worktree
+                        .read(cx)
+                        .is_path_in_excluded_directory(&file.path)
+                {
                     continue;
                 }
 

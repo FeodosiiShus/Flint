@@ -884,6 +884,14 @@ impl Worktree {
         }
     }
 
+    /// Whether `path` lies inside an excluded directory.
+    pub fn is_path_in_excluded_directory(&self, path: &RelPath) -> bool {
+        match self {
+            Worktree::Local(this) => this.settings.is_path_in_excluded_directory(path),
+            Worktree::Remote(_) => false,
+        }
+    }
+
     pub fn abs_path(&self) -> Arc<Path> {
         match self {
             Worktree::Local(worktree) => SanitizedPath::cast_arc(worktree.abs_path.clone()),

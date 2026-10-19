@@ -80,10 +80,14 @@ impl WorktreeSettings {
     pub fn is_path_excluded(&self, path: &RelPath) -> bool {
         path.ancestors()
             .any(|ancestor| self.file_scan_exclusions.is_match(ancestor))
-            || path
-                .ancestors()
-                .skip(1)
-                .any(|ancestor| self.is_directory_excluded(ancestor))
+            || self.is_path_in_excluded_directory(path)
+    }
+
+    /// Whether `path` lies inside one of the `excluded_directories`.
+    pub fn is_path_in_excluded_directory(&self, path: &RelPath) -> bool {
+        path.ancestors()
+            .skip(1)
+            .any(|ancestor| self.is_directory_excluded(ancestor))
     }
 
     /// Whether `path` is one of the `excluded_directories`, which stay in the tree without their

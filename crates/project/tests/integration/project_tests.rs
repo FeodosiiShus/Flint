@@ -2072,6 +2072,194 @@ async fn test_rescan_fs_change_is_reported_to_language_servers_as_changed(
     );
 }
 
+fn publish_type_error(fake_server: &lsp::FakeLanguageServer, abs_path: &str) {
+    fake_server.notify::<lsp::notification::PublishDiagnostics>(lsp::PublishDiagnosticsParams {
+        uri: Uri::from_file_path(abs_path).unwrap(),
+        version: None,
+        diagnostics: vec![lsp::Diagnostic {
+            range: lsp::Range::new(lsp::Position::new(0, 0), lsp::Position::new(0, 2)),
+            severity: Some(lsp::DiagnosticSeverity::ERROR),
+            message: lsp::DiagnosticMessage::from("type error"),
+            ..Default::default()
+        }],
+    });
+}
+
+fn diagnosed_paths(project: &Entity<Project>, cx: &mut gpui::TestAppContext) -> Vec<String> {
+    project.read_with(cx, |project, cx| {
+        project
+            .diagnostic_summaries(false, cx)
+            .map(|(path, _, _)| path.path.as_unix_str().to_string())
+            .sorted()
+            .collect()
+    })
+}
+
+fn track_document_notifications(
+    fake_server: &lsp::FakeLanguageServer,
+) -> (Arc<Mutex<Vec<Uri>>>, Arc<Mutex<Vec<Uri>>>) {
+    let opened = Arc::new(Mutex::new(Vec::new()));
+    let closed = Arc::new(Mutex::new(Vec::new()));
+    fake_server.handle_notification::<lsp::notification::DidOpenTextDocument, _>({
+        let opened = opened.clone();
+        move |params, _| opened.lock().push(params.text_document.uri)
+    });
+    fake_server.handle_notification::<lsp::notification::DidCloseTextDocument, _>({
+        let closed = closed.clone();
+        move |params, _| closed.lock().push(params.text_document.uri)
+    });
+    (opened, closed)
+}
+
+#[gpui::test]
+async fn test_language_servers_never_see_files_in_excluded_directories(
+    cx: &mut gpui::TestAppContext,
+) {
+    init_test(cx);
+    cx.update(|cx| {
+        SettingsStore::update_global(cx, |store, cx| {
+            store.update_user_settings(cx, |settings| {
+                settings.project.worktree.excluded_directories =
+                    Some(SplicingVec::from(vec!["vendor".to_string()]));
+            });
+        });
+    });
+    let fs = FakeFs::new(cx.executor());
+    fs.insert_tree(
+        path!("/the-root"),
+        json!({
+            "src": { "a.rs": "fn a() {}" },
+            "vendor": { "lib.rs": "fn lib() {}" },
+        }),
+    )
+    .await;
+    let project = Project::test(fs.clone(), [path!("/the-root").as_ref()], cx).await;
+    let language_registry = project.read_with(cx, |project, _| project.languages().clone());
+    language_registry.add(rust_lang());
+    let mut fake_servers = language_registry.register_fake_lsp(
+        "Rust",
+        FakeLspAdapter {
+            name: "the-language-server",
+            ..Default::default()
+        },
+    );
+    let _a = project
+        .update(cx, |project, cx| {
+            project.open_local_buffer_with_lsp(path!("/the-root/src/a.rs"), cx)
+        })
+        .await
+        .unwrap();
+    let fake_server = fake_servers.next().await.unwrap();
+    cx.executor().run_until_parked();
+    let (opened, _) = track_document_notifications(&fake_server);
+
+    let _lib = project
+        .update(cx, |project, cx| {
+            project.open_local_buffer_with_lsp(path!("/the-root/vendor/lib.rs"), cx)
+        })
+        .await
+        .unwrap();
+    cx.executor().run_until_parked();
+    assert_eq!(
+        *opened.lock(),
+        Vec::<Uri>::new(),
+        "a file in an excluded directory is never opened in a language server, so no linter \
+         or type checker looks at it"
+    );
+
+    publish_type_error(&fake_server, path!("/the-root/src/a.rs"));
+    publish_type_error(&fake_server, path!("/the-root/vendor/lib.rs"));
+    cx.executor().run_until_parked();
+    assert_eq!(
+        diagnosed_paths(&project, cx),
+        vec!["src/a.rs".to_string()],
+        "diagnostics a server reports for an excluded directory are dropped"
+    );
+}
+
+#[gpui::test]
+async fn test_excluding_a_directory_closes_its_files_in_language_servers_and_unexcluding_reopens_them(
+    cx: &mut gpui::TestAppContext,
+) {
+    init_test(cx);
+    let fs = FakeFs::new(cx.executor());
+    fs.insert_tree(
+        path!("/the-root"),
+        json!({
+            "src": { "a.rs": "fn a() {}" },
+            "vendor": { "lib.rs": "fn lib() {}" },
+        }),
+    )
+    .await;
+    let project = Project::test(fs.clone(), [path!("/the-root").as_ref()], cx).await;
+    let language_registry = project.read_with(cx, |project, _| project.languages().clone());
+    language_registry.add(rust_lang());
+    let mut fake_servers = language_registry.register_fake_lsp(
+        "Rust",
+        FakeLspAdapter {
+            name: "the-language-server",
+            ..Default::default()
+        },
+    );
+    let _a = project
+        .update(cx, |project, cx| {
+            project.open_local_buffer_with_lsp(path!("/the-root/src/a.rs"), cx)
+        })
+        .await
+        .unwrap();
+    let fake_server = fake_servers.next().await.unwrap();
+    cx.executor().run_until_parked();
+    let (opened, closed) = track_document_notifications(&fake_server);
+    let _lib = project
+        .update(cx, |project, cx| {
+            project.open_local_buffer_with_lsp(path!("/the-root/vendor/lib.rs"), cx)
+        })
+        .await
+        .unwrap();
+    cx.executor().run_until_parked();
+    let lib_uri = Uri::from_file_path(path!("/the-root/vendor/lib.rs")).unwrap();
+    assert_eq!(*opened.lock(), vec![lib_uri.clone()]);
+    publish_type_error(&fake_server, path!("/the-root/src/a.rs"));
+    publish_type_error(&fake_server, path!("/the-root/vendor/lib.rs"));
+    cx.executor().run_until_parked();
+    assert_eq!(
+        diagnosed_paths(&project, cx),
+        vec!["src/a.rs".to_string(), "vendor/lib.rs".to_string()]
+    );
+
+    let root: Arc<Path> = Arc::from(Path::new(path!("/the-root")));
+    let set_excluded = |directories: Vec<String>, cx: &mut gpui::TestAppContext| {
+        cx.update(|cx| {
+            cx.update_default_global::<worktree::IdeExcludedDirectories, _>(|excluded, _| {
+                excluded.set_for_worktree(root.clone(), directories);
+            });
+        });
+        cx.executor().run_until_parked();
+    };
+
+    set_excluded(vec!["vendor".to_string()], cx);
+    assert_eq!(
+        *closed.lock(),
+        vec![lib_uri.clone()],
+        "a file whose directory becomes excluded is closed in the language server"
+    );
+    assert_eq!(
+        diagnosed_paths(&project, cx),
+        vec!["src/a.rs".to_string()],
+        "the diagnostics it had are dropped"
+    );
+    publish_type_error(&fake_server, path!("/the-root/vendor/lib.rs"));
+    cx.executor().run_until_parked();
+    assert_eq!(diagnosed_paths(&project, cx), vec!["src/a.rs".to_string()]);
+
+    set_excluded(Vec::new(), cx);
+    assert_eq!(
+        *opened.lock(),
+        vec![lib_uri.clone(), lib_uri],
+        "cancelling the exclusion opens the file in the language server again"
+    );
+}
+
 #[gpui::test]
 async fn test_excluded_directories_are_hidden_from_language_servers_and_search(
     cx: &mut gpui::TestAppContext,
