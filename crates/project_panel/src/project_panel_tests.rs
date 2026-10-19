@@ -14176,6 +14176,7 @@ mod background_image_pixels {
 
     const FRAME: [u8; 3] = [255, 0, 0];
     const PANEL: [u8; 3] = [0, 0, 255];
+    const EDITOR: [u8; 3] = [255, 255, 0];
     const IMAGE: [u8; 3] = [0, 255, 0];
     const IMAGE_ALPHA: u8 = 128;
     const IMAGE_SIDE: u32 = 4096;
@@ -14211,6 +14212,7 @@ mod background_image_pixels {
                         colors: ThemeColorsContent {
                             background: Some("#ff0000".into()),
                             panel_background: Some("#0000ff".into()),
+                            editor_background: Some("#ffff00".into()),
                             ..Default::default()
                         },
                         ..Default::default()
@@ -14304,7 +14306,8 @@ mod background_image_pixels {
     }
 
     #[test]
-    fn pixels_background_image_shows_through_the_project_panel_and_reaches_every_window_edge() {
+    fn pixels_background_image_shows_through_the_project_panel_like_the_editor_and_reaches_every_window_edge()
+     {
         for window_size in [size(px(1000.), px(700.)), size(px(1728.), px(1080.))] {
             let screenshot = render_workspace(window_size);
             let pixel = |column: u32, row: u32| {
@@ -14324,15 +14327,15 @@ mod background_image_pixels {
                 "no part of the {window_size:?} window is left unpainted and black"
             );
             assert_eq!(
-                count(PANEL),
+                count(PANEL) + count(over(IMAGE, PANEL)),
                 0,
-                "no part of the project panel shows its bare colour without the background image ({window_size:?})"
+                "while a background image is set the project panel does not use the panel colour ({window_size:?})"
             );
-            let panel_with_image = count(over(IMAGE, PANEL));
+            let panel_with_image = count(over(IMAGE, EDITOR));
             assert!(
                 panel_with_image * 10 > pixels.len(),
-                "the project panel shows the background image over its colour, like the editor \
-                 ({panel_with_image} of {} pixels, {window_size:?})",
+                "the project panel shows the background image over the editor's base, so it looks \
+                 as see-through as the editor ({panel_with_image} of {} pixels, {window_size:?})",
                 pixels.len()
             );
             let frame_with_image = over(IMAGE, FRAME);

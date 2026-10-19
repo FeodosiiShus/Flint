@@ -1399,7 +1399,16 @@ impl Render for Dock {
                 }
             };
 
-            let panel_background = cx.theme().colors().panel_background;
+            // IntelliJ's Islands draw tool windows and the editor on one base colour
+            // (`tool-window-bg` and `editor-bg` are both `layer-0-bg`), so a background image reads
+            // the same through every island. Flint's themes give panels their own colour, so while
+            // an image is set the tool windows take the editor's.
+            let panel_background =
+                if ui::has_background_image(BackgroundImageTarget::EditorAndTools, window, cx) {
+                    cx.theme().colors().editor_background
+                } else {
+                    cx.theme().colors().panel_background
+                };
             let workspace_settings = WorkspaceSettings::get_global(cx);
             let islands = workspace_settings.islands;
             let header_settings = workspace_settings.tool_window_headers;
