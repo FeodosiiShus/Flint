@@ -12786,14 +12786,28 @@ async fn test_folder_indicator_selection(cx: &mut gpui::TestAppContext) {
     );
 }
 
-fn excluded_directories_in_project_settings(fs: &FakeFs) -> Option<Vec<String>> {
-    let settings_path = Path::new(path!("/root/.zed/settings.json"));
-    let text = String::from_utf8(fs.read_file_sync(settings_path).ok()?).ok()?;
-    let settings: serde_json::Value =
-        settings::parse_json_with_comments(&text).expect("the project settings stay valid JSON");
-    settings
-        .get("excluded_directories")
-        .and_then(|directories| serde_json::from_value(directories.clone()).ok())
+/// What Flint stored for the worktree at `root`, both in memory and in its database.
+fn ide_excluded_directories(
+    root: &str,
+    cx: &mut VisualTestContext,
+) -> (Vec<String>, Option<String>) {
+    cx.update(|_, cx| {
+        let in_memory = cx
+            .try_global::<IdeExcludedDirectories>()
+            .map(|excluded| excluded.for_worktree(Path::new(root)).to_vec())
+            .unwrap_or_default();
+        let stored = KeyValueStore::global(cx)
+            .scoped(IDE_EXCLUDED_DIRECTORIES_NAMESPACE)
+            .read(root)
+            .expect("the key-value store reads");
+        (in_memory, stored)
+    })
+}
+
+/// Whether a settings file appeared in the project, which marking a directory must never do.
+fn project_settings_file_exists(fs: &FakeFs, root: &str) -> bool {
+    fs.read_file_sync(Path::new(root).join(".zed").join("settings.json"))
+        .is_ok()
 }
 
 fn click_menu_item(selector: &'static str, cx: &mut VisualTestContext) {
@@ -12811,7 +12825,7 @@ async fn test_mark_directory_as_excluded_keeps_the_directory_without_its_content
     init_test(cx);
     let fs = FakeFs::new(cx.executor());
     fs.insert_tree(
-        path!("/root"),
+        path!("/marked"),
         json!({
             "node_modules": {
                 "react": { "index.js": "" },
@@ -12820,7 +12834,7 @@ async fn test_mark_directory_as_excluded_keeps_the_directory_without_its_content
         }),
     )
     .await;
-    let project = Project::test(fs.clone(), [path!("/root").as_ref()], cx).await;
+    let project = Project::test(fs.clone(), [path!("/marked").as_ref()], cx).await;
     let window = cx.add_window(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
     let workspace = window
         .read_with(cx, |mw, _| mw.workspace().clone())
@@ -12833,12 +12847,12 @@ async fn test_mark_directory_as_excluded_keeps_the_directory_without_its_content
         panel
     });
     cx.run_until_parked();
-    toggle_expand_dir(&panel, "root/node_modules", cx);
+    toggle_expand_dir(&panel, "marked/node_modules", cx);
     cx.run_until_parked();
     assert_eq!(
         visible_entries_as_strings(&panel, 0..10, cx),
         &[
-            "v root",
+            "v marked",
             "    v node_modules  <== selected",
             "        > react",
             "    > src",
@@ -12846,7 +12860,7 @@ async fn test_mark_directory_as_excluded_keeps_the_directory_without_its_content
     );
 
     let node_modules_entry =
-        find_project_entry(&panel, "root/node_modules", cx).expect("node_modules is in the tree");
+        find_project_entry(&panel, "marked/node_modules", cx).expect("node_modules is in the tree");
     panel.update_in(cx, |panel, window, cx| {
         panel.deploy_context_menu(
             ContextMenuPlacement::AtMouse(point(px(10.), px(10.))),
@@ -12864,19 +12878,21 @@ async fn test_mark_directory_as_excluded_keeps_the_directory_without_its_content
     );
     click_menu_item("MENU_ITEM-Excluded", cx);
 
+    assert!(
+        !project_settings_file_exists(&fs, path!("/marked")),
+        "marking a directory writes nothing into the project"
+    );
     assert_eq!(
-        excluded_directories_in_project_settings(&fs),
-        Some(vec!["...".to_string(), "node_modules".to_string()]),
-        "the exclusion is kept in the project settings and keeps the inherited exclusions"
+        ide_excluded_directories(path!("/marked"), cx),
+        (
+            vec!["node_modules".to_string()],
+            Some(r#"["node_modules"]"#.to_string())
+        ),
+        "the exclusion is kept in Flint's own database, keyed by the project folder"
     );
     assert_eq!(
         visible_entries_as_strings(&panel, 0..10, cx),
-        &[
-            "v root",
-            "    > .zed",
-            "    > node_modules  <== selected",
-            "    > src"
-        ],
+        &["v marked", "    > node_modules  <== selected", "    > src"],
         "the excluded directory stays in the tree, without a chevron and without its contents"
     );
     assert!(
@@ -12887,10 +12903,10 @@ async fn test_mark_directory_as_excluded_keeps_the_directory_without_its_content
         )),
         "the excluded directory gets IntelliJ's excluded folder icon"
     );
-    toggle_expand_dir(&panel, "root/node_modules", cx);
+    toggle_expand_dir(&panel, "marked/node_modules", cx);
     cx.run_until_parked();
     assert!(
-        find_project_entry(&panel, "root/node_modules/react", cx).is_none(),
+        find_project_entry(&panel, "marked/node_modules/react", cx).is_none(),
         "expanding an excluded directory does not read it"
     );
 
@@ -12912,12 +12928,13 @@ async fn test_mark_directory_as_excluded_keeps_the_directory_without_its_content
     click_menu_item("MENU_ITEM-Cancel Exclusion", cx);
 
     assert_eq!(
-        excluded_directories_in_project_settings(&fs),
-        None,
-        "cancelling the last exclusion removes the setting"
+        ide_excluded_directories(path!("/marked"), cx),
+        (Vec::new(), None),
+        "cancelling the last exclusion removes it from Flint's database"
     );
+    assert!(!project_settings_file_exists(&fs, path!("/marked")));
     assert!(
-        find_project_entry(&panel, "root/node_modules/react", cx).is_some(),
+        find_project_entry(&panel, "marked/node_modules/react", cx).is_some(),
         "cancelling the exclusion loads the directory again"
     );
 }
@@ -13008,80 +13025,128 @@ async fn test_background_image_shows_through_the_project_panel(cx: &mut gpui::Te
 }
 
 #[test]
-fn test_directory_exclusion_keeps_inherited_and_other_project_exclusions() {
-    let mut worktree = settings::WorktreeSettingsContent::default();
+fn test_ide_directory_exclusion_adds_each_directory_once_and_removes_only_that_one() {
+    let mut directories = Vec::new();
 
-    assert!(!set_directory_exclusion(
-        &mut worktree,
+    assert!(!set_ide_directory_exclusion(
+        &mut directories,
         "node_modules",
         true
     ));
-    assert!(!set_directory_exclusion(&mut worktree, "dist", true));
-    assert_eq!(
-        worktree
-            .excluded_directories
-            .as_ref()
-            .map(|list| list.0.clone()),
-        Some(vec![
-            "...".to_string(),
-            "node_modules".to_string(),
-            "dist".to_string()
-        ]),
-        "marking keeps the inherited list through \"...\" and appends each directory once"
-    );
+    assert!(!set_ide_directory_exclusion(&mut directories, "dist", true));
+    assert!(set_ide_directory_exclusion(&mut directories, "dist", true));
+    assert_eq!(directories, vec!["node_modules", "dist"]);
 
-    assert!(set_directory_exclusion(
-        &mut worktree,
+    assert!(set_ide_directory_exclusion(
+        &mut directories,
         "node_modules",
         false
     ));
-    assert_eq!(
-        worktree
-            .excluded_directories
-            .as_ref()
-            .map(|list| list.0.clone()),
-        Some(vec!["...".to_string(), "dist".to_string()]),
-        "cancelling removes only that directory"
-    );
-    assert!(set_directory_exclusion(&mut worktree, "dist", false));
-    assert_eq!(
-        worktree.excluded_directories, None,
-        "cancelling the last project exclusion removes the setting"
-    );
+    assert_eq!(directories, vec!["dist"]);
     assert!(
-        !set_directory_exclusion(&mut worktree, "vendor", false),
-        "a directory the project settings never listed is reported as not listed"
+        !set_ide_directory_exclusion(&mut directories, "vendor", false),
+        "a directory Flint never excluded is reported as not excluded"
     );
+    assert_eq!(directories, vec!["dist"]);
 }
 
 #[gpui::test]
-async fn test_cancelling_an_exclusion_from_the_user_settings_reports_an_error(
+async fn test_ide_exclusions_are_restored_after_a_restart(cx: &mut gpui::TestAppContext) {
+    init_test(cx);
+    let root = path!("/restored-root");
+    let store = cx.update(|cx| KeyValueStore::global(cx));
+    store
+        .scoped(IDE_EXCLUDED_DIRECTORIES_NAMESPACE)
+        .write(root.to_string(), r#"["node_modules"]"#.to_string())
+        .await
+        .expect("the exclusion is stored");
+    cx.update(load_ide_excluded_directories);
+
+    let fs = FakeFs::new(cx.executor());
+    fs.insert_tree(
+        root,
+        json!({
+            "node_modules": { "react": { "index.js": "" } },
+            "src": { "main.ts": "" },
+        }),
+    )
+    .await;
+    let project = Project::test(fs.clone(), [root.as_ref()], cx).await;
+    cx.run_until_parked();
+
+    project.read_with(cx, |project, cx| {
+        let worktree = project
+            .worktrees(cx)
+            .next()
+            .expect("the project has its worktree")
+            .read(cx);
+        assert!(
+            worktree.is_directory_excluded(rel_path("node_modules")),
+            "an exclusion stored by an earlier session applies when the project opens"
+        );
+        assert!(
+            worktree
+                .entry_for_path(rel_path("node_modules/react"))
+                .is_none(),
+            "the excluded directory is not read"
+        );
+        assert!(worktree.entry_for_path(rel_path("src/main.ts")).is_some());
+    });
+    store
+        .scoped(IDE_EXCLUDED_DIRECTORIES_NAMESPACE)
+        .delete(root.to_string())
+        .await
+        .expect("the stored exclusion is removed");
+}
+
+#[gpui::test]
+async fn test_cancel_exclusion_keeps_a_directory_excluded_by_the_settings(
     cx: &mut gpui::TestAppContext,
 ) {
     init_test(cx);
+    cx.update(|cx| {
+        cx.update_global::<SettingsStore, _>(|store, cx| {
+            store.update_user_settings(cx, |settings| {
+                settings.project.worktree.excluded_directories =
+                    Some(SplicingVec::from(vec!["vendor".to_string()]));
+            });
+        });
+    });
     let fs = FakeFs::new(cx.executor());
-    fs.insert_tree(path!("/root"), json!({ "node_modules": {} }))
+    fs.insert_tree(path!("/root"), json!({ "vendor": { "lib.js": "" } }))
         .await;
-    let settings_path = PathBuf::from(path!("/root/.zed/settings.json"));
+    let project = Project::test(fs.clone(), [path!("/root").as_ref()], cx).await;
+    let window = cx.add_window(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
+    let workspace = window
+        .read_with(cx, |mw, _| mw.workspace().clone())
+        .unwrap();
+    let cx = &mut VisualTestContext::from_window(window.into(), cx);
+    let panel = workspace.update_in(cx, ProjectPanel::new);
+    cx.run_until_parked();
 
-    let result = write_directory_exclusion(
-        fs.clone(),
-        settings_path.clone(),
-        "node_modules".to_string(),
-        false,
-        &mut cx.to_async(),
-    )
-    .await;
+    select_path(&panel, "root/vendor", cx);
+    panel.update_in(cx, |panel, window, cx| {
+        panel.cancel_directory_exclusion(&CancelDirectoryExclusion, window, cx)
+    });
+    cx.run_until_parked();
 
-    let error = result.expect_err("the project settings cannot cancel a user-level exclusion");
-    assert!(
-        error.to_string().contains("user settings"),
-        "the error tells where the exclusion comes from: {error:#}"
+    assert_eq!(
+        ide_excluded_directories(path!("/root"), cx),
+        (Vec::new(), None),
+        "Flint stores nothing for an exclusion it did not make"
     );
-    assert!(
-        !fs.is_file(&settings_path).await,
-        "a failed cancellation writes no project settings"
-    );
+    assert!(!project_settings_file_exists(&fs, path!("/root")));
+    project.read_with(cx, |project, cx| {
+        assert!(
+            project
+                .worktrees(cx)
+                .next()
+                .expect("the project has its worktree")
+                .read(cx)
+                .is_directory_excluded(rel_path("vendor")),
+            "a directory excluded by the settings stays excluded"
+        );
+    });
 }
 
 #[gpui::test]

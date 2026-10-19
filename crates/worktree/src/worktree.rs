@@ -79,7 +79,7 @@ use util::{
     paths::{PathMatcher, PathStyle, SanitizedPath, home_dir},
     rel_path::{RelPath, RelPathBuf},
 };
-pub use worktree_settings::WorktreeSettings;
+pub use worktree_settings::{IdeExcludedDirectories, WorktreeSettings};
 
 pub const FS_WATCH_LATENCY: Duration = Duration::from_millis(100);
 
@@ -550,20 +550,17 @@ impl Worktree {
             snapshot.root_repo_is_linked_worktree = root_repo_is_linked_worktree;
 
             let worktree_id = snapshot.id();
-            let settings_location = Some(SettingsLocation {
+            let settings_location = SettingsLocation {
                 worktree_id,
                 path: RelPath::empty(),
-            });
-
-            let settings = WorktreeSettings::get(settings_location, cx).clone();
+            };
+            let settings = WorktreeSettings::for_local_worktree(settings_location, &abs_path, cx);
             cx.observe_global::<SettingsStore>(move |this, cx| {
-                if let Self::Local(this) = this {
-                    let settings = WorktreeSettings::get(settings_location, cx).clone();
-                    if this.settings != settings {
-                        this.settings = settings;
-                        this.restart_background_scanners(cx);
-                    }
-                }
+                this.refresh_local_settings(settings_location, cx);
+            })
+            .detach();
+            cx.observe_global::<IdeExcludedDirectories>(move |this, cx| {
+                this.refresh_local_settings(settings_location, cx);
             })
             .detach();
 
@@ -865,6 +862,25 @@ impl Worktree {
         match self {
             Worktree::Local(_) => ReplicaId::LOCAL,
             Worktree::Remote(worktree) => worktree.replica_id,
+        }
+    }
+
+    fn refresh_local_settings(&mut self, location: SettingsLocation, cx: &mut Context<Self>) {
+        if let Self::Local(this) = self {
+            let settings =
+                WorktreeSettings::for_local_worktree(location, this.snapshot.abs_path(), cx);
+            if this.settings != settings {
+                this.settings = settings;
+                this.restart_background_scanners(cx);
+            }
+        }
+    }
+
+    /// Whether `path` is an excluded directory, which the tree keeps without its contents.
+    pub fn is_directory_excluded(&self, path: &RelPath) -> bool {
+        match self {
+            Worktree::Local(this) => this.settings.is_directory_excluded(path),
+            Worktree::Remote(_) => false,
         }
     }
 

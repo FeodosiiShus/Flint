@@ -107,6 +107,14 @@ impl ScopedKeyValueStore<'_> {
         .context("Failed to read from scoped_kv_store")
     }
 
+    /// Every key and value stored in this namespace, ordered by key.
+    pub fn read_all(&self) -> anyhow::Result<Vec<(String, String)>> {
+        self.store.select_bound::<&str, (String, String)>(
+            "SELECT key, value FROM scoped_kv_store WHERE namespace = (?) ORDER BY key",
+        )?(self.namespace)
+        .context("Failed to read all of scoped_kv_store")
+    }
+
     pub async fn write(&self, key: String, value: String) -> anyhow::Result<()> {
         let namespace = self.namespace.to_owned();
         self.store
@@ -209,12 +217,30 @@ mod tests {
         assert_eq!(scope_a.read("key-2").unwrap(), Some("value-a2".to_string()));
         assert_eq!(scope_b.read("key-1").unwrap(), Some("value-b1".to_string()));
 
+        // read_all lists one namespace's keys and values, ordered by key
+        scope_a
+            .write("key-0".to_string(), "value-a0".to_string())
+            .await
+            .unwrap();
+        assert_eq!(
+            scope_a.read_all().unwrap(),
+            vec![
+                ("key-0".to_string(), "value-a0".to_string()),
+                ("key-2".to_string(), "value-a2".to_string()),
+            ]
+        );
+        assert_eq!(
+            scope_b.read_all().unwrap(),
+            vec![("key-1".to_string(), "value-b1".to_string())]
+        );
+
         // delete_all removes all keys in a namespace without affecting other namespaces
         scope_a
             .write("key-3".to_string(), "value-a3".to_string())
             .await
             .unwrap();
         scope_a.delete_all().await.unwrap();
+        assert_eq!(scope_a.read_all().unwrap(), Vec::new());
         assert_eq!(scope_a.read("key-2").unwrap(), None);
         assert_eq!(scope_a.read("key-3").unwrap(), None);
         assert_eq!(scope_b.read("key-1").unwrap(), Some("value-b1".to_string()));

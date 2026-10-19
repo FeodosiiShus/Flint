@@ -1,6 +1,8 @@
-use std::path::Path;
+use std::{path::Path, sync::Arc};
 
-use settings::{RegisterSetting, ScanSymlinksSetting, Settings};
+use collections::HashMap;
+use gpui::{App, Global};
+use settings::{RegisterSetting, ScanSymlinksSetting, Settings, SettingsLocation};
 use util::{
     paths::{PathMatcher, PathStyle},
     rel_path::RelPath,
@@ -23,7 +25,51 @@ pub struct WorktreeSettings {
     pub read_only_files: PathMatcher,
 }
 
+/// The directories excluded with "Mark Directory As > Excluded", by worktree root. Flint keeps
+/// them in its own data instead of the project's files, so marking a directory never adds a
+/// settings file to the repository.
+#[derive(Default)]
+pub struct IdeExcludedDirectories(HashMap<Arc<Path>, Vec<String>>);
+
+impl Global for IdeExcludedDirectories {}
+
+impl IdeExcludedDirectories {
+    pub fn for_worktree(&self, root: &Path) -> &[String] {
+        self.0.get(root).map_or(&[], Vec::as_slice)
+    }
+
+    pub fn set_for_worktree(&mut self, root: Arc<Path>, directories: Vec<String>) {
+        if directories.is_empty() {
+            self.0.remove(&root);
+        } else {
+            self.0.insert(root, directories);
+        }
+    }
+}
+
 impl WorktreeSettings {
+    /// The settings of the local worktree rooted at `root`, with its IDE-excluded directories.
+    pub fn for_local_worktree(location: SettingsLocation, root: &Path, cx: &App) -> Self {
+        let settings = Self::get(Some(location), cx).clone();
+        match cx.try_global::<IdeExcludedDirectories>() {
+            Some(excluded) if !excluded.for_worktree(root).is_empty() => {
+                settings.with_excluded_directories(excluded.for_worktree(root))
+            }
+            _ => settings,
+        }
+    }
+
+    pub fn with_excluded_directories(mut self, directories: &[String]) -> Self {
+        let directories = self
+            .excluded_directories
+            .sources()
+            .map(str::to_string)
+            .chain(directories.iter().cloned())
+            .collect();
+        self.excluded_directories = valid_path_matchers(directories, "excluded_directories");
+        self
+    }
+
     pub fn is_path_private(&self, path: &RelPath) -> bool {
         path.ancestors()
             .any(|ancestor| self.private_files.is_match(ancestor))

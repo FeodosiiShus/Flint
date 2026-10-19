@@ -12,7 +12,9 @@ use postage::stream::Stream;
 use pretty_assertions::assert_eq;
 use rand::prelude::*;
 use rpc::{AnyProtoClient, NoopProtoClient, proto};
-use worktree::{Entry, EntryKind, Event, PathChange, Worktree, WorktreeModelHandle};
+use worktree::{
+    Entry, EntryKind, Event, IdeExcludedDirectories, PathChange, Worktree, WorktreeModelHandle,
+};
 
 use serde_json::json;
 use settings::{LocalSettingsKind, LocalSettingsPath, SettingsStore, SplicingVec, WorktreeId};
@@ -2800,6 +2802,92 @@ async fn test_excluded_directories_stay_in_the_tree_without_their_contents(
             tree.entry_for_path(rel_path("node_modules/react/new.js"))
                 .is_some(),
             "cancelling the exclusion scans the directory again"
+        );
+    });
+}
+
+#[gpui::test]
+async fn test_ide_excluded_directories_apply_live_alongside_the_setting(cx: &mut TestAppContext) {
+    init_test(cx);
+    cx.executor().allow_parking();
+    let dir = TempTree::new(json!({
+        "node_modules": { "react": { "index.js": "" } },
+        "vendor": { "lib.js": "" },
+        "src": { "main.ts": "" },
+    }));
+    cx.update(|cx| {
+        cx.update_global::<SettingsStore, _>(|store, cx| {
+            store.update_user_settings(cx, |settings| {
+                settings.project.worktree.excluded_directories =
+                    Some(SplicingVec::from(vec!["vendor".to_string()]));
+            });
+        });
+    });
+    let tree = Worktree::local(
+        dir.path(),
+        true,
+        RealFs::new(None, cx.executor()),
+        Default::default(),
+        true,
+        WorktreeId::from_proto(0),
+        &mut cx.to_async(),
+    )
+    .await
+    .unwrap();
+    cx.read(|cx| tree.read(cx).as_local().unwrap().scan_complete())
+        .await;
+    tree.flush_fs_events(cx).await;
+    tree.read_with(cx, |tree, _| {
+        assert!(tree.is_directory_excluded(rel_path("vendor")));
+        assert!(!tree.is_directory_excluded(rel_path("node_modules")));
+        assert!(
+            tree.entry_for_path(rel_path("node_modules/react/index.js"))
+                .is_some()
+        );
+    });
+
+    let root: Arc<Path> = Arc::from(dir.path());
+    cx.update(|cx| {
+        cx.update_default_global::<IdeExcludedDirectories, _>(|excluded, _| {
+            excluded.set_for_worktree(root.clone(), vec!["node_modules".to_string()]);
+        });
+    });
+    tree.flush_fs_events(cx).await;
+    cx.executor().run_until_parked();
+    tree.read_with(cx, |tree, _| {
+        assert!(
+            tree.is_directory_excluded(rel_path("node_modules")),
+            "a directory Flint excluded is excluded without any settings file"
+        );
+        assert!(
+            tree.is_directory_excluded(rel_path("vendor")),
+            "the excluded_directories setting still applies next to Flint's exclusions"
+        );
+        assert_eq!(
+            tree.entry_for_path(rel_path("node_modules"))
+                .map(|entry| entry.kind),
+            Some(EntryKind::UnloadedDir)
+        );
+        assert!(
+            tree.entry_for_path(rel_path("node_modules/react"))
+                .is_none()
+        );
+        assert!(tree.entry_for_path(rel_path("src/main.ts")).is_some());
+    });
+
+    cx.update(|cx| {
+        cx.update_default_global::<IdeExcludedDirectories, _>(|excluded, _| {
+            excluded.set_for_worktree(root.clone(), Vec::new());
+        });
+    });
+    tree.flush_fs_events(cx).await;
+    cx.executor().run_until_parked();
+    tree.read_with(cx, |tree, _| {
+        assert!(!tree.is_directory_excluded(rel_path("node_modules")));
+        assert!(
+            tree.entry_for_path(rel_path("node_modules/react/index.js"))
+                .is_some(),
+            "cancelling Flint's exclusion scans the directory again"
         );
     });
 }

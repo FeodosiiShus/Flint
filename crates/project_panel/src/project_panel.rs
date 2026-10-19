@@ -5,6 +5,7 @@ mod utils;
 use anyhow::{Context as _, Result};
 use client::{ErrorCode, ErrorExt};
 use collections::{BTreeSet, HashMap, hash_map};
+use db::kvp::KeyValueStore;
 use editor::{
     Editor, EditorEvent, MultiBufferOffset,
     items::{
@@ -18,7 +19,7 @@ use git;
 use git::status::GitSummary;
 use git_ui_core::file_diff_view::FileDiffView;
 use gpui::{
-    Action, Anchor, AnyElement, App, AsyncApp, AsyncWindowContext, Bounds,
+    Action, Anchor, AnyElement, App, AsyncWindowContext, Bounds,
     ClipboardEntry as GpuiClipboardEntry, ClipboardItem, Context, CursorStyle, DismissEvent, Div,
     DragMoveEvent, Entity, EventEmitter, ExternalDragPayload, ExternalPaths, FileDragPaths,
     FileDropEvent, FocusHandle, Focusable, FontWeight, Hsla, InteractiveElement, KeyContext,
@@ -44,7 +45,7 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use settings::{
     DockSide, ProjectPanelEntrySpacing, Settings, SettingsStore, ShowDiagnostics, ShowIndentGuides,
-    SplicingVec, update_settings_file,
+    update_settings_file,
 };
 use smallvec::SmallVec;
 use std::{
@@ -79,7 +80,7 @@ use workspace::{
     notifications::{DetachAndPromptErr, NotifyResultExt, NotifyTaskExt},
     open_file_permalink,
 };
-use worktree::{CreatedEntry, WorktreeSettings};
+use worktree::{CreatedEntry, IdeExcludedDirectories};
 use zed_actions::{
     project_panel::{Toggle, ToggleFocus},
     workspace::OpenWithSystem,
@@ -500,6 +501,7 @@ impl FoldedAncestors {
 }
 
 pub fn init(cx: &mut App) {
+    load_ide_excluded_directories(cx);
     cx.observe_new(|workspace: &mut Workspace, _, _| {
         workspace.register_action(|workspace, _: &ToggleFocus, window, cx| {
             workspace.toggle_panel_focus::<ProjectPanel>(window, cx);
@@ -753,68 +755,48 @@ fn inactive_selection_color(
     }
 }
 
-fn is_directory_excluded(worktree_id: WorktreeId, path: &RelPath, cx: &App) -> bool {
-    let location = settings::SettingsLocation {
-        worktree_id,
-        path: RelPath::empty(),
-    };
-    WorktreeSettings::get(Some(location), cx).is_directory_excluded(path)
-}
+/// The key-value namespace of "Mark Directory As > Excluded", keyed by worktree root. Like the
+/// rest of Flint's per-project state, the exclusions live in its own database, never in the
+/// project's files.
+const IDE_EXCLUDED_DIRECTORIES_NAMESPACE: &str = "ide_excluded_directories";
 
-async fn write_directory_exclusion(
-    fs: Arc<dyn Fs>,
-    settings_path: PathBuf,
-    directory: String,
-    excluded: bool,
-    cx: &mut AsyncApp,
-) -> Result<()> {
-    let old_text = if fs.is_file(&settings_path).await {
-        fs.load(&settings_path).await?
-    } else {
-        settings::initial_project_settings_content().into_owned()
-    };
-    let mut listed_before = false;
-    let new_text = cx.update(|cx| {
-        cx.global::<SettingsStore>()
-            .new_text_for_update(old_text, |settings| {
-                listed_before =
-                    set_directory_exclusion(&mut settings.project.worktree, &directory, excluded);
-            })
-    })?;
-    anyhow::ensure!(
-        excluded || listed_before,
-        "`{directory}` is excluded by a pattern outside this project's settings, so remove it from \
-         `excluded_directories` in your user settings"
-    );
-    if let Some(settings_dir) = settings_path.parent() {
-        fs.create_dir(settings_dir).await?;
+fn load_ide_excluded_directories(cx: &mut App) {
+    let mut excluded = IdeExcludedDirectories::default();
+    let stored = KeyValueStore::global(cx)
+        .scoped(IDE_EXCLUDED_DIRECTORIES_NAMESPACE)
+        .read_all()
+        .log_err()
+        .unwrap_or_default();
+    for (root, directories) in stored {
+        if let Some(directories) = serde_json::from_str::<Vec<String>>(&directories).log_err() {
+            excluded.set_for_worktree(Arc::from(Path::new(&root)), directories);
+        }
     }
-    fs.atomic_write(settings_path, new_text).await
+    cx.set_global(excluded);
 }
 
-/// Keeps the inherited `excluded_directories` through `"..."` and adds or removes `directory`,
-/// returning whether the project settings listed it before.
-fn set_directory_exclusion(
-    worktree: &mut settings::WorktreeSettingsContent,
+/// Adds or removes `directory`, returning whether Flint had excluded it before.
+fn set_ide_directory_exclusion(
+    directories: &mut Vec<String>,
     directory: &str,
     excluded: bool,
 ) -> bool {
-    let directories = worktree
-        .excluded_directories
-        .get_or_insert_with(|| SplicingVec::from(vec![SplicingVec::REST.to_string()]));
-    let listed_before = directories.0.iter().any(|pattern| pattern == directory);
-    directories.0.retain(|pattern| pattern != directory);
+    let listed_before = directories.iter().any(|listed| listed == directory);
+    directories.retain(|listed| listed != directory);
     if excluded {
-        directories.0.push(directory.to_string());
-    }
-    if directories
-        .0
-        .iter()
-        .all(|pattern| pattern == SplicingVec::REST)
-    {
-        worktree.excluded_directories = None;
+        directories.push(directory.to_string());
     }
     listed_before
+}
+
+fn show_error_toast(workspace: &WeakEntity<Workspace>, message: String, cx: &mut App) {
+    let toast = StatusToast::new(message, cx, |this, _| {
+        this.icon(Icon::new(IconName::XCircle).color(Color::Error))
+            .dismiss_button(true)
+    });
+    workspace
+        .update(cx, |workspace, cx| workspace.toggle_status_toast(toast, cx))
+        .log_err();
 }
 
 fn get_item_color(is_sticky: bool, has_background_image: bool, cx: &App) -> ItemColors {
@@ -1385,7 +1367,7 @@ impl ProjectPanel {
 
             let can_mark_directory = is_dir && !is_root && is_local && !is_collab;
             let is_excluded_directory =
-                can_mark_directory && is_directory_excluded(worktree_id, &entry.path, cx);
+                can_mark_directory && worktree.is_directory_excluded(&entry.path);
             let has_pasteable_content = self.has_pasteable_content(cx);
             let focus_handle = self.focus_handle.clone();
             let context_menu = ContextMenu::build(window, cx, |menu, _, _| {
@@ -2983,8 +2965,6 @@ impl ProjectPanel {
         self.set_selected_directory_excluded(false, cx);
     }
 
-    /// Records the exclusion in the worktree's project settings, the way IntelliJ keeps excluded
-    /// folders with the project rather than with the IDE.
     fn set_selected_directory_excluded(&mut self, excluded: bool, cx: &mut Context<Self>) {
         let Some((worktree, entry)) = self.selected_sub_entry(cx) else {
             return;
@@ -2993,29 +2973,54 @@ impl ProjectPanel {
         if !entry.is_dir() || entry.path.is_empty() || !worktree.is_local() {
             return;
         }
+        let root = worktree.abs_path();
+        let directory = entry.path.as_unix_str().to_string();
+        let mut directories = cx
+            .try_global::<IdeExcludedDirectories>()
+            .map(|excluded| excluded.for_worktree(&root).to_vec())
+            .unwrap_or_default();
+        let listed_before = set_ide_directory_exclusion(&mut directories, &directory, excluded);
+        if !excluded && !listed_before {
+            show_error_toast(
+                &self.workspace,
+                format!(
+                    "`{directory}` is excluded by the `excluded_directories` setting, so remove \
+                     it there"
+                ),
+                cx,
+            );
+            return;
+        }
         if excluded
             && let Some(expanded_dir_ids) = self.state.expanded_dir_ids.get_mut(&worktree.id())
             && let Ok(ix) = expanded_dir_ids.binary_search(&entry.id)
         {
             expanded_dir_ids.remove(ix);
         }
-        let directory = entry.path.as_unix_str().to_string();
-        let settings_path = worktree.absolutize(paths::local_settings_file_relative_path());
-        let fs = self.fs.clone();
+
+        cx.update_default_global::<IdeExcludedDirectories, _>(|excluded, _| {
+            excluded.set_for_worktree(root.clone(), directories.clone());
+        });
+        let store = KeyValueStore::global(cx);
         let workspace = self.workspace.clone();
         cx.spawn(async move |_, cx| {
-            let result =
-                write_directory_exclusion(fs, settings_path, directory, excluded, cx).await;
+            let scoped = store.scoped(IDE_EXCLUDED_DIRECTORIES_NAMESPACE);
+            let key = root.to_string_lossy().into_owned();
+            let result = if directories.is_empty() {
+                scoped.delete(key).await
+            } else {
+                match serde_json::to_string(&directories) {
+                    Ok(value) => scoped.write(key, value).await,
+                    Err(error) => Err(error.into()),
+                }
+            };
             if let Err(error) = result {
-                let message = format!("Failed to update the excluded directories: {error:#}");
                 cx.update(|cx| {
-                    let toast = StatusToast::new(message, cx, |this, _| {
-                        this.icon(Icon::new(IconName::XCircle).color(Color::Error))
-                            .dismiss_button(true)
-                    });
-                    workspace
-                        .update(cx, |workspace, cx| workspace.toggle_status_toast(toast, cx))
-                        .log_err();
+                    show_error_toast(
+                        &workspace,
+                        format!("Failed to save the excluded directories: {error:#}"),
+                        cx,
+                    )
                 });
             }
         })
@@ -7081,8 +7086,12 @@ impl ProjectPanel {
             .get(&worktree_id)
             .map(Vec::as_slice)
             .unwrap_or(&[]);
-        let is_excluded_directory =
-            entry.is_dir() && is_directory_excluded(worktree_id, &entry.path, cx);
+        let is_excluded_directory = entry.is_dir()
+            && self
+                .project
+                .read(cx)
+                .worktree_for_id(worktree_id, cx)
+                .is_some_and(|worktree| worktree.read(cx).is_directory_excluded(&entry.path));
         // An excluded directory is never loaded, so it has nothing to expand into.
         let is_expanded =
             !is_excluded_directory && expanded_entry_ids.binary_search(&entry.id).is_ok();
