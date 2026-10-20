@@ -133,7 +133,7 @@ impl Render for ZedPromptRenderer {
                 markdown_style(true, window, cx),
             )))
             .children(self.detail.clone().map(|detail| {
-                div().w_full().text_xs().child(MarkdownElement::new(
+                div().w_full().text_ui_xs(cx).child(MarkdownElement::new(
                     detail,
                     markdown_style(false, window, cx),
                 ))

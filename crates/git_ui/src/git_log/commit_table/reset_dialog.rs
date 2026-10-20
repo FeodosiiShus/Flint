@@ -602,7 +602,7 @@ impl Render for GitResetDialog {
                     .pt_2()
                     .pb_1()
                     .w_full()
-                    .child(Headline::new(DIALOG_TITLE).size(HeadlineSize::XSmall)),
+                    .child(Headline::new(DIALOG_TITLE).size(HeadlineSize::Small)),
             )
             .child(
                 v_flex()

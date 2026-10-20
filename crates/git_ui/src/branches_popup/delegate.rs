@@ -1029,10 +1029,16 @@ impl BranchesDelegate {
 
     /// The width of the widest row, which IntelliJ's `pack` gives the popup.
     pub fn preferred_row_width(&self, window: &mut Window, cx: &App) -> Pixels {
-        let text_style = window.text_style();
-        let rem_size = window.rem_size();
-        let default_size = TextSize::Default.rems(cx).to_pixels(rem_size);
-        let small_size = TextSize::Small.rems(cx).to_pixels(rem_size);
+        // Measured outside a draw, where the window's text style is GPUI's default font: the
+        // rows are drawn in the UI font, so measure with it.
+        let mut text_style = window.text_style();
+        let ui_font = theme::theme_settings(cx).ui_font(cx).clone();
+        text_style.font_family = ui_font.family;
+        text_style.font_features = ui_font.features;
+        text_style.font_fallbacks = ui_font.fallbacks;
+        text_style.font_weight = ui_font.weight;
+        let default_size = TextSize::Default.pixels(cx);
+        let small_size = TextSize::Small.pixels(cx);
         let measure = |text: &str, small: bool, window: &mut Window| -> Pixels {
             let font_size = if small { small_size } else { default_size };
             text_width(text, font_size, &text_style, window)
@@ -1403,22 +1409,20 @@ fn chevron(expanded: bool) -> Icon {
 fn icon_slot(icon: Option<impl IntoElement>) -> AnyElement {
     h_flex()
         .flex_none()
-        .size(rems_from_px(ICON_SLOT_PX))
+        .size(px(ICON_SLOT_PX))
         .justify_center()
         .children(icon)
         .into_any_element()
 }
 
 fn indent(depth: usize) -> Div {
-    div()
-        .flex_none()
-        .w(rems_from_px(INDENT_STEP_PX * depth as f32))
+    div().flex_none().w(px(INDENT_STEP_PX * depth as f32))
 }
 
 fn base_row(ix: usize, selected: bool) -> ListItem {
     ListItem::new(("branches-popup-row", ix))
         .inset(true)
-        .height(rems_from_px(ROW_HEIGHT_PX))
+        .height(px(ROW_HEIGHT_PX))
         .spacing(ListItemSpacing::Dense)
         .toggle_state(selected)
 }
@@ -1453,7 +1457,7 @@ fn highlighted(label: &SharedString, positions: &[usize], cx: &App) -> Highlight
 fn render_separator() -> AnyElement {
     h_flex()
         .w_full()
-        .h(rems_from_px(SEPARATOR_HEIGHT_PX))
+        .h(px(SEPARATOR_HEIGHT_PX))
         .px_2()
         .child(div().w_full().child(Divider::horizontal()))
         .into_any_element()
@@ -1493,7 +1497,7 @@ fn render_folder_row(ix: usize, selected: bool, folder: &FolderRow) -> AnyElemen
 fn render_repository_row(ix: usize, selected: bool, row: &RepositoryRow, cx: &App) -> AnyElement {
     let choice = &row.choice;
     let color = div()
-        .size(rems_from_px(REPOSITORY_COLOR_SIDE_PX))
+        .size(px(REPOSITORY_COLOR_SIDE_PX))
         .rounded(px(REPOSITORY_COLOR_RADIUS_PX))
         .bg(repository_color(choice.color_index, cx));
     base_row(ix, selected)
@@ -1512,7 +1516,7 @@ fn render_repository_row(ix: usize, selected: bool, row: &RepositoryRow, cx: &Ap
                     h_flex()
                         .flex_1()
                         .min_w_0()
-                        .pl(rems_from_px(SECONDARY_TEXT_MARGIN_LEFT_PX))
+                        .pl(px(SECONDARY_TEXT_MARGIN_LEFT_PX))
                         .justify_end()
                         .overflow_hidden()
                         .children(
@@ -1536,10 +1540,10 @@ fn render_commit_counter(
 ) -> impl IntoElement {
     h_flex()
         .flex_none()
-        .mt(rems_from_px(COUNTER_MARGIN_TOP_PX))
-        .ml(rems_from_px(margin_left))
-        .mr(rems_from_px(margin_right))
-        .gap(rems_from_px(COUNTER_ICON_TEXT_GAP_PX))
+        .mt(px(COUNTER_MARGIN_TOP_PX))
+        .ml(px(margin_left))
+        .mr(px(margin_right))
+        .gap(px(COUNTER_ICON_TEXT_GAP_PX))
         .child(
             Icon::new(icon)
                 .size(ROW_ICON_SIZE)
@@ -1547,7 +1551,7 @@ fn render_commit_counter(
         )
         .child(
             Label::new(commit_count_label(count))
-                .size(LabelSize::Small)
+                .size(LabelSize::XSmall)
                 .color(Color::Custom(color)),
         )
 }
@@ -1618,7 +1622,7 @@ impl BranchesDelegate {
         let icon_area = h_flex()
             .id(("branches-popup-ref-icon", ix))
             .flex_none()
-            .size(rems_from_px(ICON_SLOT_PX))
+            .size(px(ICON_SLOT_PX))
             .justify_center()
             .child(Icon::new(icon_name).size(ROW_ICON_SIZE).color(icon_color))
             .cursor_pointer()
@@ -1659,7 +1663,7 @@ impl BranchesDelegate {
         let tracked = h_flex()
             .flex_1()
             .min_w_0()
-            .pl(rems_from_px(SECONDARY_TEXT_MARGIN_LEFT_PX))
+            .pl(px(SECONDARY_TEXT_MARGIN_LEFT_PX))
             .justify_end()
             .overflow_hidden()
             .children(
@@ -1752,7 +1756,7 @@ impl BranchesDelegate {
                 .id("branches-popup-fetching")
                 .flex_none()
                 .justify_center()
-                .size(rems_from_px(SEARCH_BOX_HEIGHT_PX))
+                .size(px(SEARCH_BOX_HEIGHT_PX))
                 .child(
                     Icon::new(IconName::ArrowCircle)
                         .size(IconSize::Small)
@@ -2062,15 +2066,15 @@ impl PickerDelegate for BranchesDelegate {
         Some(
             v_flex().w_full().child(
                 h_flex()
-                    .pt(rems_from_px(HEADER_TOP_INSET_PX))
-                    .pl(rems_from_px(HEADER_LEFT_INSET_PX))
-                    .pr(rems_from_px(HEADER_RIGHT_INSET_PX))
+                    .pt(px(HEADER_TOP_INSET_PX))
+                    .pl(px(HEADER_LEFT_INSET_PX))
+                    .pr(px(HEADER_RIGHT_INSET_PX))
                     .flex_none()
                     .child(
                         h_flex()
                             .flex_1()
                             .min_w_0()
-                            .h(rems_from_px(SEARCH_BOX_HEIGHT_PX))
+                            .h(px(SEARCH_BOX_HEIGHT_PX))
                             .px_2()
                             .gap_1p5()
                             .rounded_md()
@@ -2091,7 +2095,7 @@ impl PickerDelegate for BranchesDelegate {
                     .child(
                         h_flex()
                             .flex_none()
-                            .ml(rems_from_px(HEADER_TOOLBAR_GAP_PX))
+                            .ml(px(HEADER_TOOLBAR_GAP_PX))
                             .child(self.render_fetch_button(cx))
                             .child(self.render_gear_button(cx)),
                     ),

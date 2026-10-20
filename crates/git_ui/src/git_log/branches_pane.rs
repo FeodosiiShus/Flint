@@ -1312,7 +1312,7 @@ impl BranchesPane {
         let mut text_style = window.text_style();
         text_style.color = text_color;
         let run = text_style.to_run(STRIPE_LABEL.len());
-        let font_size = TextSize::Small.rems(cx).to_pixels(window.rem_size());
+        let font_size = TextSize::Small.pixels(cx);
         let line = window
             .text_system()
             .shape_line(STRIPE_LABEL.into(), font_size, &[run], None);

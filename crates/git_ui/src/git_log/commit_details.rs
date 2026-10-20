@@ -339,7 +339,7 @@ impl CommitDetailsPanel {
         let colors = cx.theme().colors();
         let background = colors.panel_background;
         let link_color = colors.text_accent;
-        let font_size = TextSize::Default.rems(cx).to_pixels(window.rem_size());
+        let font_size = TextSize::Default.pixels(cx);
         let text_style = window.text_style();
         let text_system = window.text_system();
         let measure = |text: &str| {
@@ -456,7 +456,7 @@ impl CommitDetailsPanel {
                     .pt(INTERNAL_BORDER)
                     .pl(SIDE_BORDER)
                     .pb(INTERNAL_BORDER)
-                    .text_size(TextSize::Default.rems(cx))
+                    .text_size(TextSize::Default.pixels(cx))
                     .child(author_line)
                     .children(committer_line),
             )

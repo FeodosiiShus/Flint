@@ -39,7 +39,7 @@ fn draws_bottom_line(position: DockPosition, has_header_content: bool) -> bool {
 fn header_label_size(window: &Window, cx: &App) -> LabelSize {
     match theme::theme_settings(cx).ui_density(cx) {
         UiDensity::Compact => LabelSize::Custom(rems(
-            TextSize::Default.rems(cx).0
+            f32::from(TextSize::Default.pixels(cx)) / f32::from(window.rem_size())
                 + HEADER_LABEL_COMPACT_FONT_SIZE_OFFSET / window.rem_size(),
         )),
         UiDensity::Default | UiDensity::Comfortable => LabelSize::Default,

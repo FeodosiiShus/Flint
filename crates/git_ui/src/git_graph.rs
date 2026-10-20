@@ -2677,10 +2677,9 @@ impl GitGraph {
             )
     }
 
-    fn render_loading_spinner(&self, cx: &App) -> AnyElement {
-        let rems = TextSize::Large.rems(cx);
+    fn render_loading_spinner(&self) -> AnyElement {
         Icon::new(IconName::LoadCircle)
-            .size(IconSize::Custom(rems))
+            .size(IconSize::Medium)
             .color(Color::Accent)
             .with_rotate_animation(3)
             .into_any_element()
@@ -3767,7 +3766,7 @@ impl GitGraph {
                         .child(
                             div()
                                 .id("commit-message")
-                                .text_sm()
+                                .text_ui(cx)
                                 .w_full()
                                 .max_h(line_height * 12.)
                                 .overflow_y_scroll()
@@ -3815,7 +3814,7 @@ impl Render for GitGraph {
                 .justify_center()
                 .child(label)
                 .when(is_loading && error.is_none(), |this| {
-                    this.child(self.render_loading_spinner(cx))
+                    this.child(self.render_loading_spinner())
                 })
         } else {
             let is_path_history = matches!(self.log_source, LogSource::Path(_));

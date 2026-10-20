@@ -613,7 +613,7 @@ impl Render for GitToolWindowHeader {
         };
         let snapshot = tool_window.read(cx).header_snapshot(window, cx);
 
-        let font_size = TextSize::Default.rems(cx).to_pixels(window.rem_size());
+        let font_size = TextSize::Default.pixels(cx);
         let text_style = window.text_style();
         let widths: Vec<Pixels> = snapshot
             .tabs

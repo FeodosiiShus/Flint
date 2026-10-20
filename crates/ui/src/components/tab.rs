@@ -16,7 +16,6 @@ const ISLAND_TAB_CLOSE_SLOT_SIZE: Pixels = px(16.);
 const ISLAND_TAB_MINIMUM_TAB_WIDTH: Pixels = px(50.);
 const ISLAND_TAB_FILE_COLOR_ALPHA: f32 = 0.4;
 const ISLAND_TAB_FILE_COLOR_ARC_SHRINK: Pixels = px(2.);
-const ISLAND_TAB_UI_FONT_SIZE_GAP: Pixels = px(2.);
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct IslandTabMetrics {
@@ -112,7 +111,7 @@ pub fn island_tab_metrics(cx: &App) -> IslandTabMetrics {
 
 pub fn island_tab_label_size(density: UiDensity, rem_size: Pixels) -> LabelSize {
     let offset = IslandTabMetrics::for_density(density).label_font_size_offset;
-    let font_size = (rem_size - ISLAND_TAB_UI_FONT_SIZE_GAP + offset).max(px(1.));
+    let font_size = (TextSize::label_size_for(rem_size) + offset).max(px(1.));
     LabelSize::Custom(rems(font_size / rem_size))
 }
 

@@ -498,7 +498,7 @@ impl RenderOnce for DiffStyleControls {
                                         &gpui::Modifiers::secondary_key(),
                                         PlatformStyle::platform(),
                                         None,
-                                        Some(TextSize::Small.rems(cx).into()),
+                                        Some(TextSize::Small.pixels(cx).into()),
                                         false,
                                     ))
                                     .child("click to change min width"),

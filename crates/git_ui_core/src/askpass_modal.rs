@@ -129,11 +129,13 @@ impl Render for AskPassModal {
                     .w_full()
                     .gap_1p5()
                     .child(Icon::new(IconName::GitBranch).size(IconSize::XSmall))
-                    .child(h_flex().gap_1().overflow_x_hidden().child(
-                        div().max_w_96().overflow_x_hidden().text_ellipsis().child(
-                            Headline::new(self.operation.clone()).size(HeadlineSize::XSmall),
+                    .child(
+                        h_flex().gap_1().overflow_x_hidden().child(
+                            div().max_w_96().overflow_x_hidden().text_ellipsis().child(
+                                Headline::new(self.operation.clone()).size(HeadlineSize::Small),
+                            ),
                         ),
-                    )),
+                    ),
             )
             .child(
                 div()

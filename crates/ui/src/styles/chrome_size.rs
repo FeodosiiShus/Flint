@@ -100,7 +100,7 @@ fn icon_scale(icon_size: Pixels) -> f32 {
 }
 
 fn scaled_icon_px(default: IconSize, icon_size: Pixels) -> Pixels {
-    let default_px = default.rems().0 * crate::BASE_REM_SIZE_IN_PX;
+    let default_px = f32::from(default.design_pixels());
     px(default_px * f32::from(icon_size) / DEFAULT_ICON_PX)
 }
 
@@ -172,8 +172,8 @@ mod tests {
             (IconSize::XSmall, 12.),
             (IconSize::Small, 14.),
             (IconSize::Medium, 16.),
-            (IconSize::Custom(rems(1.25)), 20.),
-            (IconSize::Custom(rems(0.5)), 8.),
+            (IconSize::Custom(rems(1.25)), 18.75),
+            (IconSize::Custom(rems(0.5)), 7.5),
         ];
         for (default, default_px) in defaults {
             for icon_size in ICON_SIZES {

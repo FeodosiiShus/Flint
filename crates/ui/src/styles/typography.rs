@@ -5,7 +5,7 @@ use gpui::{
 };
 use theme::ActiveTheme;
 
-use crate::{Color, rems_from_px};
+use crate::Color;
 
 /// Extends [`gpui::Styled`] with typography-related styling methods.
 pub trait StyledTypography: Styled + Sized {
@@ -27,51 +27,27 @@ pub trait StyledTypography: Styled + Sized {
 
     /// Sets the text size using a [`TextSize`].
     fn text_ui_size(self, size: TextSize, cx: &App) -> Self {
-        self.text_size(size.rems(cx))
+        self.text_size(size.pixels(cx))
     }
 
-    /// The large size for UI text.
-    ///
-    /// `1rem` or `16px` at the default scale of `1rem` = `16px`.
-    ///
-    /// Note: The absolute size of this text will change based on a user's `ui_scale` setting.
-    ///
-    /// Use `text_ui` for regular-sized text.
+    /// The large size for UI text, 14 px by default (IntelliJ's `JBFont.h4()` size).
     fn text_ui_lg(self, cx: &App) -> Self {
-        self.text_size(TextSize::Large.rems(cx))
+        self.text_size(TextSize::Large.pixels(cx))
     }
 
-    /// The default size for UI text.
-    ///
-    /// `0.825rem` or `14px` at the default scale of `1rem` = `16px`.
-    ///
-    /// Note: The absolute size of this text will change based on a user's `ui_scale` setting.
-    ///
-    /// Use `text_ui_sm` for smaller text.
+    /// The default size for UI text, 13 px by default (IntelliJ's label font).
     fn text_ui(self, cx: &App) -> Self {
-        self.text_size(TextSize::default().rems(cx))
+        self.text_size(TextSize::default().pixels(cx))
     }
 
-    /// The small size for UI text.
-    ///
-    /// `0.75rem` or `12px` at the default scale of `1rem` = `16px`.
-    ///
-    /// Note: The absolute size of this text will change based on a user's `ui_scale` setting.
-    ///
-    /// Use `text_ui` for regular-sized text.
+    /// The small size for UI text, 12 px by default (IntelliJ's `JBFont.medium()`).
     fn text_ui_sm(self, cx: &App) -> Self {
-        self.text_size(TextSize::Small.rems(cx))
+        self.text_size(TextSize::Small.pixels(cx))
     }
 
-    /// The extra small size for UI text.
-    ///
-    /// `0.625rem` or `10px` at the default scale of `1rem` = `16px`.
-    ///
-    /// Note: The absolute size of this text will change based on a user's `ui_scale` setting.
-    ///
-    /// Use `text_ui` for regular-sized text.
+    /// The extra small size for UI text, 11 px by default (IntelliJ's `JBFont.small()`).
     fn text_ui_xs(self, cx: &App) -> Self {
-        self.text_size(TextSize::XSmall.rems(cx))
+        self.text_size(TextSize::XSmall.pixels(cx))
     }
 
     /// The font size for buffer text.
@@ -89,36 +65,22 @@ pub trait StyledTypography: Styled + Sized {
 impl<E: Styled> StyledTypography for E {}
 
 /// A utility for getting the size of various semantic text sizes.
-#[derive(Debug, Default, Clone)]
+///
+/// The sizes are whole pixels, like IntelliJ's macOS type scale (label 13, medium 12, small 11
+/// at a 1:1 UI scale), and they are the same inside editors, whose rem follows the buffer font.
+/// Fractional sizes such as `14/16` of a 15 px rem made the same label 13.125 px in one place
+/// and 12.8 px in another.
+#[derive(Debug, Default, Clone, Copy)]
 pub enum TextSize {
-    /// The default size for UI text.
-    ///
-    /// `0.825rem` or `14px` at the default scale of `1rem` = `16px`.
-    ///
-    /// Note: The absolute size of this text will change based on a user's `ui_scale` setting.
+    /// The default size for UI text: 13 px at the default `ui_font_size` of 15.
     #[default]
     Default,
-    /// The large size for UI text.
-    ///
-    /// `1rem` or `16px` at the default scale of `1rem` = `16px`.
-    ///
-    /// Note: The absolute size of this text will change based on a user's `ui_scale` setting.
+    /// The large size for UI text: 14 px at the default `ui_font_size`.
     Large,
-
-    /// The small size for UI text.
-    ///
-    /// `0.75rem` or `12px` at the default scale of `1rem` = `16px`.
-    ///
-    /// Note: The absolute size of this text will change based on a user's `ui_scale` setting.
+    /// The small size for UI text: 12 px at the default `ui_font_size`.
     Small,
-
-    /// The extra small size for UI text.
-    ///
-    /// `0.625rem` or `10px` at the default scale of `1rem` = `16px`.
-    ///
-    /// Note: The absolute size of this text will change based on a user's `ui_scale` setting.
+    /// The extra small size for UI text: 11 px at the default `ui_font_size`.
     XSmall,
-
     /// The `ui_font_size` set by the user.
     Ui,
     /// The `buffer_font_size` set by the user.
@@ -129,62 +91,61 @@ pub enum TextSize {
     // Terminal,
 }
 
-impl TextSize {
-    /// Returns the text size in rems.
-    pub fn rems(self, cx: &App) -> Rems {
-        let settings = theme::theme_settings(cx);
+/// How far IntelliJ's label font (13 pt) sits below Flint's default `ui_font_size` (15), which
+/// also sets the rem that spacing is measured in.
+const LABEL_SIZE_BELOW_UI_FONT_SIZE: f32 = 2.;
+/// Keeps the extra small size readable when the UI font size is turned far down.
+const MIN_LABEL_SIZE: f32 = 10.;
 
-        match self {
-            Self::Large => rems_from_px(16_f32),
-            Self::Default => rems_from_px(14_f32),
-            Self::Small => rems_from_px(12_f32),
-            Self::XSmall => rems_from_px(10_f32),
-            Self::Ui => rems_from_px(settings.ui_font_size(cx)),
-            Self::Editor => rems_from_px(settings.buffer_font_size(cx)),
-        }
+impl TextSize {
+    /// The UI label size for a `ui_font_size`: two pixels below it, rounded to a whole pixel.
+    pub fn label_size_for(ui_font_size: Pixels) -> Pixels {
+        px((f32::from(ui_font_size) - LABEL_SIZE_BELOW_UI_FONT_SIZE)
+            .round()
+            .max(MIN_LABEL_SIZE))
     }
 
     pub fn pixels(self, cx: &App) -> Pixels {
         let settings = theme::theme_settings(cx);
-
+        let label = Self::label_size_for(settings.ui_font_size(cx));
         match self {
-            Self::Large => px(16.),
-            Self::Default => px(14.),
-            Self::Small => px(12.),
-            Self::XSmall => px(10.),
+            Self::Large => label + px(1.),
+            Self::Default => label,
+            Self::Small => label - px(1.),
+            Self::XSmall => label - px(2.),
             Self::Ui => settings.ui_font_size(cx),
             Self::Editor => settings.buffer_font_size(cx),
         }
     }
 }
 
-/// The size of a [`Headline`] element
-///
-/// Defaults to a Major Second scale.
+/// The size of a [`Headline`] element, in whole pixels (see [`HeadlineSize::pixels`]).
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Clone, Copy, Default)]
 pub enum HeadlineSize {
-    /// An extra small headline - `~14px` @16px/rem
+    /// 13 px at the default `ui_font_size`.
     XSmall,
-    /// A small headline - `16px` @16px/rem
+    /// 14 px at the default `ui_font_size`.
     Small,
     #[default]
-    /// A medium headline - `~18px` @16px/rem
+    /// 16 px at the default `ui_font_size`.
     Medium,
-    /// A large headline - `~20px` @16px/rem
+    /// 18 px at the default `ui_font_size`.
     Large,
-    /// An extra large headline - `~22px` @16px/rem
+    /// 22 px at the default `ui_font_size`.
     XLarge,
 }
 
 impl HeadlineSize {
-    /// Returns the headline size in rems.
-    pub fn rems(self) -> Rems {
+    /// The headline size in whole pixels, on IntelliJ's `JBFont` heading sizes above the label
+    /// font: 13, then `h4` 14, `h3` 16, `h2` 18 and `h1` 22 px at the default `ui_font_size`.
+    pub fn pixels(self, cx: &App) -> Pixels {
+        let label = TextSize::Default.pixels(cx);
         match self {
-            Self::XSmall => rems(0.88),
-            Self::Small => rems(1.0),
-            Self::Medium => rems(1.125),
-            Self::Large => rems(1.27),
-            Self::XLarge => rems(1.43),
+            Self::XSmall => label,
+            Self::Small => label + px(1.),
+            Self::Medium => label + px(3.),
+            Self::Large => label + px(5.),
+            Self::XLarge => label + px(9.),
         }
     }
 
@@ -216,7 +177,7 @@ impl RenderOnce for Headline {
         div()
             .font(ui_font)
             .line_height(self.size.line_height())
-            .text_size(self.size.rems())
+            .text_size(self.size.pixels(cx))
             .text_color(cx.theme().colors().text)
             .child(self.text)
     }
@@ -288,5 +249,64 @@ impl Component for Headline {
                 ),
             ])
             .into_any_element()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gpui::TestAppContext;
+
+    #[test]
+    fn ui_text_sizes_are_whole_pixels_for_any_ui_font_size() {
+        for tenths in 80..=320 {
+            let ui_font_size = px(tenths as f32 / 10.);
+            let label = TextSize::label_size_for(ui_font_size);
+            assert_eq!(label, label.round(), "ui_font_size {ui_font_size:?}");
+        }
+        assert_eq!(TextSize::label_size_for(px(15.)), px(13.));
+        assert_eq!(TextSize::label_size_for(px(16.)), px(14.));
+        assert_eq!(TextSize::label_size_for(px(14.6)), px(13.));
+        assert_eq!(
+            TextSize::label_size_for(px(8.)),
+            px(MIN_LABEL_SIZE),
+            "the extra small size stays readable"
+        );
+    }
+
+    #[gpui::test]
+    fn the_default_ui_text_follows_intellijs_macos_type_scale(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            let mut settings_store = settings::SettingsStore::test(cx);
+            // The test settings use 14 px fonts; check Flint's own defaults.
+            let defaults = settings::parse_json_with_comments::<settings::SettingsContent>(
+                &settings::default_settings(),
+            )
+            .expect("the default settings parse");
+            settings_store.update_user_settings(cx, |settings| {
+                settings.theme.ui_font_size = defaults.theme.ui_font_size;
+                settings.theme.buffer_font_size = defaults.theme.buffer_font_size;
+            });
+            cx.set_global(settings_store);
+            theme_settings::init(theme::LoadThemes::JustBase, cx);
+
+            assert_eq!(TextSize::Default.pixels(cx), px(13.), "the label font");
+            assert_eq!(TextSize::Small.pixels(cx), px(12.), "JBFont.medium()");
+            assert_eq!(TextSize::XSmall.pixels(cx), px(11.), "JBFont.small()");
+            assert_eq!(TextSize::Large.pixels(cx), px(14.), "JBFont.h4() size");
+            assert_eq!(TextSize::Ui.pixels(cx), px(15.), "the ui_font_size itself");
+            assert_eq!(TextSize::Editor.pixels(cx), px(13.), "JetBrains Mono 13");
+            assert_eq!(
+                [
+                    HeadlineSize::XSmall,
+                    HeadlineSize::Small,
+                    HeadlineSize::Medium,
+                    HeadlineSize::Large,
+                    HeadlineSize::XLarge,
+                ]
+                .map(|size| size.pixels(cx)),
+                [px(13.), px(14.), px(16.), px(18.), px(22.)]
+            );
+        });
     }
 }

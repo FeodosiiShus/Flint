@@ -384,7 +384,7 @@ impl CommitModal {
             .unwrap_or_else(|| "<no branch>".to_owned());
 
         let branch_picker_button = Button::new("branch_picker_button", branch)
-            .label_size(LabelSize::Small)
+            .label_size(LabelSize::Default)
             .start_icon(
                 Icon::new(IconName::GitBranch)
                     .size(IconSize::Small)

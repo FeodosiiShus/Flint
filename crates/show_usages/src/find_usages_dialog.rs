@@ -91,7 +91,7 @@ impl Render for FindUsagesDialog {
                     .px_3()
                     .pt_2()
                     .pb_1()
-                    .child(Headline::new(TITLE).size(HeadlineSize::XSmall)),
+                    .child(Headline::new(TITLE).size(HeadlineSize::Small)),
             )
             .child(
                 div().w_full().px_3().pb_2().child(

@@ -1189,7 +1189,7 @@ impl Delegate {
                                 .w_full()
                                 .min_w_0()
                                 .gap_2p5()
-                                .text_sm()
+                                .text_ui(cx)
                                 .child(
                                     h_flex()
                                         .w(rems(

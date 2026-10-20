@@ -211,7 +211,7 @@ impl Render for MigrationBanner {
                     .child(
                         div()
                             .overflow_hidden()
-                            .text_size(TextSize::Default.rems(cx))
+                            .text_size(TextSize::Default.pixels(cx))
                             .max_h(2 * line_height)
                             .when_some(self.markdown.as_ref(), |this, markdown| {
                                 this.child(

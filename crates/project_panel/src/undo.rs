@@ -896,7 +896,7 @@ impl Inner {
                         let markdown = cx.new(|cx| Markdown::new(error.into(), None, None, cx));
                         MessageNotification::new_from_builder(cx, move |window, cx| {
                             MarkdownElement::new(markdown.clone(), markdown_style(window, cx))
-                                .text_size(TextSize::Default.rems(cx))
+                                .text_size(TextSize::Default.pixels(cx))
                                 .into_any_element()
                         })
                         .with_title(title)

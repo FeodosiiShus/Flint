@@ -204,7 +204,10 @@ impl BlameRenderer for GitBlameRenderer {
             h_flex()
                 .id("inline-blame")
                 .w_full()
-                .font(style.font())
+                // An annotation at the end of the line, like IntelliJ's inlays and code vision:
+                // the UI font, one pixel under the editor font.
+                .font(theme::theme_settings(cx).ui_font(cx).clone())
+                .text_size(theme::theme_settings(cx).buffer_font_size(cx) - px(1.))
                 .text_color(cx.theme().status().hint)
                 .line_height(style.line_height)
                 .child(Icon::new(IconName::FileGit).color(Color::Hint))

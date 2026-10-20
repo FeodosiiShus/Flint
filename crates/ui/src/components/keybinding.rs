@@ -554,7 +554,7 @@ impl RenderOnce for Key {
         let single_char = is_single_glyph(&self.key);
         let size = self
             .size
-            .unwrap_or_else(|| TextSize::default().rems(cx).into());
+            .unwrap_or_else(|| TextSize::default().pixels(cx).into());
 
         div()
             .py_0()

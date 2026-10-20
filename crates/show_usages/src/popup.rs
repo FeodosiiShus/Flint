@@ -276,8 +276,8 @@ impl RowStyle {
                 ..TextStyle::default()
             },
             font_size,
-            label_font_size: TextSize::Default.rems(cx).to_pixels(rem_size),
-            small_label_font_size: TextSize::Small.rems(cx).to_pixels(rem_size),
+            label_font_size: TextSize::Default.pixels(cx),
+            small_label_font_size: TextSize::Small.pixels(cx),
             icon_width: IconSize::Small.rems().to_pixels(rem_size),
             muted: colors.text_muted,
             search_background: colors.search_match_background,

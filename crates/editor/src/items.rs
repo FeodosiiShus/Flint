@@ -1067,8 +1067,9 @@ impl Item for Editor {
         if !self.buffer.read(cx).is_singleton() {
             return None;
         }
+        // IntelliJ draws breadcrumbs in the label font (`editor.breadcrumbs.system.font`).
         let font = theme_settings::ThemeSettings::get_global(cx)
-            .buffer_font
+            .ui_font
             .clone();
         let hide_file_path = self.breadcrumb_header.is_none()
             && !EditorSettings::get_global(cx).toolbar.breadcrumbs_file_path;

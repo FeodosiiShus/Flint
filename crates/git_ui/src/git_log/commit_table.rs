@@ -1571,7 +1571,8 @@ impl CommitTable {
     fn compute_frame(&mut self, window: &mut Window, cx: &mut Context<Self>) -> FrameLayout {
         let theme_settings = ThemeSettings::get_global(cx);
         let font = theme_settings.ui_font.clone();
-        let font_size = theme_settings.ui_font_size(cx);
+        // IntelliJ's log table uses the 13 px label font and its reference labels one point less.
+        let font_size = TextSize::Default.pixels(cx);
         let label_font_size = font_size - px(1.);
         let font_id = window.text_system().resolve_font(&font);
         let text_height = font_height(window, font_id, font_size);

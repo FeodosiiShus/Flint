@@ -400,7 +400,7 @@ impl Render for LanguageServerPrompt {
                     )
                     .child(
                         MarkdownElement::new(self.markdown.clone(), markdown_style(window, cx))
-                            .text_size(TextSize::Small.rems(cx))
+                            .text_size(TextSize::Small.pixels(cx))
                             .code_block_renderer(markdown::CodeBlockRenderer::Default {
                                 copy_button_visibility: CopyButtonVisibility::Hidden,
                                 wrap_button_visibility: markdown::WrapButtonVisibility::Hidden,

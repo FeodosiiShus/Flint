@@ -66,16 +66,30 @@ pub enum IconSize {
     Custom(Rems),
 }
 
+/// Flint's default `ui_font_size`, which is also its rem. Icon sizes are designed for it, so
+/// at the default an icon is exactly 16, 14 or 12 px like IntelliJ's and its strokes stay on
+/// the pixel grid; 16/16 of a 15 px rem drew a 16-unit icon at 15 px.
+const ICON_DESIGN_REM_SIZE: f32 = 15.;
+
+fn icon_rems(pixels: f32) -> Rems {
+    gpui::rems(pixels / ICON_DESIGN_REM_SIZE)
+}
+
 impl IconSize {
     pub fn rems(self) -> Rems {
         match self {
-            IconSize::Indicator => rems_from_px(10_f32),
-            IconSize::XSmall => rems_from_px(12_f32),
-            IconSize::Small => rems_from_px(14_f32),
-            IconSize::Medium => rems_from_px(16_f32),
-            IconSize::XLarge => rems_from_px(48_f32),
+            IconSize::Indicator => icon_rems(10.),
+            IconSize::XSmall => icon_rems(12.),
+            IconSize::Small => icon_rems(14.),
+            IconSize::Medium => icon_rems(16.),
+            IconSize::XLarge => icon_rems(48.),
             IconSize::Custom(size) => size,
         }
+    }
+
+    /// The icon's side at Flint's default rem: 16 px for [`IconSize::Medium`].
+    pub fn design_pixels(self) -> Pixels {
+        px(self.rems().0 * ICON_DESIGN_REM_SIZE)
     }
 
     /// Returns the individual components of the square that contains this [`IconSize`].
@@ -84,7 +98,7 @@ impl IconSize {
     ///   1. The length of one side of the square
     ///   2. The padding of one side of the square
     pub fn square_components(&self, window: &mut Window, cx: &mut App) -> (Pixels, Pixels) {
-        let icon_size = self.rems() * window.rem_size();
+        let icon_size = (self.rems() * window.rem_size()).round();
         let padding = match self {
             IconSize::Indicator => DynamicSpacing::Base00.px(cx),
             IconSize::XSmall => DynamicSpacing::Base02.px(cx),
@@ -223,11 +237,13 @@ impl Transformable for Icon {
 }
 
 impl RenderOnce for Icon {
-    fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        // A whole-pixel side keeps the icon's strokes sharp at any rem, editors included.
+        let side = self.size.to_pixels(window.rem_size()).round();
         match self.source {
             IconSource::Embedded(path) => svg()
                 .with_transformation(self.transformation)
-                .size(self.size)
+                .size(side)
                 .flex_none()
                 .path(path)
                 .text_color(self.color.color(cx))
@@ -235,12 +251,12 @@ impl RenderOnce for Icon {
             IconSource::ExternalSvg(path) => svg()
                 .external_path(path)
                 .with_transformation(self.transformation)
-                .size(self.size)
+                .size(side)
                 .flex_none()
                 .text_color(self.color.color(cx))
                 .into_any_element(),
             IconSource::External(path) => img(path)
-                .size(self.size)
+                .size(side)
                 .flex_none()
                 .text_color(self.color.color(cx))
                 .into_any_element(),
@@ -248,7 +264,7 @@ impl RenderOnce for Icon {
                 &path,
                 cx.theme().appearance().is_light(),
             ))
-            .size(self.size)
+            .size(side)
             .flex_none()
             .into_any_element(),
         }
@@ -387,6 +403,24 @@ impl Component for Icon {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn icons_are_intellijs_whole_pixel_sizes_on_the_default_rem() {
+        let default_rem = px(ICON_DESIGN_REM_SIZE);
+        for (name, size, expected) in [
+            ("Indicator", IconSize::Indicator, 10.),
+            ("XSmall", IconSize::XSmall, 12.),
+            ("Small", IconSize::Small, 14.),
+            ("Medium", IconSize::Medium, 16.),
+            ("XLarge", IconSize::XLarge, 48.),
+        ] {
+            let side = size.rems().to_pixels(default_rem);
+            assert!(
+                (f32::from(side) - expected).abs() < 0.001,
+                "{name} is {side:?}, not {expected} px"
+            );
+        }
+    }
 
     #[test]
     fn embedded_images_use_their_dark_twin_on_dark_themes() {

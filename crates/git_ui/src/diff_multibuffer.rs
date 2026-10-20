@@ -865,10 +865,9 @@ impl Render for DiffMultibuffer {
             .justify_center()
             .size_full()
             .when(is_empty && is_loading, |el| {
-                let rems = TextSize::Large.rems(cx);
                 el.child(
                     Icon::new(IconName::LoadCircle)
-                        .size(IconSize::Custom(rems))
+                        .size(IconSize::Medium)
                         .color(Color::Accent)
                         .with_rotate_animation(3)
                         .into_any_element(),

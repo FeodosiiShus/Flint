@@ -237,13 +237,14 @@ pub fn symbol_label(symbol: &Symbol, positions: &[usize], cx: &App) -> StyledTex
     let label = symbol.label.text.clone();
     let settings = ThemeSettings::get_global(cx);
 
+    // Search Everywhere rows use the label font in IntelliJ, symbols included.
     let text_style = TextStyle {
         color: theme.colors().text,
-        font_family: settings.buffer_font.family.clone(),
-        font_features: settings.buffer_font.features.clone(),
-        font_fallbacks: settings.buffer_font.fallbacks.clone(),
-        font_size: settings.buffer_font_size(cx).into(),
-        font_weight: settings.buffer_font.weight,
+        font_family: settings.ui_font.family.clone(),
+        font_features: settings.ui_font.features.clone(),
+        font_fallbacks: settings.ui_font.fallbacks.clone(),
+        font_size: TextSize::Default.pixels(cx).into(),
+        font_weight: settings.ui_font.weight,
         line_height: relative(1.),
         ..Default::default()
     };

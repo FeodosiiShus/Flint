@@ -2036,6 +2036,9 @@ mod tests {
     fn deleting_top_recent_project_preserves_scroll_position(cx: &mut TestAppContext) {
         let target = FIRST_RECENT_PROJECT;
         let (picker, cx) = build_picker(cx);
+        // From the bottom of the list, selecting the first recent project scrolls up to it, so
+        // it is the top row whatever the height of a row.
+        scroll_to_and_select(&picker, cx, LAST_RECENT_PROJECT);
         let scroll_top = scroll_to_and_select(&picker, cx, target);
         assert!(
             scroll_top > 0,

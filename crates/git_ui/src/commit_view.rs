@@ -892,7 +892,7 @@ impl CommitView {
                             div()
                                 .id("commit-message")
                                 .size_full()
-                                .text_sm()
+                                .text_ui(cx)
                                 .when(collapsed, |this| this.h(collapsed_height).overflow_hidden())
                                 .when(!collapsed, |this| {
                                     this.max_h(max_expanded_height)

@@ -1948,3 +1948,32 @@ async fn delete_ref_deletes_the_ref_of_the_open_menu_after_the_selection_moved(
     assert!(!branches.contains(&"topic".to_string()), "{branches:?}");
     assert!(branches.contains(&"main".to_string()), "{branches:?}");
 }
+
+#[gpui::test]
+async fn branch_rows_are_intellijs_whole_24_pixel_rows(cx: &mut TestAppContext) {
+    let mut fixture =
+        Fixture::open(cx, path!("/branches-popup-row-height"), standard_repository).await;
+    fixture.open_in_modal_layer();
+    fixture.select("section:Local:closed");
+    fixture.select_child();
+    let rows = fixture.rows();
+    let first_ref = rows
+        .iter()
+        .zip(rows.iter().skip(1))
+        .position(|(row, next)| row.contains("ref:") && next.contains("ref:"))
+        .unwrap_or_else(|| panic!("two branch rows follow each other: {rows:#?}"));
+
+    let first = bounds_of(
+        &mut fixture.cx,
+        format!("branches-popup-ref-label-{first_ref}"),
+    );
+    let second = bounds_of(
+        &mut fixture.cx,
+        format!("branches-popup-ref-label-{}", first_ref + 1),
+    );
+    assert_eq!(
+        second.top() - first.top(),
+        px(delegate::ROW_HEIGHT_PX),
+        "rows are 24 px like IntelliJ's trees, not 24/16 of the rem"
+    );
+}

@@ -363,8 +363,8 @@ fn icon_cell(icon: IconName, color: Color) -> impl IntoElement {
         .child(Icon::new(icon).size(IconSize::Medium).color(color))
 }
 
-fn status_count_font_size(rem_size: Pixels, cx: &App) -> Pixels {
-    TextSize::Default.rems(cx).to_pixels(rem_size) - COUNT_FONT_SIZE_REDUCTION
+fn status_count_font_size(cx: &App) -> Pixels {
+    TextSize::Default.pixels(cx) - COUNT_FONT_SIZE_REDUCTION
 }
 
 fn render_status_content(
@@ -572,7 +572,7 @@ impl EditorElement {
                 InspectionPopup::new(editor_handle)
             });
             let rem_size = window.rem_size();
-            let count_font_size = status_count_font_size(rem_size, cx);
+            let count_font_size = status_count_font_size(cx);
             let mut element = render_inspection_widget(
                 &model,
                 &self.editor,
@@ -998,7 +998,7 @@ mod tests {
 
     fn status_width(status: StatusContent, window: &mut Window, cx: &mut App) -> f32 {
         let rem_size = window.rem_size();
-        let count_font_size = status_count_font_size(rem_size, cx);
+        let count_font_size = status_count_font_size(cx);
         let mut element = render_status_content(&status, count_font_size, rem_size, cx);
         f32::from(
             element

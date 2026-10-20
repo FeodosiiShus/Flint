@@ -107,7 +107,7 @@ impl Render for UpdateOptionsDialog {
                     .pt_2()
                     .pb_1()
                     .w_full()
-                    .child(Headline::new("Update Project").size(HeadlineSize::XSmall)),
+                    .child(Headline::new("Update Project").size(HeadlineSize::Small)),
             )
             .child(
                 v_flex()
@@ -348,7 +348,7 @@ impl Render for FixTrackedBranchDialog {
                     .pt_2()
                     .pb_1()
                     .w_full()
-                    .child(Headline::new(FIX_TRACKED_BRANCH_TITLE).size(HeadlineSize::XSmall)),
+                    .child(Headline::new(FIX_TRACKED_BRANCH_TITLE).size(HeadlineSize::Small)),
             )
             .child(
                 h_flex()

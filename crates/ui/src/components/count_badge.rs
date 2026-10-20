@@ -21,7 +21,7 @@ impl CountBadge {
 }
 
 impl RenderOnce for CountBadge {
-    fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let label = if self.count > 99 {
             "99+".to_string()
         } else {
@@ -56,7 +56,8 @@ impl RenderOnce for CountBadge {
             .shadow_sm()
             .child(
                 Label::new(label)
-                    .size(LabelSize::Custom(rems_from_px(9_f32)))
+                    // A whole 9 px, not 9/16 of the rem.
+                    .size(LabelSize::Custom(rems(9. / f32::from(window.rem_size()))))
                     .weight(FontWeight::MEDIUM),
             )
     }

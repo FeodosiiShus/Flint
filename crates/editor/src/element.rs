@@ -1817,8 +1817,10 @@ impl EditorElement {
                     .color(cx)
                     .opacity(0.05))
                 .text_color(severity_to_color(&diagnostic_to_render.severity).color(cx))
-                .text_sm()
-                .font(style.text.font())
+                // Like inlay hints and code vision, IntelliJ's annotations at the end of a
+                // line: the UI font, one pixel under the editor font.
+                .font_ui(cx)
+                .text_size(style.text.font_size.to_pixels(window.rem_size()) - px(1.))
                 .child(diagnostic_to_render.message.clone())
                 .into_any();
 
@@ -6747,7 +6749,7 @@ const BOTTOM_BREADCRUMB_RIGHT_GAP: f32 = 9.;
 
 fn bottom_breadcrumb_strip_min_height(window: &Window, cx: &App) -> Pixels {
     let mut text_style = window.text_style();
-    text_style.font_size = TextSize::default().rems(cx).into();
+    text_style.font_size = TextSize::default().pixels(cx).into();
     let crumb_line_height = text_style.line_height_in_pixels(window.rem_size());
     px(BOTTOM_BREADCRUMB_VERTICAL_PADDING) * 2. + crumb_line_height
 }

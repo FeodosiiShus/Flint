@@ -297,7 +297,7 @@ impl BranchesPopup {
             .top_0()
             .left_0()
             .right_0()
-            .h(rems_from_px(HEADER_TOP_INSET_PX))
+            .h(px(HEADER_TOP_INSET_PX))
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|this, event: &MouseDownEvent, _, _| {

@@ -186,7 +186,7 @@ impl Render for StashMessageModal {
                     .w_full()
                     .gap_1p5()
                     .child(Icon::new(IconName::GitBranch).size(IconSize::XSmall))
-                    .child(Headline::new(self.kind.title()).size(HeadlineSize::XSmall)),
+                    .child(Headline::new(self.kind.title()).size(HeadlineSize::Small)),
             )
             .child(div().px_3().pb_3().w_full().child(self.editor.clone()))
     }
@@ -2460,7 +2460,7 @@ impl GitPanel {
         Some(
             h_flex()
                 .id("start-slot")
-                .text_lg()
+                .text_ui_lg(cx)
                 .child(checkbox)
                 .on_mouse_down(MouseButton::Left, |_, _, cx| {
                     // prevent the list item active state triggering when toggling checkbox

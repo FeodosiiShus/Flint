@@ -205,7 +205,7 @@ impl KeybindingHint {
 }
 
 impl RenderOnce for KeybindingHint {
-    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+    fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
         let colors = cx.theme().colors();
         let is_light = cx.theme().appearance() == Appearance::Light;
 
@@ -219,9 +219,7 @@ impl RenderOnce for KeybindingHint {
 
         let shadow_color = colors.text.alpha(if is_light { 0.04 } else { 0.08 });
 
-        let size = self
-            .size
-            .unwrap_or(TextSize::Small.rems(cx).to_pixels(window.rem_size()));
+        let size = self.size.unwrap_or(TextSize::Small.pixels(cx));
 
         let kb_size = size - px(2.0);
 
@@ -230,7 +228,7 @@ impl RenderOnce for KeybindingHint {
         base.text_style().font_style = Some(FontStyle::Italic);
 
         base.gap_1()
-            .font_buffer(cx)
+            .font_ui(cx)
             .text_size(size)
             .text_color(colors.text_disabled)
             .children(self.prefix)
@@ -243,7 +241,7 @@ impl RenderOnce for KeybindingHint {
                     .border_color(border_color)
                     .bg(bg_color)
                     .shadow(vec![BoxShadow::new(px(0.), px(1.), shadow_color)])
-                    .child(self.keybinding.size(rems_from_px(kb_size))),
+                    .child(self.keybinding.size(kb_size)),
             )
             .children(self.suffix)
     }

@@ -1794,14 +1794,14 @@ fn is_remote_head(name: &str) -> bool {
     name == HEAD_REVISION || name.ends_with("/HEAD")
 }
 
-fn label_font(window: &Window, cx: &App) -> (gpui::Font, Pixels) {
+fn label_font(cx: &App) -> (gpui::Font, Pixels) {
     let font = theme::theme_settings(cx).ui_font(cx).clone();
-    let font_size = TextSize::Default.rems(cx).to_pixels(window.rem_size());
+    let font_size = TextSize::Default.pixels(cx);
     (font, font_size)
 }
 
 fn label_font_height(window: &Window, cx: &App) -> f32 {
-    let (font, font_size) = label_font(window, cx);
+    let (font, font_size) = label_font(cx);
     let text_system = window.text_system();
     let font_id = text_system.resolve_font(&font);
     let ascent = f32::from(text_system.ascent(font_id, font_size));
@@ -1810,7 +1810,7 @@ fn label_font_height(window: &Window, cx: &App) -> f32 {
 }
 
 fn text_field_width(window: &Window, cx: &App) -> Pixels {
-    let (font, font_size) = label_font(window, cx);
+    let (font, font_size) = label_font(cx);
     let text_system = window.text_system();
     let font_id = text_system.resolve_font(&font);
     let column_width = text_system
