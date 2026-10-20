@@ -1622,6 +1622,103 @@ async fn the_popup_grows_to_the_widest_row(cx: &mut TestAppContext) {
     assert!(size.width > px(MIN_WIDTH_PX), "{size:?}");
 }
 
+#[gpui::test]
+async fn very_long_branch_names_stop_at_the_standard_popup_width_and_elide(
+    cx: &mut TestAppContext,
+) {
+    let long_name = format!(
+        "feature-{}",
+        "a-very-long-branch-name-that-keeps-going-".repeat(4)
+    );
+    let mut fixture = Fixture::open(cx, path!("/branches-popup-capped"), |fs, dot_git| {
+        fs.insert_branches(dot_git, &["main", &long_name]);
+        fs.set_recent_branches_for_repo(dot_git, &[long_name.as_str(), "main"]);
+    })
+    .await;
+    fixture.open_in_modal_layer();
+    let size = fixture
+        .popup
+        .read_with(&fixture.cx, |popup, cx| popup.popup_size(cx));
+    assert_eq!(
+        size.width, MAX_WIDTH,
+        "the popup stops at the standard width"
+    );
+
+    fixture.cx.update(|window, _| window.refresh());
+    fixture.cx.run_until_parked();
+    let popup = bounds_of(&mut fixture.cx, DEBUG_SELECTOR.to_string());
+    assert_eq!(popup.size.width, MAX_WIDTH);
+    for (selector, label) in fixture
+        .cx
+        .debug_bounds_with_prefix("branches-popup-ref-label-")
+    {
+        assert!(
+            label.right() <= popup.right(),
+            "{selector} is elided inside the popup: {label:?} in {popup:?}"
+        );
+    }
+}
+
+#[gpui::test]
+async fn the_popup_is_a_standard_popup_surface_that_fits_the_window(cx: &mut TestAppContext) {
+    let mut fixture =
+        Fixture::open(cx, path!("/branches-popup-surface"), standard_repository).await;
+    fixture.open_in_modal_layer();
+    fixture.cx.update(|window, _| window.refresh());
+    fixture.cx.run_until_parked();
+    let popup = bounds_of(&mut fixture.cx, DEBUG_SELECTOR.to_string());
+    let surfaces = fixture.cx.debug_bounds_with_prefix("SURFACE-Popup");
+    assert!(
+        surfaces.iter().any(|(_, bounds)| *bounds == popup),
+        "the branches popup is drawn with the standard popup chrome: {surfaces:?}"
+    );
+
+    let small_window = gpui::size(px(420.), px(300.));
+    fixture.cx.simulate_resize(small_window);
+    fixture.cx.update(|window, _| window.refresh());
+    fixture.cx.run_until_parked();
+    let popup = bounds_of(&mut fixture.cx, DEBUG_SELECTOR.to_string());
+    let margin = ui::SurfaceKind::Popup.standard().viewport_margin;
+    assert!(
+        popup.size.width <= small_window.width - margin * 2.
+            && popup.size.height <= small_window.height - margin * 2.,
+        "the popup shrinks to keep its margin in a small window: {popup:?}"
+    );
+}
+
+#[gpui::test]
+async fn a_separator_keeps_the_rows_clear_of_the_search_field(cx: &mut TestAppContext) {
+    let mut fixture =
+        Fixture::open(cx, path!("/branches-popup-separator"), standard_repository).await;
+    fixture.open_in_modal_layer();
+    fixture.cx.update(|window, _| window.refresh());
+    fixture.cx.run_until_parked();
+    let popup = bounds_of(&mut fixture.cx, DEBUG_SELECTOR.to_string());
+    let separator = bounds_of(
+        &mut fixture.cx,
+        "branches-popup-search-separator".to_string(),
+    );
+    assert_eq!(separator.size.height, px(1.));
+    assert_eq!(separator.size.width, popup.size.width - px(2.));
+    assert_eq!(
+        separator.top() - popup.top(),
+        px(1.
+            + delegate::HEADER_TOP_INSET_PX
+            + delegate::SEARCH_BOX_HEIGHT_PX
+            + delegate::HEADER_BOTTOM_GAP_PX),
+        "the separator sits a gap below the search field"
+    );
+    for (selector, label) in fixture
+        .cx
+        .debug_bounds_with_prefix("branches-popup-ref-label-")
+    {
+        assert!(
+            label.top() >= separator.bottom(),
+            "{selector} starts below the separator: {label:?}"
+        );
+    }
+}
+
 #[test]
 fn packed_sizes_respect_the_intellij_minimum_and_the_twenty_row_cap() {
     let minimum = packed_size(px(100.), 3, px(4.));
@@ -1629,6 +1726,7 @@ fn packed_sizes_respect_the_intellij_minimum_and_the_twenty_row_cap() {
     assert_eq!(minimum.height, px(MIN_HEIGHT_PX));
     let wide = packed_size(px(500.), 3, px(4.));
     assert_eq!(wide.width, px(502.));
+    assert_eq!(packed_size(px(2000.), 3, px(4.)).width, MAX_WIDTH);
     assert_eq!(
         packed_size(px(0.), 40, px(4.)).height,
         packed_size(px(0.), MAX_VISIBLE_ROWS, px(4.)).height

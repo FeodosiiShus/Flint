@@ -6,8 +6,8 @@ use crate::Inspector;
 use crate::profiler;
 use crate::{
     Action, AnyDrag, AnyElement, AnyImageCache, AnyTooltip, AnyView, App, AppContext, Arena, Asset,
-    AsyncWindowContext, AtlasTile, AvailableSpace, Background, BorderStyle, Bounds, BoxShadow,
-    Capslock, Context, Corners, CursorHideMode, CursorStyle, Decorations, DevicePixels,
+    AsyncWindowContext, AtlasTile, AvailableSpace, Backdrop, Background, BorderStyle, Bounds,
+    BoxShadow, Capslock, Context, Corners, CursorHideMode, CursorStyle, Decorations, DevicePixels,
     DispatchActionListener, DispatchNodeId, DispatchTree, DisplayId, Edges, Effect, Entity,
     EntityId, EventEmitter, FileDropEvent, FontId, Global, GlobalElementId, GlyphId, GpuSpecs,
     Half, Hsla, InputHandler, InputPreference, IsZero, KeyBinding, KeyContext, KeyDownEvent,
@@ -1002,7 +1002,7 @@ pub(crate) struct Frame {
     #[cfg(any(test, feature = "test-support"))]
     pub(crate) debug_bounds: FxHashMap<String, Bounds<Pixels>>,
     #[cfg(any(test, feature = "test-support"))]
-    debug_bounds_records: Vec<(String, Bounds<Pixels>)>,
+    pub(crate) debug_bounds_records: Vec<(String, Bounds<Pixels>)>,
     #[cfg(any(feature = "inspector", debug_assertions))]
     pub(crate) next_inspector_instance_ids: FxHashMap<Rc<crate::InspectorElementPath>, usize>,
     #[cfg(any(feature = "inspector", debug_assertions))]
@@ -4448,6 +4448,27 @@ impl Window {
         corner_radii: Corners<Pixels>,
         shadows: &[BoxShadow],
     ) {
+        self.paint_drop_shadows_with_interior(bounds, corner_radii, shadows, true);
+    }
+
+    /// Paints the drop shadows like [`Self::paint_drop_shadows`] but only outside the element,
+    /// for elements whose translucent background would otherwise show their own shadow.
+    pub fn paint_drop_shadows_outside(
+        &mut self,
+        bounds: Bounds<Pixels>,
+        corner_radii: Corners<Pixels>,
+        shadows: &[BoxShadow],
+    ) {
+        self.paint_drop_shadows_with_interior(bounds, corner_radii, shadows, false);
+    }
+
+    fn paint_drop_shadows_with_interior(
+        &mut self,
+        bounds: Bounds<Pixels>,
+        corner_radii: Corners<Pixels>,
+        shadows: &[BoxShadow],
+        under_element: bool,
+    ) {
         self.invalidator.debug_assert_paint();
 
         let scale_factor = self.scale_factor();
@@ -4470,7 +4491,7 @@ impl Window {
                 element_bounds,
                 element_corner_radii,
                 inset: 0,
-                pad: 0,
+                outside_element: u32::from(!under_element),
             });
         }
     }
@@ -4515,7 +4536,7 @@ impl Window {
                 element_bounds,
                 element_corner_radii,
                 inset: 1,
-                pad: 0,
+                outside_element: 0,
             });
         }
     }
@@ -4557,6 +4578,29 @@ impl Window {
         } else {
             vertical_band
         }
+    }
+
+    /// Paints a blur of everything already painted behind `bounds`, clipped to its rounded
+    /// corners. Elements paint it under a translucent background to look like glass.
+    ///
+    /// This method should only be called as part of the paint phase of element drawing.
+    pub fn paint_backdrop(
+        &mut self,
+        bounds: Bounds<Pixels>,
+        corner_radii: Corners<Pixels>,
+        blur_radius: Pixels,
+    ) {
+        self.invalidator.debug_assert_paint();
+
+        let scale_factor = self.scale_factor();
+        let backdrop = Backdrop {
+            order: 0,
+            blur_radius: blur_radius.scale(scale_factor),
+            bounds: self.snap_bounds(bounds),
+            content_mask: self.snapped_content_mask(),
+            corner_radii: corner_radii.scale(scale_factor),
+        };
+        self.next_frame.scene.insert_primitive(backdrop);
     }
 
     /// Paint one or more quads into the scene for the next frame at the current stacking context.

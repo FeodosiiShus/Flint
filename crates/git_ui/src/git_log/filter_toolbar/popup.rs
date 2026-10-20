@@ -623,7 +623,7 @@ impl Render for FilterPopup {
             .on_action(cx.listener(Self::select_parent))
             .on_key_down(cx.listener(Self::key_down))
             .on_mouse_down_out(cx.listener(Self::mouse_down_outside))
-            .elevation_2(cx)
+            .popup_surface(cx)
             .min_w(self.minimum_width)
             .max_h(maximum_height)
             .overflow_y_scroll()

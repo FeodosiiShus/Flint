@@ -21,8 +21,8 @@ use project::{Worktree, git_store::Repository};
 use settings::{DefaultOpenBehavior, Settings, WorktreeId};
 
 use ui::{
-    ContextMenu, Divider, HighlightedLabel, KeyBinding, ListItem, ListItemSpacing, ListSubHeader,
-    PopoverMenu, PopoverMenuHandle, TintColor, Tooltip, prelude::*,
+    CloseButton, CloseButtonSize, ContextMenu, Divider, HighlightedLabel, KeyBinding, ListItem,
+    ListItemSpacing, ListSubHeader, PopoverMenu, PopoverMenuHandle, TintColor, Tooltip, prelude::*,
 };
 use util::{ResultExt, paths::PathExt};
 use workspace::{
@@ -863,27 +863,31 @@ impl PickerDelegate for RecentProjectsDelegate {
                 let secondary_actions = h_flex()
                     .gap_1()
                     .child(
-                        IconButton::new(("remove-folder", worktree_id.to_usize()), IconName::Close)
-                            .icon_size(IconSize::Small)
-                            .tooltip({
-                                let focus_handle = self.focus_handle.clone();
-                                move |_, cx| {
-                                    Tooltip::for_action_in(
-                                        "Remove Folder from Project",
-                                        &RemoveSelected,
-                                        &focus_handle,
-                                        cx,
-                                    )
-                                }
-                            })
-                            .on_click(cx.listener(move |picker, _, window, cx| {
+                        CloseButton::new(
+                            ("remove-folder", worktree_id.to_usize()),
+                            CloseButtonSize::Inline,
+                        )
+                        .tooltip({
+                            let focus_handle = self.focus_handle.clone();
+                            move |_, cx| {
+                                Tooltip::for_action_in(
+                                    "Remove Folder from Project",
+                                    &RemoveSelected,
+                                    &focus_handle,
+                                    cx,
+                                )
+                            }
+                        })
+                        .on_click(cx.listener(
+                            move |picker, _, window, cx| {
                                 RecentProjectsDelegate::remove_open_folder(
                                     picker,
                                     worktree_id,
                                     window,
                                     cx,
                                 );
-                            })),
+                            },
+                        )),
                     )
                     .into_any_element();
 
@@ -999,8 +1003,7 @@ impl PickerDelegate for RecentProjectsDelegate {
                         )
                     })
                     .child(
-                        IconButton::new("remove_open_project", IconName::Close)
-                            .icon_size(IconSize::Small)
+                        CloseButton::new("remove_open_project", CloseButtonSize::Inline)
                             .tooltip({
                                 let focus_handle = self.focus_handle.clone();
                                 move |_, cx| {
@@ -1147,8 +1150,7 @@ impl PickerDelegate for RecentProjectsDelegate {
                             })),
                     )
                     .child(
-                        IconButton::new("delete", IconName::Close)
-                            .icon_size(IconSize::Small)
+                        CloseButton::new("delete", CloseButtonSize::Inline)
                             .tooltip({
                                 let focus_handle = self.focus_handle.clone();
                                 move |_, cx| {

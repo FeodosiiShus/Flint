@@ -7,7 +7,10 @@ use gpui::{
     PromptLevel, Role,
 };
 use menu::{Cancel, Confirm};
-use ui::{ChoiceCard, DialogButton, prelude::*};
+use ui::{
+    ChoiceCard, DIALOG_METRICS, DialogButton, DialogWidth, Modal, ModalFooter, ModalHeader,
+    prelude::*,
+};
 use util::ResultExt as _;
 use workspace::ModalView;
 
@@ -20,7 +23,6 @@ use crate::git_panel::GitPanel;
 use crate::merge_tool::conflict_resolution::labels::short_hash;
 
 const RESET_MODE_KEY: &str = "git_reset_mode";
-const DIALOG_WIDTH: f32 = 34.;
 const DIALOG_TITLE: &str = "Git Reset";
 const DIALOG_DESCRIPTION: &str = "This will reset the current branch head to the selected commit,\nand update the working tree and the index according to the selected mode:";
 const RESET_BUTTON: &str = "Reset";
@@ -573,7 +575,7 @@ impl Focusable for GitResetDialog {
 }
 
 impl Render for GitResetDialog {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let selected_mode = self.mode;
         let description = h_flex().flex_wrap().children(
             self.description
@@ -594,54 +596,47 @@ impl Render for GitResetDialog {
             .track_focus(&self.focus_handle)
             .on_action(cx.listener(Self::cancel))
             .on_action(cx.listener(Self::confirm))
-            .elevation_3(cx)
-            .w(rems(DIALOG_WIDTH))
+            .dialog_surface(DialogWidth::Medium, window, cx)
             .child(
-                h_flex()
-                    .px_3()
-                    .pt_2()
-                    .pb_1()
-                    .w_full()
-                    .child(Headline::new(DIALOG_TITLE).size(HeadlineSize::Small)),
-            )
-            .child(
-                v_flex()
-                    .px_3()
-                    .py_1()
-                    .gap_2()
-                    .child(description)
-                    .child(Label::new(DIALOG_DESCRIPTION)),
-            )
-            .child(
-                v_flex()
-                    .id("git-reset-mode")
-                    .role(Role::RadioGroup)
-                    .px_3()
-                    .py_1()
-                    .gap_1()
-                    .children(mode_cards),
-            )
-            .child(
-                h_flex()
-                    .w_full()
-                    .px_3()
-                    .pt_1()
-                    .pb_2()
-                    .gap_2()
-                    .justify_end()
-                    .child(
-                        DialogButton::new("git-reset-cancel", CANCEL_BUTTON)
-                            .default_button(false)
-                            .on_click(
-                                cx.listener(|this, _, window, cx| this.cancel(&Cancel, window, cx)),
-                            ),
+                Modal::new("git-reset-dialog", None)
+                    .header(
+                        ModalHeader::new()
+                            .headline(DIALOG_TITLE)
+                            .show_dismiss_button(true),
                     )
                     .child(
-                        DialogButton::new("git-reset-confirm", RESET_BUTTON)
-                            .default_button(true)
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.confirm(&Confirm, window, cx)
-                            })),
+                        v_flex()
+                            .px(DIALOG_METRICS.padding_x)
+                            .py_1()
+                            .gap_2()
+                            .child(description)
+                            .child(Label::new(DIALOG_DESCRIPTION)),
+                    )
+                    .child(
+                        v_flex()
+                            .id("git-reset-mode")
+                            .role(Role::RadioGroup)
+                            .px(DIALOG_METRICS.padding_x)
+                            .py_1()
+                            .gap_1()
+                            .children(mode_cards),
+                    )
+                    .footer(
+                        ModalFooter::new()
+                            .end_button(
+                                DialogButton::new("git-reset-cancel", CANCEL_BUTTON)
+                                    .default_button(false)
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.cancel(&Cancel, window, cx)
+                                    })),
+                            )
+                            .end_button(
+                                DialogButton::new("git-reset-confirm", RESET_BUTTON)
+                                    .default_button(true)
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.confirm(&Confirm, window, cx)
+                                    })),
+                            ),
                     ),
             )
     }

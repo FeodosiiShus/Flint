@@ -1,10 +1,12 @@
 use editor::{Editor, EditorEvent};
 use gpui::{
     App, Context, DismissEvent, Entity, EventEmitter, FocusHandle, Focusable, IntoElement, Render,
-    SharedString, Subscription, Window, rems,
+    SharedString, Subscription, Window,
 };
 use menu::{Cancel, Confirm};
-use ui::{Checkbox, DialogButton, Modal, ModalFooter, ModalHeader, Section, prelude::*};
+use ui::{
+    Checkbox, DialogButton, DialogWidth, Modal, ModalFooter, ModalHeader, Section, prelude::*,
+};
 use workspace::ModalView;
 
 use super::BranchContext;
@@ -13,8 +15,6 @@ use super::new_branch_dialog::{
     branch_name_editor, branch_name_row, clean_up_branch_name_on_apply,
     clean_up_typed_name_in_editor, under_branch_name_field,
 };
-
-const DIALOG_WIDTH: f32 = 34.;
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum RenameValidation {
@@ -175,7 +175,7 @@ impl Focusable for RenameBranchDialog {
 }
 
 impl Render for RenameBranchDialog {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let validation = self.validation(cx);
         let error_message = match &validation {
             RenameValidation::Invalid(message) => Some(message.clone()),
@@ -187,9 +187,7 @@ impl Render for RenameBranchDialog {
             .key_context("RenameBranchDialog")
             .on_action(cx.listener(Self::cancel))
             .on_action(cx.listener(Self::confirm))
-            .w(rems(DIALOG_WIDTH))
-            .elevation_3(cx)
-            .overflow_hidden()
+            .dialog_surface(DialogWidth::Medium, window, cx)
             .child(
                 Modal::new("rename-branch-dialog", None)
                     .header(
@@ -235,25 +233,22 @@ impl Render for RenameBranchDialog {
                             }),
                     )
                     .footer(
-                        ModalFooter::new().end_slot(
-                            h_flex()
-                                .gap_2()
-                                .child(
-                                    DialogButton::new("rename-cancel", "Cancel")
-                                        .default_button(false)
-                                        .on_click(cx.listener(|_, _, _, cx| {
-                                            cx.emit(DismissEvent);
-                                        })),
-                                )
-                                .child(
-                                    DialogButton::new("rename-confirm", "Rename")
-                                        .default_button(true)
-                                        .disabled(!can_rename)
-                                        .on_click(cx.listener(|this, _, window, cx| {
-                                            this.confirm(&Confirm, window, cx);
-                                        })),
-                                ),
-                        ),
+                        ModalFooter::new()
+                            .end_button(
+                                DialogButton::new("rename-cancel", "Cancel")
+                                    .default_button(false)
+                                    .on_click(cx.listener(|_, _, _, cx| {
+                                        cx.emit(DismissEvent);
+                                    })),
+                            )
+                            .end_button(
+                                DialogButton::new("rename-confirm", "Rename")
+                                    .default_button(true)
+                                    .disabled(!can_rename)
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.confirm(&Confirm, window, cx);
+                                    })),
+                            ),
                     ),
             )
     }

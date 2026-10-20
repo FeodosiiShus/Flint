@@ -45,6 +45,90 @@ struct GradientColor {
 };
 GradientColor prepare_fill_color(uint tag, uint color_space, Hsla solid, Hsla color0, Hsla color1);
 
+struct BackdropPassOutput {
+  float4 position [[position]];
+};
+
+struct BackdropBlurParams {
+  float2 direction;
+  float sigma;
+  float padding;
+};
+
+// A triangle that covers the whole target; the scissor rect limits the pass to the backdrop.
+vertex BackdropPassOutput backdrop_pass_vertex(uint vertex_id [[vertex_id]]) {
+  float2 corner = float2((vertex_id << 1) & 2, vertex_id & 2);
+  return BackdropPassOutput{float4(corner * 2.0 - 1.0, 0.0, 1.0)};
+}
+
+// Each half-resolution pixel sits between four source pixels, so one bilinear sample
+// averages them.
+fragment float4 backdrop_downsample_fragment(BackdropPassOutput input [[stage_in]],
+                                             texture2d<float> source [[texture(0)]]) {
+  constexpr sampler linear_sampler(mag_filter::linear, min_filter::linear,
+                                   address::clamp_to_edge);
+  float2 source_size = float2(source.get_width(), source.get_height());
+  return source.sample(linear_sampler, input.position.xy * 2.0 / source_size);
+}
+
+fragment float4 backdrop_blur_fragment(BackdropPassOutput input [[stage_in]],
+                                       texture2d<float> source [[texture(0)]],
+                                       constant BackdropBlurParams *params [[buffer(0)]]) {
+  constexpr sampler linear_sampler(mag_filter::linear, min_filter::linear,
+                                   address::clamp_to_edge);
+  float2 size = float2(source.get_width(), source.get_height());
+  float2 uv = input.position.xy / size;
+  float sigma = max(params->sigma, 0.5);
+  int radius = min(int(ceil(sigma * 3.0)), 64);
+  float4 sum = source.sample(linear_sampler, uv);
+  float weight_sum = 1.0;
+  for (int i = 1; i <= radius; i++) {
+    float weight = exp(-0.5 * float(i * i) / (sigma * sigma));
+    float2 offset = params->direction * float(i) / size;
+    sum += (source.sample(linear_sampler, uv + offset) +
+            source.sample(linear_sampler, uv - offset)) * weight;
+    weight_sum += 2.0 * weight;
+  }
+  return sum / weight_sum;
+}
+
+struct BackdropVertexOutput {
+  float4 position [[position]];
+  float clip_distance [[clip_distance]][4];
+};
+
+struct BackdropFragmentInput {
+  float4 position [[position]];
+};
+
+vertex BackdropVertexOutput backdrop_vertex(uint unit_vertex_id [[vertex_id]],
+                                            constant float2 *unit_vertices [[buffer(0)]],
+                                            constant Backdrop *backdrop [[buffer(1)]],
+                                            constant Size_DevicePixels *viewport_size
+                                            [[buffer(2)]]) {
+  float2 unit_vertex = unit_vertices[unit_vertex_id];
+  float4 device_position =
+      to_device_position(unit_vertex, backdrop->bounds, viewport_size);
+  float4 clip_distance = distance_from_clip_rect(unit_vertex, backdrop->bounds,
+                                                 backdrop->content_mask.bounds);
+  return BackdropVertexOutput{
+      device_position,
+      {clip_distance.x, clip_distance.y, clip_distance.z, clip_distance.w}};
+}
+
+fragment float4 backdrop_fragment(BackdropFragmentInput input [[stage_in]],
+                                  constant Backdrop *backdrop [[buffer(1)]],
+                                  texture2d<float> blurred [[texture(0)]]) {
+  constexpr sampler linear_sampler(mag_filter::linear, min_filter::linear,
+                                   address::clamp_to_edge);
+  float2 blurred_size = float2(blurred.get_width(), blurred.get_height());
+  float4 color = blurred.sample(linear_sampler, input.position.xy * 0.5 / blurred_size);
+  float distance = quad_sdf(input.position.xy, backdrop->bounds, backdrop->corner_radii);
+  float coverage = saturate(0.5 - distance) *
+                   content_mask_alpha(input.position.xy, backdrop->content_mask);
+  return float4(color.rgb, color.a * coverage);
+}
+
 struct QuadVertexOutput {
   uint quad_id [[flat]];
   float4 position [[position]];
@@ -542,6 +626,12 @@ fragment float4 shadow_fragment(ShadowFragmentInput input [[stage_in]],
                gaussian(y, shadow.blur_radius) * step;
       y += step;
     }
+  }
+
+  if (shadow.inset == 0u && shadow.outside_element != 0u) {
+    float element_distance = quad_sdf(input.position.xy, shadow.element_bounds,
+                                      shadow.element_corner_radii);
+    alpha *= saturate(0.5 + element_distance);
   }
 
   if (shadow.inset != 0u) {

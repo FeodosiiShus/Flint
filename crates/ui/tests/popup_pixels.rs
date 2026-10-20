@@ -10,8 +10,8 @@ use settings::{SettingsStore, ThemeColorsContent, ThemeStyleContent};
 use std::sync::Arc;
 use theme::LoadThemes;
 use ui::{
-    ActiveTheme, ContextMenu, POPUP_MENU_METRICS, POPUP_SURFACE_METRICS, PopupRowMetrics,
-    PopupRowStyle, StyledExt, TOOLTIP_METRICS, tooltip_container,
+    ActiveTheme, ContextMenu, GLASS_MATERIAL, POPUP_MENU_METRICS, POPUP_SURFACE_METRICS,
+    PopupRowMetrics, PopupRowStyle, StyledExt, TOOLTIP_METRICS, tooltip_container,
 };
 
 const TRANSLUCENT_ELEVATED_SURFACE: &str = "#22272f99";
@@ -129,11 +129,6 @@ fn rgb_channels(color: Hsla) -> [f32; 3] {
     [rgba.r, rgba.g, rgba.b]
 }
 
-fn composite_over(color: Hsla, backdrop: [f32; 3]) -> [f32; 3] {
-    let channels = rgb_channels(color);
-    std::array::from_fn(|index| channels[index] * color.a + backdrop[index] * (1. - color.a))
-}
-
 fn to_pixel(channels: [f32; 3]) -> [u8; 3] {
     channels.map(|channel| (channel.clamp(0., 1.) * 255.).round() as u8)
 }
@@ -223,10 +218,16 @@ fn pixels_popup_surface_stays_opaque_when_the_theme_override_is_translucent() {
 #[test]
 fn pixels_context_menu_rows_and_separators_follow_the_intellij_popup_metrics() {
     let mut cx = headless_app_with_popup_overrides();
+    // The menu is Liquid Glass: the surface color over the blurred red backdrop.
     let (surface, selection, separator) = cx.update(|cx| {
         let colors = cx.theme().colors();
+        let opacity = GLASS_MATERIAL.surface_opacity;
+        let surface = rgb_channels(colors.elevated_surface_background);
+        let backdrop = rgb_channels(gpui::rgb(BACKDROP).into());
         (
-            opaque_pixel(colors.elevated_surface_background),
+            to_pixel(std::array::from_fn(|index| {
+                surface[index] * opacity + backdrop[index] * (1. - opacity)
+            })),
             opaque_pixel(colors.ghost_element_selected),
             opaque_pixel(colors.border_variant),
         )
@@ -364,15 +365,12 @@ fn pixels_context_menu_rows_and_separators_follow_the_intellij_popup_metrics() {
 }
 
 #[test]
-fn pixels_tooltip_is_a_borderless_opaque_feedback_surface_with_intellij_insets() {
+fn pixels_tooltip_is_a_bordered_opaque_surface_with_intellij_insets() {
     let mut cx = headless_app_with_popup_overrides();
     let (tooltip_background, border) = cx.update(|cx| {
         let colors = cx.theme().colors();
         (
-            to_pixel(composite_over(
-                colors.element_background,
-                rgb_channels(colors.elevated_surface_background),
-            )),
+            opaque_pixel(colors.elevated_surface_background),
             opaque_pixel(colors.border_variant),
         )
     });
@@ -393,7 +391,7 @@ fn pixels_tooltip_is_a_borderless_opaque_feedback_surface_with_intellij_insets()
     let probe_row = scale.pixel(px(TOOLTIP_ORIGIN + 40.));
     let left = (0..image.width())
         .find(|&column| is_tooltip(column, probe_row))
-        .expect("the tooltip paints element_background composited over the popup surface");
+        .expect("the tooltip paints the opaque popup surface, unlike a button's fill");
     let right = (0..image.width())
         .rev()
         .find(|&column| is_tooltip(column, probe_row))
@@ -402,14 +400,13 @@ fn pixels_tooltip_is_a_borderless_opaque_feedback_surface_with_intellij_insets()
         (left..=right).all(|column| is_tooltip(column, probe_row)),
         "the tooltip background is one opaque color across the row"
     );
-    assert!(
-        (0..image.width()).all(|column| !pixels_near(
+    for (column, side) in [(left - 1, "left"), (right + 1, "right")] {
+        assert_pixel_near(
             pixel_at(&image, column, probe_row),
             border,
-            CHANNEL_TOLERANCE
-        )),
-        "macOS tooltips paint no border"
-    );
+            &format!("the tooltip has the standard 1px border on its {side} edge"),
+        );
+    }
     assert_position_near(
         right + 1 - left,
         scale.physical(TOOLTIP_METRICS.padding_x * 2. + px(TOOLTIP_CONTENT_WIDTH)),

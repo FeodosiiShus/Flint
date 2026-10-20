@@ -5519,7 +5519,6 @@ dependencies = [
  "gpui",
  "ui",
  "workspace",
- "zed_actions",
 ]
 
 [[package]]
@@ -12131,6 +12130,7 @@ dependencies = [
  "migrator",
  "mimalloc",
  "node_runtime",
+ "notifications",
  "outline",
  "parking_lot",
  "paths",

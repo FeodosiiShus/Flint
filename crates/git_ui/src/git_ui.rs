@@ -19,7 +19,10 @@ use menu::{Cancel, Confirm};
 use project::git_store::Repository;
 use project_diff::ProjectDiff;
 use time::OffsetDateTime;
-use ui::{ButtonLike, ContextMenu, ElevationIndex, PopoverMenuHandle, TintColor, prelude::*};
+use ui::{
+    ButtonLike, ContextMenu, DIALOG_METRICS, DialogWidth, ElevationIndex, Modal, ModalHeader,
+    PopoverMenuHandle, TintColor, prelude::*,
+};
 use workspace::{
     ModalView, OpenMode, Workspace,
     notifications::{DetachAndPromptErr, NotifyTaskExt},
@@ -543,27 +546,32 @@ impl Focusable for RenameBranchModal {
 }
 
 impl Render for RenameBranchModal {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         v_flex()
             .key_context("RenameBranchModal")
             .on_action(cx.listener(Self::cancel))
             .on_action(cx.listener(Self::confirm))
-            .elevation_2(cx)
-            .w(rems(34.))
+            .dialog_surface(DialogWidth::Medium, window, cx)
             .child(
-                h_flex()
-                    .px_3()
-                    .pt_2()
-                    .pb_1()
-                    .w_full()
-                    .gap_1p5()
-                    .child(Icon::new(IconName::GitBranch).size(IconSize::XSmall))
+                Modal::new("rename-branch-modal", None)
+                    .header(
+                        ModalHeader::new()
+                            .icon(
+                                Icon::new(IconName::GitBranch)
+                                    .size(IconSize::Small)
+                                    .color(Color::Muted),
+                            )
+                            .headline(format!("Rename Branch ({})", self.current_branch))
+                            .show_dismiss_button(true),
+                    )
                     .child(
-                        Headline::new(format!("Rename Branch ({})", self.current_branch))
-                            .size(HeadlineSize::Small),
+                        div()
+                            .px(DIALOG_METRICS.padding_x)
+                            .pb(DIALOG_METRICS.footer_padding_bottom)
+                            .w_full()
+                            .child(self.editor.clone()),
                     ),
             )
-            .child(div().px_3().pb_3().w_full().child(self.editor.clone()))
     }
 }
 
@@ -761,8 +769,7 @@ impl Focusable for RefPickerModal {
 }
 
 impl Render for RefPickerModal {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let has_commit_details = self.commit_details.is_some();
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let commit_preview = self.commit_details.as_ref().map(|details| {
             let commit_time = OffsetDateTime::from_unix_timestamp(details.commit_timestamp)
                 .unwrap_or_else(|_| OffsetDateTime::now_utc());
@@ -802,23 +809,28 @@ impl Render for RefPickerModal {
             .key_context("RefPickerModal")
             .on_action(cx.listener(Self::cancel))
             .on_action(cx.listener(Self::confirm))
-            .elevation_2(cx)
-            .w(rems(34.))
+            .dialog_surface(DialogWidth::Medium, window, cx)
             .child(
-                h_flex()
-                    .px_3()
-                    .pt_2()
-                    .pb_1()
-                    .w_full()
-                    .gap_1p5()
-                    .child(Icon::new(IconName::Hash).size(IconSize::XSmall))
-                    .child(Headline::new("View Commit").size(HeadlineSize::Small)),
+                Modal::new("ref-picker-modal", None)
+                    .header(
+                        ModalHeader::new()
+                            .icon(
+                                Icon::new(IconName::Hash)
+                                    .size(IconSize::Small)
+                                    .color(Color::Muted),
+                            )
+                            .headline("View Commit")
+                            .show_dismiss_button(true),
+                    )
+                    .child(
+                        v_flex()
+                            .px(DIALOG_METRICS.padding_x)
+                            .pb(DIALOG_METRICS.footer_padding_bottom)
+                            .w_full()
+                            .child(self.editor.clone())
+                            .children(commit_preview),
+                    ),
             )
-            .child(div().px_3().w_full().child(self.editor.clone()))
-            .when_some(commit_preview, |el, preview| {
-                el.child(div().px_3().pb_3().w_full().child(preview))
-            })
-            .when(!has_commit_details, |el| el.child(div().pb_3()))
     }
 }
 
@@ -1342,7 +1354,7 @@ impl Focusable for GitCloneModal {
 impl Render for GitCloneModal {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         div()
-            .elevation_3(cx)
+            .popup_surface(cx)
             .w(rems(34.))
             .flex_1()
             .overflow_hidden()

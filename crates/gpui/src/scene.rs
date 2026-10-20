@@ -42,6 +42,7 @@ pub struct Scene {
     pub(crate) paint_operations: Vec<PaintOperation>,
     primitive_bounds: BoundsTree<ScaledPixels>,
     layer_stack: Vec<DrawOrder>,
+    pub backdrops: Vec<Backdrop>,
     pub shadows: Vec<Shadow>,
     pub quads: Vec<Quad>,
     pub paths: Vec<Path<ScaledPixels>>,
@@ -58,6 +59,7 @@ impl Scene {
         self.paint_operations.clear();
         self.primitive_bounds.clear();
         self.layer_stack.clear();
+        self.backdrops.clear();
         self.paths.clear();
         self.shadows.clear();
         self.quads.clear();
@@ -100,6 +102,10 @@ impl Scene {
             .copied()
             .unwrap_or_else(|| self.primitive_bounds.insert(clipped_bounds));
         match &mut primitive {
+            Primitive::Backdrop(backdrop) => {
+                backdrop.order = order;
+                self.backdrops.push(*backdrop);
+            }
             Primitive::Shadow(shadow) => {
                 shadow.order = order;
                 self.shadows.push(*shadow);
@@ -149,6 +155,7 @@ impl Scene {
     }
 
     pub fn finish(&mut self) {
+        self.backdrops.sort_by_key(|backdrop| backdrop.order);
         self.shadows.sort_by_key(|shadow| shadow.order);
         self.quads.sort_by_key(|quad| quad.order);
         self.paths.sort_by_key(|path| path.order);
@@ -164,6 +171,8 @@ impl Scene {
 
     pub fn batches(&self) -> impl Iterator<Item = PrimitiveBatch> + '_ {
         BatchIterator {
+            backdrops_start: 0,
+            backdrops_iter: self.backdrops.iter().peekable(),
             shadows_start: 0,
             shadows_iter: self.shadows.iter().peekable(),
             quads_start: 0,
@@ -186,6 +195,9 @@ impl Scene {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Default)]
 pub(crate) enum PrimitiveKind {
+    // A backdrop blurs what lies behind its element, so it draws before anything else of the
+    // same order.
+    Backdrop,
     Shadow,
     #[default]
     Quad,
@@ -206,6 +218,7 @@ pub(crate) enum PaintOperation {
 #[derive(Clone)]
 #[expect(missing_docs)]
 pub enum Primitive {
+    Backdrop(Backdrop),
     Shadow(Shadow),
     Quad(Quad),
     Path(Path<ScaledPixels>),
@@ -220,6 +233,7 @@ pub enum Primitive {
 impl Primitive {
     pub fn bounds(&self) -> &Bounds<ScaledPixels> {
         match self {
+            Primitive::Backdrop(backdrop) => &backdrop.bounds,
             Primitive::Shadow(shadow) => &shadow.bounds,
             Primitive::Quad(quad) => &quad.bounds,
             Primitive::Path(path) => &path.bounds,
@@ -233,6 +247,7 @@ impl Primitive {
 
     pub fn content_mask(&self) -> &ContentMask<ScaledPixels> {
         match self {
+            Primitive::Backdrop(backdrop) => &backdrop.content_mask,
             Primitive::Shadow(shadow) => &shadow.content_mask,
             Primitive::Quad(quad) => &quad.content_mask,
             Primitive::Path(path) => &path.content_mask,
@@ -246,6 +261,8 @@ impl Primitive {
 }
 
 struct BatchIterator<'a> {
+    backdrops_start: usize,
+    backdrops_iter: Peekable<slice::Iter<'a, Backdrop>>,
     shadows_start: usize,
     shadows_iter: Peekable<slice::Iter<'a, Shadow>>,
     quads_start: usize,
@@ -269,6 +286,10 @@ impl<'a> Iterator for BatchIterator<'a> {
 
     fn next(&mut self) -> Option<Self::Item> {
         let mut orders_and_kinds = [
+            (
+                self.backdrops_iter.peek().map(|backdrop| backdrop.order),
+                PrimitiveKind::Backdrop,
+            ),
             (
                 self.shadows_iter.peek().map(|s| s.order),
                 PrimitiveKind::Shadow,
@@ -307,6 +328,20 @@ impl<'a> Iterator for BatchIterator<'a> {
         };
 
         match batch_kind {
+            PrimitiveKind::Backdrop => {
+                let backdrops_start = self.backdrops_start;
+                let mut backdrops_end = backdrops_start + 1;
+                self.backdrops_iter.next();
+                while self
+                    .backdrops_iter
+                    .next_if(|backdrop| (backdrop.order, batch_kind) < max_order_and_kind)
+                    .is_some()
+                {
+                    backdrops_end += 1;
+                }
+                self.backdrops_start = backdrops_end;
+                Some(PrimitiveBatch::Backdrops(backdrops_start..backdrops_end))
+            }
             PrimitiveKind::Shadow => {
                 let shadows_start = self.shadows_start;
                 let mut shadows_end = shadows_start + 1;
@@ -447,6 +482,7 @@ impl<'a> Iterator for BatchIterator<'a> {
 #[derive(Debug)]
 #[allow(missing_docs)]
 pub enum PrimitiveBatch {
+    Backdrops(Range<usize>),
     Shadows(Range<usize>),
     Quads(Range<usize>),
     Paths(Range<usize>),
@@ -471,6 +507,7 @@ impl PrimitiveBatch {
     #[expect(missing_docs)]
     pub fn label(&self) -> String {
         match self {
+            Self::Backdrops(range) => format!("backdrops ({})", range.len()),
             Self::Shadows(range) => format!("shadows ({})", range.len()),
             Self::Quads(range) => format!("quads ({})", range.len()),
             Self::Paths(range) => format!("paths ({})", range.len()),
@@ -540,6 +577,24 @@ impl From<Underline> for Primitive {
     }
 }
 
+/// Blurs what is already drawn behind `bounds`, clipped to its rounded corners.
+#[derive(Debug, Copy, Clone)]
+#[repr(C)]
+#[expect(missing_docs)]
+pub struct Backdrop {
+    pub order: DrawOrder,
+    pub blur_radius: ScaledPixels,
+    pub bounds: Bounds<ScaledPixels>,
+    pub content_mask: ContentMask<ScaledPixels>,
+    pub corner_radii: Corners<ScaledPixels>,
+}
+
+impl From<Backdrop> for Primitive {
+    fn from(backdrop: Backdrop) -> Self {
+        Primitive::Backdrop(backdrop)
+    }
+}
+
 #[derive(Debug, Copy, Clone)]
 #[repr(C)]
 #[expect(missing_docs)]
@@ -554,7 +609,9 @@ pub struct Shadow {
     pub element_corner_radii: Corners<ScaledPixels>,
     /// 0 = drop shadow (rendered outside the element), 1 = inset shadow (rendered inside).
     pub inset: u32,
-    pub pad: u32, // align to 8 bytes
+    /// 1 keeps a drop shadow out from under its element, as CSS does, so a translucent
+    /// element doesn't show its own shadow through it.
+    pub outside_element: u32,
 }
 
 impl From<Shadow> for Primitive {

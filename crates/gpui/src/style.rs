@@ -291,6 +291,10 @@ pub struct Style {
     /// Box shadow of the element
     pub box_shadow: Vec<BoxShadow>,
 
+    /// Blurs what is painted behind the element, like CSS `backdrop-filter: blur()`, so a
+    /// translucent background reads as frosted glass.
+    pub backdrop_blur: Option<Pixels>,
+
     /// The text style of this element
     #[refineable]
     pub text: TextStyleRefinement,
@@ -746,7 +750,16 @@ impl Style {
             .to_pixels(rem_size)
             .clamp_radii_for_quad_size(bounds.size);
 
-        window.paint_drop_shadows(bounds, corner_radii, &self.box_shadow);
+        // The backdrop samples what lies behind the element, which its own shadow is not.
+        if let Some(blur_radius) = self.backdrop_blur {
+            window.paint_backdrop(bounds, corner_radii, blur_radius);
+        }
+
+        if self.backdrop_blur.is_some() {
+            window.paint_drop_shadows_outside(bounds, corner_radii, &self.box_shadow);
+        } else {
+            window.paint_drop_shadows(bounds, corner_radii, &self.box_shadow);
+        }
 
         let background_color = self.background.as_ref().and_then(Fill::color);
         if background_color.is_some_and(|color| !color.is_transparent()) {
@@ -844,6 +857,7 @@ impl Default for Style {
             border_style: BorderStyle::default(),
             corner_radii: Corners::default(),
             box_shadow: Default::default(),
+            backdrop_blur: None,
             text: TextStyleRefinement::default(),
             mouse_cursor: None,
             opacity: None,

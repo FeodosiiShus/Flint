@@ -8,8 +8,9 @@ use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use ui::{
-    ActiveTheme, Color, CommonAnimationExt, Icon, IconName, IconSize, IntoElement, Label,
-    LabelCommon, LabelSize, ParentElement, Styled, StyledExt, div, h_flex, v_flex,
+    Color, CommonAnimationExt, DialogWidth, Icon, IconName, IconSize, IntoElement, Label,
+    LabelCommon, LabelSize, Modal, ModalHeader, ParentElement, Section, Styled, StyledSurface,
+    h_flex, v_flex,
 };
 use util::ResultExt;
 use util::command::new_command;
@@ -165,43 +166,36 @@ impl Focusable for InstallingZedModal {
 }
 
 impl Render for InstallingZedModal {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = cx.theme();
-
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         v_flex()
-            .elevation_3(cx)
-            .w_80()
-            .overflow_hidden()
+            .dialog_surface(DialogWidth::Small, window, cx)
             .child(
-                div()
-                    .px_4()
-                    .py_3()
-                    .border_b_1()
-                    .border_color(theme.colors().border_variant)
-                    .child(Label::new("Installing Flint…")),
-            )
-            .child(
-                h_flex()
-                    .w_full()
-                    .gap_3()
-                    .px_4()
-                    .py_3()
-                    .bg(theme.colors().editor_background)
-                    .child(
-                        Icon::new(IconName::ArrowCircle)
-                            .size(IconSize::Medium)
-                            .color(Color::Accent)
-                            .with_rotate_animation(3),
-                    )
-                    .child(
-                        v_flex()
-                            .gap_1()
-                            .child(Label::new("Moving Flint to Applications"))
-                            .child(
-                                Label::new("Flint will reopen when installation is complete.")
-                                    .size(LabelSize::Small)
-                                    .color(Color::Muted),
-                            ),
+                Modal::new("installing-flint-modal", None)
+                    .header(ModalHeader::new().headline("Installing Flint…"))
+                    .section(
+                        Section::new().child(
+                            h_flex()
+                                .w_full()
+                                .gap_3()
+                                .child(
+                                    Icon::new(IconName::ArrowCircle)
+                                        .size(IconSize::Medium)
+                                        .color(Color::Accent)
+                                        .with_rotate_animation(3),
+                                )
+                                .child(
+                                    v_flex()
+                                        .gap_1()
+                                        .child(Label::new("Moving Flint to Applications"))
+                                        .child(
+                                            Label::new(
+                                                "Flint will reopen when installation is complete.",
+                                            )
+                                            .size(LabelSize::Small)
+                                            .color(Color::Muted),
+                                        ),
+                                ),
+                        ),
                     ),
             )
     }

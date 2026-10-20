@@ -16,7 +16,7 @@ use project::git_store::Repository;
 use project::project_settings::ProjectSettings;
 use project::trusted_worktrees::{PathTrust, TrustedWorktrees};
 use settings::Settings;
-use ui::prelude::*;
+use ui::{Balloon, prelude::*};
 use workspace::{
     MultiWorkspace, OpenMode, PreviousWorkspaceState, ToastView, Workspace, dock::DockPosition,
 };
@@ -249,32 +249,11 @@ impl Render for WorktreeFetchFailedToast {
         let operation = self.operation.clone();
         let output = self.output.clone();
 
-        h_flex()
-            .id("worktree-fetch-failed-toast")
-            .elevation_3(cx)
-            .gap_2()
-            .py_1p5()
-            .pl_2p5()
-            .pr_1p5()
-            .flex_none()
-            .bg(cx.theme().colors().surface_background)
-            .shadow_lg()
-            .child(
-                Icon::new(IconName::XCircle)
-                    .size(IconSize::Small)
-                    .color(Color::Error),
-            )
-            .child(Label::new(format!(
-                "git fetch failed for {}",
-                self.remote_branch_name
-            )))
-            .child(
-                Button::new(
-                    "use-local-worktree-base",
-                    format!("Use local {}", self.remote_branch_name),
-                )
-                .color(Color::Muted)
-                .on_click(cx.listener(move |_, _event, window, cx| {
+        Balloon::new("worktree-fetch-failed-toast", Severity::Error)
+            .title(format!("git fetch failed for {}", self.remote_branch_name))
+            .action(
+                format!("Use local {}", self.remote_branch_name),
+                cx.listener(move |_, _event, window, cx| {
                     cx.emit(DismissEvent);
                     if let Some(workspace) = workspace_for_retry.upgrade() {
                         workspace.update(cx, |workspace, cx| {
@@ -293,31 +272,24 @@ impl Render for WorktreeFetchFailedToast {
                             task.detach_and_log_err(cx);
                         });
                     }
-                })),
+                }),
             )
-            .child(
-                Button::new("view-worktree-fetch-log", "Show Error Logs")
-                    .color(Color::Muted)
-                    .on_click(cx.listener(move |_, _event, window, cx| {
-                        cx.emit(DismissEvent);
-                        let output = output.clone();
-                        let operation = operation.clone();
-                        workspace_for_log
-                            .update(cx, move |workspace, cx| {
-                                open_output(operation, workspace, &output, window, cx)
-                            })
-                            .ok();
-                    })),
+            .action(
+                "Show Error Logs",
+                cx.listener(move |_, _event, window, cx| {
+                    cx.emit(DismissEvent);
+                    let output = output.clone();
+                    let operation = operation.clone();
+                    workspace_for_log
+                        .update(cx, move |workspace, cx| {
+                            open_output(operation, workspace, &output, window, cx)
+                        })
+                        .ok();
+                }),
             )
-            .child(
-                IconButton::new("dismiss-worktree-fetch-failed-toast", IconName::Close)
-                    .shape(ui::IconButtonShape::Square)
-                    .icon_size(IconSize::Small)
-                    .icon_color(Color::Muted)
-                    .on_click(cx.listener(|_, _event, _window, cx| {
-                        cx.emit(DismissEvent);
-                    })),
-            )
+            .on_close(cx.listener(|_, _event, _window, cx| {
+                cx.emit(DismissEvent);
+            }))
     }
 }
 

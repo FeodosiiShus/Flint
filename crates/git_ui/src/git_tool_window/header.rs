@@ -4,11 +4,13 @@ use std::rc::Rc;
 use gpui::{
     Action, Anchor, AnyElement, Context, DismissEvent, Entity, Focusable, Hsla, MouseButton,
     MouseDownEvent, MouseUpEvent, Pixels, Point, SharedString, Subscription, WeakEntity, Window,
-    anchored, canvas, deferred, px, rgb, rgba,
+    anchored, canvas, deferred, px,
 };
+use theme::ThemeColors;
 use ui::{
-    ContextMenu, ContextMenuEntry, IconButton, IconButtonShape, PopoverMenu, TextSize, Tooltip,
-    prelude::*,
+    CloseButton, CloseButtonSize, ContextMenu, ContextMenuEntry, IconButton, IconButtonShape,
+    PopoverMenu, TextSize, Tooltip, island_tab_hover_background, island_tab_metrics,
+    island_tab_pill_colors, prelude::*,
 };
 use util::ResultExt as _;
 
@@ -28,7 +30,6 @@ const MAX_TAB_WIDTH: Pixels = px(400.);
 const PILL_HORIZONTAL_OFFSET: Pixels = px(4.);
 const PILL_FULL_HEIGHT: f32 = 28.;
 const PILL_MIN_VERTICAL_OFFSET: f32 = 8.;
-const PILL_RADIUS: Pixels = px(6.);
 const UNDERLINE_HEIGHT: Pixels = px(3.);
 const UNDERLINE_RADIUS: Pixels = px(2.);
 const TOOLBAR_BUTTON_SIZE: Pixels = px(22.);
@@ -48,54 +49,38 @@ pub(crate) struct TabDecoration {
     pub underline: Option<Hsla>,
 }
 
+/// The git tool window's content tabs share the island tab pill of the editor and terminal tabs.
 pub(crate) fn tab_decoration(
     selected: bool,
     active: bool,
-    light: bool,
     islands: bool,
+    colors: &ThemeColors,
 ) -> TabDecoration {
-    let hover_fill: Hsla = match (islands, light) {
-        (true, true) => rgba(0x00000012),
-        (true, false) => rgba(0xFFFFFF17),
-        (false, true) => rgb(0xEBECF0),
-        (false, false) => rgb(0x393B40),
-    }
-    .into();
+    let hover_fill = island_tab_hover_background(selected, active, colors);
     if !islands {
-        return if selected {
-            let underline: Hsla = match (active, light) {
-                (true, _) => rgb(0x3574F0),
-                (false, true) => rgb(0xA8ADBD),
-                (false, false) => rgb(0x5A5D63),
-            }
-            .into();
-            TabDecoration {
-                underline: Some(underline),
-                ..TabDecoration::default()
-            }
-        } else {
-            TabDecoration {
-                hover_fill: Some(hover_fill),
-                ..TabDecoration::default()
-            }
+        return TabDecoration {
+            underline: selected.then(|| {
+                if active {
+                    colors.border_selected
+                } else {
+                    colors.border
+                }
+            }),
+            hover_fill: (!selected).then_some(colors.ghost_element_hover),
+            ..TabDecoration::default()
         };
     }
     if !selected {
         return TabDecoration {
-            hover_fill: Some(hover_fill),
+            hover_fill,
             ..TabDecoration::default()
         };
     }
-    let (fill, border) = match (active, light) {
-        (true, false) => (rgb(0x233558), rgb(0x2E4D89)),
-        (true, true) => (rgb(0xE3EBFE), rgb(0xA7C5FF)),
-        (false, false) => (rgb(0x26282C), rgb(0x40434A)),
-        (false, true) => (rgb(0xE9EAEE), rgb(0xD1D3D9)),
-    };
+    let pill = island_tab_pill_colors(active, colors);
     TabDecoration {
-        fill: Some(fill.into()),
-        border: Some(border.into()),
-        hover_fill: (!active).then_some(hover_fill),
+        fill: Some(pill.background),
+        border: Some(pill.border),
+        hover_fill,
         underline: None,
     }
 }
@@ -344,10 +329,10 @@ impl GitToolWindowHeader {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let islands = snapshot.islands;
-        let decoration = tab_decoration(tab.selected, snapshot.active, snapshot.light, islands);
+        let decoration =
+            tab_decoration(tab.selected, snapshot.active, islands, cx.theme().colors());
         let (pill_top, pill_height) = pill_vertical_geometry(snapshot.header_height);
         let group_name = SharedString::from(format!("git-tool-window-tab-{index}"));
-        let close_group_name = SharedString::from(format!("git-tool-window-tab-close-{index}"));
         let key = tab.key.clone();
 
         let mut pill = div()
@@ -355,7 +340,9 @@ impl GitToolWindowHeader {
             .left(PILL_HORIZONTAL_OFFSET)
             .right(PILL_HORIZONTAL_OFFSET);
         pill = if islands {
-            pill.top(pill_top).h(pill_height).rounded(PILL_RADIUS)
+            pill.top(pill_top)
+                .h(pill_height)
+                .rounded(island_tab_metrics(cx).pill_radius)
         } else {
             pill.top_0().bottom_0()
         };
@@ -374,59 +361,33 @@ impl GitToolWindowHeader {
             let tooltip_handle = snapshot.focus_handle.clone();
             let selected = tab.selected;
             div()
-                .id(("git-tool-window-tab-close", index))
-                .group(close_group_name.clone())
                 .flex_none()
-                .relative()
                 .size(CLOSE_ICON_SIZE)
                 .ml(CLOSE_ICON_TEXT_GAP)
                 .mt(CLOSE_ICON_BOTTOM_SHIFT)
-                .child(
-                    div()
-                        .absolute()
-                        .top_0()
-                        .left_0()
-                        .group_hover(close_group_name.clone(), |style| style.invisible())
-                        .child(
-                            Icon::new(IconName::CloseSmall)
-                                .size(IconSize::Medium)
-                                .color(Color::Muted),
-                        ),
-                )
-                .child(
-                    div()
-                        .absolute()
-                        .top_0()
-                        .left_0()
-                        .invisible()
-                        .group_hover(close_group_name.clone(), |style| style.visible())
-                        .child(
-                            Icon::new(IconName::CloseSmallHovered)
-                                .size(IconSize::Medium)
-                                .color(Color::Muted),
-                        ),
-                )
-                .tooltip(move |window, cx| {
-                    if selected {
-                        Tooltip::for_action_in(
-                            CLOSE_TAB_TOOLTIP,
-                            &CloseActiveTab,
-                            &tooltip_handle,
-                            cx,
-                        )
-                    } else {
-                        Tooltip::text(CLOSE_TAB_TOOLTIP)(window, cx)
-                    }
-                })
                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                .on_mouse_up(
-                    MouseButton::Left,
-                    cx.listener(move |this, _: &MouseUpEvent, window, cx| {
-                        cx.stop_propagation();
+                .child(
+                    CloseButton::new(
+                        ("git-tool-window-tab-close", index),
+                        CloseButtonSize::Inline,
+                    )
+                    .tooltip(move |window, cx| {
+                        if selected {
+                            Tooltip::for_action_in(
+                                CLOSE_TAB_TOOLTIP,
+                                &CloseActiveTab,
+                                &tooltip_handle,
+                                cx,
+                            )
+                        } else {
+                            Tooltip::text(CLOSE_TAB_TOOLTIP)(window, cx)
+                        }
+                    })
+                    .on_click(cx.listener(move |this, _, window, cx| {
                         this.update_tool_window(cx, |tool_window, cx| {
                             tool_window.close_tab(&close_key, window, cx)
                         });
-                    }),
+                    })),
                 )
         });
 

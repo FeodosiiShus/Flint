@@ -792,7 +792,6 @@ fn set_ide_directory_exclusion(
 fn show_error_toast(workspace: &WeakEntity<Workspace>, message: String, cx: &mut App) {
     let toast = StatusToast::new(message, cx, |this, _| {
         this.icon(Icon::new(IconName::XCircle).color(Color::Error))
-            .dismiss_button(true)
     });
     workspace
         .update(cx, |workspace, cx| workspace.toggle_status_toast(toast, cx))
@@ -2816,7 +2815,6 @@ impl ProjectPanel {
                                         .size(IconSize::Small)
                                         .color(Color::Error),
                                 )
-                                .dismiss_button(true)
                             });
                             panel
                                 .workspace
@@ -2884,7 +2882,6 @@ impl ProjectPanel {
                             let message = format!("Failed to add to .gitignore: {}", e);
                             let toast = StatusToast::new(message, cx, |this, _| {
                                 this.icon(Icon::new(IconName::XCircle).color(Color::Error))
-                                    .dismiss_button(true)
                             });
                             workspace.update(cx, |workspace, cx| {
                                 workspace.toggle_status_toast(toast, cx);
@@ -2931,7 +2928,6 @@ impl ProjectPanel {
                             let message = format!("Failed to add to .git/info/exclude: {}", e);
                             let toast = StatusToast::new(message, cx, |this, _| {
                                 this.icon(Icon::new(IconName::XCircle).color(Color::Error))
-                                    .dismiss_button(true)
                             });
                             workspace.update(cx, |workspace, cx| {
                                 workspace.toggle_status_toast(toast, cx);
@@ -3248,7 +3244,6 @@ impl ProjectPanel {
                     .size(IconSize::Small)
                     .color(Color::Error),
             )
-            .dismiss_button(true)
         });
 
         self.workspace

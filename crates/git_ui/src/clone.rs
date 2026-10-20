@@ -53,7 +53,6 @@ pub fn clone_and_open(
                                     .size(IconSize::Small)
                                     .color(Color::Error),
                             )
-                            .dismiss_button(true)
                         });
                         workspace.toggle_status_toast(toast, cx);
                     })

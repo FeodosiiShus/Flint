@@ -242,8 +242,8 @@ use theme::{
 };
 use theme_settings::{ThemeSettings, observe_buffer_font_size_adjustment};
 use ui::{
-    ContextMenu, IconButtonShape, Indicator, KeyBinding, Tooltip, prelude::*,
-    scrollbars::ScrollbarAutoHide, tooltip_container, utils::WithRemSize,
+    CloseButton, CloseButtonSize, ContextMenu, IconButtonShape, Indicator, KeyBinding, Tooltip,
+    prelude::*, scrollbars::ScrollbarAutoHide, tooltip_container, utils::WithRemSize,
 };
 use ui_input::ErasedEditor;
 use util::{RangeExt, ResultExt, TryFutureExt, maybe, post_inc};
@@ -12588,9 +12588,7 @@ impl PromptEditor {
 
     fn render_close_button(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let focus_handle = self.prompt.focus_handle(cx);
-        IconButton::new("cancel", IconName::Close)
-            .icon_color(Color::Muted)
-            .shape(IconButtonShape::Square)
+        CloseButton::new("cancel", CloseButtonSize::Header)
             .tooltip(move |_window, cx| {
                 Tooltip::for_action_in("Cancel", &menu::Cancel, &focus_handle, cx)
             })

@@ -15,7 +15,7 @@ use menu::{Cancel, Confirm};
 use project::git_store::{Repository, RepositoryEvent};
 use release_channel::ReleaseChannel;
 use time::OffsetDateTime;
-use ui::{DialogButton, prelude::*};
+use ui::{DIALOG_METRICS, DialogButton, DialogWidth, Modal, ModalFooter, ModalHeader, prelude::*};
 use util::ResultExt as _;
 use workspace::ModalView;
 
@@ -427,7 +427,7 @@ impl Focusable for SmartOperationDialog {
 }
 
 impl Render for SmartOperationDialog {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let operation = self.operation;
         let force_button = operation.force_label().map(|label| {
             DialogButton::new("smart-operation-force", label)
@@ -440,50 +440,43 @@ impl Render for SmartOperationDialog {
             .track_focus(&self.focus_handle)
             .on_action(cx.listener(Self::cancel))
             .on_action(cx.listener(Self::confirm))
-            .elevation_3(cx)
-            .w(rems(36.))
+            .dialog_surface(DialogWidth::Medium, window, cx)
             .child(
-                div()
-                    .px_3()
-                    .pt_3()
-                    .pb_1()
-                    .child(Headline::new(operation.dialog_title()).size(HeadlineSize::Small)),
-            )
-            .child(
-                v_flex()
-                    .px_3()
-                    .py_2()
-                    .gap_1()
-                    .child(Label::new(operation.problem_message()))
-                    .child(Label::new(self.explanation.clone()).color(Color::Muted)),
-            )
-            .child(
-                v_flex()
-                    .id("smart-operation-files")
-                    .mx_3()
-                    .mb_2()
-                    .p_2()
-                    .max_h(rems(14.))
-                    .overflow_y_scroll()
-                    .border_1()
-                    .border_color(cx.theme().colors().border)
-                    .rounded_md()
-                    .children(
-                        self.files
-                            .iter()
-                            .map(|file| Label::new(file.clone()).size(LabelSize::Small)),
-                    ),
-            )
-            .child(
-                h_flex()
-                    .p_3()
-                    .gap_2()
-                    .justify_between()
-                    .child(div().children(force_button))
+                Modal::new("smart-operation-dialog", None)
+                    .header(
+                        ModalHeader::new()
+                            .headline(operation.dialog_title())
+                            .show_dismiss_button(true),
+                    )
                     .child(
-                        h_flex()
-                            .gap_2()
-                            .child(
+                        v_flex()
+                            .px(DIALOG_METRICS.padding_x)
+                            .py_2()
+                            .gap_1()
+                            .child(Label::new(operation.problem_message()))
+                            .child(Label::new(self.explanation.clone()).color(Color::Muted)),
+                    )
+                    .child(
+                        v_flex()
+                            .id("smart-operation-files")
+                            .mx(DIALOG_METRICS.padding_x)
+                            .mb_2()
+                            .p_2()
+                            .max_h(rems(14.))
+                            .overflow_y_scroll()
+                            .border_1()
+                            .border_color(cx.theme().colors().border)
+                            .rounded_md()
+                            .children(
+                                self.files
+                                    .iter()
+                                    .map(|file| Label::new(file.clone()).size(LabelSize::Small)),
+                            ),
+                    )
+                    .footer(
+                        ModalFooter::new()
+                            .start_slot::<DialogButton>(force_button)
+                            .end_button(
                                 DialogButton::new(
                                     "smart-operation-decline",
                                     operation.decline_label(),
@@ -493,7 +486,7 @@ impl Render for SmartOperationDialog {
                                     |this, _, _, cx| this.choose(SmartChoice::Cancel, cx),
                                 )),
                             )
-                            .child(
+                            .end_button(
                                 DialogButton::new("smart-operation-smart", operation.smart_label())
                                     .default_button(true)
                                     .on_click(cx.listener(|this, _, _, cx| {

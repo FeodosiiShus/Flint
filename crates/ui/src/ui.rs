@@ -10,6 +10,8 @@
 pub mod component_prelude;
 mod components;
 pub mod prelude;
+#[cfg(any(test, feature = "test-support"))]
+pub mod standard_conformance;
 mod styles;
 mod traits;
 pub mod utils;

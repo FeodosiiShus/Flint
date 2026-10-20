@@ -317,18 +317,23 @@ fn tab_metrics_follow_content_label_and_islands_painter() {
     assert_eq!(pill_vertical_geometry(px(40.)), (px(6.), px(28.)));
     assert_eq!(pill_vertical_geometry(px(32.)), (px(4.), px(24.)));
 
-    let active_dark = tab_decoration(true, true, false, true);
-    assert_eq!(active_dark.fill, Some(gpui::rgb(0x233558).into()));
-    assert_eq!(active_dark.border, Some(gpui::rgb(0x2E4D89).into()));
-    assert_eq!(active_dark.hover_fill, None);
-    let inactive_light = tab_decoration(true, false, true, true);
-    assert_eq!(inactive_light.fill, Some(gpui::rgb(0xE9EAEE).into()));
-    assert!(inactive_light.hover_fill.is_some());
-    let unselected = tab_decoration(false, true, false, true);
+    let colors = theme::ThemeColors::dark();
+    let focused_pill = ui::island_tab_pill_colors(true, &colors);
+    let active = tab_decoration(true, true, true, &colors);
+    assert_eq!(active.fill, Some(focused_pill.background));
+    assert_eq!(active.border, Some(focused_pill.border));
+    assert_eq!(active.hover_fill, None);
+    let inactive = tab_decoration(true, false, true, &colors);
+    assert_eq!(
+        inactive.fill,
+        Some(ui::island_tab_pill_colors(false, &colors).background)
+    );
+    assert!(inactive.hover_fill.is_some());
+    let unselected = tab_decoration(false, true, true, &colors);
     assert_eq!(unselected.fill, None);
-    assert_eq!(unselected.hover_fill, Some(gpui::rgba(0xFFFFFF17).into()));
-    let classic = tab_decoration(true, false, false, false);
-    assert_eq!(classic.underline, Some(gpui::rgb(0x5A5D63).into()));
+    assert_eq!(unselected.hover_fill, Some(colors.ghost_element_hover));
+    let classic = tab_decoration(true, false, false, &colors);
+    assert_eq!(classic.underline, Some(colors.border));
 }
 
 #[test]

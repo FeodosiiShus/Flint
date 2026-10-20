@@ -22,9 +22,9 @@ use project::{Project, ProjectPath, Symbol, WorktreeId};
 use search::text_finder::{SearchMatch, TextFinder};
 use settings::Settings;
 use ui::{
-    Checkbox, Divider, HighlightedLabel, IslandTabMetrics, KeyBinding, LabelLike, ListItem,
-    ListItemSpacing, PopupRowMetrics, PopupRowStyle, Tooltip, island_tab_pill_colors, prelude::*,
-    ui_density,
+    Checkbox, CloseButton, CloseButtonSize, Divider, HighlightedLabel, IslandTabMetrics,
+    KeyBinding, LabelLike, ListItem, ListItemSpacing, PopupRowMetrics, PopupRowStyle, Tooltip,
+    island_tab_pill_colors, prelude::*, ui_density,
 };
 use util::{ResultExt, paths::PathMatcher, post_inc};
 use workspace::{
@@ -850,13 +850,15 @@ impl SearchEverywhereDelegate {
                         .truncate(),
                 )
                 .child(
-                    IconButton::new("search-everywhere-clear-text-scope", IconName::Close)
-                        .icon_size(IconSize::XSmall)
-                        .tooltip(Tooltip::text("Clear Text Scope"))
-                        .on_click(cx.listener(|picker, _, window, cx| {
-                            picker.delegate.set_text_scope(None);
-                            picker.refresh(window, cx);
-                        })),
+                    CloseButton::new(
+                        "search-everywhere-clear-text-scope",
+                        CloseButtonSize::Inline,
+                    )
+                    .tooltip(Tooltip::text("Clear Text Scope"))
+                    .on_click(cx.listener(|picker, _, window, cx| {
+                        picker.delegate.set_text_scope(None);
+                        picker.refresh(window, cx);
+                    })),
                 )
                 .into_any_element(),
         )

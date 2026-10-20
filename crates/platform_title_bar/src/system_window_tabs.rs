@@ -7,8 +7,8 @@ use gpui::{
 
 use theme_settings::ThemeSettings;
 use ui::{
-    Color, ContextMenu, DynamicSpacing, IconButton, IconButtonShape, IconName, IconSize, Label,
-    LabelSize, Tab, h_flex, prelude::*, right_click_menu,
+    CloseButton, CloseButtonSize, Color, ContextMenu, DynamicSpacing, IconButton, IconName,
+    IconSize, Label, LabelSize, Tab, h_flex, prelude::*, right_click_menu,
 };
 use workspace::{
     CloseWindow, ItemSettings, Workspace, WorkspaceSettings,
@@ -250,10 +250,7 @@ impl SystemWindowTabs {
                             ClosePosition::Right => this.right_1(),
                         })
                         .child(
-                            IconButton::new("close", IconName::Close)
-                                .shape(IconButtonShape::Square)
-                                .icon_color(Color::Muted)
-                                .icon_size(IconSize::XSmall)
+                            CloseButton::new("close", CloseButtonSize::Inline)
                                 .on_click({
                                     move |_, window, cx| {
                                         if item.handle.window_id()

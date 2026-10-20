@@ -362,7 +362,7 @@ impl Render for GoToLine {
 
         v_flex()
             .w(rems(24.))
-            .elevation_2(cx)
+            .popup_surface(cx)
             .key_context("GoToLine")
             .on_action(cx.listener(Self::cancel))
             .on_action(cx.listener(Self::confirm))

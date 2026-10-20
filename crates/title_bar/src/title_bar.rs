@@ -38,8 +38,8 @@ use toolbar_widgets::{
     ToolbarSearchField, ToolbarWidget, toolbar_widget_icon_color, upstream_tracking,
 };
 use ui::{
-    ChromeRegion, ContextMenu, ContextMenuEntry, IconButtonShape, PopoverMenu, TintColor, Tooltip,
-    prelude::*, utils::platform_title_bar_height,
+    ChromeRegion, CloseButton, CloseButtonSize, ContextMenu, ContextMenuEntry, PopoverMenu,
+    TintColor, Tooltip, prelude::*, utils::platform_title_bar_height,
 };
 use util::{ResultExt, paths::PathExt as _};
 use workspace::{
@@ -61,7 +61,6 @@ const PROJECT_TAB_MAX_WIDTH: Pixels = px(220.);
 const PROJECT_TAB_PADDING_X: Pixels = px(6.);
 const PROJECT_TAB_CLOSE_SLOT: Pixels = px(20.);
 const PROJECT_TAB_CLOSE_GAP: Pixels = px(6.);
-const PROJECT_TAB_CLOSE_ICON_SIDE: Pixels = px(14.);
 // `IslandsUICustomization.paintProjectTab`: the fill is inset 1 px from the tab's sides, and
 // the separator between two plain tabs is inset 5 px from the top and bottom.
 const PROJECT_TAB_FILL_INSET: Pixels = px(1.);
@@ -358,7 +357,7 @@ impl Render for TitleBar {
             && is_git_enabled
             && title_bar_settings.show_branch_name;
 
-        let project_tabs = self.render_project_tabs(window, cx);
+        let project_tabs = self.render_project_tabs(cx);
         let project_items = h_flex()
             .h_full()
             .flex_1()
@@ -761,7 +760,7 @@ impl TitleBar {
 
     /// IntelliJ's Islands window tabs, one per project of the window, in the main toolbar row
     /// left of the VCS widget (`WindowTabsComponent`, `IslandsUICustomization.paintProjectTab`).
-    fn render_project_tabs(&self, window: &Window, cx: &mut Context<Self>) -> Option<AnyElement> {
+    fn render_project_tabs(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let multi_workspace = self.multi_workspace.as_ref()?.upgrade()?;
         let (tabs, active_workspace) = {
             let multi_workspace = multi_workspace.read(cx);
@@ -782,8 +781,6 @@ impl TitleBar {
         let height = ui::utils::title_bar_widget_height(cx);
         let icon_scale = ui::chrome_icon_scale(ChromeRegion::TitleBar, cx).unwrap_or(1.);
         let close_slot = PROJECT_TAB_CLOSE_SLOT * icon_scale;
-        let close_icon_size =
-            ui::exact_icon_size(PROJECT_TAB_CLOSE_ICON_SIDE * icon_scale, window.rem_size());
         let menu_workspace_id = self.project_tab_menu.as_ref().map(|menu| menu.workspace_id);
         let highlighted = |tab: &ProjectTab| {
             let id = tab.workspace.entity_id();
@@ -834,14 +831,11 @@ impl TitleBar {
                         .items_center()
                         .justify_center()
                         .child(
-                            IconButton::new(
+                            CloseButton::new(
                                 ("project_tab_close", workspace_id.as_u64()),
-                                IconName::Close,
+                                CloseButtonSize::Inline,
                             )
-                            .shape(IconButtonShape::Square)
-                            .size(ButtonSize::Compact)
-                            .icon_size(close_icon_size)
-                            .icon_color(Color::Muted)
+                            .scale(icon_scale)
                             .tooltip(Tooltip::text(PROJECT_TAB_CLOSE_TOOLTIP))
                             .on_click(
                                 move |event: &ClickEvent, window, cx| {

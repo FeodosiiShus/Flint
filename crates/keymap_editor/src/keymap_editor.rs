@@ -31,7 +31,7 @@ use settings::{
     BaseKeymap, KeybindSource, KeymapFile, Settings as _, SettingsAssets, infer_json_indent_size,
 };
 use ui::{
-    ActiveTheme as _, App, Banner, BorrowAppContext, ColumnWidthConfig, ContextMenu,
+    ActiveTheme as _, App, Banner, BorrowAppContext, ColumnWidthConfig, ContextMenu, DialogWidth,
     IconButtonShape, IconPosition, Indicator, Modal, ModalFooter, ModalHeader, ParentElement as _,
     PopoverMenu, RedistributableColumnsState, Render, Section, SharedString, Styled as _, Table,
     TableInteractionState, TableResizeBehavior, Tooltip, Window, prelude::*,
@@ -2857,7 +2857,6 @@ impl KeybindingEditorModal {
                                             .size(IconSize::Small)
                                             .color(Color::Success),
                                     )
-                                    .dismiss_button(true)
                                     // .action("Undo", f) todo: wire the undo functionality
                                 },
                             );
@@ -3017,14 +3016,22 @@ impl Render for KeybindingEditorModal {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.add_action_arguments_input(window, cx);
 
-        let theme = cx.theme().colors();
         let matching_bindings_count = self.get_matching_bindings_count(cx);
         let key_context = self.key_context_internal(window, cx);
         let showing_completions = key_context.contains("showing_completions");
+        let title: SharedString = if self.creating {
+            "Create Keybinding".into()
+        } else {
+            self.editing_keybind.action().humanized_name.clone()
+        };
+        let documentation = self
+            .editing_keybind
+            .action()
+            .documentation
+            .filter(|_| !self.creating);
 
         v_flex()
-            .w(rems(34.))
-            .elevation_3(cx)
+            .dialog_surface(DialogWidth::Medium, window, cx)
             .key_context(key_context)
             .on_action(cx.listener(Self::confirm))
             .on_action(cx.listener(Self::cancel))
@@ -3035,33 +3042,12 @@ impl Render for KeybindingEditorModal {
             .child(
                 Modal::new("keybinding_editor_modal", None)
                     .header(
-                        ModalHeader::new().child(
-                            v_flex()
-                                .w_full()
-                                .pb_1p5()
-                                .mb_1()
-                                .gap_0p5()
-                                .border_b_1()
-                                .border_color(theme.border_variant)
-                                .when(!self.creating, |this| {
-                                    this.child(Label::new(
-                                        self.editing_keybind.action().humanized_name.clone(),
-                                    ))
-                                    .when_some(
-                                        self.editing_keybind.action().documentation,
-                                        |this, docs| {
-                                            this.child(
-                                                Label::new(docs)
-                                                    .size(LabelSize::Small)
-                                                    .color(Color::Muted),
-                                            )
-                                        },
-                                    )
-                                })
-                                .when(self.creating, |this| {
-                                    this.child(Label::new("Create Keybinding"))
-                                }),
-                        ),
+                        ModalHeader::new()
+                            .headline(title)
+                            .when_some(documentation, |header, documentation| {
+                                header.description(documentation)
+                            })
+                            .show_dismiss_button(true),
                     )
                     .section(
                         Section::new().child(
@@ -3139,19 +3125,16 @@ impl Render for KeybindingEditorModal {
                         ),
                     )
                     .footer(
-                        ModalFooter::new().end_slot(
-                            h_flex()
-                                .gap_1()
-                                .child(
-                                    Button::new("cancel", "Cancel")
-                                        .on_click(cx.listener(|_, _, _, cx| cx.emit(DismissEvent))),
-                                )
-                                .child(Button::new("save-btn", "Save").on_click(cx.listener(
-                                    |this, _event, _window, cx| {
-                                        this.save_or_display_error(cx);
-                                    },
-                                ))),
-                        ),
+                        ModalFooter::new()
+                            .end_button(
+                                Button::new("cancel", "Cancel")
+                                    .on_click(cx.listener(|_, _, _, cx| cx.emit(DismissEvent))),
+                            )
+                            .end_button(Button::new("save-btn", "Save").on_click(cx.listener(
+                                |this, _event, _window, cx| {
+                                    this.save_or_display_error(cx);
+                                },
+                            ))),
                     ),
             )
     }

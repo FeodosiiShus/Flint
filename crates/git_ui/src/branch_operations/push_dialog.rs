@@ -5,10 +5,13 @@ use editor::{Editor, EditorEvent};
 use git::repository::{CommitSummary, PushOptions, Remote, Upstream};
 use gpui::{
     AnyElement, App, Context, DismissEvent, Entity, EventEmitter, FocusHandle, Focusable,
-    IntoElement, Render, SharedString, Subscription, Window, rems,
+    IntoElement, Render, SharedString, Subscription, Window,
 };
 use menu::{Cancel, Confirm};
-use ui::{Checkbox, DialogButton, Modal, ModalFooter, ModalHeader, Section, Tooltip, prelude::*};
+use ui::{
+    Checkbox, DialogButton, DialogWidth, Modal, ModalFooter, ModalHeader, Section, Tooltip,
+    prelude::*,
+};
 use util::ResultExt as _;
 use workspace::ModalView;
 
@@ -19,7 +22,6 @@ use super::push_result::{PushTarget, push_failed_notice, push_succeeded_notice};
 use super::{BranchContext, OperationProgress, PUSH_PROGRESS_TITLE};
 use crate::branch_refs::RefTarget;
 
-const DIALOG_WIDTH: f32 = 44.;
 const REFRESH_DEBOUNCE: Duration = Duration::from_millis(150);
 const PUSH_COMMIT_LIMIT: usize = 100;
 const FORCE_PUSH_TITLE: &str = "Force Push";
@@ -602,6 +604,7 @@ impl PushDialog {
     fn render_force_confirmation(
         &self,
         confirmation: &ForcePushConfirmation,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         v_flex()
@@ -609,9 +612,7 @@ impl PushDialog {
             .track_focus(&self.confirmation_focus_handle)
             .on_action(cx.listener(Self::cancel))
             .on_action(cx.listener(Self::confirm))
-            .w(rems(DIALOG_WIDTH))
-            .elevation_3(cx)
-            .overflow_hidden()
+            .dialog_surface(DialogWidth::Medium, window, cx)
             .child(
                 Modal::new("force-push-confirmation", None)
                     .header(
@@ -647,23 +648,19 @@ impl PushDialog {
                                     },
                                 )),
                             )
-                            .end_slot(
-                                h_flex()
-                                    .gap_2()
-                                    .child(
-                                        DialogButton::new("force-push-cancel", "Cancel")
-                                            .default_button(false)
-                                            .on_click(cx.listener(|this, _, window, cx| {
-                                                this.cancel(&Cancel, window, cx);
-                                            })),
-                                    )
-                                    .child(
-                                        DialogButton::new("force-push-confirm", FORCE_PUSH_TITLE)
-                                            .default_button(true)
-                                            .on_click(cx.listener(|this, _, window, cx| {
-                                                this.confirm_force_push(window, cx);
-                                            })),
-                                    ),
+                            .end_button(
+                                DialogButton::new("force-push-cancel", "Cancel")
+                                    .default_button(false)
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.cancel(&Cancel, window, cx);
+                                    })),
+                            )
+                            .end_button(
+                                DialogButton::new("force-push-confirm", FORCE_PUSH_TITLE)
+                                    .default_button(true)
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.confirm_force_push(window, cx);
+                                    })),
                             ),
                     ),
             )
@@ -672,9 +669,9 @@ impl PushDialog {
 }
 
 impl Render for PushDialog {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if let Some(confirmation) = self.force_confirmation.as_ref() {
-            return self.render_force_confirmation(confirmation, cx);
+            return self.render_force_confirmation(confirmation, window, cx);
         }
         let can_push = self.can_push(cx);
         let force_prohibited = can_push && self.force_push_prohibited(cx);
@@ -687,9 +684,7 @@ impl Render for PushDialog {
             .key_context("PushDialog")
             .on_action(cx.listener(Self::cancel))
             .on_action(cx.listener(Self::confirm))
-            .w(rems(DIALOG_WIDTH))
-            .elevation_3(cx)
-            .overflow_hidden()
+            .dialog_surface(DialogWidth::Large, window, cx)
             .child(
                 Modal::new("push-dialog", None)
                     .header(
@@ -728,7 +723,7 @@ impl Render for PushDialog {
                                             .min_w_0()
                                             .px_2()
                                             .py_1()
-                                            .rounded_sm()
+                                            .rounded(ui::component_corner_radii(cx).input)
                                             .border_1()
                                             .border_color(colors.border)
                                             .bg(colors.editor_background)
@@ -738,38 +733,35 @@ impl Render for PushDialog {
                             .child(outgoing),
                     )
                     .footer(
-                        ModalFooter::new().end_slot(
-                            h_flex()
-                                .gap_2()
-                                .child(
-                                    DialogButton::new("push-cancel", "Cancel")
-                                        .default_button(false)
-                                        .on_click(cx.listener(|_, _, _, cx| {
-                                            cx.emit(DismissEvent);
-                                        })),
-                                )
-                                .child(
-                                    DialogButton::new("push-force", FORCE_PUSH_TITLE)
-                                        .default_button(false)
-                                        .disabled(!can_push || force_prohibited)
-                                        .when(force_prohibited, |button| {
-                                            button.tooltip(Tooltip::text(
-                                                force_push_prohibited_message(&force_target),
-                                            ))
-                                        })
-                                        .on_click(cx.listener(|this, _, window, cx| {
-                                            this.request_force_push(window, cx);
-                                        })),
-                                )
-                                .child(
-                                    DialogButton::new("push-confirm", "Push")
-                                        .default_button(true)
-                                        .disabled(!can_push)
-                                        .on_click(cx.listener(|this, _, window, cx| {
-                                            this.push(false, window, cx);
-                                        })),
-                                ),
-                        ),
+                        ModalFooter::new()
+                            .end_button(
+                                DialogButton::new("push-cancel", "Cancel")
+                                    .default_button(false)
+                                    .on_click(cx.listener(|_, _, _, cx| {
+                                        cx.emit(DismissEvent);
+                                    })),
+                            )
+                            .end_button(
+                                DialogButton::new("push-force", FORCE_PUSH_TITLE)
+                                    .default_button(false)
+                                    .disabled(!can_push || force_prohibited)
+                                    .when(force_prohibited, |button| {
+                                        button.tooltip(Tooltip::text(
+                                            force_push_prohibited_message(&force_target),
+                                        ))
+                                    })
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.request_force_push(window, cx);
+                                    })),
+                            )
+                            .end_button(
+                                DialogButton::new("push-confirm", "Push")
+                                    .default_button(true)
+                                    .disabled(!can_push)
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.push(false, window, cx);
+                                    })),
+                            ),
                     ),
             )
             .into_any_element()

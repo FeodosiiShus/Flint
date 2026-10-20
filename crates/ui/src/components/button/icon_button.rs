@@ -55,6 +55,11 @@ impl IconButton {
         self
     }
 
+    pub(super) fn debug_selector(mut self, selector: impl FnOnce() -> String) -> Self {
+        self.base.base = self.base.base.debug_selector(selector);
+        self
+    }
+
     /// Sets the label announced by assistive technology.
     ///
     /// Icon buttons have no visible text, so they should always set this for
@@ -540,7 +545,7 @@ mod tests {
         fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
             h_flex()
                 .child(IconButton::new("wide", IconName::Check))
-                .child(IconButton::new("square", IconName::Close).shape(IconButtonShape::Square))
+                .child(IconButton::new("square", IconName::Plus).shape(IconButtonShape::Square))
                 .child(
                     IconButton::new("wide-box", IconName::Dash)
                         .shape(IconButtonShape::Wide)
@@ -583,7 +588,7 @@ mod tests {
         init_theme(cx);
         let (_, cx) = cx.add_window_view(|_, _| SizeProbe);
         assert_box(cx, "ICON-Check", 22.);
-        assert_box(cx, "ICON-Close", 22.);
+        assert_box(cx, "ICON-Plus", 22.);
     }
 
     #[gpui::test]

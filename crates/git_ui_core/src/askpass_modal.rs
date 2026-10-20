@@ -3,10 +3,10 @@ use editor::Editor;
 use futures::channel::oneshot;
 use gpui::{AppContext, DismissEvent, Entity, EventEmitter, Focusable, Styled, Task};
 use ui::{
-    ActiveTheme, AnyElement, App, Button, Clickable, Color, Context, DynamicSpacing, Headline,
-    HeadlineSize, Icon, IconName, IconSize, InteractiveElement, IntoElement, Label, LabelCommon,
-    LabelSize, ParentElement, Render, SharedString, StyledExt, StyledTypography, Window, div,
-    h_flex, v_flex,
+    ActiveTheme, AnyElement, App, Button, Clickable, Color, Context, DIALOG_METRICS, DialogWidth,
+    Icon, IconName, IconSize, InteractiveElement, IntoElement, Label, LabelCommon, LabelSize,
+    Modal, ModalHeader, ParentElement, Render, SharedString, StyledSurface, StyledTypography,
+    Window, div, h_flex, v_flex,
 };
 use util::maybe;
 use workspace::ModalView;
@@ -112,46 +112,44 @@ impl AskPassModal {
 }
 
 impl Render for AskPassModal {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         v_flex()
             .key_context("PasswordPrompt")
             .on_action(cx.listener(Self::cancel))
             .on_action(cx.listener(Self::confirm))
-            .elevation_2(cx)
-            .size_full()
+            .dialog_surface(DialogWidth::Small, window, cx)
             .child(
-                h_flex()
-                    .font_buffer(cx)
-                    .px(DynamicSpacing::Base12.rems(cx))
-                    .pt(DynamicSpacing::Base08.rems(cx))
-                    .pb(DynamicSpacing::Base04.rems(cx))
-                    .rounded_t_sm()
-                    .w_full()
-                    .gap_1p5()
-                    .child(Icon::new(IconName::GitBranch).size(IconSize::XSmall))
+                Modal::new("askpass-modal", None)
+                    .header(
+                        ModalHeader::new()
+                            .icon(
+                                Icon::new(IconName::GitBranch)
+                                    .size(IconSize::Small)
+                                    .color(Color::Muted),
+                            )
+                            .headline(self.operation.clone())
+                            .show_dismiss_button(true),
+                    )
                     .child(
-                        h_flex().gap_1().overflow_x_hidden().child(
-                            div().max_w_96().overflow_x_hidden().text_ellipsis().child(
-                                Headline::new(self.operation.clone()).size(HeadlineSize::Small),
-                            ),
-                        ),
+                        v_flex()
+                            .w_full()
+                            .child(
+                                div()
+                                    .font_buffer(cx)
+                                    .text_buffer(cx)
+                                    .py_2()
+                                    .px(DIALOG_METRICS.padding_x)
+                                    .bg(cx.theme().colors().editor_background)
+                                    .border_t_1()
+                                    .border_color(cx.theme().colors().border_variant)
+                                    .size_full()
+                                    .overflow_hidden()
+                                    .child(self.prompt.clone())
+                                    .child(self.editor.clone()),
+                            )
+                            .children(self.render_hint(cx)),
                     ),
             )
-            .child(
-                div()
-                    .font_buffer(cx)
-                    .text_buffer(cx)
-                    .py_2()
-                    .px_3()
-                    .bg(cx.theme().colors().editor_background)
-                    .border_t_1()
-                    .border_color(cx.theme().colors().border_variant)
-                    .size_full()
-                    .overflow_hidden()
-                    .child(self.prompt.clone())
-                    .child(self.editor.clone()),
-            )
-            .children(self.render_hint(cx))
     }
 }
 

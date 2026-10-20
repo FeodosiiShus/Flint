@@ -49,7 +49,10 @@ use std::path::Path;
 use std::{sync::Arc, time::Duration};
 use strum::{IntoEnumIterator, VariantNames};
 use theme_settings::ThemeSettings;
-use ui::{Checkbox, ContextMenu, ElevationIndex, PopoverMenuHandle, prelude::*};
+use ui::{
+    Checkbox, ContextMenu, DIALOG_METRICS, DialogWidth, ElevationIndex, Modal, ModalHeader,
+    PopoverMenuHandle, prelude::*,
+};
 use util::{ResultExt, TryFutureExt, maybe};
 use workspace::SERIALIZATION_THROTTLE_TIME;
 use workspace::{
@@ -171,24 +174,32 @@ impl Focusable for StashMessageModal {
 }
 
 impl Render for StashMessageModal {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         v_flex()
             .key_context("StashMessageModal")
             .on_action(cx.listener(Self::cancel))
             .on_action(cx.listener(Self::confirm))
-            .elevation_2(cx)
-            .w(rems(34.))
+            .dialog_surface(DialogWidth::Medium, window, cx)
             .child(
-                h_flex()
-                    .px_3()
-                    .pt_2()
-                    .pb_1()
-                    .w_full()
-                    .gap_1p5()
-                    .child(Icon::new(IconName::GitBranch).size(IconSize::XSmall))
-                    .child(Headline::new(self.kind.title()).size(HeadlineSize::Small)),
+                Modal::new("stash-message-modal", None)
+                    .header(
+                        ModalHeader::new()
+                            .icon(
+                                Icon::new(IconName::GitBranch)
+                                    .size(IconSize::Small)
+                                    .color(Color::Muted),
+                            )
+                            .headline(self.kind.title())
+                            .show_dismiss_button(true),
+                    )
+                    .child(
+                        div()
+                            .px(DIALOG_METRICS.padding_x)
+                            .pb(DIALOG_METRICS.footer_padding_bottom)
+                            .w_full()
+                            .child(self.editor.clone()),
+                    ),
             )
-            .child(div().px_3().pb_3().w_full().child(self.editor.clone()))
     }
 }
 
@@ -2337,7 +2348,6 @@ impl GitPanel {
                             .ok();
                     }),
                 }
-                .dismiss_button(true)
             });
             workspace.toggle_status_toast(status_toast, cx)
         });

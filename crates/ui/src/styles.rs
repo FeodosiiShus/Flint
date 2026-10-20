@@ -13,6 +13,7 @@ mod project_gradient;
 mod severity;
 mod spacing;
 mod typography;
+mod ui_standard;
 mod units;
 
 pub use appearance::*;
@@ -29,4 +30,5 @@ pub use project_gradient::*;
 pub use severity::*;
 pub use spacing::*;
 pub use typography::*;
+pub use ui_standard::*;
 pub use units::*;

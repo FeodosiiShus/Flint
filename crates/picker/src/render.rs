@@ -4,8 +4,8 @@ use theme_settings::ThemeSettings;
 use ui::{
     ActiveTheme, Color, Context, Disableable, DocumentationAside, DocumentationSide, FluentBuilder,
     InteractiveElement, IntoElement, Label, LabelCommon, ListItem, ListItemSpacing, ParentElement,
-    Render, ScrollAxes, Scrollbars, Styled, StyledExt, Window, WithScrollbar, div, h_flex,
-    rems_from_px, utils::WithRemSize, v_flex,
+    Render, ScrollAxes, Scrollbars, Styled, Window, WithScrollbar, div, h_flex, rems_from_px,
+    utils::WithRemSize, v_flex,
 };
 
 use crate::shape::Shape;
@@ -77,7 +77,7 @@ impl<D: PickerDelegate> Render for Picker<D> {
         let has_preview = self.preview.is_some();
         let is_panel = self.is_panel();
         let content = div()
-            .when(self.draws_own_container(), |this| this.elevation_3(cx))
+            .when(self.draws_own_container(), |this| this.popup_surface(cx))
             .when(has_preview, |this| this.overflow_hidden())
             .when(is_panel, |this| this.size_full())
             .child(content);
@@ -299,7 +299,7 @@ impl<D: PickerDelegate> Picker<D> {
         let render_aside = |aside: DocumentationAside, cx: &mut Context<Self>| {
             WithRemSize::new(ui_font_size)
                 .occlude()
-                .elevation_2(cx)
+                .popup_surface(cx)
                 .w_full()
                 .p_2()
                 .overflow_hidden()

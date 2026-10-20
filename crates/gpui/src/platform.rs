@@ -525,6 +525,12 @@ pub trait Platform: 'static {
 
     fn should_auto_hide_scrollbars(&self) -> bool;
 
+    /// Whether the user asked the system for opaque surfaces instead of translucent ones
+    /// (macOS: Accessibility > Display > Reduce transparency).
+    fn should_reduce_transparency(&self) -> bool {
+        false
+    }
+
     fn read_from_clipboard(&self) -> Option<ClipboardItem>;
     fn write_to_clipboard(&self, item: ClipboardItem);
 

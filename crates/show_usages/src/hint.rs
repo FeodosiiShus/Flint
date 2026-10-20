@@ -3,7 +3,7 @@ use gpui::{
     App, ClickEvent, Context, DismissEvent, Entity, EventEmitter, FocusHandle, Focusable,
     Keystroke, MouseDownEvent, Pixels, Point, SharedString, Subscription, Window, anchored, px,
 };
-use ui::{POPUP_SURFACE_METRICS, prelude::*};
+use ui::{SurfaceKind, concentric_radius, prelude::*};
 use workspace::ModalView;
 
 use crate::UsagesSession;
@@ -111,6 +111,7 @@ impl Render for UsagesHint {
         } else {
             cx.theme().status().info_background
         };
+        let popup = SurfaceKind::Popup.standard();
         anchored()
             .position(self.position)
             .snap_to_window_with_margin(WINDOW_MARGIN)
@@ -118,7 +119,7 @@ impl Render for UsagesHint {
                 div()
                     .id("usages-hint")
                     .occlude()
-                    .elevation_2(cx)
+                    .popup_surface(cx)
                     .overflow_hidden()
                     .on_mouse_down_out(
                         cx.listener(|_, _: &MouseDownEvent, _, cx| cx.emit(DismissEvent)),
@@ -127,7 +128,7 @@ impl Render for UsagesHint {
                         v_flex()
                             .px(HORIZONTAL_PADDING)
                             .py(VERTICAL_PADDING)
-                            .rounded(POPUP_SURFACE_METRICS.corner_radius)
+                            .rounded(concentric_radius(popup.corner_radius, popup.border_width))
                             .bg(background)
                             .child(
                                 div()

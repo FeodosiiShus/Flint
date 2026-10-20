@@ -17,8 +17,8 @@ use theme_settings::ThemeSettings;
 use ui::{
     ActiveTheme, AnyElement, ButtonCommon, ButtonStyle, Clickable, FluentBuilder, IconButton,
     IconButtonShape, IconName, IconSize, InteractiveElement, IntoElement, Label, LabelCommon,
-    LabelSize, ParentElement, Pixels, SharedString, StatefulInteractiveElement, Styled, StyledExt,
-    WithScrollbar, div, relative,
+    LabelSize, ParentElement, Pixels, SharedString, StatefulInteractiveElement, Styled,
+    StyledSurface, WithScrollbar, div, relative,
 };
 
 // Language-specific settings may define quotes as "brackets", so filter them out separately.
@@ -506,7 +506,7 @@ impl SignatureHelpPopover {
             None
         };
         div()
-            .elevation_2(cx)
+            .popup_surface(cx)
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .on_mouse_move(|_, _, cx| cx.stop_propagation())
             .flex()

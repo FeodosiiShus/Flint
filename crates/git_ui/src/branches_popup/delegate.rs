@@ -13,7 +13,8 @@ use picker::{Picker, PickerDelegate};
 use project::git_store::{GitStore, Repository, RepositoryEvent, RepositoryId, RepositorySnapshot};
 use ui::{
     CommonAnimationExt as _, ContextMenu, Divider, HighlightedLabel, KeyBinding, KeyBindingStyle,
-    ListItem, ListItemSpacing, PopoverMenu, PopoverMenuHandle, TextSize, Tooltip, prelude::*,
+    ListItem, ListItemSpacing, PopoverMenu, PopoverMenuHandle, TextSize, Tooltip,
+    component_corner_radii, prelude::*,
 };
 use ui_input::ErasedEditor;
 use util::ResultExt as _;
@@ -41,6 +42,10 @@ pub(super) const HEADER_LEFT_INSET_PX: f32 = 10.;
 pub(super) const HEADER_RIGHT_INSET_PX: f32 = 8.;
 pub(super) const HEADER_TOOLBAR_GAP_PX: f32 = 6.;
 pub(super) const SEARCH_BOX_HEIGHT_PX: f32 = 28.;
+/// IntelliJ's list popups draw a separator under the search field (`Popup.SearchField`), so rows
+/// scrolled up pass under a line instead of running into the field.
+pub(super) const HEADER_BOTTOM_GAP_PX: f32 = 6.;
+pub(super) const SEARCH_SEPARATOR_PX: f32 = 1.;
 const ICON_SLOT_PX: f32 = 16.;
 const INDENT_STEP_PX: f32 = 16.;
 // Separators are tree rows of the full row height in IntelliJ, with the line half a row down.
@@ -2064,42 +2069,51 @@ impl PickerDelegate for BranchesDelegate {
         let border_color = cx.theme().colors().border_variant;
         let text_color = self.search_text_color(cx);
         Some(
-            v_flex().w_full().child(
-                h_flex()
-                    .pt(px(HEADER_TOP_INSET_PX))
-                    .pl(px(HEADER_LEFT_INSET_PX))
-                    .pr(px(HEADER_RIGHT_INSET_PX))
-                    .flex_none()
-                    .child(
-                        h_flex()
-                            .flex_1()
-                            .min_w_0()
-                            .h(px(SEARCH_BOX_HEIGHT_PX))
-                            .px_2()
-                            .gap_1p5()
-                            .rounded_md()
-                            .border_1()
-                            .border_color(border_color)
-                            .child(
-                                Icon::new(IconName::MagnifyingGlass)
-                                    .size(IconSize::Small)
-                                    .color(Color::Muted),
-                            )
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_w_0()
-                                    .child(editor.render_with_text_color(text_color, window, cx)),
-                            ),
-                    )
-                    .child(
-                        h_flex()
-                            .flex_none()
-                            .ml(px(HEADER_TOOLBAR_GAP_PX))
-                            .child(self.render_fetch_button(cx))
-                            .child(self.render_gear_button(cx)),
-                    ),
-            ),
+            v_flex()
+                .w_full()
+                .child(
+                    h_flex()
+                        .pt(px(HEADER_TOP_INSET_PX))
+                        .pb(px(HEADER_BOTTOM_GAP_PX))
+                        .pl(px(HEADER_LEFT_INSET_PX))
+                        .pr(px(HEADER_RIGHT_INSET_PX))
+                        .flex_none()
+                        .child(
+                            h_flex()
+                                .flex_1()
+                                .min_w_0()
+                                .h(px(SEARCH_BOX_HEIGHT_PX))
+                                .px_2()
+                                .gap_1p5()
+                                .rounded(component_corner_radii(cx).input)
+                                .border_1()
+                                .border_color(border_color)
+                                .child(
+                                    Icon::new(IconName::MagnifyingGlass)
+                                        .size(IconSize::Small)
+                                        .color(Color::Muted),
+                                )
+                                .child(
+                                    div().flex_1().min_w_0().child(
+                                        editor.render_with_text_color(text_color, window, cx),
+                                    ),
+                                ),
+                        )
+                        .child(
+                            h_flex()
+                                .flex_none()
+                                .ml(px(HEADER_TOOLBAR_GAP_PX))
+                                .child(self.render_fetch_button(cx))
+                                .child(self.render_gear_button(cx)),
+                        ),
+                )
+                .child(
+                    div()
+                        .debug_selector(|| "branches-popup-search-separator".into())
+                        .w_full()
+                        .h(px(SEARCH_SEPARATOR_PX))
+                        .bg(border_color),
+                ),
         )
     }
 

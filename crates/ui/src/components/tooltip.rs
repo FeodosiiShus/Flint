@@ -2,7 +2,9 @@ use std::borrow::Borrow;
 use std::rc::Rc;
 
 use crate::prelude::*;
-use crate::{Color, ElevationIndex, KeyBinding, Label, LabelSize, TOOLTIP_METRICS, h_flex, v_flex};
+use crate::{
+    Color, KeyBinding, Label, LabelSize, TOOLTIP_CURSOR_OFFSET, TOOLTIP_METRICS, h_flex, v_flex,
+};
 use gpui::{Action, AnyElement, AnyView, AppContext, FocusHandle, IntoElement, Render};
 
 #[derive(RegisterComponent)]
@@ -225,16 +227,11 @@ where
     let app = (*cx).borrow();
     let ui_font = theme::theme_settings(app).ui_font(app).clone();
     let colors = app.theme().colors();
-    let background = colors
-        .elevated_surface_background
-        .blend(colors.element_background);
 
-    // padding to avoid tooltip appearing right below the mouse cursor
-    div().pl_2().pt_2p5().child(
+    // Keeps the tooltip clear of the pointer, so it never reads as part of the hovered control.
+    div().pl_2().pt(TOOLTIP_CURSOR_OFFSET).child(
         v_flex()
-            .bg(background)
-            .rounded(TOOLTIP_METRICS.corner_radius)
-            .shadow(ElevationIndex::ElevatedSurface.shadow(app))
+            .tooltip_surface(app)
             .font(ui_font)
             .text_ui(app)
             .text_color(colors.text)

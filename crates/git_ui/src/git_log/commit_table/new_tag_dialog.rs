@@ -5,7 +5,7 @@ use gpui::{
     Subscription, Window,
 };
 use menu::{Cancel, Confirm};
-use ui::{DialogButton, prelude::*};
+use ui::{DIALOG_METRICS, DialogButton, DialogWidth, Modal, ModalFooter, ModalHeader, prelude::*};
 use workspace::ModalView;
 
 use crate::branch_operations::{BranchContext, error_notice};
@@ -111,54 +111,51 @@ impl Focusable for NewTagDialog {
 }
 
 impl Render for NewTagDialog {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let can_confirm = is_valid_tag_name(&self.tag_name(cx));
         v_flex()
             .key_context("NewTagDialog")
             .on_action(cx.listener(Self::cancel))
             .on_action(cx.listener(Self::confirm))
-            .elevation_3(cx)
-            .w(rems(30.))
+            .dialog_surface(DialogWidth::Small, window, cx)
             .child(
-                div()
-                    .px_3()
-                    .pt_3()
-                    .pb_1()
-                    .child(Headline::new(self.title.clone()).size(HeadlineSize::Small)),
-            )
-            .child(
-                v_flex()
-                    .px_3()
-                    .py_2()
-                    .gap_2()
-                    .child(Label::new(TAG_NAME_LABEL))
-                    .child(
-                        div()
-                            .w_full()
-                            .px_2()
-                            .py_1()
-                            .rounded_md()
-                            .border_1()
-                            .border_color(cx.theme().colors().border)
-                            .bg(cx.theme().colors().editor_background)
-                            .child(self.editor.clone()),
-                    ),
-            )
-            .child(
-                h_flex()
-                    .p_3()
-                    .gap_2()
-                    .justify_end()
-                    .child(
-                        DialogButton::new("new-tag-cancel", CANCEL_LABEL)
-                            .default_button(false)
-                            .on_click(cx.listener(|_, _, _, cx| cx.emit(DismissEvent))),
+                Modal::new("new-tag-dialog", None)
+                    .header(
+                        ModalHeader::new()
+                            .headline(self.title.clone())
+                            .show_dismiss_button(true),
                     )
                     .child(
-                        DialogButton::new("new-tag-confirm", OK_LABEL)
-                            .default_button(true)
-                            .disabled(!can_confirm)
-                            .on_click(cx.listener(|this, _, _, cx| this.submit(cx))),
+                        v_flex()
+                            .px(DIALOG_METRICS.padding_x)
+                            .py_2()
+                            .gap_2()
+                            .child(Label::new(TAG_NAME_LABEL))
+                            .child(
+                                div()
+                                    .w_full()
+                                    .px_2()
+                                    .py_1()
+                                    .rounded_md()
+                                    .border_1()
+                                    .border_color(cx.theme().colors().border)
+                                    .bg(cx.theme().colors().editor_background)
+                                    .child(self.editor.clone()),
+                            ),
+                    )
+                    .footer(
+                        ModalFooter::new()
+                            .end_button(
+                                DialogButton::new("new-tag-cancel", CANCEL_LABEL)
+                                    .default_button(false)
+                                    .on_click(cx.listener(|_, _, _, cx| cx.emit(DismissEvent))),
+                            )
+                            .end_button(
+                                DialogButton::new("new-tag-confirm", OK_LABEL)
+                                    .default_button(true)
+                                    .disabled(!can_confirm)
+                                    .on_click(cx.listener(|this, _, _, cx| this.submit(cx))),
+                            ),
                     ),
             )
     }

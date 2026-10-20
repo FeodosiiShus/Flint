@@ -1,6 +1,9 @@
 use crate::component_prelude::*;
 use crate::prelude::*;
-use crate::{Checkbox, ListBulletItem, ToggleState};
+use crate::{
+    Checkbox, DIALOG_METRICS, DialogButton, DialogWidth, ListBulletItem, ModalFooter, ModalHeader,
+    ToggleState,
+};
 use gpui::Action;
 use gpui::FocusHandle;
 use gpui::IntoElement;
@@ -19,7 +22,7 @@ pub struct AlertModal {
     title: Option<SharedString>,
     primary_action: Option<SharedString>,
     dismiss_label: Option<SharedString>,
-    width: Option<DefiniteLength>,
+    width: DialogWidth,
     key_context: Option<String>,
     action_handlers: Vec<ActionHandler>,
     focus_handle: Option<FocusHandle>,
@@ -35,7 +38,7 @@ impl AlertModal {
             title: None,
             primary_action: None,
             dismiss_label: None,
-            width: None,
+            width: DialogWidth::Small,
             key_context: None,
             action_handlers: Vec::new(),
             focus_handle: None,
@@ -67,8 +70,8 @@ impl AlertModal {
         self
     }
 
-    pub fn width(mut self, width: impl Into<DefiniteLength>) -> Self {
-        self.width = Some(width.into());
+    pub fn width(mut self, width: DialogWidth) -> Self {
+        self.width = width;
         self
     }
 
@@ -93,8 +96,7 @@ impl AlertModal {
 }
 
 impl RenderOnce for AlertModal {
-    fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
-        let width = self.width.unwrap_or_else(|| px(440.).into());
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let has_default_footer = self.primary_action.is_some() || self.dismiss_label.is_some();
 
         let mut modal = v_flex()
@@ -105,10 +107,7 @@ impl RenderOnce for AlertModal {
                 this.track_focus(&focus_handle)
             })
             .id(self.id)
-            .elevation_3(cx)
-            .w(width)
-            .bg(cx.theme().colors().elevated_surface_background)
-            .overflow_hidden();
+            .dialog_surface(self.width, window, cx);
 
         for handler in self.action_handlers {
             modal = handler(modal);
@@ -117,20 +116,14 @@ impl RenderOnce for AlertModal {
         if let Some(header) = self.header {
             modal = modal.child(header);
         } else if let Some(title) = self.title {
-            modal = modal.child(
-                v_flex()
-                    .pt_3()
-                    .pr_3()
-                    .pl_3()
-                    .pb_1()
-                    .child(Headline::new(title).size(HeadlineSize::Small)),
-            );
+            modal = modal.child(ModalHeader::new().headline(title));
         }
 
         if !self.children.is_empty() {
             modal = modal.child(
                 v_flex()
-                    .p_3()
+                    .px(DIALOG_METRICS.padding_x)
+                    .py(DIALOG_METRICS.section_gap)
                     .text_ui(cx)
                     .text_color(Color::Muted.color(cx))
                     .gap_1()
@@ -149,13 +142,12 @@ impl RenderOnce for AlertModal {
                 .unwrap_or_else(|| SharedString::new_static("Cancel"));
 
             modal = modal.child(
-                h_flex()
-                    .p_3()
-                    .items_center()
-                    .justify_end()
-                    .gap_1()
-                    .child(Button::new(dismiss_label.clone(), dismiss_label).color(Color::Muted))
-                    .child(Button::new(primary_action.clone(), primary_action)),
+                ModalFooter::new()
+                    .end_button(DialogButton::new(dismiss_label.clone(), dismiss_label))
+                    .end_button(
+                        DialogButton::new(primary_action.clone(), primary_action)
+                            .default_button(true),
+                    ),
             );
         }
 
@@ -245,7 +237,7 @@ Review .zed/settings.json for any extensions or commands configured by this proj
                                             .child(Button::new("trust", "Trust and Continue").style(ButtonStyle::Filled))
                                     )
                             )
-                            .width(rems(40.))
+                            .width(DialogWidth::Medium)
                             .into_any_element(),
                     )]),
                 ])

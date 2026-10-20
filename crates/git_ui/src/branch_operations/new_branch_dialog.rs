@@ -6,7 +6,10 @@ use gpui::{
     Subscription, Window,
 };
 use menu::{Cancel, Confirm, SelectNext, SelectPrevious};
-use ui::{Checkbox, DialogButton, prelude::*};
+use ui::{
+    Checkbox, DIALOG_METRICS, DialogButton, DialogWidth, Modal, ModalFooter, ModalHeader,
+    prelude::*,
+};
 use workspace::ModalView;
 
 use crate::branch_operations::BranchContext;
@@ -491,7 +494,7 @@ impl Focusable for NewBranchDialog {
 }
 
 impl Render for NewBranchDialog {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let name = self.applied_name(cx);
         let problem = self.problem(cx);
         let overwrite_available = self.existing.has_local(&name);
@@ -515,84 +518,88 @@ impl Render for NewBranchDialog {
             .on_action(cx.listener(Self::select_next_suggestion))
             .on_action(cx.listener(Self::select_previous_suggestion))
             .on_action(cx.listener(Self::accept_first_suggestion))
-            .elevation_3(cx)
-            .w(rems(30.))
+            .dialog_surface(DialogWidth::Small, window, cx)
             .child(
-                div()
-                    .px_3()
-                    .pt_3()
-                    .pb_1()
-                    .child(Headline::new(self.title.clone()).size(HeadlineSize::Small)),
-            )
-            .child(
-                v_flex()
-                    .px_3()
-                    .py_2()
-                    .gap_2()
-                    .child(branch_name_row(&self.editor, cx))
-                    .when(has_field_details, |this| {
-                        this.child(under_branch_name_field(
-                            v_flex().gap_2().children(suggestion_list).children(
-                                problem_message.map(|message| {
-                                    Label::new(message)
-                                        .color(Color::Error)
-                                        .size(LabelSize::Small)
-                                }),
-                            ),
-                        ))
-                    })
-                    .child(under_branch_name_field(
-                        h_flex()
-                            .gap_4()
-                            .when(self.show_checkout_option, |this| {
-                                this.child(
-                                    div().debug_selector(|| "NEW_BRANCH_CHECKOUT".into()).child(
-                                        Checkbox::new("new-branch-checkout", self.checkout.into())
-                                            .label("Checkout branch")
-                                            .on_click(cx.listener(
-                                                |this, state: &ToggleState, _, cx| {
-                                                    this.checkout = state.selected();
-                                                    cx.notify();
-                                                },
-                                            )),
-                                    ),
-                                )
-                            })
-                            .child(
-                                div()
-                                    .debug_selector(|| "NEW_BRANCH_OVERWRITE".into())
-                                    .child(
-                                        Checkbox::new(
-                                            "new-branch-overwrite",
-                                            (self.overwrite && overwrite_available).into(),
-                                        )
-                                        .label("Overwrite existing branch")
-                                        .disabled(!overwrite_available)
-                                        .on_click(
-                                            cx.listener(|this, state: &ToggleState, _, cx| {
-                                                this.overwrite = state.selected();
-                                                cx.notify();
-                                            }),
-                                        ),
-                                    ),
-                            ),
-                    )),
-            )
-            .child(
-                h_flex()
-                    .p_3()
-                    .gap_2()
-                    .justify_end()
-                    .child(
-                        DialogButton::new("new-branch-cancel", "Cancel")
-                            .default_button(false)
-                            .on_click(cx.listener(|_, _, _, cx| cx.emit(DismissEvent))),
+                Modal::new("new-branch-dialog", None)
+                    .header(
+                        ModalHeader::new()
+                            .headline(self.title.clone())
+                            .show_dismiss_button(true),
                     )
                     .child(
-                        DialogButton::new("new-branch-confirm", self.confirm_label.clone())
-                            .default_button(true)
-                            .disabled(!can_confirm)
-                            .on_click(cx.listener(|this, _, window, cx| this.submit(window, cx))),
+                        v_flex()
+                            .px(DIALOG_METRICS.padding_x)
+                            .py_2()
+                            .gap_2()
+                            .child(branch_name_row(&self.editor, cx))
+                            .when(has_field_details, |this| {
+                                this.child(under_branch_name_field(
+                                    v_flex().gap_2().children(suggestion_list).children(
+                                        problem_message.map(|message| {
+                                            Label::new(message)
+                                                .color(Color::Error)
+                                                .size(LabelSize::Small)
+                                        }),
+                                    ),
+                                ))
+                            })
+                            .child(under_branch_name_field(
+                                h_flex()
+                                    .gap_4()
+                                    .when(self.show_checkout_option, |this| {
+                                        this.child(
+                                            div()
+                                                .debug_selector(|| "NEW_BRANCH_CHECKOUT".into())
+                                                .child(
+                                                    Checkbox::new(
+                                                        "new-branch-checkout",
+                                                        self.checkout.into(),
+                                                    )
+                                                    .label("Checkout branch")
+                                                    .on_click(cx.listener(
+                                                        |this, state: &ToggleState, _, cx| {
+                                                            this.checkout = state.selected();
+                                                            cx.notify();
+                                                        },
+                                                    )),
+                                                ),
+                                        )
+                                    })
+                                    .child(
+                                        div()
+                                            .debug_selector(|| "NEW_BRANCH_OVERWRITE".into())
+                                            .child(
+                                                Checkbox::new(
+                                                    "new-branch-overwrite",
+                                                    (self.overwrite && overwrite_available).into(),
+                                                )
+                                                .label("Overwrite existing branch")
+                                                .disabled(!overwrite_available)
+                                                .on_click(cx.listener(
+                                                    |this, state: &ToggleState, _, cx| {
+                                                        this.overwrite = state.selected();
+                                                        cx.notify();
+                                                    },
+                                                )),
+                                            ),
+                                    ),
+                            )),
+                    )
+                    .footer(
+                        ModalFooter::new()
+                            .end_button(
+                                DialogButton::new("new-branch-cancel", "Cancel")
+                                    .default_button(false)
+                                    .on_click(cx.listener(|_, _, _, cx| cx.emit(DismissEvent))),
+                            )
+                            .end_button(
+                                DialogButton::new("new-branch-confirm", self.confirm_label.clone())
+                                    .default_button(true)
+                                    .disabled(!can_confirm)
+                                    .on_click(
+                                        cx.listener(|this, _, window, cx| this.submit(window, cx)),
+                                    ),
+                            ),
                     ),
             )
     }

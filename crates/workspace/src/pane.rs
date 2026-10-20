@@ -20,7 +20,7 @@ use anyhow::Result;
 use collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use futures::{StreamExt, stream::FuturesUnordered};
 use gpui::{
-    Action, Anchor, AnyElement, App, AsyncWindowContext, Bounds, ClickEvent, Context, Div,
+    Action, Anchor, AnyElement, AnyView, App, AsyncWindowContext, Bounds, ClickEvent, Context, Div,
     DragMoveEvent, Entity, EntityId, EventEmitter, ExternalPaths, FocusHandle, FocusOutEvent,
     Focusable, Hsla, KeyContext, MouseButton, NavigationDirection, Pixels, Point, PromptLevel,
     Render, ScrollHandle, Subscription, Task, TaskExt, WeakEntity, WeakFocusHandle, Window,
@@ -47,10 +47,11 @@ use std::{
 };
 use theme_settings::ThemeSettings;
 use ui::{
-    BackgroundImageArea, BackgroundImageTarget, ContextMenu, DecoratedIcon, Divider, DividerColor,
-    IconButtonShape, IconDecoration, IconDecorationKind, Indicator, PopoverMenu, PopoverMenuHandle,
-    Tab, TabBar, TabPosition, Tooltip, background_image_layer, has_any_background_image,
-    has_background_image, prelude::*, right_click_menu,
+    BackgroundImageArea, BackgroundImageTarget, CloseButton, CloseButtonSize, ContextMenu,
+    DecoratedIcon, Divider, DividerColor, IconButtonShape, IconDecoration, IconDecorationKind,
+    Indicator, PopoverMenu, PopoverMenuHandle, Tab, TabBar, TabPosition, Tooltip,
+    background_image_layer, has_any_background_image, has_background_image, prelude::*,
+    right_click_menu,
 };
 use util::{
     ResultExt, debug_panic, markdown::MarkdownInlineCode, maybe, paths::PathStyle,
@@ -3009,50 +3010,36 @@ impl Pane {
             save_intent: None,
             close_pinned: false,
         };
-        let end_slot_button: Option<(IconButton, &'static str, &'static dyn Action, Color)> =
-            if is_pinned {
-                Some((
-                    IconButton::new("unpin tab", IconName::Pin).on_click(cx.listener(
-                        move |pane, _, window, cx| {
-                            pane.unpin_tab_at(ix, window, cx);
-                        },
-                    )),
-                    "Unpin Tab",
-                    &TogglePinTab,
-                    Color::Default,
-                ))
+        let end_slot_tooltip = move |tooltip_text: &'static str,
+                                     action: &'static dyn Action|
+              -> Box<dyn Fn(&mut Window, &mut App) -> AnyView> {
+            if is_active {
+                let focus_handle = focus_handle.clone();
+                Box::new(move |window, cx| {
+                    Tooltip::for_action_in(
+                        tooltip_text,
+                        action,
+                        &window.focused(cx).unwrap_or_else(|| focus_handle.clone()),
+                        cx,
+                    )
+                })
             } else {
-                match show_close_button {
-                    ShowCloseButton::Hidden => None,
-                    ShowCloseButton::Always | ShowCloseButton::Hover => {
-                        let close_button = IconButton::new("close tab", IconName::Close);
-                        let close_button = if close_button_reveals_on_hover {
-                            close_button.visible_on_hover(close_reveal_group)
-                        } else {
-                            close_button
-                        };
-                        Some((
-                            close_button.on_click(cx.listener(move |pane, _, window, cx| {
-                                pane.close_item_by_id(item_id, SaveIntent::Close, window, cx)
-                                    .detach_and_log_err(cx);
-                            })),
-                            "Close Tab",
-                            close_action,
-                            Color::Placeholder,
-                        ))
-                    }
-                }
-            };
-        let end_slot_button =
-            end_slot_button.map(|(button, tooltip_text, action, island_icon_color)| {
-                button
+                Box::new(Tooltip::text(tooltip_text))
+            }
+        };
+        let end_slot_button: Option<AnyElement> = if is_pinned {
+            let tooltip = end_slot_tooltip("Unpin Tab", &TogglePinTab);
+            Some(
+                IconButton::new("unpin tab", IconName::Pin)
+                    .on_click(cx.listener(move |pane, _, window, cx| {
+                        pane.unpin_tab_at(ix, window, cx);
+                    }))
                     .shape(IconButtonShape::Square)
                     .size(ButtonSize::None)
                     .chrome_region(ui::ChromeRegion::TabBar)
                     .map(|this| {
                         if islands {
-                            this.icon_color(island_icon_color)
-                                .icon_size(island_close_icon_size)
+                            this.icon_size(island_close_icon_size)
                                 .box_size(island_close_box_size)
                                 .corner_radius(island_close_box_size / 2.)
                                 .hover_background(island_close_hover_background)
@@ -3061,22 +3048,30 @@ impl Pane {
                             this.icon_color(Color::Muted).icon_size(IconSize::Small)
                         }
                     })
-                    .map(|this| {
-                        if is_active {
-                            let focus_handle = focus_handle.clone();
-                            this.tooltip(move |window, cx| {
-                                Tooltip::for_action_in(
-                                    tooltip_text,
-                                    action,
-                                    &window.focused(cx).unwrap_or_else(|| focus_handle.clone()),
-                                    cx,
-                                )
-                            })
-                        } else {
-                            this.tooltip(Tooltip::text(tooltip_text))
-                        }
-                    })
-            });
+                    .tooltip(tooltip)
+                    .into_any_element(),
+            )
+        } else {
+            match show_close_button {
+                ShowCloseButton::Hidden => None,
+                ShowCloseButton::Always | ShowCloseButton::Hover => {
+                    let tooltip = end_slot_tooltip("Close Tab", close_action);
+                    let close_button = CloseButton::new("close tab", CloseButtonSize::Inline)
+                        .scale(island_close_scale.unwrap_or(1.))
+                        .on_click(cx.listener(move |pane, _, window, cx| {
+                            pane.close_item_by_id(item_id, SaveIntent::Close, window, cx)
+                                .detach_and_log_err(cx);
+                        }))
+                        .tooltip(tooltip);
+                    let close_button = if close_button_reveals_on_hover {
+                        close_button.visible_on_hover(close_reveal_group)
+                    } else {
+                        close_button
+                    };
+                    Some(close_button.into_any_element())
+                }
+            }
+        };
         let tab_end_slot: Option<AnyElement> = if islands {
             let dirty_dot = dirty_dot_color.filter(|_| !is_pinned).map(|color| {
                 div()
@@ -3113,12 +3108,12 @@ impl Pane {
                         )
                         .into_any_element(),
                 ),
-                (Some(button), None) => Some(button.into_any_element()),
+                (Some(button), None) => Some(button),
                 (None, Some(dot)) => Some(dot.into_any_element()),
                 (None, None) => None,
             }
         } else {
-            end_slot_button.map(IntoElement::into_any_element)
+            end_slot_button
         };
 
         let pane_tab_content = h_flex()

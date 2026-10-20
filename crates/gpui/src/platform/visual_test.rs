@@ -218,6 +218,10 @@ impl Platform for VisualTestPlatform {
         self.platform.should_auto_hide_scrollbars()
     }
 
+    fn should_reduce_transparency(&self) -> bool {
+        self.platform.should_reduce_transparency()
+    }
+
     fn read_from_clipboard(&self) -> Option<ClipboardItem> {
         self.clipboard.lock().clone()
     }

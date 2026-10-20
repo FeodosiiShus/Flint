@@ -12,8 +12,8 @@ use gpui::{
 use picker::{Picker, PickerDelegate, PickerEditorPosition};
 use project::{Project, git_store::RepositoryEvent, repo_identity_path_if_local};
 use ui::{
-    Button, CommonAnimationExt as _, Divider, HighlightedLabel, IconButton, KeyBinding, ListItem,
-    ListItemSpacing, ListSubHeader, Tooltip, prelude::*,
+    Button, CloseButton, CloseButtonSize, CommonAnimationExt as _, Divider, HighlightedLabel,
+    IconButton, KeyBinding, ListItem, ListItemSpacing, ListSubHeader, Tooltip, prelude::*,
 };
 use util::{ResultExt as _, paths::PathExt};
 use workspace::{ModalView, MultiWorkspace, RemovalIntent, Workspace, dock::DockPosition};
@@ -241,7 +241,7 @@ impl Render for WorktreePicker {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         v_flex()
             .key_context("WorktreePicker")
-            .elevation_3(cx)
+            .popup_surface(cx)
             .child(self.picker.clone())
             .on_modifiers_changed(cx.listener(Self::handle_modifiers_changed))
             .on_mouse_down_out(cx.listener(|_, _, _, cx| {
@@ -1295,11 +1295,10 @@ impl PickerDelegate for WorktreePickerDelegate {
                                     .when(can_remove_from_window, |this| {
                                         let worktree_path = worktree.path.clone();
                                         this.child(
-                                            IconButton::new(
+                                            CloseButton::new(
                                                 ("remove-worktree-from-window", ix),
-                                                IconName::Close,
+                                                CloseButtonSize::Inline,
                                             )
-                                            .icon_size(IconSize::Small)
                                             .tooltip(Tooltip::text("Remove Worktree from Window"))
                                             .on_click(
                                                 cx.listener(move |picker, _, window, cx| {

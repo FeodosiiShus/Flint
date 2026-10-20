@@ -15,12 +15,12 @@ use gpui::{
 };
 use picker::{Picker, PickerDelegate};
 use project::git_store::Repository;
-use ui::prelude::*;
+use ui::{SurfaceKind, prelude::*};
 use workspace::{ModalView, Workspace};
 
 use self::delegate::{
-    BranchesDelegate, HEADER_TOP_INSET_PX, LeafDirection, ROW_HEIGHT_PX, RunningFetches,
-    SEARCH_BOX_HEIGHT_PX,
+    BranchesDelegate, HEADER_BOTTOM_GAP_PX, HEADER_TOP_INSET_PX, LeafDirection, ROW_HEIGHT_PX,
+    RunningFetches, SEARCH_BOX_HEIGHT_PX, SEARCH_SEPARATOR_PX,
 };
 use self::rows::is_filtering;
 use self::state::PopupSize;
@@ -31,6 +31,9 @@ pub(crate) const DEBUG_SELECTOR: &str = "branches-popup";
 // `GitBranchesPopupBase`: the New UI popup is at least 375 px wide and 300 px plus the 12 px drag
 // area tall, and opens with at most 20 visible tree rows.
 pub(crate) const MIN_WIDTH_PX: f32 = 375.;
+/// IntelliJ fits the popup to its widest row; Flint stops at the standard popup width and elides
+/// long branch names instead.
+pub(crate) const MAX_WIDTH: Pixels = ui::POPUP_MAX_CONTENT_WIDTH;
 pub(crate) const MIN_HEIGHT_PX: f32 = 312.;
 pub(crate) const MAX_VISIBLE_ROWS: usize = 20;
 const BORDER_PX: f32 = 1.;
@@ -91,10 +94,16 @@ pub(crate) fn packed_size(
     list_padding: Pixels,
 ) -> Size<Pixels> {
     let rows = visible_rows.min(MAX_VISIBLE_ROWS) as f32;
-    let chrome =
-        px(HEADER_TOP_INSET_PX + SEARCH_BOX_HEIGHT_PX + 2. * BORDER_PX) + list_padding * 2.;
+    let chrome = px(HEADER_TOP_INSET_PX
+        + SEARCH_BOX_HEIGHT_PX
+        + HEADER_BOTTOM_GAP_PX
+        + SEARCH_SEPARATOR_PX
+        + 2. * BORDER_PX)
+        + list_padding * 2.;
     size(
-        (widest_row + px(2. * BORDER_PX)).max(px(MIN_WIDTH_PX)),
+        (widest_row + px(2. * BORDER_PX))
+            .max(px(MIN_WIDTH_PX))
+            .min(MAX_WIDTH),
         (chrome + px(ROW_HEIGHT_PX) * rows).max(px(MIN_HEIGHT_PX)),
     )
 }
@@ -409,8 +418,9 @@ impl Focusable for BranchesPopup {
 }
 
 impl Render for BranchesPopup {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let popup_size = self.popup_size(cx);
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let popup_size =
+            SurfaceKind::Popup.fit_to_viewport(self.popup_size(cx), window.viewport_size());
         v_flex()
             .debug_selector(|| DEBUG_SELECTOR.to_string())
             .occlude()
@@ -419,7 +429,7 @@ impl Render for BranchesPopup {
             .top(self.move_offset.y)
             .w(popup_size.width)
             .h(popup_size.height)
-            .elevation_3(cx)
+            .popup_surface(cx)
             .overflow_hidden()
             .key_context(KEY_CONTEXT)
             .when(self.style == BranchesPopupStyle::Popover, |this| {

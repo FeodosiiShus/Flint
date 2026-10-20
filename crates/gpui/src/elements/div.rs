@@ -875,15 +875,17 @@ pub trait InteractiveElement: Sized {
         self
     }
 
-    /// Set a key that can be used to look up this element's bounds
-    /// in the [`crate::VisualTestContext::debug_bounds`] map.
+    /// Adds a key that can be used to look up this element's bounds
+    /// in the [`crate::VisualTestContext::debug_bounds`] map. An element can
+    /// carry several keys, such as its own and the one of the shared component
+    /// that styles it.
     ///
     /// Selectors are only recorded in debug builds with the `test-support`
     /// feature. Elsewhere this is a no-op, so `test-support` can stay enabled
     /// in release builds without the per-frame cost.
     #[cfg(any(test, all(debug_assertions, feature = "test-support")))]
     fn debug_selector(mut self, f: impl FnOnce() -> String) -> Self {
-        self.interactivity().debug_selector = Some(f());
+        self.interactivity().debug_selectors.push(f());
         self
     }
 
@@ -2201,7 +2203,7 @@ pub struct Interactivity {
     pub(crate) source_location: Option<&'static core::panic::Location<'static>>,
 
     #[cfg(any(test, all(debug_assertions, feature = "test-support")))]
-    pub(crate) debug_selector: Option<String>,
+    pub(crate) debug_selectors: Vec<String>,
 }
 
 impl Interactivity {
@@ -2524,7 +2526,7 @@ impl Interactivity {
                 let style = self.compute_style_internal(hitbox, element_state.as_mut(), window, cx);
 
                 #[cfg(any(test, all(debug_assertions, feature = "test-support")))]
-                if let Some(debug_selector) = &self.debug_selector {
+                for debug_selector in &self.debug_selectors {
                     window
                         .next_frame
                         .record_debug_bounds(debug_selector.clone(), bounds);

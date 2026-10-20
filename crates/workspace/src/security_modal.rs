@@ -17,8 +17,8 @@ use project::{
 use smallvec::SmallVec;
 use theme::ActiveTheme;
 use ui::{
-    AlertModal, Checkbox, FluentBuilder, KeyBinding, ListBulletItem, ToggleState, WithScrollbar,
-    prelude::*,
+    AlertModal, Checkbox, DialogWidth, FluentBuilder, KeyBinding, ListBulletItem, ToggleState,
+    WithScrollbar, prelude::*,
 };
 use ui_input::InputField;
 
@@ -93,7 +93,7 @@ impl Render for SecurityModal {
             .then(|| self.trust_path_input.clone());
 
         AlertModal::new("security-modal")
-            .width(rems(40.))
+            .width(DialogWidth::Medium)
             .key_context("SecurityModal")
             .track_focus(&self.focus_handle(cx))
             .on_action(cx.listener(|this, _: &menu::Confirm, _window, cx| {

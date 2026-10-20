@@ -43,18 +43,12 @@ impl RenderOnce for Popover {
             .gap_1()
             .child(
                 v_flex()
-                    .elevation_2(cx)
+                    .popup_surface(cx)
                     .py(POPOVER_VERTICAL_PADDING)
                     .child(div().children(self.children)),
             )
             .when_some(self.aside, |this, aside| {
-                this.child(
-                    v_flex()
-                        .elevation_2(cx)
-                        .bg(cx.theme().colors().surface_background)
-                        .px_1()
-                        .child(aside),
-                )
+                this.child(v_flex().popup_surface(cx).px_1().child(aside))
             })
     }
 }

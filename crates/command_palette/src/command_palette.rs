@@ -26,7 +26,8 @@ use picker::{Picker, PickerDelegate};
 use postage::{sink::Sink, stream::Stream};
 use settings::Settings;
 use ui::{
-    ButtonLike, HighlightedLabel, KeyBinding, ListItem, ListItemSpacing, Tooltip, prelude::*,
+    CloseButton, CloseButtonSize, HighlightedLabel, KeyBinding, ListItem, ListItemSpacing, Tooltip,
+    prelude::*,
 };
 use util::ResultExt;
 use workspace::{ModalView, Workspace, WorkspaceSettings};
@@ -446,40 +447,33 @@ impl CommandPaletteDelegate {
                 cx.stop_propagation();
                 window.prevent_default();
             })
+            .relative()
             .child(
-                ButtonLike::new(("remove-command-history", ix))
-                    .aria_label("Remove from Command History")
-                    .tooltip(Tooltip::for_action_title(
-                        "Remove from Command History",
-                        &RemoveSelected,
-                    ))
+                h_flex()
+                    .group_hover("command-history-button", |this| this.invisible())
                     .child(
-                        h_flex()
-                            .relative()
-                            .child(
-                                h_flex()
-                                    .group_hover("command-history-button", |this| this.invisible())
-                                    .child(
-                                        Icon::new(IconName::HistoryRerun)
-                                            .color(Color::Muted)
-                                            .size(IconSize::Small),
-                                    ),
-                            )
-                            .child(
-                                h_flex()
-                                    .absolute()
-                                    .inset_0()
-                                    .visible_on_hover("command-history-button")
-                                    .child(Icon::new(IconName::Close).size(IconSize::Small)),
-                            ),
-                    )
-                    .on_click(cx.listener(move |picker, _, window, cx| {
-                        window.prevent_default();
-                        picker
-                            .delegate
-                            .remove_command_history(command_name.clone(), window, cx)
-                            .detach();
-                    })),
+                        Icon::new(IconName::HistoryRerun)
+                            .color(Color::Muted)
+                            .size(IconSize::Small),
+                    ),
+            )
+            .child(
+                h_flex().absolute().inset_0().justify_center().child(
+                    CloseButton::new(("remove-command-history", ix), CloseButtonSize::Inline)
+                        .aria_label("Remove from Command History")
+                        .tooltip(Tooltip::for_action_title(
+                            "Remove from Command History",
+                            &RemoveSelected,
+                        ))
+                        .visible_on_hover("command-history-button")
+                        .on_click(cx.listener(move |picker, _, window, cx| {
+                            window.prevent_default();
+                            picker
+                                .delegate
+                                .remove_command_history(command_name.clone(), window, cx)
+                                .detach();
+                        })),
+                ),
             )
     }
 

@@ -49,9 +49,9 @@ use zed_actions::{
 use theme::AccentColors;
 use time::{OffsetDateTime, UtcOffset, format_description::BorrowedFormatItem};
 use ui::{
-    Chip, ColumnWidthConfig, CommonAnimationExt as _, ContextMenu, DiffStat, Disclosure, Divider,
-    HeaderResizeInfo, HighlightedLabel, IndentGuideColors, ListItem, ListItemSpacing,
-    RedistributableColumnsState, ScrollableHandle, Table, TableInteractionState,
+    Chip, CloseButton, CloseButtonSize, ColumnWidthConfig, CommonAnimationExt as _, ContextMenu,
+    DiffStat, Disclosure, Divider, HeaderResizeInfo, HighlightedLabel, IndentGuideColors, ListItem,
+    ListItemSpacing, RedistributableColumnsState, ScrollableHandle, Table, TableInteractionState,
     TableRenderContext, TableResizeBehavior, Tooltip, WithScrollbar, bind_redistributable_columns,
     prelude::*, redistribute_hidden_fractions, redistribute_hidden_widths,
     render_redistributable_columns_resize_handles, render_table_header, table_row::TableRow,
@@ -2833,22 +2833,20 @@ impl GitGraph {
                     .w_full()
                     .p_2()
                     .gap_2()
-                    .child(
-                        div().absolute().top_2().right_2().child(
-                            IconButton::new("close-detail", IconName::Close)
-                                .icon_size(IconSize::Small)
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    this.selected_entry_idx = None;
-                                    this.selected_commit_diff = None;
-                                    this.selected_commit_diff_stats = None;
-                                    this.selected_commit_message = None;
-                                    this._selected_commit_message_task = None;
-                                    this.changed_files_expanded_dirs.clear();
-                                    this._commit_diff_task = None;
-                                    cx.notify();
-                                })),
+                    .child(div().absolute().top_2().right_2().child(
+                        CloseButton::new("close-detail", CloseButtonSize::Header).on_click(
+                            cx.listener(move |this, _, _, cx| {
+                                this.selected_entry_idx = None;
+                                this.selected_commit_diff = None;
+                                this.selected_commit_diff_stats = None;
+                                this.selected_commit_message = None;
+                                this._selected_commit_message_task = None;
+                                this.changed_files_expanded_dirs.clear();
+                                this._commit_diff_task = None;
+                                cx.notify();
+                            }),
                         ),
-                    )
+                    ))
                     .child(
                         div().absolute().top_2().left_2().child(
                             Disclosure::new(

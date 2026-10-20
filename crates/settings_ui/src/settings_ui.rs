@@ -33,8 +33,9 @@ use std::{
 };
 use theme_settings::ThemeSettings;
 use ui::{
-    Banner, COMPONENT_CORNER_RADII, Checkbox, ContextMenu, DialogButton, IconButtonShape,
-    PopoverMenu, PopoverMenuHandle, Scrollbars, Tooltip, WithScrollbar, prelude::*,
+    Banner, COMPONENT_CORNER_RADII, Checkbox, CloseButton, CloseButtonSize, ContextMenu,
+    DialogButton, IconButtonShape, PopoverMenu, PopoverMenuHandle, Scrollbars, Tooltip,
+    WithScrollbar, prelude::*,
 };
 
 use util::{ResultExt as _, paths::PathStyle, rel_path::RelPath};
@@ -2767,9 +2768,7 @@ impl SettingsWindow {
                     .child(div().flex_1().min_w_0().child(self.search_bar.clone()))
                     .when(has_query, |this| {
                         this.child(
-                            IconButton::new("clear-btn", IconName::Close)
-                                .icon_color(Color::Muted)
-                                .icon_size(IconSize::Small)
+                            CloseButton::new("clear-btn", CloseButtonSize::Inline)
                                 .tooltip(Tooltip::text("Clear"))
                                 .on_click(cx.listener(|settings_window, _, window, cx| {
                                     settings_window.clear_search(window, cx);

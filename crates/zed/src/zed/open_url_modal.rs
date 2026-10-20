@@ -1,9 +1,9 @@
 use editor::Editor;
 use gpui::{AppContext as _, DismissEvent, Entity, EventEmitter, Focusable, ReadGlobal, Styled};
 use ui::{
-    ActiveTheme, App, Color, Context, FluentBuilder, InteractiveElement, IntoElement, Label,
-    LabelCommon, LabelSize, ParentElement, Render, SharedString, StyledExt, Window, div, h_flex,
-    v_flex,
+    ActiveTheme, App, Color, Context, DialogWidth, FluentBuilder, InteractiveElement, IntoElement,
+    Label, LabelCommon, LabelSize, Modal, ModalHeader, ParentElement, Render, Section,
+    SharedString, StyledSurface, Window, component_corner_radii, div, v_flex,
 };
 use workspace::ModalView;
 
@@ -78,40 +78,47 @@ impl OpenUrlModal {
 }
 
 impl Render for OpenUrlModal {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = cx.theme();
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let colors = cx.theme().colors();
 
         v_flex()
             .key_context("OpenUrlModal")
             .on_action(cx.listener(Self::cancel))
             .on_action(cx.listener(Self::confirm))
-            .elevation_3(cx)
-            .w_96()
-            .overflow_hidden()
+            .dialog_surface(DialogWidth::Small, window, cx)
             .child(
-                div()
-                    .p_2()
-                    .border_b_1()
-                    .border_color(theme.colors().border_variant)
-                    .child(self.editor.clone()),
-            )
-            .child(
-                h_flex()
-                    .bg(theme.colors().editor_background)
-                    .rounded_b_sm()
-                    .w_full()
-                    .p_2()
-                    .gap_1()
-                    .when_some(self.last_error.clone(), |this, error| {
-                        this.child(Label::new(error).size(LabelSize::Small).color(Color::Error))
-                    })
-                    .when(self.last_error.is_none(), |this| {
-                        this.child(
-                            Label::new("Paste a URL to open.")
-                                .color(Color::Muted)
-                                .size(LabelSize::Small),
-                        )
-                    }),
+                Modal::new("open-url-modal", None)
+                    .header(
+                        ModalHeader::new()
+                            .headline("Open URL")
+                            .show_dismiss_button(true),
+                    )
+                    .section(
+                        Section::new()
+                            .child(
+                                div()
+                                    .w_full()
+                                    .px_2()
+                                    .py_1()
+                                    .rounded(component_corner_radii(cx).input)
+                                    .border_1()
+                                    .border_color(colors.border)
+                                    .bg(colors.editor_background)
+                                    .child(self.editor.clone()),
+                            )
+                            .when_some(self.last_error.clone(), |this, error| {
+                                this.child(
+                                    Label::new(error).size(LabelSize::Small).color(Color::Error),
+                                )
+                            })
+                            .when(self.last_error.is_none(), |this| {
+                                this.child(
+                                    Label::new("Paste a URL to open.")
+                                        .color(Color::Muted)
+                                        .size(LabelSize::Small),
+                                )
+                            }),
+                    ),
             )
     }
 }

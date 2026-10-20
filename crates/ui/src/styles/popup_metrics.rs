@@ -16,8 +16,8 @@ pub struct PopupSurfaceMetrics {
 }
 
 pub const POPUP_SURFACE_METRICS: PopupSurfaceMetrics = PopupSurfaceMetrics {
-    corner_radius: px(8.),
-    border_width: px(1.),
+    corner_radius: crate::SurfaceKind::Popup.standard().corner_radius,
+    border_width: crate::SurfaceKind::Popup.standard().border_width,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -50,7 +50,8 @@ impl PopupRowMetrics {
                 pill_height: px(24.),
                 pill_inset_x: px(7.),
                 pill_inset_y: px(MENU_ROW_INSET_Y),
-                pill_radius: px(4.),
+                // Concentric with the 12 px popup, like macOS 26's menu selection.
+                pill_radius: px(5.),
                 content_padding_x: px(6.),
             },
         }

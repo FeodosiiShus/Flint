@@ -9,6 +9,11 @@ pub struct BalloonMetrics {
     pub border_stroke_width: Pixels,
     pub corner_radius: Pixels,
     pub window_inset: Pixels,
+    /// The gap between the stacked balloons.
+    pub stack_gap: Pixels,
+    /// IntelliJ's New UI puts the 16 px close glyph 9 px from the balloon's top and right
+    /// edges, so the 20 px hover circle around it starts 7 px in.
+    pub close_inset: Pixels,
 }
 
 pub const BALLOON_METRICS: BalloonMetrics = BalloonMetrics {
@@ -19,6 +24,8 @@ pub const BALLOON_METRICS: BalloonMetrics = BalloonMetrics {
     border_stroke_width: px(1.),
     corner_radius: px(12.),
     window_inset: px(8.),
+    stack_gap: px(8.),
+    close_inset: px(7.),
 };
 
 #[derive(Debug, Clone, Copy, PartialEq)]

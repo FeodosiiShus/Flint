@@ -21,8 +21,8 @@ use gpui::{
 use project::git_store::Repository;
 use time::OffsetDateTime;
 use ui::{
-    ContextMenu, IconButton, IconButtonShape, PopoverMenu, TextSize, Tooltip, prelude::*,
-    text_for_keystroke,
+    CloseButton, CloseButtonSize, ContextMenu, IconButton, IconButtonShape, PopoverMenu, TextSize,
+    Tooltip, prelude::*, text_for_keystroke,
 };
 use util::ResultExt as _;
 use workspace::Workspace;
@@ -229,8 +229,6 @@ pub(crate) struct LogFilterToolbar {
     chip_bounds: [Rc<Cell<Option<Bounds<Pixels>>>>; 4],
     text_field_bounds: Rc<Cell<Option<Bounds<Pixels>>>>,
     hovered_chip: Option<FilterKind>,
-    hovered_chip_button: Option<FilterKind>,
-    clear_button_hovered: bool,
     text_history: Vec<String>,
     history_index: usize,
     recent_filters: HashMap<String, Vec<Vec<String>>>,
@@ -309,8 +307,6 @@ impl LogFilterToolbar {
             chip_bounds: std::array::from_fn(|_| Rc::new(Cell::new(None))),
             text_field_bounds: Rc::new(Cell::new(None)),
             hovered_chip: None,
-            hovered_chip_button: None,
-            clear_button_hovered: false,
             text_history: Vec::new(),
             history_index: 0,
             recent_filters: HashMap::default(),
@@ -1410,11 +1406,6 @@ impl LogFilterToolbar {
         let bounds_cell = self.text_field_bounds.clone();
         let regex = self.tab_properties.text_filter_regex;
         let match_case = self.tab_properties.text_filter_match_case;
-        let clear_icon = if self.clear_button_hovered {
-            IconName::CloseSmallHovered
-        } else {
-            IconName::CloseSmall
-        };
         let regex_option = self.render_text_option(
             "git-log-text-filter-regex",
             IconName::InlineRegex,
@@ -1505,21 +1496,22 @@ impl LogFilterToolbar {
                     .when(has_text, |this| {
                         this.child(
                             div()
-                                .id("git-log-text-filter-clear")
                                 .flex_none()
                                 .size(px(BUTTON_SIZE))
                                 .flex()
                                 .items_center()
                                 .justify_center()
-                                .cursor_pointer()
-                                .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
-                                    this.clear_button_hovered = *hovered;
-                                    cx.notify();
-                                }))
-                                .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
-                                    this.clear_text_field(window, cx)
-                                }))
-                                .child(Icon::new(clear_icon).size(IconSize::Medium)),
+                                .child(
+                                    CloseButton::new(
+                                        "git-log-text-filter-clear",
+                                        CloseButtonSize::Inline,
+                                    )
+                                    .on_click(cx.listener(
+                                        |this, _: &ClickEvent, window, cx| {
+                                            this.clear_text_field(window, cx)
+                                        },
+                                    )),
+                                ),
                         )
                     })
                     .child(regex_option)
@@ -1556,12 +1548,6 @@ impl LogFilterToolbar {
             colors.text_muted
         };
         let value_color = colors.text;
-        let button_hovered = self.hovered_chip_button == Some(kind);
-        let icon = match (selected, button_hovered) {
-            (true, true) => IconName::CloseSmallHovered,
-            (true, false) => IconName::CloseSmall,
-            (false, _) => IconName::GeneralChevronDown,
-        };
         let tooltip = self.chip_tooltip(kind);
         let bounds_cell = self.chip_bounds[kind.index()].clone();
         let padding = if focused {
@@ -1571,31 +1557,27 @@ impl LogFilterToolbar {
         };
         let focus_border = colors.border_focused;
         let button = div()
-            .id(kind.button_id())
             .flex_none()
             .size(px(CHIP_ICON_SIZE))
             .flex()
             .items_center()
             .justify_center()
-            .child(Icon::new(icon).size(IconSize::Medium))
             .when(selected, |this| {
-                this.tooltip(Tooltip::for_action_title_in(
-                    CLEAR_TEXT,
-                    &ResetFilter,
-                    &focus_handle,
-                ))
-                .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
-                    if *hovered {
-                        this.hovered_chip_button = Some(kind);
-                    } else if this.hovered_chip_button == Some(kind) {
-                        this.hovered_chip_button = None;
-                    }
-                    cx.notify();
-                }))
-                .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                    cx.stop_propagation();
-                    this.reset_filter(kind, cx);
-                }))
+                this.child(
+                    CloseButton::new(kind.button_id(), CloseButtonSize::Inline)
+                        .tooltip(Tooltip::for_action_title_in(
+                            CLEAR_TEXT,
+                            &ResetFilter,
+                            &focus_handle,
+                        ))
+                        .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                            cx.stop_propagation();
+                            this.reset_filter(kind, cx);
+                        })),
+                )
+            })
+            .when(!selected, |this| {
+                this.child(Icon::new(IconName::GeneralChevronDown).size(IconSize::Medium))
             });
         h_flex()
             .id(kind.element_id())

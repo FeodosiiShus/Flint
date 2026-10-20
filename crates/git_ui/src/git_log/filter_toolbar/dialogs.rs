@@ -1,12 +1,15 @@
 use editor::{Editor, EditorEvent};
 use gpui::{
-    App, Context, DismissEvent, Entity, EventEmitter, FocusHandle, Focusable, FontWeight,
-    MouseDownEvent, SharedString, Subscription, Task, Window, px,
+    App, Context, DismissEvent, Entity, EventEmitter, FocusHandle, Focusable, MouseDownEvent,
+    SharedString, Subscription, Task, Window, px,
 };
 use menu::{Cancel, Confirm, SecondaryConfirm, SelectNext, SelectPrevious};
 use project::git_store::Repository;
 use time::{Date, Month, OffsetDateTime, UtcOffset};
-use ui::{Checkbox, DialogButton, ToggleState, prelude::*};
+use ui::{
+    Checkbox, DIALOG_METRICS, DialogButton, DialogWidth, Modal, ModalFooter, ModalHeader,
+    ToggleState, prelude::*,
+};
 use util::ResultExt as _;
 use workspace::ModalView;
 
@@ -200,7 +203,7 @@ impl Render for ValuesPopup {
             .on_action(cx.listener(Self::finish))
             .on_action(cx.listener(Self::cancel))
             .on_mouse_down_out(cx.listener(Self::dismiss_on_click_outside))
-            .elevation_2(cx)
+            .popup_surface(cx)
             .w(px(VALUES_POPUP_WIDTH))
             .min_h(px(VALUES_POPUP_MINIMUM_HEIGHT))
             .child(
@@ -388,7 +391,7 @@ impl Focusable for DatePeriodDialog {
 }
 
 impl Render for DatePeriodDialog {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let after = self.render_date_field(
             "git-log-date-after",
             AFTER_LABEL,
@@ -410,24 +413,38 @@ impl Render for DatePeriodDialog {
             .track_focus(&self.focus_handle)
             .on_action(cx.listener(Self::confirm))
             .on_action(cx.listener(Self::cancel))
-            .elevation_3(cx)
+            .dialog_surface(DialogWidth::Small, window, cx)
             .child(
-                div()
-                    .px_3()
-                    .pt_3()
-                    .pb_1()
-                    .child(Headline::new(SELECT_PERIOD_TITLE).size(HeadlineSize::Small)),
-            )
-            .child(h_flex().px_3().py_2().gap_3().child(after).child(before))
-            .when_some(self.error.clone(), |this, error| {
-                this.child(div().px_3().child(Label::new(error).color(Color::Error)))
-            })
-            .child(
-                h_flex().p_3().justify_end().child(
-                    DialogButton::new("git-log-date-ok", OK_LABEL)
-                        .default_button(true)
-                        .on_click(cx.listener(|this, _, window, cx| this.submit(window, cx))),
-                ),
+                Modal::new("git-log-select-period-dialog", None)
+                    .header(
+                        ModalHeader::new()
+                            .headline(SELECT_PERIOD_TITLE)
+                            .show_dismiss_button(true),
+                    )
+                    .child(
+                        h_flex()
+                            .px(DIALOG_METRICS.padding_x)
+                            .py_2()
+                            .gap_3()
+                            .child(after)
+                            .child(before),
+                    )
+                    .when_some(self.error.clone(), |this, error| {
+                        this.child(
+                            div()
+                                .px(DIALOG_METRICS.padding_x)
+                                .child(Label::new(error).color(Color::Error)),
+                        )
+                    })
+                    .footer(
+                        ModalFooter::new().end_button(
+                            DialogButton::new("git-log-date-ok", OK_LABEL)
+                                .default_button(true)
+                                .on_click(
+                                    cx.listener(|this, _, window, cx| this.submit(window, cx)),
+                                ),
+                        ),
+                    ),
             )
     }
 }
@@ -579,7 +596,7 @@ impl Focusable for GoToPopup {
 }
 
 impl Render for GoToPopup {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let suggestion_list = (!self.suggestions.is_empty()).then(|| {
             render_suggestion_list(
                 &self.suggestions,
@@ -597,25 +614,31 @@ impl Render for GoToPopup {
             .on_action(cx.listener(Self::select_next))
             .on_action(cx.listener(Self::select_previous))
             .on_action(cx.listener(Self::accept_first))
-            .elevation_3(cx)
-            .w(rems(30.))
-            .p(px(2.))
-            .gap_1()
+            .dialog_surface(DialogWidth::Small, window, cx)
             .child(
-                div()
-                    .px_1()
-                    .child(Label::new(GO_TO_LABEL).weight(FontWeight::BOLD)),
+                Modal::new("git-log-go-to-dialog", None)
+                    .header(
+                        ModalHeader::new()
+                            .headline(GO_TO_LABEL)
+                            .show_dismiss_button(true),
+                    )
+                    .child(
+                        v_flex()
+                            .px(DIALOG_METRICS.padding_x)
+                            .pb(DIALOG_METRICS.footer_padding_bottom)
+                            .gap_1()
+                            .child(
+                                div()
+                                    .w_full()
+                                    .p(px(3.))
+                                    .rounded_md()
+                                    .border_1()
+                                    .border_color(colors.border)
+                                    .bg(colors.editor_background)
+                                    .child(self.editor.clone()),
+                            )
+                            .children(suggestion_list),
+                    ),
             )
-            .child(
-                div()
-                    .w_full()
-                    .p(px(3.))
-                    .rounded_md()
-                    .border_1()
-                    .border_color(colors.border)
-                    .bg(colors.editor_background)
-                    .child(self.editor.clone()),
-            )
-            .children(suggestion_list)
     }
 }

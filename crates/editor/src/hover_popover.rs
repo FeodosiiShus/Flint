@@ -27,7 +27,10 @@ use std::{
 use std::{ops::Range, sync::Arc, time::Duration};
 use std::{path::PathBuf, rc::Rc};
 use theme_settings::ThemeSettings;
-use ui::{CopyButton, Scrollbars, WithScrollbar, prelude::*, theme_is_transparent};
+use ui::{
+    CopyButton, Scrollbars, SurfaceKind, WithScrollbar, concentric_radius, prelude::*,
+    theme_is_transparent,
+};
 use url::Url;
 use util::TryFutureExt;
 use workspace::{OpenOptions, OpenVisible, Workspace};
@@ -381,26 +384,14 @@ fn show_hover(
                         .context("no rendered diagnostic")
                 })??;
 
-                let (background_color, border_color) = cx.update(|_, cx| {
+                let background_color = cx.update(|_, cx| {
                     let status_colors = cx.theme().status();
                     match local_diagnostic.diagnostic.severity {
-                        DiagnosticSeverity::ERROR => {
-                            (status_colors.error_background, status_colors.error_border)
-                        }
-                        DiagnosticSeverity::WARNING => (
-                            status_colors.warning_background,
-                            status_colors.warning_border,
-                        ),
-                        DiagnosticSeverity::INFORMATION => {
-                            (status_colors.info_background, status_colors.info_border)
-                        }
-                        DiagnosticSeverity::HINT => {
-                            (status_colors.hint_background, status_colors.hint_border)
-                        }
-                        _ => (
-                            status_colors.ignored_background,
-                            status_colors.ignored_border,
-                        ),
+                        DiagnosticSeverity::ERROR => status_colors.error_background,
+                        DiagnosticSeverity::WARNING => status_colors.warning_background,
+                        DiagnosticSeverity::INFORMATION => status_colors.info_background,
+                        DiagnosticSeverity::HINT => status_colors.hint_background,
+                        _ => status_colors.ignored_background,
                     }
                 })?;
 
@@ -422,7 +413,6 @@ fn show_hover(
                 Some(DiagnosticPopover {
                     local_diagnostic,
                     markdown,
-                    border_color,
                     scroll_handle,
                     background_color,
                     keyboard_grace: Rc::new(RefCell::new(ignore_timeout)),
@@ -1268,7 +1258,7 @@ impl InfoPopover {
         div()
             .id("info_popover")
             .occlude()
-            .elevation_2(cx)
+            .popup_surface(cx)
             .child(
                 canvas(
                     {
@@ -1352,7 +1342,6 @@ impl InfoPopover {
 pub struct DiagnosticPopover {
     pub(crate) local_diagnostic: DiagnosticEntry<Anchor>,
     markdown: Entity<Markdown>,
-    border_color: Hsla,
     background_color: Hsla,
     pub keyboard_grace: Rc<RefCell<bool>>,
     pub anchor: Anchor,
@@ -1371,10 +1360,11 @@ impl DiagnosticPopover {
         let keyboard_grace = Rc::clone(&self.keyboard_grace);
         let this = cx.entity().downgrade();
         let bounds_cell = self.last_bounds.clone();
+        let popup = SurfaceKind::Popup.standard();
         div()
             .id("diagnostic")
             .occlude()
-            .elevation_2_borderless(cx)
+            .popup_surface(cx)
             .child(
                 canvas(
                     {
@@ -1419,9 +1409,7 @@ impl DiagnosticPopover {
                     .pl_2()
                     .pr_8()
                     .bg(self.background_color)
-                    .border_1()
-                    .border_color(self.border_color)
-                    .rounded_lg()
+                    .rounded(concentric_radius(popup.corner_radius, popup.border_width))
                     .child(
                         div()
                             .id("diagnostic-content-container")

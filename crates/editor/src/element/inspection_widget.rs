@@ -5,7 +5,7 @@ use gpui::{
 use project::ProjectItem as _;
 use settings::Settings as _;
 use smallvec::SmallVec;
-use ui::{TOOLBAR_ICON_SIDE, Tooltip, exact_icon_size, prelude::*};
+use ui::{SurfaceKind, TOOLBAR_ICON_SIDE, Tooltip, concentric_radius, exact_icon_size, prelude::*};
 use util::ResultExt as _;
 
 use super::{EditorElement, EditorLayout};
@@ -277,6 +277,7 @@ impl Render for InspectionPopup {
         };
         let InspectionPopupText { title, details } = inspection_popup_text(level, counts);
         let lower_panel_background = cx.theme().colors().surface_background;
+        let popup = SurfaceKind::Popup.standard();
 
         let first_row_text = title.clone().or_else(|| details.clone());
         let details_row_text = title.and(details);
@@ -284,7 +285,7 @@ impl Render for InspectionPopup {
         v_flex()
             .id("inspection-popup")
             .min_w(POPUP_MIN_WIDTH)
-            .elevation_2(cx)
+            .popup_surface(cx)
             .font_ui(cx)
             .when_some(first_row_text, |this, text| {
                 this.child(div().p(POPUP_INSET).child(Label::new(text)))
@@ -302,7 +303,7 @@ impl Render for InspectionPopup {
                 v_flex()
                     .px(POPUP_INSET)
                     .py(POPUP_LOWER_PANEL_VERTICAL_PADDING)
-                    .rounded_b_lg()
+                    .rounded_b(concentric_radius(popup.corner_radius, popup.border_width))
                     .bg(lower_panel_background)
                     .child(
                         h_flex()

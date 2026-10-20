@@ -5,7 +5,7 @@ use gpui::{
 };
 use menu::{Cancel, Confirm, SelectNext, SelectPrevious};
 use project::git_store::Repository;
-use ui::{DialogButton, prelude::*};
+use ui::{DIALOG_METRICS, DialogButton, DialogWidth, Modal, ModalFooter, ModalHeader, prelude::*};
 use util::ResultExt as _;
 use workspace::ModalView;
 
@@ -237,7 +237,7 @@ impl Focusable for CheckoutRevisionDialog {
 }
 
 impl Render for CheckoutRevisionDialog {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let can_confirm = self.revision(cx).is_some();
         let suggestion_list = (!self.suggestions.is_empty()).then(|| {
             render_suggestion_list(
@@ -256,49 +256,48 @@ impl Render for CheckoutRevisionDialog {
             .on_action(cx.listener(Self::select_next_suggestion))
             .on_action(cx.listener(Self::select_previous_suggestion))
             .on_action(cx.listener(Self::accept_first_suggestion))
-            .elevation_3(cx)
-            .w(rems(30.))
+            .dialog_surface(DialogWidth::Small, window, cx)
             .child(
-                div()
-                    .px_3()
-                    .pt_3()
-                    .pb_1()
-                    .child(Headline::new(DIALOG_TITLE).size(HeadlineSize::Small)),
-            )
-            .child(
-                v_flex()
-                    .px_3()
-                    .py_2()
-                    .gap_2()
-                    .child(Label::new(PROMPT))
-                    .child(
-                        div()
-                            .w_full()
-                            .px_2()
-                            .py_1()
-                            .rounded_md()
-                            .border_1()
-                            .border_color(cx.theme().colors().border)
-                            .bg(cx.theme().colors().editor_background)
-                            .child(self.editor.clone()),
-                    )
-                    .children(suggestion_list),
-            )
-            .child(
-                h_flex()
-                    .p_3()
-                    .gap_2()
-                    .justify_end()
-                    .child(
-                        DialogButton::new("checkout-revision-cancel", "Cancel")
-                            .default_button(false)
-                            .on_click(cx.listener(|_, _, _, cx| cx.emit(DismissEvent))),
+                Modal::new("checkout-revision-dialog", None)
+                    .header(
+                        ModalHeader::new()
+                            .headline(DIALOG_TITLE)
+                            .show_dismiss_button(true),
                     )
                     .child(
-                        DialogButton::new("checkout-revision-confirm", CONFIRM_LABEL)
-                            .default_button(true)
-                            .disabled(!can_confirm)
-                            .on_click(cx.listener(|this, _, window, cx| this.submit(window, cx))),
+                        v_flex()
+                            .px(DIALOG_METRICS.padding_x)
+                            .py_2()
+                            .gap_2()
+                            .child(Label::new(PROMPT))
+                            .child(
+                                div()
+                                    .w_full()
+                                    .px_2()
+                                    .py_1()
+                                    .rounded_md()
+                                    .border_1()
+                                    .border_color(cx.theme().colors().border)
+                                    .bg(cx.theme().colors().editor_background)
+                                    .child(self.editor.clone()),
+                            )
+                            .children(suggestion_list),
+                    )
+                    .footer(
+                        ModalFooter::new()
+                            .end_button(
+                                DialogButton::new("checkout-revision-cancel", "Cancel")
+                                    .default_button(false)
+                                    .on_click(cx.listener(|_, _, _, cx| cx.emit(DismissEvent))),
+                            )
+                            .end_button(
+                                DialogButton::new("checkout-revision-confirm", CONFIRM_LABEL)
+                                    .default_button(true)
+                                    .disabled(!can_confirm)
+                                    .on_click(
+                                        cx.listener(|this, _, window, cx| this.submit(window, cx)),
+                                    ),
+                            ),
                     ),
             )
     }

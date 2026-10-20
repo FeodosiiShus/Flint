@@ -1,4 +1,7 @@
-use crate::{IconButtonShape, component_corner_radii, prelude::*};
+use crate::{
+    CloseButton, CloseButtonSize, DIALOG_METRICS, IconButtonShape, component_corner_radii,
+    prelude::*,
+};
 
 use gpui::{prelude::FluentBuilder, *};
 use smallvec::SmallVec;
@@ -62,7 +65,7 @@ impl ParentElement for Modal {
 }
 
 impl RenderOnce for Modal {
-    fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
+    fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
         v_flex()
             .id(self.id.clone())
             .size_full()
@@ -74,7 +77,7 @@ impl RenderOnce for Modal {
                     .id(self.container_id.clone())
                     .w_full()
                     .flex_1()
-                    .gap(DynamicSpacing::Base08.rems(cx))
+                    .gap(DIALOG_METRICS.section_gap)
                     .when_some(
                         self.container_scroll_handler,
                         |this, container_scroll_handle| {
@@ -153,15 +156,15 @@ impl ParentElement for ModalHeader {
 }
 
 impl RenderOnce for ModalHeader {
-    fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
+    fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
         let mut children = self.children;
 
         if let Some(headline) = self.headline {
             children.insert(
                 0,
-                Headline::new(headline)
-                    .size(HeadlineSize::Small)
-                    .color(Color::Muted)
+                Label::new(headline)
+                    .weight(gpui::FontWeight::SEMIBOLD)
+                    .truncate()
                     .into_any_element(),
             );
         }
@@ -171,10 +174,10 @@ impl RenderOnce for ModalHeader {
             .flex_none()
             .justify_between()
             .w_full()
-            .px(DynamicSpacing::Base12.rems(cx))
-            .pt(DynamicSpacing::Base08.rems(cx))
-            .pb(DynamicSpacing::Base04.rems(cx))
-            .gap(DynamicSpacing::Base08.rems(cx))
+            .px(DIALOG_METRICS.padding_x)
+            .pt(DIALOG_METRICS.header_padding_top)
+            .pb(DIALOG_METRICS.header_padding_bottom)
+            .gap(DIALOG_METRICS.title_icon_gap)
             .when(self.show_back_button, |this| {
                 this.child(
                     IconButton::new("back", IconName::ArrowLeft)
@@ -191,21 +194,22 @@ impl RenderOnce for ModalHeader {
                     .child(
                         h_flex()
                             .w_full()
-                            .gap_1()
+                            .gap(DIALOG_METRICS.title_icon_gap)
                             .justify_between()
                             .child(
                                 h_flex()
-                                    .gap_1()
+                                    .min_w_0()
+                                    .gap(DIALOG_METRICS.title_icon_gap)
                                     .when_some(self.icon, |this, icon| this.child(icon))
                                     .children(children),
                             )
                             .when(self.show_dismiss_button, |this| {
                                 this.child(
-                                    IconButton::new("dismiss", IconName::Close)
-                                        .icon_size(IconSize::Small)
-                                        .on_click(|_, window, cx| {
+                                    CloseButton::new("dismiss", CloseButtonSize::Header).on_click(
+                                        |_, window, cx| {
                                             window.dispatch_action(menu::Cancel.boxed_clone(), cx);
-                                        }),
+                                        },
+                                    ),
                                 )
                             }),
                     )
@@ -247,10 +251,13 @@ impl RenderOnce for ModalRow {
     }
 }
 
+/// The button row of a dialog: an optional start slot (a checkbox, a link) and the dialog
+/// buttons at the end, default button last, as on macOS and in IntelliJ.
 #[derive(IntoElement)]
 pub struct ModalFooter {
     start_slot: Option<AnyElement>,
     end_slot: Option<AnyElement>,
+    end_buttons: SmallVec<[AnyElement; 3]>,
 }
 
 impl Default for ModalFooter {
@@ -264,6 +271,7 @@ impl ModalFooter {
         Self {
             start_slot: None,
             end_slot: None,
+            end_buttons: SmallVec::new(),
         }
     }
 
@@ -272,24 +280,42 @@ impl ModalFooter {
         self
     }
 
+    /// Custom content for the end of the row. Dialog buttons go through
+    /// [`Self::end_button`], which keeps the standard gap between them.
     pub fn end_slot<E: IntoElement>(mut self, end_slot: impl Into<Option<E>>) -> Self {
         self.end_slot = end_slot.into().map(IntoElement::into_any_element);
+        self
+    }
+
+    pub fn end_button(mut self, button: impl IntoElement) -> Self {
+        self.end_buttons.push(button.into_any_element());
         self
     }
 }
 
 impl RenderOnce for ModalFooter {
-    fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
+    fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
         h_flex()
+            .debug_selector(|| "DIALOG_FOOTER".to_string())
             .w_full()
-            .p(DynamicSpacing::Base08.rems(cx))
+            .px(DIALOG_METRICS.padding_x)
+            .pt(DIALOG_METRICS.footer_padding_top)
+            .pb(DIALOG_METRICS.footer_padding_bottom)
             .flex_none()
             .justify_between()
-            .gap_1()
-            .border_t_1()
-            .border_color(cx.theme().colors().border_variant)
-            .child(div().when_some(self.start_slot, |this, start_slot| this.child(start_slot)))
-            .child(div().when_some(self.end_slot, |this, end_slot| this.child(end_slot)))
+            .gap(DIALOG_METRICS.button_group_gap)
+            .child(
+                h_flex()
+                    .min_w_0()
+                    .when_some(self.start_slot, |this, start_slot| this.child(start_slot)),
+            )
+            .child(
+                h_flex()
+                    .flex_none()
+                    .gap(DIALOG_METRICS.button_gap)
+                    .when_some(self.end_slot, |this, end_slot| this.child(end_slot))
+                    .children(self.end_buttons),
+            )
     }
 }
 
@@ -363,7 +389,7 @@ impl RenderOnce for Section {
         let children = if self.contained {
             v_flex()
                 .flex_1()
-                .when(self.padded, |this| this.px(DynamicSpacing::Base12.rems(cx)))
+                .when(self.padded, |this| this.px(DIALOG_METRICS.padding_x))
                 .child(
                     v_flex()
                         .w_full()
@@ -386,9 +412,7 @@ impl RenderOnce for Section {
                 .flex_1()
                 .gap_y(DynamicSpacing::Base04.rems(cx))
                 .pb_2()
-                .when(self.padded, |this| {
-                    this.px(DynamicSpacing::Base06.rems(cx) + DynamicSpacing::Base06.rems(cx))
-                })
+                .when(self.padded, |this| this.px(DIALOG_METRICS.padding_x))
                 .children(self.children)
         };
 
@@ -398,7 +422,7 @@ impl RenderOnce for Section {
             .child(
                 v_flex()
                     .flex_none()
-                    .px(DynamicSpacing::Base12.rems(cx))
+                    .px(DIALOG_METRICS.padding_x)
                     .children(self.header)
                     .when_some(self.meta, |this, meta| {
                         this.child(Label::new(meta).size(LabelSize::Small).color(Color::Muted))

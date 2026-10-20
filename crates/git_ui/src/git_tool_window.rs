@@ -63,7 +63,6 @@ pub(crate) struct HeaderSnapshot {
     pub header_height: Pixels,
     pub can_open_log_tab: bool,
     pub dropdown_visible: bool,
-    pub light: bool,
     pub islands: bool,
 }
 
@@ -510,7 +509,6 @@ impl GitToolWindow {
             active: self.focus_handle.contains_focused(window, cx),
             focus_handle: self.focus_handle.clone(),
             header_height: ui::panel_header_height(cx),
-            light: cx.theme().appearance().is_light(),
             islands: WorkspaceSettings::get_global(cx).islands.enabled,
             can_open_log_tab: self.has_repositories(cx),
             dropdown_visible: dropdown.show_history.is_some()

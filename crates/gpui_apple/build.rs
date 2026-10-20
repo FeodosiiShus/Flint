@@ -35,6 +35,7 @@ mod apple_build {
             ..Default::default()
         };
         config.export.include.extend([
+            "Backdrop".into(),
             "Bounds".into(),
             "Corners".into(),
             "Edges".into(),

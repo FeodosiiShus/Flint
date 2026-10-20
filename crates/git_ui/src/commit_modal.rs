@@ -6,8 +6,8 @@ use git::{Amend, Commit, Signoff, SkipHooks};
 use git_ui_core::GitPickerPopover;
 use settings::Settings;
 use ui::{
-    ContextMenu, ContextMenuEntry, DialogButton, DocumentationSide, KeybindingHint, PopoverMenu,
-    PopoverMenuHandle, Tooltip, prelude::*,
+    ContextMenu, ContextMenuEntry, DialogButton, DialogWidth, DocumentationSide, KeybindingHint,
+    PopoverMenu, PopoverMenuHandle, Tooltip, prelude::*,
 };
 use zed_actions::{DecreaseBufferFontSize, IncreaseBufferFontSize, ResetBufferFontSize};
 
@@ -630,7 +630,6 @@ impl Render for CommitModal {
         let properties = self.properties;
         let width = px(properties.modal_width);
         let container_padding = px(properties.container_padding);
-        let border_radius = properties.modal_border_radius;
         let editor_focus_handle = self.commit_editor.focus_handle(cx);
 
         let max_title_length = GitPanelSettings::get_global(cx).commit_title_max_length;
@@ -670,17 +669,13 @@ impl Render for CommitModal {
                     this.toggle_branch_selector(window, cx);
                 }),
             )
+            .dialog_surface(DialogWidth::Small, window, cx)
+            // The dialog is as wide as the commit message's preferred line length.
             .w(width)
             .min_h_112()
             .p(container_padding)
-            .elevation_3(cx)
-            .overflow_hidden()
             .flex_none()
             .relative()
-            .bg(cx.theme().colors().elevated_surface_background)
-            .rounded(px(border_radius))
-            .border_1()
-            .border_color(cx.theme().colors().border)
             .child(
                 v_flex()
                     .id("editor-container")

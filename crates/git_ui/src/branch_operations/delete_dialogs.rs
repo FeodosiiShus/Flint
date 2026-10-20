@@ -4,11 +4,11 @@ use gpui::{
     Render, SharedString, Window, rems,
 };
 use menu::{Cancel, Confirm};
-use ui::{Checkbox, DialogButton, Modal, ModalFooter, ModalHeader, Section, prelude::*};
+use ui::{
+    Checkbox, DialogButton, DialogWidth, Modal, ModalFooter, ModalHeader, Section, prelude::*,
+};
 use workspace::ModalView;
 
-const DELETE_REMOTE_DIALOG_WIDTH: f32 = 30.;
-const UNMERGED_DIALOG_WIDTH: f32 = 40.;
 const COMMIT_LIST_MAX_HEIGHT: f32 = 16.;
 const SHORT_SHA_LENGTH: usize = 8;
 
@@ -203,7 +203,7 @@ impl Focusable for DeleteRemoteBranchDialog {
 }
 
 impl Render for DeleteRemoteBranchDialog {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let tracking_option = self.render_tracking_option(cx);
 
         v_flex()
@@ -211,9 +211,7 @@ impl Render for DeleteRemoteBranchDialog {
             .track_focus(&self.focus_handle)
             .on_action(cx.listener(Self::cancel))
             .on_action(cx.listener(Self::confirm))
-            .w(rems(DELETE_REMOTE_DIALOG_WIDTH))
-            .elevation_3(cx)
-            .overflow_hidden()
+            .dialog_surface(DialogWidth::Small, window, cx)
             .child(
                 Modal::new("delete-remote-branch-dialog", None)
                     .header(
@@ -234,29 +232,26 @@ impl Render for DeleteRemoteBranchDialog {
                             .children(tracking_option),
                     )
                     .footer(
-                        ModalFooter::new().end_slot(
-                            h_flex()
-                                .gap_2()
-                                .child(
-                                    DialogButton::new("delete-remote-cancel", "Cancel")
-                                        .default_button(false)
-                                        .on_click(cx.listener(|_, _, _, cx| {
-                                            cx.emit(DismissEvent);
-                                        })),
+                        ModalFooter::new()
+                            .end_button(
+                                DialogButton::new("delete-remote-cancel", "Cancel")
+                                    .default_button(false)
+                                    .on_click(cx.listener(|_, _, _, cx| {
+                                        cx.emit(DismissEvent);
+                                    })),
+                            )
+                            .end_button(
+                                DialogButton::new(
+                                    "delete-remote-confirm",
+                                    delete_remote_branches_button(self.remote_branches.len()),
                                 )
-                                .child(
-                                    DialogButton::new(
-                                        "delete-remote-confirm",
-                                        delete_remote_branches_button(self.remote_branches.len()),
-                                    )
-                                    .default_button(true)
-                                    .on_click(cx.listener(
-                                        |this, _, window, cx| {
-                                            this.confirm(&Confirm, window, cx);
-                                        },
-                                    )),
-                                ),
-                        ),
+                                .default_button(true)
+                                .on_click(cx.listener(
+                                    |this, _, window, cx| {
+                                        this.confirm(&Confirm, window, cx);
+                                    },
+                                )),
+                            ),
                     ),
             )
     }
@@ -315,15 +310,13 @@ impl Focusable for UnmergedCommitsDialog {
 }
 
 impl Render for UnmergedCommitsDialog {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         v_flex()
             .key_context("UnmergedCommitsDialog")
             .track_focus(&self.focus_handle)
             .on_action(cx.listener(Self::cancel))
             .on_action(cx.listener(Self::confirm))
-            .w(rems(UNMERGED_DIALOG_WIDTH))
-            .elevation_3(cx)
-            .overflow_hidden()
+            .dialog_surface(DialogWidth::Medium, window, cx)
             .child(
                 Modal::new("unmerged-commits-dialog", None)
                     .header(
@@ -364,7 +357,7 @@ impl Render for UnmergedCommitsDialog {
                                         this.restore(window, cx);
                                     })),
                             )
-                            .end_slot(
+                            .end_button(
                                 DialogButton::new("unmerged-cancel", "Cancel")
                                     .default_button(true)
                                     .on_click(cx.listener(|_, _, _, cx| {

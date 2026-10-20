@@ -2,7 +2,10 @@ use editor::Editor;
 use git::repository::Branch;
 use gpui::{DismissEvent, Entity, EventEmitter, FocusHandle, Focusable, Role, SharedString};
 use menu::{Cancel, Confirm};
-use ui::{Checkbox, ChoiceCard, DialogButton, prelude::*};
+use ui::{
+    Checkbox, ChoiceCard, DIALOG_METRICS, DialogButton, DialogWidth, Modal, ModalFooter,
+    ModalHeader, prelude::*,
+};
 use workspace::ModalView;
 
 use super::BranchContext;
@@ -81,7 +84,7 @@ impl Focusable for UpdateOptionsDialog {
 }
 
 impl Render for UpdateOptionsDialog {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let merge_selected = self.method == UpdateMethod::Merge;
         let rebase_selected = self.method == UpdateMethod::Rebase;
         let reset_button = self.reset_target.as_ref().map(|target| {
@@ -99,76 +102,63 @@ impl Render for UpdateOptionsDialog {
             .track_focus(&self.focus_handle)
             .on_action(cx.listener(Self::cancel))
             .on_action(cx.listener(Self::confirm))
-            .elevation_3(cx)
-            .w(rems(34.))
+            .dialog_surface(DialogWidth::Medium, window, cx)
             .child(
-                h_flex()
-                    .px_3()
-                    .pt_2()
-                    .pb_1()
-                    .w_full()
-                    .child(Headline::new("Update Project").size(HeadlineSize::Small)),
-            )
-            .child(
-                v_flex()
-                    .id("update-method")
-                    .role(Role::RadioGroup)
-                    .px_3()
-                    .py_1()
-                    .gap_1()
-                    .child(
-                        ChoiceCard::radio(
-                            "update-merge",
-                            "Merge incoming changes into the current branch",
-                            merge_selected,
-                        )
-                        .on_click(
-                            cx.listener(|this, _, _, cx| {
-                                this.select_method(UpdateMethod::Merge, cx)
-                            }),
-                        ),
+                Modal::new("update-options-dialog", None)
+                    .header(
+                        ModalHeader::new()
+                            .headline("Update Project")
+                            .show_dismiss_button(true),
                     )
                     .child(
-                        ChoiceCard::radio(
-                            "update-rebase",
-                            "Rebase the current branch on top of incoming changes",
-                            rebase_selected,
-                        )
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.select_method(UpdateMethod::Rebase, cx)
-                        })),
-                    ),
-            )
-            .child(
-                div().px_3().py_1().child(
-                    Checkbox::new("update-dont-show-again", self.dont_show_again.into())
-                        .label("Don't show this dialog again")
-                        .on_click(cx.listener(|this, state: &ToggleState, _, cx| {
-                            this.dont_show_again = state.selected();
-                            cx.notify();
-                        })),
-                ),
-            )
-            .child(
-                h_flex()
-                    .w_full()
-                    .px_3()
-                    .pt_1()
-                    .pb_2()
-                    .gap_2()
-                    .justify_between()
-                    .child(div().children(reset_button))
-                    .child(
-                        h_flex()
-                            .gap_2()
+                        v_flex()
+                            .id("update-method")
+                            .role(Role::RadioGroup)
+                            .px(DIALOG_METRICS.padding_x)
+                            .py_1()
+                            .gap_1()
                             .child(
+                                ChoiceCard::radio(
+                                    "update-merge",
+                                    "Merge incoming changes into the current branch",
+                                    merge_selected,
+                                )
+                                .on_click(cx.listener(
+                                    |this, _, _, cx| this.select_method(UpdateMethod::Merge, cx),
+                                )),
+                            )
+                            .child(
+                                ChoiceCard::radio(
+                                    "update-rebase",
+                                    "Rebase the current branch on top of incoming changes",
+                                    rebase_selected,
+                                )
+                                .on_click(cx.listener(
+                                    |this, _, _, cx| this.select_method(UpdateMethod::Rebase, cx),
+                                )),
+                            ),
+                    )
+                    .child(
+                        div().px(DIALOG_METRICS.padding_x).py_1().child(
+                            Checkbox::new("update-dont-show-again", self.dont_show_again.into())
+                                .label("Don't show this dialog again")
+                                .on_click(cx.listener(|this, state: &ToggleState, _, cx| {
+                                    this.dont_show_again = state.selected();
+                                    cx.notify();
+                                })),
+                        ),
+                    )
+                    .footer(
+                        ModalFooter::new()
+                            .start_slot::<DialogButton>(reset_button)
+                            .end_button(
                                 DialogButton::new("update-cancel", "Cancel")
                                     .default_button(false)
                                     .on_click(cx.listener(|this, _, window, cx| {
                                         this.cancel(&Cancel, window, cx)
                                     })),
                             )
-                            .child(
+                            .end_button(
                                 DialogButton::new("update-confirm", "OK")
                                     .default_button(true)
                                     .on_click(cx.listener(|this, _, window, cx| {
@@ -321,7 +311,7 @@ impl Focusable for FixTrackedBranchDialog {
 }
 
 impl Render for FixTrackedBranchDialog {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let can_update = self.choice(cx).is_some();
         let colors = cx.theme().colors();
         let remote_buttons = self.remotes.iter().enumerate().map(|(index, remote)| {
@@ -340,99 +330,99 @@ impl Render for FixTrackedBranchDialog {
             .key_context("FixTrackedBranchDialog")
             .on_action(cx.listener(Self::cancel))
             .on_action(cx.listener(Self::confirm))
-            .elevation_3(cx)
-            .w(rems(34.))
+            .dialog_surface(DialogWidth::Medium, window, cx)
             .child(
-                h_flex()
-                    .px_3()
-                    .pt_2()
-                    .pb_1()
-                    .w_full()
-                    .child(Headline::new(FIX_TRACKED_BRANCH_TITLE).size(HeadlineSize::Small)),
-            )
-            .child(
-                h_flex()
-                    .px_3()
-                    .py_1()
-                    .gap_1()
-                    .w_full()
-                    .children(remote_buttons)
-                    .child(Label::new("/").color(Color::Muted))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .px_2()
-                            .py_1()
-                            .rounded_sm()
-                            .border_1()
-                            .border_color(colors.border)
-                            .bg(colors.editor_background)
-                            .child(self.branch_editor.clone()),
-                    ),
-            )
-            .child(
-                div().px_3().py_1().child(
-                    Checkbox::new("fix-tracked-set-as-tracked", self.set_as_tracked.into())
-                        .label(SET_AS_TRACKED_LABEL)
-                        .on_click(cx.listener(|this, state: &ToggleState, _, cx| {
-                            this.set_as_tracked = state.selected();
-                            cx.notify();
-                        })),
-                ),
-            )
-            .child(
-                v_flex()
-                    .id("fix-tracked-update-method")
-                    .role(Role::RadioGroup)
-                    .px_3()
-                    .py_1()
-                    .gap_1()
-                    .child(
-                        ChoiceCard::radio(
-                            "fix-tracked-merge",
-                            UpdateMethod::Merge.label(),
-                            self.method == UpdateMethod::Merge,
-                        )
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.method = UpdateMethod::Merge;
-                            cx.notify();
-                        })),
+                Modal::new("fix-tracked-branch-dialog", None)
+                    .header(
+                        ModalHeader::new()
+                            .headline(FIX_TRACKED_BRANCH_TITLE)
+                            .show_dismiss_button(true),
                     )
                     .child(
-                        ChoiceCard::radio(
-                            "fix-tracked-rebase",
-                            UpdateMethod::Rebase.label(),
-                            self.method == UpdateMethod::Rebase,
-                        )
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.method = UpdateMethod::Rebase;
-                            cx.notify();
-                        })),
-                    ),
-            )
-            .child(
-                h_flex()
-                    .w_full()
-                    .px_3()
-                    .pt_1()
-                    .pb_2()
-                    .gap_2()
-                    .justify_end()
-                    .child(
-                        DialogButton::new("fix-tracked-cancel", "Cancel")
-                            .default_button(false)
-                            .on_click(
-                                cx.listener(|this, _, window, cx| this.cancel(&Cancel, window, cx)),
+                        h_flex()
+                            .px(DIALOG_METRICS.padding_x)
+                            .py_1()
+                            .gap_1()
+                            .w_full()
+                            .children(remote_buttons)
+                            .child(Label::new("/").color(Color::Muted))
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .px_2()
+                                    .py_1()
+                                    .rounded_sm()
+                                    .border_1()
+                                    .border_color(colors.border)
+                                    .bg(colors.editor_background)
+                                    .child(self.branch_editor.clone()),
                             ),
                     )
                     .child(
-                        DialogButton::new("fix-tracked-confirm", FIX_TRACKED_BRANCH_OK_LABEL)
-                            .default_button(true)
-                            .disabled(!can_update)
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.confirm(&Confirm, window, cx)
-                            })),
+                        div().px(DIALOG_METRICS.padding_x).py_1().child(
+                            Checkbox::new("fix-tracked-set-as-tracked", self.set_as_tracked.into())
+                                .label(SET_AS_TRACKED_LABEL)
+                                .on_click(cx.listener(|this, state: &ToggleState, _, cx| {
+                                    this.set_as_tracked = state.selected();
+                                    cx.notify();
+                                })),
+                        ),
+                    )
+                    .child(
+                        v_flex()
+                            .id("fix-tracked-update-method")
+                            .role(Role::RadioGroup)
+                            .px(DIALOG_METRICS.padding_x)
+                            .py_1()
+                            .gap_1()
+                            .child(
+                                ChoiceCard::radio(
+                                    "fix-tracked-merge",
+                                    UpdateMethod::Merge.label(),
+                                    self.method == UpdateMethod::Merge,
+                                )
+                                .on_click(cx.listener(
+                                    |this, _, _, cx| {
+                                        this.method = UpdateMethod::Merge;
+                                        cx.notify();
+                                    },
+                                )),
+                            )
+                            .child(
+                                ChoiceCard::radio(
+                                    "fix-tracked-rebase",
+                                    UpdateMethod::Rebase.label(),
+                                    self.method == UpdateMethod::Rebase,
+                                )
+                                .on_click(cx.listener(
+                                    |this, _, _, cx| {
+                                        this.method = UpdateMethod::Rebase;
+                                        cx.notify();
+                                    },
+                                )),
+                            ),
+                    )
+                    .footer(
+                        ModalFooter::new()
+                            .end_button(
+                                DialogButton::new("fix-tracked-cancel", "Cancel")
+                                    .default_button(false)
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.cancel(&Cancel, window, cx)
+                                    })),
+                            )
+                            .end_button(
+                                DialogButton::new(
+                                    "fix-tracked-confirm",
+                                    FIX_TRACKED_BRANCH_OK_LABEL,
+                                )
+                                .default_button(true)
+                                .disabled(!can_update)
+                                .on_click(cx.listener(
+                                    |this, _, window, cx| this.confirm(&Confirm, window, cx),
+                                )),
+                            ),
                     ),
             )
     }

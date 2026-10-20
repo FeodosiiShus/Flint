@@ -209,7 +209,7 @@ mod tests {
             h_flex()
                 .child(IconButton::new("default", IconName::Check))
                 .child(
-                    IconButton::new("compact", IconName::Close)
+                    IconButton::new("compact", IconName::Plus)
                         .size(ButtonSize::Compact)
                         .icon_size(IconSize::Small),
                 )
@@ -258,7 +258,7 @@ mod tests {
         init_theme(cx);
         let (_, cx) = cx.add_window_view(|_, _| SizeProbe);
         assert_box(cx, "ICON-Check", 22.);
-        assert_box(cx, "ICON-Close", 20.);
+        assert_box(cx, "ICON-Plus", 20.);
         assert_box(cx, "ICON-Dash", 28.);
         assert_box(cx, "ICON-ChevronDown", 22.);
     }
@@ -269,7 +269,7 @@ mod tests {
         set_ui_density(settings::UiDensity::Compact, cx);
         let (_, cx) = cx.add_window_view(|_, _| SizeProbe);
         assert_box(cx, "ICON-Check", 22.);
-        assert_box(cx, "ICON-Close", 20.);
+        assert_box(cx, "ICON-Plus", 20.);
         assert_box(cx, "ICON-Dash", 24.);
         assert_box(cx, "ICON-ChevronDown", 22.);
     }

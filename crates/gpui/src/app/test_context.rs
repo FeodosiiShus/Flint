@@ -991,6 +991,20 @@ impl VisualTestContext {
         self.update(|window, _| window.rendered_frame.debug_bounds.get(selector).copied())
     }
 
+    /// Returns every element painted in the last frame whose debug selector starts with
+    /// `prefix`, in paint order and including repeated selectors.
+    pub fn debug_bounds_with_prefix(&mut self, prefix: &str) -> Vec<(String, Bounds<Pixels>)> {
+        self.update(|window, _| {
+            window
+                .rendered_frame
+                .debug_bounds_records
+                .iter()
+                .filter(|(selector, _)| selector.starts_with(prefix))
+                .cloned()
+                .collect()
+        })
+    }
+
     /// Draw an element to the window. Useful for simulating events or actions
     pub fn draw<E>(
         &mut self,

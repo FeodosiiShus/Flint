@@ -1,6 +1,7 @@
 mod button;
 mod button_like;
 mod button_link;
+mod close_button;
 mod copy_button;
 mod dialog_button;
 mod icon_button;
@@ -10,6 +11,7 @@ mod toggle_button;
 pub use button::*;
 pub use button_like::*;
 pub use button_link::*;
+pub use close_button::*;
 pub use copy_button::*;
 pub use dialog_button::*;
 pub use icon_button::*;

@@ -1785,7 +1785,7 @@ impl Render for ShowUsagesPopup {
             .relative()
             .w(geometry.width)
             .h(geometry.height)
-            .elevation_2(cx)
+            .popup_surface(cx)
             .overflow_hidden()
             .child(self.render_header(&style, border_color, cx))
             .child(self.render_toolbar(border_color, cx))

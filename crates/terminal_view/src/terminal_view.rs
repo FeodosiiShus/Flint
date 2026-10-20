@@ -1347,7 +1347,6 @@ impl Item for TerminalView {
 
         let self_handle = self.self_handle.clone();
         h_flex()
-            .gap_1()
             .when(!params.selected, |this| {
                 this.track_focus(&self.focus_handle)
             })
@@ -1356,13 +1355,13 @@ impl Item for TerminalView {
                     .update(cx, |this, cx| this.rename_terminal(action, window, cx))
                     .ok();
             })
-            .child(Icon::new(IconName::Terminal).color(Color::Muted))
             .child(
                 div()
                     .relative()
                     .child(
                         Label::new(title)
                             .single_line()
+                            .size(params.label_size.unwrap_or_default())
                             .color(params.text_color())
                             .when(self.is_renaming(), |this| this.alpha(0.)),
                     )
@@ -1394,6 +1393,10 @@ impl Item for TerminalView {
                     }),
             )
             .into_any()
+    }
+
+    fn tab_icon(&self, _window: &Window, _cx: &App) -> Option<Icon> {
+        Some(Icon::new(IconName::Terminal))
     }
 
     fn tab_content_text(&self, detail: usize, cx: &App) -> SharedString {
@@ -2557,6 +2560,29 @@ mod tests {
             let res = project.read(cx).active_entry_directory(cx);
             assert_eq!(res, Some(Path::new("/root/").to_path_buf()));
         });
+    }
+
+    #[gpui::test]
+    async fn terminal_tabs_are_drawn_like_editor_tabs(cx: &mut TestAppContext) {
+        let (project, _workspace, window_handle) = init_test_with_window(cx).await;
+        let (_pane, _terminal, terminal_view) =
+            add_display_only_terminal(&project, window_handle, true, false, cx);
+        window_handle
+            .update(cx, |_, window, cx| {
+                assert!(
+                    terminal_view.read(cx).tab_icon(window, cx).is_some(),
+                    "the pane draws the terminal icon in the same slot and size as a file icon"
+                );
+            })
+            .unwrap();
+
+        let cx = &mut gpui::VisualTestContext::from_window(window_handle.into(), cx);
+        ui::standard_conformance::assert_follows_the_ui_standard(cx, "a terminal tab");
+        assert_eq!(
+            cx.debug_bounds_with_prefix("CLOSE_BUTTON-close tab").len(),
+            1,
+            "the active terminal tab closes with the standard close button"
+        );
     }
 
     /// Creates a worktree with 1 file: /root.txt

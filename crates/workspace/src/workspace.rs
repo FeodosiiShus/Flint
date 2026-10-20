@@ -1920,6 +1920,8 @@ impl Workspace {
 
         let subscriptions = vec![
             cx.observe_window_activation(window, Self::on_window_activation_changed),
+            // The toast is drawn in the notification stack, which only this view lays out.
+            cx.observe(&toast_layer, |_, _, cx| cx.notify()),
             cx.observe_global_in::<SettingsStore>(window, |this, window, cx| {
                 // Settings can only affect the title through these two values,
                 // so skip the recomputation when they are unchanged.
@@ -6459,9 +6461,14 @@ impl Workspace {
         self.update_window_edited(window);
     }
 
-    fn render_notifications(&self, _window: &mut Window, _cx: &mut Context<Self>) -> Option<Div> {
+    fn render_notifications(&self, _window: &mut Window, cx: &mut Context<Self>) -> Option<Div> {
         let background_tasks = self.render_background_tasks();
-        if self.notifications.is_empty() && background_tasks.is_none() {
+        let toast = self
+            .toast_layer
+            .read(cx)
+            .has_active_toast()
+            .then(|| self.toast_layer.clone());
+        if self.notifications.is_empty() && background_tasks.is_none() && toast.is_none() {
             return None;
         }
 
@@ -6475,12 +6482,13 @@ impl Workspace {
                 .flex_col()
                 .justify_end()
                 .items_end()
-                .gap_2()
+                .gap(BALLOON_METRICS.stack_gap)
                 .children(
                     self.notifications
                         .iter()
                         .map(|(_, notification)| notification.clone().into_any_element()),
                 )
+                .children(toast)
                 .children(background_tasks),
         )
     }
@@ -9108,8 +9116,7 @@ impl Render for Workspace {
                                 }))
                                 .children(self.render_notifications(window, cx)),
                         ),
-                    )
-                    .child(self.toast_layer.clone()),
+                    ),
             )
     }
 }
@@ -15876,12 +15883,7 @@ mod tests {
     #[gpui::test]
     async fn tool_window_bar_tooltips_show_without_a_delay(cx: &mut TestAppContext) {
         let (_workspace, _panels, cx) = tool_window_bar_test_workspace(cx).await;
-        let tooltip_background = cx.update(|_, cx| {
-            let colors = cx.theme().colors();
-            colors
-                .elevated_surface_background
-                .blend(colors.element_background)
-        });
+        let tooltip_background = cx.update(|_, cx| cx.theme().colors().elevated_surface_background);
         let tooltip_is_painted = |cx: &mut VisualTestContext| {
             cx.update(|window, _| {
                 let tooltip_radius =

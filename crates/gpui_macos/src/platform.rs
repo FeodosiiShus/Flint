@@ -1235,6 +1235,14 @@ impl Platform for MacPlatform {
         }
     }
 
+    fn should_reduce_transparency(&self) -> bool {
+        unsafe {
+            let workspace: id = msg_send![class!(NSWorkspace), sharedWorkspace];
+            let reduce: BOOL = msg_send![workspace, accessibilityDisplayShouldReduceTransparency];
+            reduce == YES
+        }
+    }
+
     fn read_from_clipboard(&self) -> Option<ClipboardItem> {
         let state = self.0.lock();
         state.general_pasteboard.read()

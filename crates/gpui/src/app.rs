@@ -1804,6 +1804,11 @@ impl App {
         self.platform.should_auto_hide_scrollbars()
     }
 
+    /// Whether the user asked the system for opaque surfaces instead of translucent ones.
+    pub fn should_reduce_transparency(&self) -> bool {
+        self.platform.should_reduce_transparency()
+    }
+
     /// Restarts the application.
     pub fn restart(&mut self) {
         self.restart_observers

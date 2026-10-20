@@ -7,7 +7,9 @@ use markdown::{Markdown, MarkdownElement, MarkdownStyle};
 use settings::{Settings, SettingsStore};
 use theme::ClientDecorationsExt;
 use theme_settings::ThemeSettings;
-use ui::{FluentBuilder, TintColor, prelude::*};
+use ui::{
+    DialogButton, DialogWidth, FluentBuilder, Modal, ModalFooter, ModalHeader, Section, prelude::*,
+};
 use workspace::WorkspaceSettings;
 
 pub fn init(cx: &mut App) {
@@ -111,6 +113,20 @@ impl ZedPromptRenderer {
 impl Render for ZedPromptRenderer {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let settings = ThemeSettings::get_global(cx);
+        let has_cancel_action = self.actions.iter().any(|action| action == "Cancel");
+
+        let footer = self.actions.iter().enumerate().rev().fold(
+            ModalFooter::new(),
+            |footer, (index, action)| {
+                footer.end_button(
+                    DialogButton::new(index, action.clone())
+                        .default_button(index == self.active_action_id)
+                        .on_click(cx.listener(move |_, _, _window, cx| {
+                            cx.emit(PromptResponse(index));
+                        })),
+                )
+            },
+        );
 
         let dialog = v_flex()
             .key_context("Prompt")
@@ -122,37 +138,24 @@ impl Render for ZedPromptRenderer {
             .on_action(cx.listener(Self::select_previous))
             .on_action(cx.listener(Self::select_first))
             .on_action(cx.listener(Self::select_last))
-            .w_80()
-            .p_4()
-            .gap_4()
-            .elevation_3(cx)
-            .overflow_hidden()
+            .dialog_surface(DialogWidth::Small, window, cx)
             .font_family(settings.ui_font.family.clone())
-            .child(div().w_full().child(MarkdownElement::new(
-                self.message.clone(),
-                markdown_style(true, window, cx),
-            )))
-            .children(self.detail.clone().map(|detail| {
-                div().w_full().text_ui_xs(cx).child(MarkdownElement::new(
-                    detail,
-                    markdown_style(false, window, cx),
-                ))
-            }))
             .child(
-                v_flex()
-                    .gap_1()
-                    .children(self.actions.iter().enumerate().map(|(ix, action)| {
-                        Button::new(ix, action.clone())
-                            .full_width()
-                            .style(ButtonStyle::Outlined)
-                            .when(ix == self.active_action_id, |s| {
-                                s.style(ButtonStyle::Tinted(TintColor::Accent))
-                            })
-                            .tab_index(ix as isize)
-                            .on_click(cx.listener(move |_, _, _window, cx| {
-                                cx.emit(PromptResponse(ix));
-                            }))
-                    })),
+                Modal::new("prompt", None)
+                    .header(
+                        ModalHeader::new()
+                            .child(div().w_full().child(MarkdownElement::new(
+                                self.message.clone(),
+                                markdown_style(true, window, cx),
+                            )))
+                            .show_dismiss_button(has_cancel_action),
+                    )
+                    .when_some(self.detail.clone(), |modal, detail| {
+                        modal.section(Section::new().child(div().w_full().text_ui_xs(cx).child(
+                            MarkdownElement::new(detail, markdown_style(false, window, cx)),
+                        )))
+                    })
+                    .footer(footer),
             );
 
         let decorations = window.window_decorations();
