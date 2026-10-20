@@ -12159,7 +12159,11 @@ impl ui_input::ErasedEditor for ErasedEditorImpl {
         self.0.read(cx).focus_handle(cx)
     }
 
-    fn render(&self, _: &mut Window, cx: &App) -> AnyElement {
+    fn render(&self, window: &mut Window, cx: &App) -> AnyElement {
+        self.render_with_text_color(cx.theme().colors().text, window, cx)
+    }
+
+    fn render_with_text_color(&self, text_color: Hsla, _: &mut Window, cx: &App) -> AnyElement {
         let settings = ThemeSettings::get_global(cx);
         let theme_color = cx.theme().colors();
 
@@ -12170,7 +12174,7 @@ impl ui_input::ErasedEditor for ErasedEditorImpl {
             font_weight: settings.ui_font.weight,
             font_style: FontStyle::Normal,
             line_height: relative(1.2),
-            color: theme_color.text,
+            color: text_color,
             ..Default::default()
         };
         let editor_style = EditorStyle {

@@ -350,10 +350,11 @@ struct RepositoryFacts {
     branches: Arc<[Branch]>,
     remote_names: Vec<SharedString>,
     default_remote_url: Option<String>,
+    protected_branches: Vec<String>,
 }
 
 impl RepositoryFacts {
-    fn read(repository: &Repository) -> Self {
+    fn read(repository: &Repository, protected_branches: Vec<String>) -> Self {
         let mut remote_names: Vec<SharedString> = Vec::new();
         for branch in repository.branch_list.iter() {
             if let Some(remote) = branch.remote_name()
@@ -374,6 +375,7 @@ impl RepositoryFacts {
             branches: repository.branch_list.clone(),
             remote_names,
             default_remote_url: repository.default_remote_url(),
+            protected_branches,
         }
     }
 
@@ -392,7 +394,10 @@ impl RepositoryFacts {
             has_commits: self.head_sha.is_some(),
             remotes: &self.remote_names,
             has_tracked_branch,
+            tracked_branch: None,
+            other_worktree: None,
             fetching: false,
+            protected_branches: &self.protected_branches,
         });
         RefOperation { target, plan }
     }
@@ -417,7 +422,10 @@ pub(crate) fn commit_context_menu(
     window: &mut Window,
     cx: &mut App,
 ) -> Entity<ContextMenu> {
-    let facts = RepositoryFacts::read(request.repository.read(cx));
+    let facts = RepositoryFacts::read(
+        request.repository.read(cx),
+        crate::branch_operations::integrate::protected_branch_patterns(cx),
+    );
     let single = match request.commits.as_slice() {
         [commit] => Some(commit.clone()),
         _ => None,
@@ -706,25 +714,26 @@ fn add_ref_operation(
     let operation = operation.clone();
     let context = context.clone();
     menu.submenu(label, move |submenu, _, _| {
-        operation
-            .plan
-            .iter()
-            .cloned()
-            .fold(submenu, |submenu, planned| match planned {
-                MenuItemPlan::Separator => submenu.separator(),
-                MenuItemPlan::Item(item) => {
-                    add_ref_item(submenu, item, &context, &operation.target)
-                }
-                MenuItemPlan::Submenu { label, items } => {
-                    let context = context.clone();
-                    let target = operation.target.clone();
-                    submenu.submenu(label, move |nested, _, _| {
-                        items.iter().cloned().fold(nested, |nested, item| {
-                            add_ref_item(nested, item, &context, &target)
-                        })
-                    })
-                }
+        add_ref_plan(submenu, operation.plan.clone(), &context, &operation.target)
+    })
+}
+
+fn add_ref_plan(
+    menu: ContextMenu,
+    plan: Vec<MenuItemPlan>,
+    context: &BranchContext,
+    target: &RefTarget,
+) -> ContextMenu {
+    plan.into_iter().fold(menu, |menu, planned| match planned {
+        MenuItemPlan::Separator => menu.separator(),
+        MenuItemPlan::Item(item) => add_ref_item(menu, item, context, target),
+        MenuItemPlan::Submenu { label, items } => {
+            let context = context.clone();
+            let target = target.clone();
+            menu.submenu(label, move |nested, _, _| {
+                add_ref_plan(nested, items.clone(), &context, &target)
             })
+        }
     })
 }
 
@@ -738,7 +747,7 @@ fn add_ref_item(
         return disabled_entry(menu, ContextMenuEntry::new(item.label), item.tooltip);
     }
     let context = context.clone();
-    let target = target.clone();
+    let target = item.target_or(target).clone();
     let action = item.action;
     menu.entry(item.label, None, move |window, cx| {
         let action = action.clone();

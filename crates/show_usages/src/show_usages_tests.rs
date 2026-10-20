@@ -1720,3 +1720,79 @@ async fn test_show_usages_speed_search_selects_match_and_escape_clears_query(
     );
     assert!(is_focused(&origin_editor, &mut cx));
 }
+
+#[gpui::test]
+async fn test_access_classification_opens_usage_files_only_in_highlight_servers(
+    cx: &mut TestAppContext,
+) {
+    let mut cx = show_usages_context(
+        lsp::ServerCapabilities {
+            references_provider: Some(lsp::OneOf::Left(true)),
+            definition_provider: Some(lsp::OneOf::Left(true)),
+            document_highlight_provider: Some(lsp::OneOf::Left(true)),
+            ..lsp::ServerCapabilities::default()
+        },
+        cx,
+    )
+    .await;
+    let language_registry =
+        cx.update_workspace(|workspace, _, cx| workspace.project().read(cx).languages().clone());
+    let linter_opened_files = Arc::new(std::sync::Mutex::new(Vec::<lsp::Uri>::new()));
+    let _linter_servers = language_registry.register_fake_lsp(
+        "Rust",
+        language::FakeLspAdapter {
+            name: "the-linter",
+            capabilities: lsp::ServerCapabilities::default(),
+            initializer: Some(Box::new({
+                let linter_opened_files = linter_opened_files.clone();
+                move |fake_server| {
+                    let linter_opened_files = linter_opened_files.clone();
+                    fake_server.handle_notification::<lsp::notification::DidOpenTextDocument, _>(
+                        move |params, _| {
+                            linter_opened_files
+                                .lock()
+                                .unwrap()
+                                .push(params.text_document.uri)
+                        },
+                    );
+                }
+            })),
+            ..language::FakeLspAdapter::default()
+        },
+    );
+    insert_tree(
+        &mut cx,
+        path!("/root/dir"),
+        json!({ "other.rs": OTHER_SOURCE }),
+    )
+    .await;
+    cx.set_state(MAIN_SOURCE);
+    let main_uri = cx.buffer_lsp_url.clone();
+    let other_uri = lsp::Uri::from_file_path(path!("/root/dir/other.rs")).unwrap();
+    handle_definition(&cx, location(&main_uri, 0, 3, 9));
+    handle_references(&cx, two_file_usages(&main_uri, &other_uri));
+    let highlighted_files = Arc::new(std::sync::Mutex::new(Vec::<lsp::Uri>::new()));
+    cx.lsp
+        .set_request_handler::<lsp::request::DocumentHighlightRequest, _, _>({
+            let highlighted_files = highlighted_files.clone();
+            move |params, _| {
+                highlighted_files
+                    .lock()
+                    .unwrap()
+                    .push(params.text_document_position_params.text_document.uri);
+                async move { Ok(Some(Vec::new())) }
+            }
+        });
+
+    cx.dispatch_action(ShowUsages::default());
+    cx.run_until_parked();
+
+    assert!(
+        highlighted_files.lock().unwrap().contains(&other_uri),
+        "the usage file is still classified by the server that provides highlights"
+    );
+    assert!(
+        !linter_opened_files.lock().unwrap().contains(&other_uri),
+        "a server without document highlights is not given usage files to load"
+    );
+}

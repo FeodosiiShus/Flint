@@ -6,6 +6,7 @@ use gpui::{App, AsyncWindowContext, Entity, EntityId, SharedString, Task};
 use language::{
     Bias, Buffer, BufferSnapshot, HighlightId, LanguageAwareStyling, OutlineItem, Point,
 };
+use lsp::{LanguageServerSelector, OneOf};
 use project::{DocumentHighlight, Location, Project, WorktreeId, lsp_store::OpenLspBufferHandle};
 
 use crate::model::{RawUsage, UsageAccess};
@@ -256,6 +257,7 @@ pub(crate) fn request_access(
         }
     }
 
+    let highlight_servers = document_highlight_servers(project, cx);
     let mut registrations = Vec::with_capacity(groups.len());
     let mut requests = Vec::with_capacity(groups.len());
     for (buffer, members) in groups {
@@ -263,7 +265,17 @@ pub(crate) fn request_access(
             continue;
         };
         let (registration, highlights) = project.update(cx, |project, cx| {
-            let registration = project.register_buffer_with_language_servers(&buffer, cx);
+            // Opening every usage file in every server (linters included) only to classify
+            // read/write access makes them load whole programs; the highlights come from one server.
+            let registration = if highlight_servers.is_empty() {
+                project.register_buffer_with_language_servers(&buffer, cx)
+            } else {
+                project.register_buffer_with_language_servers_for(
+                    &buffer,
+                    highlight_servers.clone(),
+                    cx,
+                )
+            };
             let highlights = project.document_highlights(&buffer, position, cx);
             (registration, highlights)
         });
@@ -278,6 +290,34 @@ pub(crate) fn request_access(
         registrations,
         requests,
     }
+}
+
+/// Both selectors are needed: registration skips a started server unless its id is selected,
+/// and one not started yet unless its name is.
+fn document_highlight_servers(
+    project: &Entity<Project>,
+    cx: &App,
+) -> HashSet<LanguageServerSelector> {
+    let lsp_store = project.read(cx).lsp_store().read(cx);
+    lsp_store
+        .language_server_statuses()
+        .filter(|(server_id, _)| {
+            lsp_store
+                .lsp_server_capabilities
+                .get(server_id)
+                .and_then(|capabilities| capabilities.document_highlight_provider.as_ref())
+                .is_some_and(|provider| match provider {
+                    OneOf::Left(supported) => *supported,
+                    OneOf::Right(_) => true,
+                })
+        })
+        .flat_map(|(server_id, status)| {
+            [
+                LanguageServerSelector::Id(server_id),
+                LanguageServerSelector::Name(status.name.clone()),
+            ]
+        })
+        .collect()
 }
 
 pub(crate) async fn resolve_access(

@@ -17,8 +17,11 @@ const MAX_MESSAGE_HEIGHT_FRACTION: f32 = 0.4;
 const BALLOON_HOVER_GROUP: &str = "branch-notification-balloon";
 const MORE_ACTIONS_LABEL: &str = "More";
 
+// IntelliJ keeps every branch notification in the Notifications tool window, so
+// actions like Restore stay reachable; without that history a notice with
+// actions stays until it is clicked or closed.
 fn should_auto_dismiss(notice: &BranchNotice) -> bool {
-    notice.severity == NoticeSeverity::Info
+    notice.severity == NoticeSeverity::Info && notice.actions.is_empty()
 }
 
 fn title_weight(has_message: bool) -> FontWeight {
@@ -66,6 +69,27 @@ impl BranchNotification {
         };
         notification.resume_countdown(cx);
         notification
+    }
+
+    #[cfg(test)]
+    pub(crate) fn notice(&self) -> &BranchNotice {
+        &self.notice
+    }
+
+    pub(crate) fn invoke_action(
+        &mut self,
+        index: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(action) = self.notice.actions.get(index).cloned() else {
+            return;
+        };
+        if action.expires {
+            cx.emit(DismissEvent);
+        }
+        let app: &mut App = cx;
+        (action.handler)(window, app);
     }
 
     fn set_hovered(&mut self, hovered: bool, cx: &mut Context<Self>) {
@@ -137,7 +161,6 @@ impl Render for BranchNotification {
             .take(BALLOON_MAX_VISIBLE_ACTIONS)
             .enumerate()
             .map(|(index, action)| {
-                let handler = action.handler.clone();
                 div()
                     .id(("branch-notification-action", index))
                     .debug_selector(move || format!("BRANCH_NOTIFICATION_ACTION_{index}"))
@@ -147,10 +170,8 @@ impl Render for BranchNotification {
                     .text_color(link_color)
                     .hover(|style| style.underline())
                     .child(action.label.clone())
-                    .on_click(cx.listener(move |_, _, window, cx| {
-                        cx.emit(DismissEvent);
-                        let app: &mut App = cx;
-                        handler(window, app);
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.invoke_action(index, window, cx);
                     }))
             })
             .collect::<Vec<_>>();
@@ -160,7 +181,7 @@ impl Render for BranchNotification {
             .actions
             .iter()
             .skip(BALLOON_MAX_VISIBLE_ACTIONS)
-            .map(|action| (action.label.clone(), action.handler.clone()))
+            .map(|action| (action.label.clone(), action.handler.clone(), action.expires))
             .collect::<Vec<_>>();
         let more_actions = (!hidden_actions.is_empty()).then(|| {
             let hidden_actions = hidden_actions.clone();
@@ -174,18 +195,24 @@ impl Render for BranchNotification {
                             let hidden_actions = hidden_actions.clone();
                             let notification = notification.clone();
                             Some(ContextMenu::build(window, cx, move |menu, _, _| {
-                                hidden_actions.iter().fold(menu, |menu, (label, handler)| {
-                                    let handler = handler.clone();
-                                    let notification = notification.clone();
-                                    menu.item(ContextMenuEntry::new(label.clone()).handler(
-                                        move |window, cx| {
-                                            notification
-                                                .update(cx, |_, cx| cx.emit(DismissEvent))
-                                                .log_err();
-                                            handler(window, cx);
-                                        },
-                                    ))
-                                })
+                                hidden_actions.iter().fold(
+                                    menu,
+                                    |menu, (label, handler, expires)| {
+                                        let handler = handler.clone();
+                                        let notification = notification.clone();
+                                        let expires = *expires;
+                                        menu.item(ContextMenuEntry::new(label.clone()).handler(
+                                            move |window, cx| {
+                                                if expires {
+                                                    notification
+                                                        .update(cx, |_, cx| cx.emit(DismissEvent))
+                                                        .log_err();
+                                                }
+                                                handler(window, cx);
+                                            },
+                                        ))
+                                    },
+                                )
                             }))
                         })
                         .trigger(
@@ -321,9 +348,9 @@ mod tests {
     }
 
     #[test]
-    fn info_notices_dismiss_themselves_even_with_actions() {
+    fn only_info_notices_without_actions_dismiss_themselves() {
         assert!(should_auto_dismiss(&BranchNotice::info("done")));
-        assert!(should_auto_dismiss(
+        assert!(!should_auto_dismiss(
             &BranchNotice::info("done").action("Undo", |_, _| {})
         ));
         assert!(!should_auto_dismiss(&BranchNotice::warning("careful")));
@@ -369,23 +396,50 @@ mod tests {
     }
 
     #[gpui::test]
-    fn info_notice_with_actions_dismisses_after_the_delay(cx: &mut TestAppContext) {
+    fn info_notice_with_actions_stays_until_clicked_or_closed(cx: &mut TestAppContext) {
         init_test(cx);
-        let notification =
-            cx.new(|cx| BranchNotification::new(with_actions(BranchNotice::info("Pushed"), 2), cx));
+        let notification = cx.new(|cx| {
+            BranchNotification::new(with_actions(BranchNotice::info("Deleted Branch: x"), 2), cx)
+        });
         let (dismissed, _subscription) = track_dismissal(&notification, cx);
 
-        cx.executor()
-            .advance_clock(AUTO_DISMISS_DELAY - Duration::from_millis(1));
-        cx.run_until_parked();
-        assert!(!dismissed.get(), "dismissed before the delay elapsed");
-
-        cx.executor().advance_clock(Duration::from_millis(2));
+        cx.executor().advance_clock(AUTO_DISMISS_DELAY * 3);
         cx.run_until_parked();
         assert!(
-            dismissed.get(),
-            "an info balloon with actions stayed after the delay"
+            !dismissed.get(),
+            "a balloon whose actions would be lost disappeared on its own"
         );
+    }
+
+    #[gpui::test]
+    fn an_action_that_keeps_the_notice_leaves_it_open(cx: &mut TestAppContext) {
+        init_test(cx);
+        let invoked = Rc::new(Cell::new(0));
+        let notice = BranchNotice::info("Deleted Branch: x")
+            .action("Restore", |_, _| {})
+            .action_keeping_notice("View Commits", {
+                let invoked = invoked.clone();
+                move |_, _| invoked.set(invoked.get() + 1)
+            });
+        let (notification, cx) = cx.add_window_view(|_, cx| BranchNotification::new(notice, cx));
+        let dismissed = Rc::new(Cell::new(false));
+        let _subscription = cx.update(|_, cx| {
+            let dismissed = dismissed.clone();
+            cx.subscribe(&notification, move |_, _: &DismissEvent, _| {
+                dismissed.set(true)
+            })
+        });
+
+        notification.update_in(cx, |notification, window, cx| {
+            notification.invoke_action(1, window, cx)
+        });
+        assert_eq!(invoked.get(), 1);
+        assert!(!dismissed.get(), "View Commits closed the notification");
+
+        notification.update_in(cx, |notification, window, cx| {
+            notification.invoke_action(0, window, cx)
+        });
+        assert!(dismissed.get(), "Restore left the notification open");
     }
 
     #[gpui::test]

@@ -103,12 +103,7 @@ impl BranchesTreeMatcher {
         if let [matcher] = self.matchers.as_slice() {
             let name: Vec<char> = name.chars().collect();
             let degree = matcher.matching_degree(&name, false, fragments);
-            return match fragments.and_then(|fragments| fragments.first()) {
-                Some(first) => degree
-                    .saturating_add(MATCH_OFFSET)
-                    .saturating_sub(i32::try_from(first.start).unwrap_or(i32::MAX)),
-                None => degree,
-            };
+            return prefer_early_matches(degree, fragments.unwrap_or_default());
         }
         if fragments.is_some_and(|fragments| !fragments.is_empty()) {
             PARTIAL_MATCH_DEGREE
@@ -120,6 +115,46 @@ impl BranchesTreeMatcher {
     pub(crate) fn degree_of(&self, name: &str) -> i32 {
         let fragments = self.match_fragments(name);
         self.matching_degree(name, fragments.as_deref())
+    }
+}
+
+/// The matcher of IntelliJ's branches popup, which matches the whole query as one `*pattern`
+/// instead of splitting it into words, so a space works as a wildcard.
+pub(crate) struct QueryMatcher {
+    matcher: LayoutFixingMatcher,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct NameMatch {
+    pub(crate) degree: i32,
+    pub(crate) fragments: Vec<Range<usize>>,
+}
+
+impl QueryMatcher {
+    pub(crate) fn new(query: &str) -> Self {
+        Self {
+            matcher: LayoutFixingMatcher::new(&format!("*{}", query.trim())),
+        }
+    }
+
+    pub(crate) fn match_name(&self, name: &str) -> Option<NameMatch> {
+        let name: Vec<char> = name.chars().collect();
+        let fragments = self.matcher.match_fragments(&name)?;
+        let degree = self.matcher.matching_degree(&name, false, Some(&fragments));
+        Some(NameMatch {
+            degree: prefer_early_matches(degree, &fragments),
+            fragments,
+        })
+    }
+}
+
+/// `GitBranchesMatcherWrapper` ranks a match that starts earlier in the name above a later one.
+fn prefer_early_matches(degree: i32, fragments: &[Range<usize>]) -> i32 {
+    match fragments.first() {
+        Some(first) => degree
+            .saturating_add(MATCH_OFFSET)
+            .saturating_sub(i32::try_from(first.start).unwrap_or(i32::MAX)),
+        None => degree,
     }
 }
 
@@ -1010,6 +1045,45 @@ mod tests {
             PARTIAL_MATCH_DEGREE
         );
         assert_eq!(matcher.matching_degree("zzz", None), NO_MATCH_DEGREE);
+    }
+
+    #[test]
+    fn the_popup_matcher_follows_intellij_word_and_hump_rules() {
+        let matches = |query: &str, name: &str| QueryMatcher::new(query).match_name(name).is_some();
+        assert!(matches("f", "reformatCode"));
+        assert!(!matches("fc", "reformatCode"));
+        assert!(!matches("foc", "reformatCode"));
+        assert!(matches("forc", "reformatCode"));
+        assert!(!matches("mn", "main"));
+        assert!(matches("fl", "feature/login"));
+    }
+
+    #[test]
+    fn the_popup_matcher_treats_spaces_as_wildcards_instead_of_separate_words() {
+        let matcher = QueryMatcher::new(" fea log ");
+        assert_eq!(
+            matcher
+                .match_name("feature/login")
+                .map(|found| found.fragments),
+            Some(vec![0..3, 8..11])
+        );
+        assert_eq!(matcher.match_name("feature/x"), None);
+        assert_eq!(matcher.match_name("login"), None);
+    }
+
+    #[test]
+    fn the_popup_matcher_fixes_the_keyboard_layout_and_prefers_early_matches() {
+        assert_eq!(
+            QueryMatcher::new("ьфшт")
+                .match_name("main")
+                .map(|found| found.fragments),
+            Some(vec![0..4])
+        );
+        let matcher = QueryMatcher::new("main");
+        let degree = |name: &str| matcher.match_name(name).map(|found| found.degree);
+        assert!(degree("main") > degree("x-main"));
+        assert!(degree("main") > degree("main-x"));
+        assert_eq!(degree("zzz"), None);
     }
 
     #[test]

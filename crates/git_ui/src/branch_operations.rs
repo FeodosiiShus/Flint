@@ -1,4 +1,5 @@
 pub mod branch_notification;
+pub mod branch_workspace;
 pub mod checkout;
 pub mod checkout_revision_dialog;
 pub mod compare;
@@ -16,10 +17,15 @@ pub mod rename_dialog;
 pub mod smart_operation;
 pub mod update_dialog;
 
+#[cfg(test)]
+mod operation_tests;
+
+use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use askpass::AskPassDelegate;
+use collections::HashSet;
 use futures::StreamExt as _;
 use futures::channel::mpsc;
 use git::repository::{
@@ -27,6 +33,7 @@ use git::repository::{
 };
 use git_ui_core::askpass_modal::AskPassModal;
 use gpui::{App, AppContext as _, Context, Entity, SharedString, Task, WeakEntity, Window};
+use language::{Buffer, DiskState};
 use project::git_store::{Repository, RepositorySnapshot};
 use util::ResultExt as _;
 use workspace::{BackgroundTaskProgress, ModalView, Workspace, notifications::NotificationId};
@@ -45,7 +52,54 @@ const MAX_QUOTED_REF_NAME_CHARS: usize = 40;
 const QUOTED_REF_NAME_DELTA: usize = 4;
 const QUOTED_REF_NAME_SUFFIX: usize = 5;
 const ELLIPSIS: char = '\u{2026}';
-const PUSH_PROGRESS_TITLE: &str = "Pushing\u{2026}";
+pub(crate) const PUSH_PROGRESS_TITLE: &str = "Pushing\u{2026}";
+pub(crate) const UPDATE_PROGRESS_TITLE: &str = "Updating\u{2026}";
+pub(crate) const UPDATE_BRANCHES_PROGRESS_TITLE: &str = "Updating branches\u{2026}";
+
+pub(crate) fn checking_out_progress_title(reference: &str) -> String {
+    format!("Checking out {reference}{ELLIPSIS}")
+}
+
+pub(crate) fn checking_out_new_branch_progress_title(name: &str) -> String {
+    format!("Checking out new branch {name}{ELLIPSIS}")
+}
+
+pub(crate) fn checking_out_from_progress_title(name: &str, start: &str) -> String {
+    format!("Checking out {name} from {start}{ELLIPSIS}")
+}
+
+pub(crate) fn creating_branch_progress_title(name: &str) -> String {
+    format!("Creating branch {name}{ELLIPSIS}")
+}
+
+pub(crate) fn merging_progress_title(reference: &str) -> String {
+    format!("Merging {reference}{ELLIPSIS}")
+}
+
+pub(crate) fn rebasing_progress_title(branch: &str) -> String {
+    format!("Rebasing {branch}{ELLIPSIS}")
+}
+
+pub(crate) fn rebasing_onto_progress_title(reference: &str) -> String {
+    format!("Rebasing onto {reference}{ELLIPSIS}")
+}
+
+pub(crate) fn deleting_progress_title(names: &[impl AsRef<str>]) -> String {
+    let names = names
+        .iter()
+        .map(|name| name.as_ref())
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("Deleting {names}{ELLIPSIS}")
+}
+
+pub(crate) fn renaming_progress_title(old_name: &str, new_name: &str) -> String {
+    format!("Renaming {old_name} to {new_name}{ELLIPSIS}")
+}
+
+pub(crate) fn deleting_tag_on_remote_progress_title(tag: &str) -> String {
+    format!("Deleting tag {tag} on remote{ELLIPSIS}")
+}
 
 #[derive(Clone)]
 pub struct BranchContext {
@@ -63,6 +117,24 @@ impl BranchContext {
 
     pub fn snapshot(&self, cx: &App) -> RepositorySnapshot {
         self.repository.read(cx).snapshot()
+    }
+
+    /// Goes through the worktree switch so the worktree becomes a project tab in this window,
+    /// or the window that already holds it comes to the front; it never opens a new window.
+    pub fn open_worktree(&self, path: PathBuf, window: &mut Window, cx: &mut App) {
+        let Some(workspace) = self.workspace.upgrade() else {
+            return;
+        };
+        let display_name = path
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_else(|| path.to_string_lossy().into_owned());
+        let action = zed_actions::SwitchWorktree { path, display_name };
+        workspace.update(cx, |workspace, cx| {
+            git_ui_core::worktree_service::handle_switch_worktree(
+                workspace, &action, window, None, cx,
+            )
+        });
     }
 
     pub fn current_branch(&self, cx: &App) -> Option<Branch> {
@@ -118,6 +190,37 @@ impl BranchContext {
                     .ok();
             },
         )
+    }
+
+    /// Saves every modified file-backed buffer without asking, like IntelliJ's
+    /// `saveAllDocuments` before a branch operation, so the operation sees and
+    /// carries the edits instead of changing files under unsaved buffers.
+    pub fn save_documents(&self, cx: &mut App) -> Task<()> {
+        let Some(workspace) = self.workspace.upgrade() else {
+            return Task::ready(());
+        };
+        let project = workspace.read(cx).project().clone();
+        let buffers: HashSet<Entity<Buffer>> = project
+            .read(cx)
+            .opened_buffers(cx)
+            .into_iter()
+            .filter(|buffer| saves_before_operation(buffer.read(cx)))
+            .collect();
+        if buffers.is_empty() {
+            return Task::ready(());
+        }
+        let saving = project.update(cx, |project, cx| project.save_buffers(buffers, cx));
+        cx.spawn(async move |_| {
+            saving.await.log_err();
+        })
+    }
+
+    pub fn start_progress(
+        &self,
+        title: impl Into<SharedString>,
+        cx: &mut App,
+    ) -> OperationProgress {
+        OperationProgress::start(&self.workspace, title, cx)
     }
 
     pub fn notify(&self, notice: BranchNotice, cx: &mut App) {
@@ -184,6 +287,17 @@ impl BranchContext {
     }
 }
 
+fn saves_before_operation(buffer: &Buffer) -> bool {
+    buffer.is_dirty()
+        && !buffer.has_conflict()
+        && buffer.file().is_some_and(|file| {
+            matches!(
+                file.disk_state(),
+                DiskState::Present { .. } | DiskState::New
+            )
+        })
+}
+
 fn next_notification_id() -> NotificationId {
     static NEXT_NOTIFICATION_INDEX: AtomicUsize = AtomicUsize::new(0);
     NotificationId::composite::<BranchNotification>(
@@ -191,22 +305,48 @@ fn next_notification_id() -> NotificationId {
     )
 }
 
-pub struct PushProgress {
-    _indicator: Entity<BackgroundTaskProgress>,
-    _forwarding: Task<()>,
+/// A status-bar progress entry that lives as long as the operation holds it,
+/// like the title of IntelliJ's `Task.Backgroundable` for branch operations.
+pub struct OperationProgress {
+    indicator: Entity<BackgroundTaskProgress>,
+    _forwarding: Option<Task<()>>,
 }
 
-impl PushProgress {
-    pub fn start(workspace: &WeakEntity<Workspace>, cx: &mut App) -> (Self, RemoteProgressSender) {
-        let indicator = cx.new(|_| BackgroundTaskProgress::new(PUSH_PROGRESS_TITLE));
-        workspace
-            .update(cx, |workspace, cx| {
-                workspace.show_background_task(&indicator, cx)
-            })
-            .log_err();
-        let (sender, mut receiver) = mpsc::unbounded::<RemoteProgress>();
+impl OperationProgress {
+    pub fn start(
+        workspace: &WeakEntity<Workspace>,
+        title: impl Into<SharedString>,
+        cx: &mut App,
+    ) -> Self {
+        let indicator = cx.new(|_| BackgroundTaskProgress::new(title));
         let weak_indicator = indicator.downgrade();
-        let forwarding = cx.spawn(async move |cx| {
+        let workspace = workspace.clone();
+        // Operations start from handlers that may run inside a workspace update.
+        cx.defer(move |cx| {
+            let Some(indicator) = weak_indicator.upgrade() else {
+                return;
+            };
+            workspace
+                .update(cx, |workspace, cx| {
+                    workspace.show_background_task(&indicator, cx)
+                })
+                .log_err();
+        });
+        Self {
+            indicator,
+            _forwarding: None,
+        }
+    }
+
+    pub fn start_reporting(
+        workspace: &WeakEntity<Workspace>,
+        title: impl Into<SharedString>,
+        cx: &mut App,
+    ) -> (Self, RemoteProgressSender) {
+        let mut progress = Self::start(workspace, title, cx);
+        let (sender, mut receiver) = mpsc::unbounded::<RemoteProgress>();
+        let weak_indicator = progress.indicator.downgrade();
+        progress._forwarding = Some(cx.spawn(async move |cx| {
             while let Some(update) = receiver.next().await {
                 let forwarded = weak_indicator.update(cx, |indicator, cx| {
                     indicator.set_progress(update.fraction, update.details, cx)
@@ -215,11 +355,7 @@ impl PushProgress {
                     break;
                 }
             }
-        });
-        let progress = Self {
-            _indicator: indicator,
-            _forwarding: forwarding,
-        };
+        }));
         (progress, sender)
     }
 }
@@ -235,6 +371,9 @@ pub enum NoticeSeverity {
 pub struct NoticeAction {
     pub label: SharedString,
     pub handler: Rc<dyn Fn(&mut Window, &mut App)>,
+    /// Whether running the action closes the notice, which IntelliJ's
+    /// `NotificationAction` does unless the action keeps it on purpose.
+    pub expires: bool,
 }
 
 #[derive(Clone)]
@@ -271,6 +410,20 @@ impl BranchNotice {
         self.actions.push(NoticeAction {
             label: label.into(),
             handler: Rc::new(handler),
+            expires: true,
+        });
+        self
+    }
+
+    pub fn action_keeping_notice(
+        mut self,
+        label: impl Into<SharedString>,
+        handler: impl Fn(&mut Window, &mut App) + 'static,
+    ) -> Self {
+        self.actions.push(NoticeAction {
+            label: label.into(),
+            handler: Rc::new(handler),
+            expires: false,
         });
         self
     }
@@ -316,7 +469,16 @@ pub(crate) fn failure_text(error: &anyhow::Error) -> Option<String> {
 
 pub fn error_notice(operation: &str, error: &anyhow::Error) -> Option<BranchNotice> {
     let message = failure_text(error)?.trim().to_string();
-    Some(BranchNotice::error(message).title(format!("git {operation} failed")))
+    Some(BranchNotice::error(message).title(failed_title(operation)))
+}
+
+/// IntelliJ names a failed git operation like "Fetch failed".
+fn failed_title(operation: &str) -> String {
+    let mut characters = operation.chars();
+    match characters.next() {
+        Some(first) => format!("{}{} failed", first.to_uppercase(), characters.as_str()),
+        None => "Failed".to_string(),
+    }
 }
 
 #[cfg(test)]
@@ -419,7 +581,7 @@ mod tests {
         let notice = error_notice("fetch", &error).expect("a notice for a real failure");
         assert_eq!(notice.severity, NoticeSeverity::Error);
         assert_eq!(notice.message.as_ref(), "fatal: unable to access remote");
-        assert_eq!(notice.title.as_deref(), Some("git fetch failed"));
+        assert_eq!(notice.title.as_deref(), Some("Fetch failed"));
         assert!(notice.actions.is_empty());
     }
 
@@ -467,9 +629,10 @@ mod tests {
 
     #[gpui::test]
     fn push_progress_forwards_git_progress_until_the_push_ends(cx: &mut TestAppContext) {
-        let (progress, sender) =
-            cx.update(|cx| PushProgress::start(&WeakEntity::new_invalid(), cx));
-        let indicator = progress._indicator.downgrade();
+        let (progress, sender) = cx.update(|cx| {
+            OperationProgress::start_reporting(&WeakEntity::new_invalid(), PUSH_PROGRESS_TITLE, cx)
+        });
+        let indicator = progress.indicator.downgrade();
         indicator
             .read_with(cx, |task, _| {
                 assert_eq!(task.title().as_ref(), PUSH_PROGRESS_TITLE);

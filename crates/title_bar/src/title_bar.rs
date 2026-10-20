@@ -15,38 +15,61 @@ use crate::application_menu::{
     ActivateDirection, ActivateMenuLeft, ActivateMenuRight, OpenApplicationMenu,
 };
 
+use git::repository::RepositoryOperation;
 use gpui::{
-    AnyElement, App, Context, Entity, Hsla, InteractiveElement, IntoElement, MouseButton,
-    ParentElement, Render, Styled, Subscription, WeakEntity, Window, actions, div, point, px, rgb,
+    AnyElement, App, ClickEvent, Context, DismissEvent, Entity, EntityId, Focusable, Hsla,
+    InteractiveElement, IntoElement, MouseButton, MouseDownEvent, ParentElement, Pixels, Point,
+    Render, Styled, Subscription, Task, TaskExt as _, WeakEntity, Window, actions, anchored,
+    deferred, div, px, rgb,
 };
 use project::{
-    Project, git_store::GitStoreEvent, project_settings::ProjectSettings,
+    Project,
+    git_store::{GitStore, GitStoreEvent, RepositoryEvent, RepositoryId},
+    project_settings::ProjectSettings,
     trusted_worktrees::TrustedWorktrees,
 };
-use recent_projects::RecentProjects;
 use settings::Settings as _;
+use std::collections::HashMap;
 
-use std::{path::Path, sync::Arc};
+use std::path::Path;
 use title_bar_settings::TitleBarSettings;
 pub use toolbar_widgets::SEARCH_FIELD_DEBUG_SELECTOR;
 use toolbar_widgets::{
-    ToolbarSearchField, ToolbarWidget, avatar_initials, toolbar_widget_icon_color,
+    TOOLBAR_WIDGET_ICON_SIDE, ToolbarSearchField, ToolbarWidget, toolbar_widget_icon_color,
     upstream_tracking,
 };
 use ui::{
-    ContextMenu, PopoverMenu, TintColor, Tooltip, prelude::*, utils::platform_title_bar_height,
+    ChromeRegion, ContextMenu, ContextMenuEntry, IconButtonShape, PopoverMenu, TintColor, Tooltip,
+    prelude::*, utils::platform_title_bar_height,
 };
 use util::{ResultExt, paths::PathExt as _};
 use workspace::{
-    AccessibleMode, MultiWorkspace, ToggleWorktreeSecurity, Workspace, WorkspaceSettings,
+    AccessibleMode, MultiWorkspace, MultiWorkspaceEvent, ProjectTab, ToggleWorktreeSecurity,
+    Workspace, WorkspaceSettings,
 };
 
-const MAX_BRANCH_NAME_LENGTH: usize = 40;
+// `GitBranchPresentation.DEFAULT_MAX_BRANCH_NAME_LENGTH`.
+const MAX_BRANCH_NAME_LENGTH: usize = 80;
 const MAX_SHORT_SHA_LENGTH: usize = 8;
-const PROJECT_WIDGET_DEBUG_SELECTOR: &str = "title_bar_project_widget";
+const PROJECT_TABS_DEBUG_SELECTOR: &str = "title_bar_project_tabs";
+// `WindowTabsComponent`: the tab content insets under Islands are (0, 4, 0, 15), the close
+// button sits on the left with a 6 px border, and a tab never gets narrower than
+// `TabbedPane.tabContentMinWidth`.
+const PROJECT_TAB_PADDING_LEFT: Pixels = px(4.);
+const PROJECT_TAB_PADDING_RIGHT: Pixels = px(15.);
+const PROJECT_TAB_CLOSE_BORDER: Pixels = px(6.);
+const PROJECT_TAB_CONTENT_MIN_WIDTH: Pixels = px(24.);
+// `IslandsUICustomization.paintProjectTab`: the fill is inset 1 px from the tab's sides, and
+// the separator between two plain tabs is inset 5 px from the top and bottom.
+const PROJECT_TAB_FILL_INSET: Pixels = px(1.);
+const PROJECT_TAB_SEPARATOR_INSET: Pixels = px(5.);
+// `mac.window.tabs.close.title`
+const PROJECT_TAB_CLOSE_TOOLTIP: &str =
+    "Click to close this tab. Option-click to close all tabs except this one";
 const WORKTREE_AND_BRANCH_DEBUG_SELECTOR: &str = "title_bar_worktree_and_branch";
 const VERSION_CONTROL_SETUP_DEBUG_SELECTOR: &str = "title_bar_version_control_setup";
 const DETACHED_HEAD_TOOLTIP: &str = "Git: Detached HEAD doesn't point to any branch";
+const REBASE_IN_PROGRESS_TOOLTIP: &str = "Git: Rebase in progress";
 const PROJECT_GRADIENT_COLOR: u32 = 0x955AE0;
 
 fn linked_worktree_name_anchor<'a>(
@@ -135,7 +158,133 @@ pub struct TitleBar {
     workspace: WeakEntity<Workspace>,
     multi_workspace: Option<WeakEntity<MultiWorkspace>>,
     application_menu: Option<Entity<ApplicationMenu>>,
+    hovered_project_tab: Option<EntityId>,
+    project_tab_menu: Option<ProjectTabMenu>,
+    repository_states: HashMap<RepositoryId, RepositoryWidgetState>,
+    repository_state_tasks: HashMap<RepositoryId, Task<()>>,
     _subscriptions: Vec<Subscription>,
+}
+
+/// What the branch widget shows beyond the branch, which git reports only asynchronously.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct RepositoryWidgetState {
+    operation: Option<RepositoryOperation>,
+    head_tag: Option<SharedString>,
+    rebased_branch: Option<SharedString>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BranchWidgetIcon {
+    /// The branch widget's own icon, which may show the working tree status.
+    Branch,
+    Warning,
+    Tag,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BranchWidgetTooltip {
+    Branch,
+    DetachedHead,
+    RebaseInProgress,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct BranchWidgetPresentation {
+    text: String,
+    icon: BranchWidgetIcon,
+    tooltip: BranchWidgetTooltip,
+}
+
+/// `GitBranchUtil.getDisplayableBranchText` and `GitCurrentBranchPresenter`: an operation in
+/// progress prefixes the branch, and a detached HEAD shows the tag it is on or its short hash.
+fn branch_widget_presentation(
+    branch: Option<&str>,
+    short_sha: Option<&str>,
+    state: &RepositoryWidgetState,
+) -> Option<BranchWidgetPresentation> {
+    let truncate = |name: &str| git_ui_core::truncate_branch_name(name, MAX_BRANCH_NAME_LENGTH);
+    if let Some(operation) = state.operation {
+        // HEAD is detached while a rebase runs, so the rebased branch comes from git's files.
+        let rebased_branch = state
+            .rebased_branch
+            .as_deref()
+            .filter(|_| operation == RepositoryOperation::Rebase);
+        let name = branch
+            .or(rebased_branch)
+            .map(truncate)
+            .or_else(|| short_sha.map(str::to_string))?;
+        let (text, tooltip) = match operation {
+            RepositoryOperation::Merge => (format!("Merging {name}"), BranchWidgetTooltip::Branch),
+            RepositoryOperation::Rebase => (
+                format!("Rebasing {name}"),
+                BranchWidgetTooltip::RebaseInProgress,
+            ),
+            RepositoryOperation::CherryPick => (
+                format!("Cherry-picking in {name}"),
+                BranchWidgetTooltip::Branch,
+            ),
+            RepositoryOperation::Revert => {
+                (format!("Reverting in {name}"), BranchWidgetTooltip::Branch)
+            }
+        };
+        let tooltip = if branch.is_none() && tooltip == BranchWidgetTooltip::Branch {
+            BranchWidgetTooltip::DetachedHead
+        } else {
+            tooltip
+        };
+        return Some(BranchWidgetPresentation {
+            text,
+            icon: BranchWidgetIcon::Warning,
+            tooltip,
+        });
+    }
+    if let Some(branch) = branch {
+        return Some(BranchWidgetPresentation {
+            text: truncate(branch),
+            icon: BranchWidgetIcon::Branch,
+            tooltip: BranchWidgetTooltip::Branch,
+        });
+    }
+    if let Some(tag) = &state.head_tag {
+        return Some(BranchWidgetPresentation {
+            text: truncate(tag),
+            icon: BranchWidgetIcon::Tag,
+            tooltip: BranchWidgetTooltip::DetachedHead,
+        });
+    }
+    short_sha.map(|short_sha| BranchWidgetPresentation {
+        text: short_sha.to_string(),
+        icon: BranchWidgetIcon::Warning,
+        tooltip: BranchWidgetTooltip::DetachedHead,
+    })
+}
+
+/// The context menu of a project tab, like the one of IntelliJ's window tabs.
+struct ProjectTabMenu {
+    workspace_id: EntityId,
+    menu: Entity<ContextMenu>,
+    position: Point<Pixels>,
+    _subscription: Subscription,
+}
+
+/// A project tab being dragged to another place in the strip.
+#[derive(Clone)]
+struct DraggedProjectTab {
+    workspace: Entity<Workspace>,
+    title: SharedString,
+}
+
+impl Render for DraggedProjectTab {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let corner_radius = WorkspaceSettings::get_global(cx).islands.corner_radius;
+        h_flex()
+            .h(ui::utils::title_bar_widget_height(cx))
+            .px(PROJECT_TAB_PADDING_RIGHT)
+            .rounded(corner_radius)
+            .bg(cx.theme().colors().panel_background)
+            .font_ui(cx)
+            .child(Label::new(self.title.clone()).size(LabelSize::Small))
+    }
 }
 
 impl Render for TitleBar {
@@ -146,6 +295,7 @@ impl Render for TitleBar {
                 .upgrade()
                 .and_then(|ws| ws.read(cx).multi_workspace().cloned())
             {
+                self.observe_multi_workspace(&mw, cx);
                 self.multi_workspace = Some(mw.clone());
                 self.platform_titlebar.update(cx, |titlebar, _cx| {
                     titlebar.set_multi_workspace(mw);
@@ -160,7 +310,6 @@ impl Render for TitleBar {
         let show_menus = show_menus(cx);
 
         let mut project_name = None;
-        let mut project_path = None;
         let mut repository = None;
         let mut linked_worktree_name = None;
         if let Some(worktree) = self.effective_active_worktree(cx) {
@@ -170,7 +319,6 @@ impl Render for TitleBar {
                 .root_name()
                 .file_name()
                 .map(|name| SharedString::from(name.to_string()));
-            project_path = Some(worktree.read(cx).abs_path());
             if let Some(repo) = &repository {
                 let repo = repo.read(cx);
                 let identity_fallback =
@@ -205,8 +353,11 @@ impl Render for TitleBar {
             && is_git_enabled
             && title_bar_settings.show_branch_name;
 
+        let project_tabs = self.render_project_tabs(window, cx);
         let project_items = h_flex()
             .h_full()
+            // Lets the project tabs give way before the branch widget and the search field.
+            .min_w_0()
             .gap_0p5()
             .map(|title_bar| {
                 let mut render_project_items = true;
@@ -227,10 +378,7 @@ impl Render for TitleBar {
                     .children(self.render_restricted_mode(cx))
                     .when(render_project_items, |title_bar| {
                         title_bar
-                            .when_some(project_name.clone(), |title_bar, project_name| {
-                                title_bar
-                                    .child(self.render_project_widget(project_name, project_path))
-                            })
+                            .children(project_tabs)
                             .when_some(
                                 repository.filter(|_| is_git_enabled),
                                 |title_bar, repository| {
@@ -344,15 +492,33 @@ impl TitleBar {
             }),
         );
 
-        subscriptions.push(
-            cx.subscribe(&git_store, move |_, _, event, cx| match event {
-                GitStoreEvent::ActiveRepositoryChanged(_)
-                | GitStoreEvent::RepositoryUpdated(_, _, true) => {
+        subscriptions.push(cx.subscribe(
+            &git_store,
+            move |this, git_store, event, cx| match event {
+                GitStoreEvent::ActiveRepositoryChanged(_) | GitStoreEvent::RepositoryAdded => {
+                    this.refresh_repository_states(&git_store, cx);
                     cx.notify();
                 }
+                GitStoreEvent::RepositoryUpdated(
+                    id,
+                    RepositoryEvent::StatusesChanged | RepositoryEvent::HeadChanged,
+                    is_active,
+                ) => {
+                    this.refresh_repository_state(&git_store, *id, cx);
+                    if *is_active {
+                        cx.notify();
+                    }
+                }
+                GitStoreEvent::RepositoryUpdated(_, _, true) => {
+                    cx.notify();
+                }
+                GitStoreEvent::RepositoryRemoved(id) => {
+                    this.repository_states.remove(id);
+                    this.repository_state_tasks.remove(id);
+                }
                 _ => {}
-            }),
-        );
+            },
+        ));
         if let Some(workspace_entity) = workspace.weak_handle().upgrade() {
             subscriptions.push(cx.subscribe(
                 &workspace_entity,
@@ -378,13 +544,124 @@ impl TitleBar {
             titlebar
         });
 
-        Self {
+        let mut this = Self {
             platform_titlebar,
             application_menu,
             workspace: workspace.weak_handle(),
-            multi_workspace,
+            multi_workspace: multi_workspace.clone(),
             project,
+            hovered_project_tab: None,
+            project_tab_menu: None,
+            repository_states: HashMap::default(),
+            repository_state_tasks: HashMap::default(),
             _subscriptions: subscriptions,
+        };
+        if let Some(multi_workspace) = multi_workspace {
+            this.observe_multi_workspace(&multi_workspace, cx);
+        }
+        this.refresh_repository_states(&git_store, cx);
+        this
+    }
+
+    fn refresh_repository_states(&mut self, git_store: &Entity<GitStore>, cx: &mut Context<Self>) {
+        let ids: Vec<RepositoryId> = git_store.read(cx).repositories().keys().copied().collect();
+        for id in ids {
+            self.refresh_repository_state(git_store, id, cx);
+        }
+    }
+
+    /// Reads the operation in progress, and the tag a detached HEAD is on, for the branch widget.
+    fn refresh_repository_state(
+        &mut self,
+        git_store: &Entity<GitStore>,
+        id: RepositoryId,
+        cx: &mut Context<Self>,
+    ) {
+        // Remote repositories cannot report an operation in progress.
+        if !git_store.read(cx).is_local() {
+            return;
+        }
+        let Some(repository) = git_store.read(cx).repositories().get(&id).cloned() else {
+            return;
+        };
+        let head_sha = repository
+            .read(cx)
+            .head_commit
+            .as_ref()
+            .map(|commit| commit.sha.clone());
+        let (operation, tags, rebased_branch) = repository.update(cx, |repository, _| {
+            let detached = repository.branch.is_none();
+            let tags = detached.then(|| repository.tags());
+            let rebased_branch = detached.then(|| repository.rebased_branch());
+            (repository.operation_in_progress(), tags, rebased_branch)
+        });
+        let task = cx.spawn(async move |this, cx| {
+            let operation = operation
+                .await
+                .ok()
+                .and_then(|result| result.log_err())
+                .flatten();
+            let head_tag = match tags {
+                Some(tags) => tags
+                    .await
+                    .ok()
+                    .and_then(|result| result.log_err())
+                    .and_then(|tags| {
+                        tags.into_iter()
+                            .find(|tag| Some(&tag.commit_sha) == head_sha.as_ref())
+                    })
+                    .map(|tag| tag.name),
+                None => None,
+            };
+            let rebased_branch = match rebased_branch {
+                Some(rebased_branch) if operation == Some(RepositoryOperation::Rebase) => {
+                    rebased_branch
+                        .await
+                        .ok()
+                        .and_then(|result| result.log_err())
+                        .flatten()
+                        .map(SharedString::from)
+                }
+                _ => None,
+            };
+            this.update(cx, |this, cx| {
+                let state = RepositoryWidgetState {
+                    operation,
+                    head_tag,
+                    rebased_branch,
+                };
+                if this.repository_states.get(&id) != Some(&state) {
+                    this.repository_states.insert(id, state);
+                    cx.notify();
+                }
+            })
+            .ok();
+        });
+        self.repository_state_tasks.insert(id, task);
+    }
+
+    /// The project tabs show every project of the window, so they redraw whenever the window
+    /// adds, removes, reorders or switches its projects.
+    fn observe_multi_workspace(
+        &mut self,
+        multi_workspace: &WeakEntity<MultiWorkspace>,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(multi_workspace) = multi_workspace.upgrade() {
+            self._subscriptions
+                .push(cx.observe(&multi_workspace, |_, _, cx| cx.notify()));
+            // While another project is shown this title bar is not drawn, so the mouse-leave
+            // of a tab clicked in it never arrives and its hover would stick.
+            self._subscriptions.push(cx.subscribe(
+                &multi_workspace,
+                |this, _, event: &MultiWorkspaceEvent, cx| {
+                    if let MultiWorkspaceEvent::ActiveWorkspaceChanged { .. } = event {
+                        this.hovered_project_tab = None;
+                        this.project_tab_menu = None;
+                        cx.notify();
+                    }
+                },
+            ));
         }
     }
 
@@ -476,45 +753,347 @@ impl TitleBar {
         rgb(PROJECT_GRADIENT_COLOR).into()
     }
 
-    fn render_project_widget(
-        &self,
-        project_name: SharedString,
-        project_path: Option<Arc<Path>>,
-    ) -> impl IntoElement + use<> {
-        let initials: SharedString = avatar_initials(&project_name).into();
-        let color = Self::project_gradient_color();
-        let tooltip_text = project_widget_tooltip(&project_name, project_path.as_deref());
-        let workspace = self.workspace.clone();
-        let multi_workspace = self.multi_workspace.clone();
+    /// IntelliJ's Islands window tabs, one per project of the window, in the main toolbar row
+    /// left of the VCS widget (`WindowTabsComponent`, `IslandsUICustomization.paintProjectTab`).
+    fn render_project_tabs(&self, window: &Window, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let multi_workspace = self.multi_workspace.as_ref()?.upgrade()?;
+        let (tabs, active_workspace) = {
+            let multi_workspace = multi_workspace.read(cx);
+            (
+                multi_workspace.project_tabs(cx),
+                multi_workspace.workspace().clone(),
+            )
+        };
+        if tabs.is_empty() {
+            return None;
+        }
 
-        h_flex()
-            .debug_selector(|| PROJECT_WIDGET_DEBUG_SELECTOR.into())
-            .child(
-                PopoverMenu::new("project-widget-menu")
-                    .menu(move |window, cx| {
-                        let window_project_groups = multi_workspace
-                            .as_ref()
-                            .and_then(|multi_workspace| multi_workspace.upgrade())
-                            .map(|multi_workspace| multi_workspace.read(cx).project_group_keys())
-                            .unwrap_or_default();
-                        RecentProjects::popover(
-                            workspace.clone(),
-                            window_project_groups,
-                            window,
-                            cx,
+        let colors = cx.theme().colors();
+        let selected_background = colors.panel_background;
+        let hover_background = colors.ghost_element_hover;
+        let separator_color = workspace::stripe_separator_color(cx.theme().appearance().is_light());
+        let corner_radius = WorkspaceSettings::get_global(cx).islands.corner_radius;
+        let height = ui::utils::title_bar_widget_height(cx);
+        let icon_scale = ui::chrome_icon_scale(ChromeRegion::TitleBar, cx).unwrap_or(1.);
+        let close_icon_side = TOOLBAR_WIDGET_ICON_SIDE * icon_scale;
+        let close_icon_size = ui::exact_icon_size(close_icon_side, window.rem_size());
+        let menu_workspace_id = self.project_tab_menu.as_ref().map(|menu| menu.workspace_id);
+        let highlighted = |tab: &ProjectTab| {
+            let id = tab.workspace.entity_id();
+            tab.workspace == active_workspace
+                || Some(id) == self.hovered_project_tab
+                || Some(id) == menu_workspace_id
+        };
+        let separator_after: Vec<bool> = tabs
+            .iter()
+            .zip(tabs.iter().skip(1))
+            .map(|(tab, next_tab)| !highlighted(tab) && !highlighted(next_tab))
+            .chain(std::iter::once(false))
+            .collect();
+        let shows_close_button: Vec<bool> = tabs
+            .iter()
+            .map(|tab| {
+                let id = Some(tab.workspace.entity_id());
+                id == self.hovered_project_tab || id == menu_workspace_id
+            })
+            .collect();
+
+        let weak_multi_workspace = multi_workspace.downgrade();
+        let tab_elements = tabs
+            .into_iter()
+            .zip(separator_after)
+            .zip(shows_close_button)
+            .map(|((tab, separator_after), shows_close_button)| {
+                let workspace_id = tab.workspace.entity_id();
+                let is_active = tab.workspace == active_workspace;
+                let is_hovered = Some(workspace_id) == self.hovered_project_tab
+                    || Some(workspace_id) == menu_workspace_id;
+                let tooltip = project_widget_tooltip(&tab.title, Some(tab.path.as_ref()));
+                let debug_title = tab.title.clone();
+                let close_debug_title = tab.title.clone();
+                let dragged = DraggedProjectTab {
+                    workspace: tab.workspace.clone(),
+                    title: tab.title.clone(),
+                };
+
+                let close_button = shows_close_button.then(|| {
+                    let multi_workspace = weak_multi_workspace.clone();
+                    let workspace = tab.workspace.clone();
+                    div()
+                        .debug_selector(move || format!("PROJECT_TAB_CLOSE-{close_debug_title}"))
+                        .flex_none()
+                        .child(
+                            IconButton::new(
+                                ("project_tab_close", workspace_id.as_u64()),
+                                IconName::Close,
+                            )
+                            .shape(IconButtonShape::Square)
+                            .icon_size(close_icon_size)
+                            .icon_color(Color::Muted)
+                            .tooltip(Tooltip::text(PROJECT_TAB_CLOSE_TOOLTIP))
+                            .on_click(
+                                move |event: &ClickEvent, window, cx| {
+                                    cx.stop_propagation();
+                                    let workspace = workspace.clone();
+                                    if event.modifiers().alt {
+                                        update_multi_workspace_later(
+                                            multi_workspace.clone(),
+                                            window,
+                                            cx,
+                                            move |multi_workspace, window, cx| {
+                                                multi_workspace
+                                                    .close_other_workspaces(&workspace, window, cx)
+                                                    .detach_and_log_err(cx);
+                                            },
+                                        );
+                                    } else {
+                                        close_project_tab(
+                                            multi_workspace.clone(),
+                                            workspace,
+                                            window,
+                                            cx,
+                                        );
+                                    }
+                                },
+                            ),
+                        )
+                });
+
+                let pill = h_flex()
+                    .id(("project_tab", workspace_id.as_u64()))
+                    .debug_selector(move || format!("PROJECT_TAB-{debug_title}"))
+                    .size_full()
+                    .min_w_0()
+                    .pl(PROJECT_TAB_PADDING_LEFT)
+                    .pr(PROJECT_TAB_PADDING_RIGHT)
+                    .rounded(corner_radius)
+                    .when(is_active, |pill| pill.bg(selected_background))
+                    .when(!is_active && is_hovered, |pill| pill.bg(hover_background))
+                    .cursor_pointer()
+                    .tooltip(Tooltip::text(tooltip))
+                    .on_hover(cx.listener(move |this, hovered: &bool, _window, cx| {
+                        if *hovered {
+                            this.hovered_project_tab = Some(workspace_id);
+                        } else if this.hovered_project_tab == Some(workspace_id) {
+                            this.hovered_project_tab = None;
+                        }
+                        cx.notify();
+                    }))
+                    .on_click({
+                        let multi_workspace = weak_multi_workspace.clone();
+                        let workspace = tab.workspace.clone();
+                        move |_, window, cx| {
+                            let workspace = workspace.clone();
+                            // The click arrives in the title bar of the workspace being left,
+                            // so the switch waits until this event is done with it.
+                            update_multi_workspace_later(
+                                multi_workspace.clone(),
+                                window,
+                                cx,
+                                move |multi_workspace, window, cx| {
+                                    multi_workspace.activate(workspace, None, window, cx);
+                                },
+                            );
+                        }
+                    })
+                    .on_mouse_up(MouseButton::Middle, {
+                        let multi_workspace = weak_multi_workspace.clone();
+                        let workspace = tab.workspace.clone();
+                        move |_, window, cx| {
+                            cx.stop_propagation();
+                            close_project_tab(
+                                multi_workspace.clone(),
+                                workspace.clone(),
+                                window,
+                                cx,
+                            );
+                        }
+                    })
+                    .on_mouse_down(
+                        MouseButton::Right,
+                        cx.listener({
+                            let workspace = tab.workspace.clone();
+                            move |this, event: &MouseDownEvent, window, cx| {
+                                cx.stop_propagation();
+                                this.deploy_project_tab_menu(
+                                    workspace.clone(),
+                                    event.position,
+                                    window,
+                                    cx,
+                                );
+                            }
+                        }),
+                    )
+                    .on_drag(dragged, |dragged, _, _, cx| cx.new(|_| dragged.clone()))
+                    .drag_over::<DraggedProjectTab>(move |style, _, _, cx| {
+                        style.bg(cx.theme().colors().drop_target_background)
+                    })
+                    .on_drop({
+                        let multi_workspace = weak_multi_workspace.clone();
+                        let target = tab.workspace.clone();
+                        move |dragged: &DraggedProjectTab, _window, cx| {
+                            multi_workspace
+                                .update(cx, |multi_workspace, cx| {
+                                    multi_workspace.move_workspace_to_tab_of(
+                                        &dragged.workspace,
+                                        &target,
+                                        cx,
+                                    );
+                                })
+                                .log_err();
+                        }
+                    })
+                    .child(
+                        div()
+                            .flex_none()
+                            .pl(PROJECT_TAB_CLOSE_BORDER)
+                            .w(PROJECT_TAB_CLOSE_BORDER + close_icon_side)
+                            .children(close_button),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(PROJECT_TAB_CONTENT_MIN_WIDTH)
+                            .overflow_hidden()
+                            .child(
+                                Label::new(tab.title)
+                                    .size(LabelSize::Small)
+                                    .color(if is_active {
+                                        Color::Default
+                                    } else {
+                                        Color::Muted
+                                    })
+                                    .truncate(),
+                            ),
+                    );
+
+                div()
+                    .relative()
+                    .flex()
+                    .min_w_0()
+                    .h(height)
+                    .px(PROJECT_TAB_FILL_INSET)
+                    .child(pill)
+                    .when(separator_after, |slot| {
+                        slot.child(
+                            div()
+                                .absolute()
+                                .right_0()
+                                .top(PROJECT_TAB_SEPARATOR_INSET)
+                                .bottom(PROJECT_TAB_SEPARATOR_INSET)
+                                .w(px(1.))
+                                .bg(separator_color),
                         )
                     })
-                    .trigger(
-                        ToolbarWidget::avatar("project_widget_trigger", initials, color)
-                            .label(project_name)
-                            .tab_index(0)
-                            .tooltip(move |_window, cx| Tooltip::simple(tooltip_text.clone(), cx)),
-                    )
+            });
+
+        let menu = self.project_tab_menu.as_ref().map(|menu| {
+            deferred(
+                anchored()
+                    .position(menu.position)
                     .anchor(gpui::Anchor::TopLeft)
-                    // The default offset lines a context menu's item text up with the trigger;
-                    // IntelliJ's `showUnderneathOf` puts the popup's own edge under the widget's.
-                    .offset(point(px(0.), px(0.))),
+                    .child(menu.menu.clone()),
             )
+            .with_priority(1)
+        });
+
+        Some(
+            h_flex()
+                .debug_selector(|| PROJECT_TABS_DEBUG_SELECTOR.into())
+                .h(height)
+                .min_w_0()
+                .flex_shrink_1()
+                .overflow_x_hidden()
+                .children(tab_elements)
+                .children(menu)
+                .into_any_element(),
+        )
+    }
+
+    fn deploy_project_tab_menu(
+        &mut self,
+        workspace: Entity<Workspace>,
+        position: Point<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(multi_workspace) = self.multi_workspace.clone() else {
+            return;
+        };
+        let workspace_id = workspace.entity_id();
+        // Like `MoveProjectToNewWindow` and Open Recent's Open Projects, the actions that need
+        // another tab are greyed with a single project, so moving it cannot leave an empty window.
+        let has_other_tabs = multi_workspace.upgrade().is_some_and(|multi_workspace| {
+            multi_workspace
+                .read(cx)
+                .project_tabs(cx)
+                .iter()
+                .any(|tab| tab.workspace != workspace)
+        });
+        let menu = ContextMenu::build(window, cx, move |menu, _, _| {
+            let close_workspace = workspace.clone();
+            let close_multi_workspace = multi_workspace.clone();
+            let other_workspace = workspace.clone();
+            let other_multi_workspace = multi_workspace.clone();
+            let move_workspace = workspace;
+            let move_multi_workspace = multi_workspace;
+            // `mac.window.tabs.close.tab`, `mac.window.tabs.close.other.tabs` and
+            // `mac.window.tabs.move.tab`
+            menu.entry("Close Tab", None, move |window, cx| {
+                close_project_tab(
+                    close_multi_workspace.clone(),
+                    close_workspace.clone(),
+                    window,
+                    cx,
+                );
+            })
+            .item(
+                ContextMenuEntry::new("Close Other Tabs")
+                    .disabled(!has_other_tabs)
+                    .handler(move |window, cx| {
+                        let workspace = other_workspace.clone();
+                        update_multi_workspace_later(
+                            other_multi_workspace.clone(),
+                            window,
+                            cx,
+                            move |multi_workspace, window, cx| {
+                                multi_workspace
+                                    .close_other_workspaces(&workspace, window, cx)
+                                    .detach_and_log_err(cx);
+                            },
+                        );
+                    }),
+            )
+            .item(
+                ContextMenuEntry::new("Move Tab to New Window")
+                    .disabled(!has_other_tabs)
+                    .handler(move |window, cx| {
+                        let workspace = move_workspace.clone();
+                        update_multi_workspace_later(
+                            move_multi_workspace.clone(),
+                            window,
+                            cx,
+                            move |multi_workspace, window, cx| {
+                                multi_workspace
+                                    .move_workspace_to_new_window(&workspace, window, cx)
+                                    .detach_and_log_err(cx);
+                            },
+                        );
+                    }),
+            )
+        });
+        window.focus(&menu.focus_handle(cx), cx);
+        let subscription = cx.subscribe(&menu, |this, _, _: &DismissEvent, cx| {
+            this.project_tab_menu.take();
+            cx.notify();
+        });
+        self.project_tab_menu = Some(ProjectTabMenu {
+            workspace_id,
+            menu,
+            position,
+            _subscription: subscription,
+        });
+        cx.notify();
     }
 
     fn render_version_control_setup() -> impl IntoElement {
@@ -556,25 +1135,34 @@ impl TitleBar {
         let workspace = self.workspace.upgrade()?;
         let icon_color = toolbar_widget_icon_color(cx);
 
-        let (branch_name, upstream, incoming_outgoing, icon_info, is_detached_head) = {
+        let (presentation, branch_tooltip_name, root_name, upstream, incoming_outgoing, icon_info) = {
             let repo = repository.read(cx);
-
-            let is_detached_head = repo.branch.is_none();
-
-            let branch_name = repo
-                .branch
-                .as_ref()
-                .map(|branch| branch.name())
-                .map(|name| util::truncate_and_trailoff(name, MAX_BRANCH_NAME_LENGTH))
-                .or_else(|| {
-                    repo.head_commit.as_ref().map(|commit| {
-                        commit
-                            .sha
-                            .chars()
-                            .take(MAX_SHORT_SHA_LENGTH)
-                            .collect::<String>()
-                    })
-                });
+            let short_sha = repo.head_commit.as_ref().map(|commit| {
+                commit
+                    .sha
+                    .chars()
+                    .take(MAX_SHORT_SHA_LENGTH)
+                    .collect::<String>()
+            });
+            let widget_state = self
+                .repository_states
+                .get(&repo.id)
+                .cloned()
+                .unwrap_or_default();
+            let branch = repo.branch.as_ref().map(|branch| branch.name());
+            let presentation =
+                branch_widget_presentation(branch, short_sha.as_deref(), &widget_state);
+            let branch_tooltip_name = branch.map(|name| name.to_string());
+            // IntelliJ names the repository root in the tooltip when the project has several.
+            let several_repositories = self
+                .project
+                .read(cx)
+                .git_store()
+                .read(cx)
+                .repositories()
+                .len()
+                > 1;
+            let root_name = several_repositories.then(|| repo.display_name());
 
             let tracking_status = repo
                 .branch
@@ -600,11 +1188,12 @@ impl TitleBar {
             };
 
             (
-                branch_name,
+                presentation,
+                branch_tooltip_name,
+                root_name,
                 upstream,
                 incoming_outgoing,
                 icon_info,
-                is_detached_head,
             )
         };
 
@@ -666,48 +1255,59 @@ impl TitleBar {
                 .anchor(gpui::Anchor::TopLeft)
         });
 
-        let branch_picker = branch_name.and_then(|branch_name| {
+        let branch_picker = presentation.and_then(|presentation| {
             settings.show_branch_name.then(|| {
-                let branch_tooltip_label = branch_name.clone();
                 let (branch_icon, branch_icon_color) = if settings.show_branch_status_icon {
                     icon_info
                 } else {
                     (IconName::GitBranch, icon_color)
                 };
-
-                let trigger = if is_detached_head {
-                    // IntelliJ shows the short hash with a warning icon in detached HEAD
-                    // (`GitBranchUtil.getDisplayableBranchText`, `GitCurrentBranchPresenter`).
-                    ToolbarWidget::new(
-                        "project_branch_trigger",
-                        Icon::new(IconName::Warning).color(Color::Warning),
-                        branch_name,
-                    )
-                } else {
-                    ToolbarWidget::new(
+                let tooltip_kind = presentation.tooltip;
+                let trigger = match presentation.icon {
+                    BranchWidgetIcon::Branch => ToolbarWidget::new(
                         "project_branch_trigger",
                         Icon::new(branch_icon).color(branch_icon_color),
-                        branch_name,
+                        presentation.text,
                     )
-                    .upstream(upstream)
+                    .upstream(upstream),
+                    BranchWidgetIcon::Warning => ToolbarWidget::new(
+                        "project_branch_trigger",
+                        Icon::new(IconName::Warning).color(Color::Warning),
+                        presentation.text,
+                    ),
+                    BranchWidgetIcon::Tag => ToolbarWidget::new(
+                        "project_branch_trigger",
+                        Icon::new(IconName::TagLabel).color(icon_color),
+                        presentation.text,
+                    ),
                 }
                 .tab_index(0)
                 .tooltip(move |_window, cx| {
-                    if is_detached_head {
-                        return Tooltip::for_action(
-                            DETACHED_HEAD_TOOLTIP,
-                            &zed_actions::git::Branch,
-                            cx,
-                        );
-                    }
-                    let title = branch_widget_tooltip_title(&branch_tooltip_label);
-                    match &incoming_outgoing {
-                        Some(incoming_outgoing) => Tooltip::with_meta(
-                            title,
-                            Some(&zed_actions::git::Branch),
-                            incoming_outgoing.clone(),
-                            cx,
-                        ),
+                    let branch = match (tooltip_kind, &branch_tooltip_name) {
+                        (BranchWidgetTooltip::DetachedHead, _) | (_, None) => {
+                            return Tooltip::for_action(
+                                DETACHED_HEAD_TOOLTIP,
+                                &zed_actions::git::Branch,
+                                cx,
+                            );
+                        }
+                        (BranchWidgetTooltip::RebaseInProgress, _) => {
+                            return Tooltip::for_action(
+                                REBASE_IN_PROGRESS_TOOLTIP,
+                                &zed_actions::git::Branch,
+                                cx,
+                            );
+                        }
+                        (BranchWidgetTooltip::Branch, Some(branch)) => branch,
+                    };
+                    let title = branch_widget_tooltip_title(branch);
+                    match branch_widget_tooltip_meta(
+                        root_name.as_deref(),
+                        incoming_outgoing.as_deref(),
+                    ) {
+                        Some(meta) => {
+                            Tooltip::with_meta(title, Some(&zed_actions::git::Branch), meta, cx)
+                        }
                         None => Tooltip::for_action(title, &zed_actions::git::Branch, cx),
                     }
                 });
@@ -751,8 +1351,8 @@ impl TitleBar {
     }
 }
 
-/// Like `ProjectToolbarWidgetAction`, the project widget tooltip is the project folder relative
-/// to the home folder.
+/// Like `ProjectToolbarWidgetAction`, a project tab's tooltip is the project folder relative to
+/// the home folder.
 fn project_widget_tooltip(
     project_name: &SharedString,
     project_path: Option<&Path>,
@@ -762,9 +1362,59 @@ fn project_widget_tooltip(
         .unwrap_or_else(|| project_name.clone())
 }
 
+/// Updates the window's projects once the current event is handled: a project tab lives in the
+/// title bar of one of those projects, which the update may switch away from or close.
+fn update_multi_workspace_later(
+    multi_workspace: WeakEntity<MultiWorkspace>,
+    window: &mut Window,
+    cx: &mut App,
+    update: impl FnOnce(&mut MultiWorkspace, &mut Window, &mut Context<MultiWorkspace>) + 'static,
+) {
+    window.defer(cx, move |window, cx| {
+        multi_workspace
+            .update(cx, |multi_workspace, cx| {
+                update(multi_workspace, window, cx)
+            })
+            .log_err();
+    });
+}
+
+fn close_project_tab(
+    multi_workspace: WeakEntity<MultiWorkspace>,
+    workspace: Entity<Workspace>,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    update_multi_workspace_later(
+        multi_workspace,
+        window,
+        cx,
+        move |multi_workspace, window, cx| {
+            multi_workspace
+                .close_workspace(&workspace, window, cx)
+                .detach_and_log_err(cx);
+        },
+    );
+}
+
 /// IntelliJ's VCS widget tooltip title (`tooltip.branch.widget.vcs.branch.name.text`).
 fn branch_widget_tooltip_title(branch_name: &str) -> String {
     format!("Git Branch: {branch_name}")
+}
+
+/// The lines under the title of IntelliJ's VCS widget tooltip: the repository root when the
+/// project has several (`tooltip.branch.widget.root.name.text`), then the incoming and outgoing
+/// commits.
+fn branch_widget_tooltip_meta(
+    root_name: Option<&str>,
+    incoming_outgoing: Option<&str>,
+) -> Option<String> {
+    let lines: Vec<String> = root_name
+        .map(|root_name| format!("Root: {root_name}"))
+        .into_iter()
+        .chain(incoming_outgoing.map(str::to_string))
+        .collect();
+    (!lines.is_empty()).then(|| lines.join("\n"))
 }
 
 /// The incoming and outgoing line of IntelliJ's VCS widget tooltip
@@ -892,6 +1542,413 @@ mod tests {
         cx.run_until_parked();
     }
 
+    fn multi_workspace_of(
+        workspace: &Entity<Workspace>,
+        cx: &mut VisualTestContext,
+    ) -> Entity<MultiWorkspace> {
+        workspace.read_with(cx, |workspace, _| {
+            workspace
+                .multi_workspace()
+                .and_then(|multi_workspace| multi_workspace.upgrade())
+                .expect("the workspace belongs to a window")
+        })
+    }
+
+    /// Opens another project in the window, with its own title bar like `title_bar::init`
+    /// gives every workspace, and makes it the active one.
+    async fn add_project_to_window(
+        workspace: &Entity<Workspace>,
+        root: &'static str,
+        cx: &mut VisualTestContext,
+    ) -> Entity<Workspace> {
+        let fs = workspace.read_with(cx, |workspace, _| workspace.app_state().fs.clone());
+        fs.create_dir(Path::new(root))
+            .await
+            .expect("project root should be created");
+        let project = Project::test(fs, [Path::new(root)], cx).await;
+        let multi_workspace = multi_workspace_of(workspace, cx);
+        let new_workspace = multi_workspace.update_in(cx, |multi_workspace, window, cx| {
+            multi_workspace.test_add_workspace(project, window, cx)
+        });
+        new_workspace.update_in(cx, |workspace, window, cx| {
+            let title_bar = cx.new(|cx| TitleBar::new("title-bar", workspace, None, window, cx));
+            workspace.set_titlebar_item(title_bar.into(), window, cx);
+        });
+        cx.run_until_parked();
+        new_workspace
+    }
+
+    fn project_tab_bounds(cx: &mut VisualTestContext, selector: &'static str) -> Bounds<Pixels> {
+        cx.debug_bounds(selector)
+            .unwrap_or_else(|| panic!("{selector} is rendered in the title bar"))
+    }
+
+    fn fills_inside(cx: &mut VisualTestContext, bounds: Bounds<Pixels>) -> Vec<Background> {
+        quads_inside(cx, bounds)
+            .into_iter()
+            .map(|quad| quad.background)
+            .collect()
+    }
+
+    fn projects_of_window(
+        workspace: &Entity<Workspace>,
+        cx: &mut VisualTestContext,
+    ) -> (Vec<Entity<Workspace>>, Entity<Workspace>) {
+        let multi_workspace = multi_workspace_of(workspace, cx);
+        multi_workspace.read_with(cx, |multi_workspace, _| {
+            (
+                multi_workspace.workspaces().cloned().collect(),
+                multi_workspace.workspace().clone(),
+            )
+        })
+    }
+
+    #[gpui::test]
+    async fn project_tabs_show_every_project_in_order_and_select_the_active_one(
+        cx: &mut TestAppContext,
+    ) {
+        let (workspace, _title_bar, cx) = open_project_title_bar(cx, Some("main")).await;
+        add_project_to_window(&workspace, "/zed", cx).await;
+        add_project_to_window(&workspace, "/notes", cx).await;
+
+        let flint_tab = project_tab_bounds(cx, "PROJECT_TAB-flint");
+        let zed_tab = project_tab_bounds(cx, "PROJECT_TAB-zed");
+        let notes_tab = project_tab_bounds(cx, "PROJECT_TAB-notes");
+        assert!(
+            flint_tab.right() <= zed_tab.left() && zed_tab.right() <= notes_tab.left(),
+            "one tab per project, in the order the projects joined the window: {flint_tab:?}, {zed_tab:?}, {notes_tab:?}"
+        );
+
+        let (selected_fill, widget_height) = cx.update(|_, cx| {
+            (
+                Background::from(cx.theme().colors().panel_background),
+                ui::utils::title_bar_widget_height(cx),
+            )
+        });
+        assert!(
+            fills_inside(cx, notes_tab).contains(&selected_fill),
+            "the active project's tab is filled with the island colour"
+        );
+        for tab in [flint_tab, zed_tab] {
+            assert!(
+                !fills_inside(cx, tab).contains(&selected_fill),
+                "the other tabs are not filled: {tab:?}"
+            );
+        }
+        assert_eq!(
+            project_tab_bounds(cx, PROJECT_TABS_DEBUG_SELECTOR)
+                .size
+                .height,
+            widget_height,
+            "the tabs are as tall as the main toolbar widgets, like IntelliJ's 30 px window tabs"
+        );
+    }
+
+    #[gpui::test]
+    async fn a_single_project_still_shows_its_name_in_a_project_tab(cx: &mut TestAppContext) {
+        let (_workspace, _title_bar, cx) = open_project_title_bar(cx, None).await;
+
+        let flint_tab = project_tab_bounds(cx, "PROJECT_TAB-flint");
+        let version_control = project_tab_bounds(cx, VERSION_CONTROL_SETUP_DEBUG_SELECTOR);
+        assert!(
+            flint_tab.right() <= version_control.left(),
+            "the project name comes first in the row: {flint_tab:?}, {version_control:?}"
+        );
+    }
+
+    #[gpui::test]
+    async fn clicking_a_project_tab_switches_to_its_project(cx: &mut TestAppContext) {
+        let (workspace, _title_bar, cx) = open_project_title_bar(cx, None).await;
+        let zed = add_project_to_window(&workspace, "/zed", cx).await;
+        assert_eq!(projects_of_window(&workspace, cx).1, zed);
+
+        let flint_tab = project_tab_bounds(cx, "PROJECT_TAB-flint");
+        cx.simulate_click(flint_tab.center(), Modifiers::none());
+        cx.run_until_parked();
+
+        let (projects, active) = projects_of_window(&workspace, cx);
+        assert_eq!(active, workspace, "clicking a tab activates its project");
+        assert_eq!(projects.len(), 2, "switching keeps every project open");
+        assert!(
+            cx.debug_bounds("PROJECT_TAB-zed").is_some(),
+            "the newly active project's title bar shows the same tabs"
+        );
+    }
+
+    #[gpui::test]
+    async fn project_tabs_give_way_before_the_branch_widget_and_the_search_field(
+        cx: &mut TestAppContext,
+    ) {
+        let (workspace, _title_bar, cx) = open_project_title_bar(cx, Some("main")).await;
+        for root in [
+            "/a-project-with-a-really-long-folder-name-number-one",
+            "/a-project-with-a-really-long-folder-name-number-two",
+            "/a-project-with-a-really-long-folder-name-number-three",
+            "/a-project-with-a-really-long-folder-name-number-four",
+            "/a-project-with-a-really-long-folder-name-number-five",
+            "/a-project-with-a-really-long-folder-name-number-six",
+            "/a-project-with-a-really-long-folder-name-number-seven",
+            "/a-project-with-a-really-long-folder-name-number-eight",
+        ] {
+            add_project_to_window(&workspace, root, cx).await;
+        }
+        let multi_workspace = multi_workspace_of(&workspace, cx);
+        multi_workspace.update_in(cx, |multi_workspace, window, cx| {
+            multi_workspace.activate(workspace.clone(), None, window, cx);
+        });
+        cx.run_until_parked();
+
+        let title_bar_height = cx.update(|window, cx| platform_title_bar_height(window, cx));
+        let viewport_width = cx.update(|window, _| window.viewport_size().width);
+        let project_tabs = project_tab_bounds(cx, PROJECT_TABS_DEBUG_SELECTOR);
+        let branch_widget = project_tab_bounds(cx, WORKTREE_AND_BRANCH_DEBUG_SELECTOR);
+        let search_field = project_tab_bounds(cx, SEARCH_FIELD_DEBUG_SELECTOR);
+
+        assert!(
+            project_tabs.right() <= branch_widget.left()
+                && branch_widget.right() <= search_field.left(),
+            "the tabs stay left of the branch widget: {project_tabs:?}, {branch_widget:?}, {search_field:?}"
+        );
+        assert_visible_inside_title_bar(search_field, title_bar_height, "Search Everywhere field");
+        assert!(
+            search_field.right() <= viewport_width,
+            "many projects never push the search field out of the window: {search_field:?}"
+        );
+        assert!(
+            search_field.size.width >= px(200.),
+            "the search field keeps its width while the tabs shrink: {search_field:?}"
+        );
+    }
+
+    #[gpui::test]
+    async fn the_close_button_and_a_middle_click_close_only_that_project(cx: &mut TestAppContext) {
+        let (workspace, _title_bar, cx) = open_project_title_bar(cx, None).await;
+        let zed = add_project_to_window(&workspace, "/zed", cx).await;
+        let notes = add_project_to_window(&workspace, "/notes", cx).await;
+
+        assert_eq!(
+            cx.debug_bounds("PROJECT_TAB_CLOSE-zed"),
+            None,
+            "the close button shows only on hover"
+        );
+        let zed_tab = project_tab_bounds(cx, "PROJECT_TAB-zed");
+        cx.simulate_mouse_move(zed_tab.center(), None, Modifiers::none());
+        cx.run_until_parked();
+        let close_button = project_tab_bounds(cx, "PROJECT_TAB_CLOSE-zed");
+        assert!(
+            close_button.right()
+                <= cx
+                    .debug_bounds("PROJECT_TAB-zed")
+                    .map_or(px(0.), |tab| tab.center().x),
+            "the close button sits on the left of the tab, like IntelliJ's window tabs"
+        );
+
+        cx.simulate_click(close_button.center(), Modifiers::none());
+        cx.run_until_parked();
+        let (projects, active) = projects_of_window(&workspace, cx);
+        assert_eq!(
+            projects,
+            vec![workspace.clone(), notes.clone()],
+            "the close button closes only its project"
+        );
+        assert_eq!(
+            active, notes,
+            "closing another tab keeps the active project"
+        );
+        assert!(!projects.contains(&zed));
+
+        let flint_tab = project_tab_bounds(cx, "PROJECT_TAB-flint");
+        cx.simulate_mouse_down(flint_tab.center(), MouseButton::Middle, Modifiers::none());
+        cx.simulate_mouse_up(flint_tab.center(), MouseButton::Middle, Modifiers::none());
+        cx.run_until_parked();
+        let (projects, active) = projects_of_window(&workspace, cx);
+        assert_eq!(
+            projects,
+            vec![notes.clone()],
+            "a middle click closes the tab"
+        );
+        assert_eq!(active, notes);
+    }
+
+    #[gpui::test]
+    async fn the_project_tab_menu_offers_intellij_tab_actions(cx: &mut TestAppContext) {
+        let (workspace, _title_bar, cx) = open_project_title_bar(cx, None).await;
+        let zed = add_project_to_window(&workspace, "/zed", cx).await;
+        add_project_to_window(&workspace, "/notes", cx).await;
+
+        let zed_tab = project_tab_bounds(cx, "PROJECT_TAB-zed");
+        cx.simulate_mouse_down(zed_tab.center(), MouseButton::Right, Modifiers::none());
+        cx.simulate_mouse_up(zed_tab.center(), MouseButton::Right, Modifiers::none());
+        cx.run_until_parked();
+        for item in [
+            "MENU_ITEM-Close Tab",
+            "MENU_ITEM-Close Other Tabs",
+            "MENU_ITEM-Move Tab to New Window",
+        ] {
+            assert!(
+                cx.debug_bounds(item).is_some(),
+                "the tab menu offers {item}"
+            );
+        }
+
+        let close_others = project_tab_bounds(cx, "MENU_ITEM-Close Other Tabs");
+        cx.simulate_click(close_others.center(), Modifiers::none());
+        cx.run_until_parked();
+        let (projects, active) = projects_of_window(&workspace, cx);
+        assert_eq!(
+            projects,
+            vec![zed.clone()],
+            "Close Other Tabs keeps only that project"
+        );
+        assert_eq!(active, zed);
+    }
+
+    #[gpui::test]
+    async fn a_single_project_tab_cannot_be_moved_to_a_new_window(cx: &mut TestAppContext) {
+        let (workspace, _title_bar, cx) = open_project_title_bar(cx, None).await;
+
+        let flint_tab = project_tab_bounds(cx, "PROJECT_TAB-flint");
+        cx.simulate_mouse_down(flint_tab.center(), MouseButton::Right, Modifiers::none());
+        cx.simulate_mouse_up(flint_tab.center(), MouseButton::Right, Modifiers::none());
+        cx.run_until_parked();
+        let move_tab = project_tab_bounds(cx, "MENU_ITEM-Move Tab to New Window");
+        cx.simulate_click(move_tab.center(), Modifiers::none());
+        cx.run_until_parked();
+
+        let multi_workspace = multi_workspace_of(&workspace, cx);
+        multi_workspace
+            .update_in(cx, |multi_workspace, window, cx| {
+                multi_workspace.move_workspace_to_new_window(&workspace, window, cx)
+            })
+            .await
+            .expect("moving the only tab is a no-op");
+        cx.run_until_parked();
+
+        let (projects, active) = projects_of_window(&workspace, cx);
+        assert_eq!(projects, vec![workspace.clone()]);
+        assert_eq!(active, workspace);
+        assert_eq!(
+            cx.update(|_, cx| cx.windows().len()),
+            1,
+            "the only project stays in its window instead of leaving an empty one behind"
+        );
+    }
+
+    #[gpui::test]
+    async fn switching_projects_clears_the_hover_of_a_tab_clicked_in_another_title_bar(
+        cx: &mut TestAppContext,
+    ) {
+        let (workspace, title_bar, cx) = open_project_title_bar(cx, None).await;
+        let zed = add_project_to_window(&workspace, "/zed", cx).await;
+        let multi_workspace = multi_workspace_of(&workspace, cx);
+        multi_workspace.update_in(cx, |multi_workspace, window, cx| {
+            multi_workspace.activate(workspace.clone(), None, window, cx);
+        });
+        cx.run_until_parked();
+
+        let zed_tab = project_tab_bounds(cx, "PROJECT_TAB-zed");
+        cx.simulate_mouse_move(zed_tab.center(), None, Modifiers::none());
+        cx.run_until_parked();
+        cx.simulate_click(zed_tab.center(), Modifiers::none());
+        cx.run_until_parked();
+        assert_eq!(projects_of_window(&workspace, cx).1, zed);
+        cx.simulate_mouse_move(point(px(1.), px(300.)), None, Modifiers::none());
+        cx.run_until_parked();
+
+        multi_workspace.update_in(cx, |multi_workspace, window, cx| {
+            multi_workspace.activate(workspace.clone(), None, window, cx);
+        });
+        cx.run_until_parked();
+
+        assert_eq!(
+            title_bar.read_with(cx, |title_bar, _| title_bar.hovered_project_tab),
+            None,
+            "the tab clicked before the switch is not drawn hovered"
+        );
+        assert_eq!(
+            cx.debug_bounds("PROJECT_TAB_CLOSE-zed"),
+            None,
+            "and shows no close button"
+        );
+    }
+
+    #[gpui::test]
+    async fn move_tab_to_new_window_moves_only_that_project(cx: &mut TestAppContext) {
+        let (workspace, _title_bar, cx) = open_project_title_bar(cx, None).await;
+        let zed = add_project_to_window(&workspace, "/zed", cx).await;
+
+        let flint_tab = project_tab_bounds(cx, "PROJECT_TAB-flint");
+        cx.simulate_mouse_down(flint_tab.center(), MouseButton::Right, Modifiers::none());
+        cx.simulate_mouse_up(flint_tab.center(), MouseButton::Right, Modifiers::none());
+        cx.run_until_parked();
+        let move_tab = project_tab_bounds(cx, "MENU_ITEM-Move Tab to New Window");
+        cx.simulate_click(move_tab.center(), Modifiers::none());
+        cx.run_until_parked();
+
+        let (projects, active) = projects_of_window(&workspace, cx);
+        assert_eq!(
+            projects,
+            vec![zed.clone()],
+            "the moved project leaves this window"
+        );
+        assert_eq!(active, zed);
+        assert_eq!(
+            cx.update(|_, cx| cx.windows().len()),
+            2,
+            "the moved project opens in a window of its own"
+        );
+    }
+
+    #[gpui::test]
+    async fn dragging_a_project_tab_onto_another_moves_it_there(cx: &mut TestAppContext) {
+        let (workspace, _title_bar, cx) = open_project_title_bar(cx, None).await;
+        let zed = add_project_to_window(&workspace, "/zed", cx).await;
+        let notes = add_project_to_window(&workspace, "/notes", cx).await;
+
+        let flint_tab = project_tab_bounds(cx, "PROJECT_TAB-flint");
+        let notes_tab = project_tab_bounds(cx, "PROJECT_TAB-notes");
+        cx.simulate_mouse_down(flint_tab.center(), MouseButton::Left, Modifiers::none());
+        cx.simulate_mouse_move(
+            flint_tab.center() + point(px(20.), px(0.)),
+            Some(MouseButton::Left),
+            Modifiers::none(),
+        );
+        cx.simulate_mouse_move(
+            notes_tab.center(),
+            Some(MouseButton::Left),
+            Modifiers::none(),
+        );
+        cx.simulate_mouse_up(notes_tab.center(), MouseButton::Left, Modifiers::none());
+        cx.run_until_parked();
+
+        let (projects, active) = projects_of_window(&workspace, cx);
+        assert_eq!(
+            projects,
+            vec![zed, notes.clone(), workspace.clone()],
+            "the dragged tab takes the place of the tab it is dropped on"
+        );
+        assert_eq!(active, notes, "dragging a tab does not switch projects");
+        let notes_tab = project_tab_bounds(cx, "PROJECT_TAB-notes");
+        let flint_tab = project_tab_bounds(cx, "PROJECT_TAB-flint");
+        assert!(notes_tab.right() <= flint_tab.left());
+    }
+
+    #[gpui::test]
+    async fn project_tabs_tell_projects_with_the_same_name_apart(cx: &mut TestAppContext) {
+        let (workspace, _title_bar, cx) = open_project_title_bar(cx, None).await;
+        add_project_to_window(&workspace, "/worktrees/feature/flint", cx).await;
+
+        assert!(
+            cx.debug_bounds("PROJECT_TAB-flint [/flint]").is_some(),
+            "a project that shares its name gets its folder in brackets, like IntelliJ's frame title"
+        );
+        assert!(
+            cx.debug_bounds("PROJECT_TAB-flint [/worktrees/feature/flint]")
+                .is_some()
+        );
+        assert_eq!(cx.debug_bounds("PROJECT_TAB-flint"), None);
+    }
+
     #[gpui::test]
     async fn project_gradient_tints_the_title_bar_from_its_left_edge(cx: &mut TestAppContext) {
         let (_workspace, _title_bar, cx) = open_project_title_bar(cx, None).await;
@@ -1014,29 +2071,15 @@ mod tests {
                 .islands
                 .frame_content_opacity(false)
         });
-        let scale_factor = cx.update(|window, _| window.scale_factor());
-        let avatar_chip = cx
-            .debug_bounds(toolbar_widgets::PROJECT_AVATAR_CHIP_DEBUG_SELECTOR)
-            .expect("the project avatar chip should be rendered in the title bar")
-            .scale(scale_factor);
-        let avatar_chip_fills = |quads: &[Quad]| {
-            quads
-                .iter()
-                .filter(|quad| avatar_chip.contains(&quad.bounds.center()))
-                .map(|quad| quad.background)
-                .collect::<Vec<_>>()
-        };
+        let active_tab_fill =
+            cx.update(|_, cx| Background::from(cx.theme().colors().panel_background));
+        let project_tab = project_tab_bounds(cx, "PROJECT_TAB-flint");
+        let project_tab_fills = |cx: &mut VisualTestContext| fills_inside(cx, project_tab);
         assert!(
             inactive_opacity < 1.,
             "inactive windows dim their frame content by default"
         );
         let gradient = ui::project_gradient_background(project_color);
-        let avatar_fill = toolbar_widgets::project_avatar_background(project_color);
-        assert_ne!(
-            avatar_fill,
-            Background::from(project_color),
-            "the avatar chip is IntelliJ's Avatar.End to Avatar.Start gradient, not a solid fill"
-        );
 
         assert!(cx.update(|window, _| window.is_window_active()));
         let active_quads = cx.update(|window, _| window.painted_quads());
@@ -1045,8 +2088,8 @@ mod tests {
             "an active window paints the gradient at full strength"
         );
         assert!(
-            avatar_chip_fills(active_quads.as_slice()).contains(&avatar_fill),
-            "an active window paints the project avatar chip at full strength"
+            project_tab_fills(cx).contains(&active_tab_fill),
+            "an active window paints the selected project tab at full strength"
         );
 
         cx.deactivate_window();
@@ -1066,19 +2109,25 @@ mod tests {
                 .any(|quad| quad.background == gradient),
             "no undimmed gradient remains in an inactive window"
         );
-        let inactive_avatar_fills = avatar_chip_fills(inactive_quads.as_slice());
+        let inactive_tab_fills = project_tab_fills(cx);
         assert!(
-            inactive_avatar_fills.contains(&avatar_fill.opacity(inactive_opacity)),
-            "an inactive window dims the project avatar chip"
+            inactive_tab_fills.contains(&active_tab_fill.opacity(inactive_opacity)),
+            "an inactive window dims the selected project tab"
         );
         assert!(
-            !inactive_avatar_fills.contains(&avatar_fill),
-            "no undimmed project avatar chip remains in an inactive window"
+            !inactive_tab_fills.contains(&active_tab_fill),
+            "no undimmed project tab remains in an inactive window"
         );
+        // The test theme gives the islands and the frame one colour, so the selected tab's
+        // own dimmed fill is left out here.
+        let scaled_project_tab = project_tab.scale(cx.update(|window, _| window.scale_factor()));
         assert!(
-            !inactive_quads.iter().any(|quad| {
-                quad.background == Background::from(title_bar_color).opacity(inactive_opacity)
-            }),
+            !inactive_quads
+                .iter()
+                .filter(|quad| !scaled_project_tab.contains(&quad.bounds.center()))
+                .any(|quad| {
+                    quad.background == Background::from(title_bar_color).opacity(inactive_opacity)
+                }),
             "the title bar background is never dimmed"
         );
     }
@@ -1088,9 +2137,9 @@ mod tests {
         let (_workspace, _title_bar, cx) = open_project_title_bar(cx, Some("main")).await;
         let title_bar_height = cx.update(|window, cx| platform_title_bar_height(window, cx));
         let viewport_width = cx.update(|window, _| window.viewport_size().width);
-        let project_widget = cx
-            .debug_bounds(PROJECT_WIDGET_DEBUG_SELECTOR)
-            .expect("the project widget is rendered in the title bar");
+        let project_tabs = cx
+            .debug_bounds(PROJECT_TABS_DEBUG_SELECTOR)
+            .expect("the project tabs are rendered in the title bar");
         let branch_widget = cx
             .debug_bounds(WORKTREE_AND_BRANCH_DEBUG_SELECTOR)
             .expect("a checked-out branch should show the branch picker");
@@ -1100,9 +2149,9 @@ mod tests {
 
         assert_visible_inside_title_bar(search_field, title_bar_height, "Search Everywhere field");
         assert!(
-            project_widget.right() <= branch_widget.left()
+            project_tabs.right() <= branch_widget.left()
                 && branch_widget.right() <= search_field.left(),
-            "the title bar reads project, branch, then the search field: {project_widget:?}, {branch_widget:?}, {search_field:?}"
+            "the title bar reads project tabs, branch, then the search field: {project_tabs:?}, {branch_widget:?}, {search_field:?}"
         );
         assert!(
             search_field.left() - branch_widget.right() <= px(4.),
@@ -1117,8 +2166,8 @@ mod tests {
             "nothing is pinned to the right corner of the title bar: {search_field:?}"
         );
         assert_eq!(
-            search_field.size.height, project_widget.size.height,
-            "the search field is as tall as the project and branch widgets"
+            search_field.size.height, project_tabs.size.height,
+            "the search field is as tall as the project tabs and the branch widget"
         );
     }
 
@@ -1177,7 +2226,7 @@ mod tests {
         let traffic_light_padding = px(ui::utils::TRAFFIC_LIGHT_PADDING);
         let widgets = |cx: &mut VisualTestContext, phase: &str| {
             [
-                PROJECT_WIDGET_DEBUG_SELECTOR,
+                PROJECT_TABS_DEBUG_SELECTOR,
                 WORKTREE_AND_BRANCH_DEBUG_SELECTOR,
                 SEARCH_FIELD_DEBUG_SELECTOR,
             ]
@@ -1198,12 +2247,12 @@ mod tests {
             !cx.update(|window, _| window.is_fullscreen()),
             "a new project window opens outside full screen"
         );
-        let [project_widget, ..] = widgets(cx, "outside full screen");
+        let [project_tabs, ..] = widgets(cx, "outside full screen");
         assert!(
-            project_widget.left() >= traffic_light_padding,
-            "outside full screen the project widget starts after the macOS window buttons, got {project_widget:?}"
+            project_tabs.left() >= traffic_light_padding,
+            "outside full screen the project tabs start after the macOS window buttons, got {project_tabs:?}"
         );
-        let windowed_project_widget_left = project_widget.left();
+        let windowed_project_tabs_left = project_tabs.left();
 
         cx.update(|window, _| {
             window.toggle_fullscreen();
@@ -1215,19 +2264,19 @@ mod tests {
             cx.update(|window, _| window.is_fullscreen()),
             "toggling full screen puts the window in full screen"
         );
-        let [project_widget, branch_widget, search_field] = widgets(cx, "in full screen");
+        let [project_tabs, branch_widget, search_field] = widgets(cx, "in full screen");
         assert!(
-            project_widget.left() < traffic_light_padding,
-            "in full screen the project widget moves into the space of the hidden macOS window buttons, got {project_widget:?}"
+            project_tabs.left() < traffic_light_padding,
+            "in full screen the project tabs move into the space of the hidden macOS window buttons, got {project_tabs:?}"
         );
         assert!(
-            project_widget.left() < windowed_project_widget_left,
-            "in full screen the project widget shifts left compared to windowed mode, got {project_widget:?} (windowed {windowed_project_widget_left:?})"
+            project_tabs.left() < windowed_project_tabs_left,
+            "in full screen the project tabs shift left compared to windowed mode, got {project_tabs:?} (windowed {windowed_project_tabs_left:?})"
         );
         assert!(
-            project_widget.right() <= branch_widget.left()
+            project_tabs.right() <= branch_widget.left()
                 && branch_widget.right() <= search_field.left(),
-            "in full screen the widgets keep their order: {project_widget:?}, {branch_widget:?}, {search_field:?}"
+            "in full screen the widgets keep their order: {project_tabs:?}, {branch_widget:?}, {search_field:?}"
         );
 
         cx.update(|window, _| {
@@ -1240,10 +2289,10 @@ mod tests {
             !cx.update(|window, _| window.is_fullscreen()),
             "toggling full screen again returns the window to windowed mode"
         );
-        let [project_widget, ..] = widgets(cx, "after leaving full screen");
+        let [project_tabs, ..] = widgets(cx, "after leaving full screen");
         assert!(
-            project_widget.left() >= traffic_light_padding,
-            "after leaving full screen the project widget starts after the macOS window buttons again, got {project_widget:?}"
+            project_tabs.left() >= traffic_light_padding,
+            "after leaving full screen the project tabs start after the macOS window buttons again, got {project_tabs:?}"
         );
     }
 
@@ -1298,8 +2347,8 @@ mod tests {
             "turning off show_search_button removes the Search Everywhere field"
         );
         assert!(
-            cx.debug_bounds(PROJECT_WIDGET_DEBUG_SELECTOR).is_some(),
-            "the project widget stays when the search field is hidden"
+            cx.debug_bounds(PROJECT_TABS_DEBUG_SELECTOR).is_some(),
+            "the project tabs stay when the search field is hidden"
         );
     }
 
@@ -1358,15 +2407,15 @@ mod tests {
         });
 
         let title_bar_height = cx.update(|window, cx| platform_title_bar_height(window, cx));
-        let project_widget = cx
-            .debug_bounds(PROJECT_WIDGET_DEBUG_SELECTOR)
-            .expect("the project widget is rendered in the title bar");
+        let branch_widget = cx
+            .debug_bounds(WORKTREE_AND_BRANCH_DEBUG_SELECTOR)
+            .expect("the branch widget is rendered in the title bar");
         let scaled_field = cx
             .debug_bounds(SEARCH_FIELD_DEBUG_SELECTOR)
             .expect("the Search Everywhere field is rendered in the title bar");
         assert_visible_inside_title_bar(scaled_field, title_bar_height, "scaled search field");
         assert_eq!(
-            scaled_field.size.height, project_widget.size.height,
+            scaled_field.size.height, branch_widget.size.height,
             "the scaled search field stays as tall as the scaled widgets"
         );
         assert!(
@@ -1391,7 +2440,7 @@ mod tests {
             "a 24 px title_bar.height is raised to the 30 px widget pills"
         );
         for selector in [
-            PROJECT_WIDGET_DEBUG_SELECTOR,
+            PROJECT_TABS_DEBUG_SELECTOR,
             WORKTREE_AND_BRANCH_DEBUG_SELECTOR,
         ] {
             let widget = cx
@@ -1413,7 +2462,7 @@ mod tests {
                 settings.theme.ui_density = Some(density);
             });
             for selector in [
-                PROJECT_WIDGET_DEBUG_SELECTOR,
+                PROJECT_TABS_DEBUG_SELECTOR,
                 WORKTREE_AND_BRANCH_DEBUG_SELECTOR,
             ] {
                 let widget = cx
@@ -1422,14 +2471,15 @@ mod tests {
                 assert_eq!(
                     widget.size.height,
                     px(expected_height),
-                    "{selector} is a {expected_height} px MainToolbar combo pill in {density:?} density"
+                    "{selector} is {expected_height} px tall like the MainToolbar combo pills in {density:?} density"
                 );
             }
 
-            let project_widget = cx
-                .debug_bounds(PROJECT_WIDGET_DEBUG_SELECTOR)
-                .expect("the project widget is rendered in the title bar");
-            cx.simulate_mouse_move(project_widget.center(), None, Modifiers::none());
+            let branch_widgets = cx
+                .debug_bounds(WORKTREE_AND_BRANCH_DEBUG_SELECTOR)
+                .expect("the worktree and branch widgets are rendered in the title bar");
+            let worktree_widget = point(branch_widgets.left() + px(12.), branch_widgets.center().y);
+            cx.simulate_mouse_move(worktree_widget, None, Modifiers::none());
             cx.run_until_parked();
             let (hover, scale_factor) = cx.update(|window, cx| {
                 (
@@ -1437,7 +2487,7 @@ mod tests {
                     window.scale_factor(),
                 )
             });
-            let hovered_pill = quads_inside(cx, project_widget)
+            let hovered_pill = quads_inside(cx, branch_widgets)
                 .into_iter()
                 .find(|quad| quad.background == Background::from(hover))
                 .expect("a hovered widget paints its pill");
@@ -1560,84 +2610,13 @@ mod tests {
     }
 
     #[gpui::test]
-    async fn project_widget_opens_recent_projects_underneath_it(cx: &mut TestAppContext) {
-        let (workspace, _title_bar, cx) = open_project_title_bar(cx, None).await;
-        cx.update(|_, cx| editor::init(cx));
-        let project_widget = cx
-            .debug_bounds(PROJECT_WIDGET_DEBUG_SELECTOR)
-            .expect("the project widget is rendered in the title bar");
-        assert_eq!(
-            cx.debug_bounds(recent_projects::RECENT_PROJECTS_DEBUG_SELECTOR),
-            None
-        );
-
-        cx.simulate_click(project_widget.center(), Modifiers::none());
-        cx.run_until_parked();
-
-        let popup = cx
-            .debug_bounds(recent_projects::RECENT_PROJECTS_DEBUG_SELECTOR)
-            .expect("clicking the project widget opens Recent Projects");
-        assert!(
-            popup.top() >= project_widget.bottom(),
-            "the popup opens underneath the widget: {popup:?}, widget {project_widget:?}"
-        );
-        assert!(
-            (popup.left() - project_widget.left()).abs() <= px(8.),
-            "the popup is left-aligned with the widget: {popup:?}, widget {project_widget:?}"
-        );
-        workspace.read_with(cx, |workspace, cx| {
-            assert!(
-                workspace.active_modal::<RecentProjects>(cx).is_none(),
-                "the widget does not open the centred Recent Projects modal"
-            );
-        });
-    }
-
-    // PopoverMenu focuses a menu two frames after it opens, and tests have no frame loop.
-    fn deliver_popover_focus(cx: &mut VisualTestContext) {
-        cx.run_until_parked();
-        for _ in 0..2 {
-            cx.update(|window, cx| {
-                window.simulate_next_frame(cx);
-            });
-            cx.run_until_parked();
-        }
-    }
-
-    #[gpui::test]
-    async fn recent_projects_popup_stays_open_while_its_actions_menu_is_open(
-        cx: &mut TestAppContext,
-    ) {
-        let (_workspace, _title_bar, cx) = open_project_title_bar(cx, None).await;
-        cx.update(|_, cx| editor::init(cx));
-        let project_widget = cx
-            .debug_bounds(PROJECT_WIDGET_DEBUG_SELECTOR)
-            .expect("the project widget is rendered in the title bar");
-        cx.simulate_click(project_widget.center(), Modifiers::none());
-        deliver_popover_focus(cx);
-
-        cx.dispatch_action(recent_projects::ToggleActionsMenu);
-        deliver_popover_focus(cx);
-
-        assert!(
-            cx.debug_bounds("MENU_ITEM-Open Local Folders").is_some(),
-            "the Actions menu of Recent Projects is open"
-        );
-        assert!(
-            cx.debug_bounds(recent_projects::RECENT_PROJECTS_DEBUG_SELECTOR)
-                .is_some(),
-            "moving focus into the Actions menu keeps the popup open"
-        );
-    }
-
-    #[gpui::test]
     async fn project_without_a_repository_shows_the_version_control_widget(
         cx: &mut TestAppContext,
     ) {
         let (_workspace, _title_bar, cx) = open_project_title_bar(cx, None).await;
-        let project_widget = cx
-            .debug_bounds(PROJECT_WIDGET_DEBUG_SELECTOR)
-            .expect("the project widget is rendered in the title bar");
+        let project_tabs = cx
+            .debug_bounds(PROJECT_TABS_DEBUG_SELECTOR)
+            .expect("the project tabs are rendered in the title bar");
         let version_control = cx
             .debug_bounds(VERSION_CONTROL_SETUP_DEBUG_SELECTOR)
             .expect("a project without a repository keeps IntelliJ's VCS widget");
@@ -1646,8 +2625,8 @@ mod tests {
             "the widget reads Version Control"
         );
         assert!(
-            project_widget.right() <= version_control.left(),
-            "the VCS widget follows the project widget, like MainToolbarLeft"
+            project_tabs.right() <= version_control.left(),
+            "the VCS widget follows the project tabs, like MainToolbarLeft"
         );
 
         cx.simulate_click(version_control.center(), Modifiers::none());
@@ -1697,7 +2676,6 @@ mod tests {
             for (selector, side) in [
                 (toolbar_widgets::TOOLBAR_WIDGET_ICON_DEBUG_SELECTOR, 16.),
                 (toolbar_widgets::TOOLBAR_WIDGET_CHEVRON_DEBUG_SELECTOR, 16.),
-                (toolbar_widgets::PROJECT_AVATAR_CHIP_DEBUG_SELECTOR, 16.),
                 ("title_bar_incoming_commits", 12.),
                 ("title_bar_outgoing_commits", 12.),
             ] {
@@ -1725,6 +2703,166 @@ mod tests {
         assert_eq!(project_widget_tooltip(&project_name, None), "Flint");
     }
 
+    async fn open_title_bar_with_configured_repository(
+        cx: &mut TestAppContext,
+        configure: impl FnOnce(&project::FakeFs, &Path),
+    ) -> &mut VisualTestContext {
+        let app_state = cx.update(|cx| {
+            let app_state = AppState::test(cx);
+            PlatformTitleBar::init(cx);
+            app_state
+        });
+        let dot_git = Path::new(PROJECT_ROOT).join(".git");
+        app_state
+            .fs
+            .create_dir(&dot_git)
+            .await
+            .expect("git directory should be created");
+        configure(&app_state.fs.as_fake(), &dot_git);
+        let project = Project::test(app_state.fs.clone(), [Path::new(PROJECT_ROOT)], cx).await;
+        let (multi_workspace, cx) =
+            cx.add_window_view(|window, cx| MultiWorkspace::test_new(project, window, cx));
+        let workspace =
+            multi_workspace.read_with(cx, |multi_workspace, _| multi_workspace.workspace().clone());
+        workspace.update_in(cx, |workspace, window, cx| {
+            let title_bar = cx.new(|cx| TitleBar::new("title-bar", workspace, None, window, cx));
+            workspace.set_titlebar_item(title_bar.into(), window, cx);
+        });
+        cx.update(|window, _| window.activate_window());
+        cx.run_until_parked();
+        cx.update(|window, _| window.refresh());
+        cx.run_until_parked();
+        cx
+    }
+
+    #[gpui::test]
+    async fn an_operation_in_progress_prefixes_the_branch_widget_like_intellij(
+        cx: &mut TestAppContext,
+    ) {
+        let cx = open_title_bar_with_configured_repository(cx, |fs, dot_git| {
+            fs.set_branch_name(dot_git, Some("main"));
+            fs.set_head_for_repo(dot_git, &[], DETACHED_HEAD_SHA);
+            fs.set_operation_in_progress_for_repo(dot_git, Some(RepositoryOperation::Merge));
+        })
+        .await;
+        assert!(
+            cx.debug_bounds("TOOLBAR_WIDGET-Merging main").is_some(),
+            "a merge in progress shows \"Merging main\""
+        );
+        assert_eq!(cx.debug_bounds("TOOLBAR_WIDGET-main"), None);
+    }
+
+    #[gpui::test]
+    async fn a_detached_head_on_a_tag_shows_the_tag_name(cx: &mut TestAppContext) {
+        let cx = open_title_bar_with_configured_repository(cx, |fs, dot_git| {
+            fs.set_head_for_repo(dot_git, &[], DETACHED_HEAD_SHA);
+            fs.set_branch_name(dot_git, None::<String>);
+            fs.insert_tags(dot_git, &[("v2.0", DETACHED_HEAD_SHA)]);
+        })
+        .await;
+        assert!(
+            cx.debug_bounds("TOOLBAR_WIDGET-v2.0").is_some(),
+            "a detached HEAD on a tag shows the tag instead of the hash"
+        );
+        assert_eq!(cx.debug_bounds("TOOLBAR_WIDGET-01234567"), None);
+    }
+
+    #[test]
+    fn the_branch_widget_text_follows_intellij_for_operations_and_detached_heads() {
+        let state = |operation, head_tag: Option<&str>| RepositoryWidgetState {
+            operation,
+            head_tag: head_tag.map(|tag| SharedString::from(tag.to_string())),
+            rebased_branch: None,
+        };
+        let present = |branch, operation, head_tag| {
+            branch_widget_presentation(branch, Some("0123abcd"), &state(operation, head_tag))
+                .expect("the widget has a text")
+        };
+        for (operation, text) in [
+            (RepositoryOperation::Merge, "Merging main"),
+            (RepositoryOperation::Rebase, "Rebasing main"),
+            (RepositoryOperation::CherryPick, "Cherry-picking in main"),
+            (RepositoryOperation::Revert, "Reverting in main"),
+        ] {
+            let presentation = present(Some("main"), Some(operation), None);
+            assert_eq!(presentation.text, text);
+            assert_eq!(presentation.icon, BranchWidgetIcon::Warning);
+        }
+        assert_eq!(
+            present(Some("main"), Some(RepositoryOperation::Rebase), None).tooltip,
+            BranchWidgetTooltip::RebaseInProgress
+        );
+        assert_eq!(
+            present(Some("main"), Some(RepositoryOperation::Merge), None).tooltip,
+            BranchWidgetTooltip::Branch
+        );
+
+        let normal = present(Some("main"), None, None);
+        assert_eq!(normal.text, "main");
+        assert_eq!(normal.icon, BranchWidgetIcon::Branch);
+
+        let tag = present(None, None, Some("v1.0"));
+        assert_eq!(tag.text, "v1.0");
+        assert_eq!(tag.icon, BranchWidgetIcon::Tag);
+        assert_eq!(tag.tooltip, BranchWidgetTooltip::DetachedHead);
+
+        let detached = present(None, None, None);
+        assert_eq!(detached.text, "0123abcd");
+        assert_eq!(detached.icon, BranchWidgetIcon::Warning);
+
+        let rebasing = |rebased_branch: Option<&str>| {
+            branch_widget_presentation(
+                None,
+                Some("0123abcd"),
+                &RepositoryWidgetState {
+                    operation: Some(RepositoryOperation::Rebase),
+                    head_tag: None,
+                    rebased_branch: rebased_branch.map(|name| SharedString::from(name.to_string())),
+                },
+            )
+            .expect("the widget has a text")
+        };
+        assert_eq!(
+            rebasing(Some("feature")).text,
+            "Rebasing feature",
+            "HEAD is detached during a rebase, so the rebased branch names it"
+        );
+        assert_eq!(rebasing(None).text, "Rebasing 0123abcd");
+    }
+
+    #[test]
+    fn long_branch_names_are_cut_in_the_middle_at_eighty_characters() {
+        let long_name = format!("feature/{}-12345", "x".repeat(100));
+        let presentation =
+            branch_widget_presentation(Some(&long_name), None, &RepositoryWidgetState::default())
+                .expect("the widget has a text");
+        assert_eq!(presentation.text.chars().count(), 79);
+        assert!(presentation.text.ends_with("\u{2026}12345"));
+        let short = "a".repeat(84);
+        assert_eq!(
+            branch_widget_presentation(Some(&short), None, &RepositoryWidgetState::default())
+                .map(|presentation| presentation.text),
+            Some(short)
+        );
+    }
+
+    #[test]
+    fn the_branch_tooltip_names_the_root_only_with_several_repositories() {
+        assert_eq!(branch_widget_tooltip_meta(None, None), None);
+        assert_eq!(
+            branch_widget_tooltip_meta(Some("api"), None).as_deref(),
+            Some("Root: api")
+        );
+        assert_eq!(
+            branch_widget_tooltip_meta(Some("api"), Some("1 incoming commit")).as_deref(),
+            Some("Root: api\n1 incoming commit")
+        );
+        assert_eq!(
+            branch_widget_tooltip_meta(None, Some("1 incoming commit")).as_deref(),
+            Some("1 incoming commit")
+        );
+    }
+
     #[test]
     fn branch_tooltip_lists_incoming_and_outgoing_commits_like_intellij() {
         assert_eq!(branch_widget_tooltip_title("main"), "Git Branch: main");
@@ -1741,40 +2879,6 @@ mod tests {
             incoming_outgoing_tooltip(2, 1).as_deref(),
             Some("2 incoming and 1 outgoing commits")
         );
-    }
-
-    #[test]
-    fn project_avatar_initials_follow_intellij_camel_case_and_word_rules() {
-        assert_eq!(avatar_initials("Flint"), "F");
-        assert_eq!(avatar_initials("MyProject"), "MP");
-        assert_eq!(avatar_initials("My-Project"), "MP");
-        assert_eq!(avatar_initials("John Smith"), "JS");
-        assert_eq!(avatar_initials("John-Smith-Harris"), "JH");
-        assert_eq!(avatar_initials("VivaQuant.RS1"), "VQ");
-        assert_eq!(avatar_initials("  vq.Automation  "), "VA");
-        assert_eq!(avatar_initials("MyApp server"), "MA");
-
-        // IntelliJ's `RecentProjectsTest.projectInitialsMakeSense` cases.
-        for (name, expected) in [
-            ("John Smith", "JS"),
-            ("John Smith-Harris", "JS"),
-            ("John-Smith-Harris", "JH"),
-            ("John-Smith Harris", "JH"),
-            ("MyProject", "MP"),
-            ("My-Project", "MP"),
-            ("My-Project_Strong", "MP"),
-            ("My_Project_Strong", "MS"),
-            ("One,Two-Four", "OT"),
-            ("One.Two.Four", "OF"),
-            ("Project_", "P"),
-            ("_internal-project", "IP"),
-            (".internal-project", "IP"),
-            (".internalProject", "IP"),
-            ("proj_[ver1]", "PV"),
-            ("myProject-0", "MP"),
-        ] {
-            assert_eq!(avatar_initials(name), expected, "initials of {name:?}");
-        }
     }
 
     #[test]

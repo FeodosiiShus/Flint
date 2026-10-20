@@ -38,8 +38,9 @@ pub use dock::{Panel, PanelHeaderAction};
 pub use multi_workspace::{
     CloseWorkspaceSidebar, DraggedSidebar, FocusWorkspaceSidebar, MoveProjectDown,
     MoveProjectToNewWindow, MoveProjectUp, MultiWorkspace, MultiWorkspaceEvent, NextProject,
-    PreviousProject, ProjectGroup, ProjectGroupKey, RemovalIntent, SerializedProjectGroupState,
-    Sidebar, SidebarEvent, SidebarHandle, SidebarRenderState, SidebarSide, ToggleWorkspaceSidebar,
+    PreviousProject, ProjectGroup, ProjectGroupKey, ProjectTab, RemovalIntent,
+    SerializedProjectGroupState, Sidebar, SidebarEvent, SidebarHandle, SidebarRenderState,
+    SidebarSide, ToggleWorkspaceSidebar,
 };
 pub use path_list::{PathList, SerializedPathList};
 pub use toast_layer::{ToastAction, ToastLayer, ToastView};
@@ -137,6 +138,7 @@ use std::{
 use task::{DebugScenario, SharedTaskContext};
 use theme::{ActiveTheme, ClientDecorationsExt, SystemAppearance};
 use theme_settings::ThemeSettings;
+pub use tool_window_bar::stripe_separator_color;
 use tool_window_bar::{ISLANDS_EMPTY_GAP, ToolWindowBar, ToolWindowBarSide};
 pub use toolbar::{
     PaneSearchBarCallbacks, Toolbar, ToolbarItemEvent, ToolbarItemLocation, ToolbarItemView,
@@ -9178,6 +9180,7 @@ pub async fn restore_multiworkspace(
 ) -> anyhow::Result<WindowHandle<MultiWorkspace>> {
     let SerializedMultiWorkspace {
         active_workspace,
+        other_workspaces,
         state,
     } = multi_workspace;
 
@@ -9247,6 +9250,7 @@ pub async fn restore_multiworkspace(
         }
     };
 
+    restore_other_workspaces(window_handle, other_workspaces, &state, &app_state, cx).await;
     apply_restored_multiworkspace_state(window_handle, &state, app_state.fs.clone(), cx).await;
 
     window_handle
@@ -9256,6 +9260,60 @@ pub async fn restore_multiworkspace(
         .ok();
 
     Ok(window_handle)
+}
+
+/// Reopens the projects a window held next to its active one, so every project tab comes
+/// back after a restart, in its old place.
+async fn restore_other_workspaces(
+    window_handle: WindowHandle<MultiWorkspace>,
+    other_workspaces: Vec<SessionWorkspace>,
+    state: &MultiWorkspaceState,
+    app_state: &Arc<AppState>,
+    cx: &mut AsyncApp,
+) {
+    // An empty workspace has no project tab to reach it by, so only projects come back.
+    let other_workspaces: Vec<SessionWorkspace> = other_workspaces
+        .into_iter()
+        .filter(|workspace| !workspace.paths.is_empty())
+        .collect();
+    if other_workspaces.is_empty() {
+        return;
+    }
+
+    window_handle
+        .update(cx, |multi_workspace, _window, cx| {
+            multi_workspace.retain_active_workspace(cx);
+        })
+        .log_err();
+
+    for workspace in other_workspaces {
+        let paths = workspace.paths.paths().to_vec();
+        let restored = cx
+            .update(|cx| {
+                Workspace::new_local(
+                    paths,
+                    app_state.clone(),
+                    Some(window_handle),
+                    None,
+                    None,
+                    OpenMode::Add,
+                    cx,
+                )
+            })
+            .await;
+        if let Err(error) = restored {
+            log::error!(
+                "Failed to restore the project {:?} of a window: {error:#}",
+                workspace.paths
+            );
+        }
+    }
+
+    window_handle
+        .update(cx, |multi_workspace, _window, cx| {
+            multi_workspace.restore_workspace_order(&state.workspace_order, cx);
+        })
+        .log_err();
 }
 
 pub async fn apply_restored_multiworkspace_state(
@@ -9802,33 +9860,72 @@ pub fn open_paths(
         // Skip when requesting_window is already set: the caller (e.g.
         // open_workspace_for_paths reusing an empty window) already chose the
         // target window, so we must not open the sidebar as a side-effect.
+        let mut added_to_existing_window = false;
+        let mut replaced_empty_workspace = None;
         if open_options.should_reuse_existing_window()
             && existing.is_none()
             && open_options.requesting_window.is_none()
         {
+            // Every production caller sets `add_dirs_to_sidebar` from the user's choice (the
+            // `-e` flag or the open-behavior settings), so it is honored even when
+            // `default_open_behavior` is `new_window`.
             let use_existing_window = open_options.add_dirs_to_sidebar;
 
             if use_existing_window {
                 let target_window = cx.update(|cx| {
                     let windows =
                         workspace_windows_for_location(&SerializedWorkspaceLocation::Local, cx);
-                    let window = cx
-                        .active_window()
+                    cx.active_window()
                         .and_then(|window| window.downcast::<MultiWorkspace>())
                         .filter(|window| windows.contains(window))
-                        .or_else(|| windows.into_iter().next());
-                    window.filter(|window| {
-                        window.read(cx).is_ok_and(|mw| mw.multi_workspace_enabled())
-                    })
+                        .or_else(|| windows.into_iter().next())
                 });
 
                 if let Some(window) = target_window {
                     open_options.requesting_window = Some(window);
-                    window
+                    added_to_existing_window = true;
+                    // An empty workspace gets no project tab, so like `open_project` it is
+                    // replaced instead of being kept where nothing can reach it.
+                    let empty_workspace = window
                         .update(cx, |multi_workspace, _, cx| {
-                            multi_workspace.retain_active_workspace(cx);
+                            let active_workspace = multi_workspace.workspace().clone();
+                            let has_project = active_workspace
+                                .read(cx)
+                                .project()
+                                .read(cx)
+                                .visible_worktrees(cx)
+                                .next()
+                                .is_some();
+                            if has_project {
+                                multi_workspace.retain_active_workspace(cx);
+                                None
+                            } else {
+                                Some(active_workspace)
+                            }
                         })
-                        .log_err();
+                        .log_err()
+                        .flatten();
+                    if let Some(empty_workspace) = empty_workspace {
+                        let should_continue = window
+                            .update(cx, |_, window, cx| {
+                                empty_workspace.update(cx, |workspace, cx| {
+                                    workspace.prepare_to_close(
+                                        CloseIntent::ReplaceWindow,
+                                        window,
+                                        cx,
+                                    )
+                                })
+                            })?
+                            .await?;
+                        if !should_continue {
+                            return Ok(OpenResult {
+                                window,
+                                workspace: empty_workspace,
+                                opened_items: Vec::new(),
+                            });
+                        }
+                        replaced_empty_workspace = Some(empty_workspace);
+                    }
                 }
             }
         }
@@ -9887,8 +9984,19 @@ pub fn open_paths(
             if let Ok(ref result) = result {
                 result
                     .window
-                    .update(cx, |_, window, _cx| {
+                    .update(cx, |multi_workspace, window, cx| {
                         window.activate_window();
+                        if added_to_existing_window {
+                            // With `default_open_behavior: new_window` activating does not
+                            // pin the project, and a later switch would drop it again.
+                            if multi_workspace.workspace() == &result.workspace {
+                                multi_workspace.retain_active_workspace(cx);
+                            }
+                            if let Some(empty_workspace) = &replaced_empty_workspace {
+                                multi_workspace
+                                    .detach_replaced_empty_workspace(empty_workspace, cx);
+                            }
+                        }
                     })
                     .log_err();
             }

@@ -27,6 +27,43 @@ pub fn tracking_branches_label(tracking_branches: &[SharedString]) -> Option<Str
     }
 }
 
+pub fn delete_remote_branches_title(count: usize) -> &'static str {
+    if count == 1 {
+        "Delete Remote Branch"
+    } else {
+        "Delete Remote Branches"
+    }
+}
+
+pub fn delete_remote_branches_question(remote_branches: &[SharedString]) -> String {
+    let noun = if remote_branches.len() == 1 {
+        "branch"
+    } else {
+        "branches"
+    };
+    let names = remote_branches
+        .iter()
+        .map(|name| name.as_ref())
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("Delete remote {noun} {names}?")
+}
+
+pub fn delete_remote_branches_button(count: usize) -> &'static str {
+    if count == 1 { "Delete" } else { "Delete All" }
+}
+
+pub fn unmerged_commits_description(branch: &str, base: &str, has_commits: bool) -> Vec<String> {
+    if has_commits {
+        vec![
+            format!("The branch {branch} was not fully merged to {base}."),
+            "Below is the list of unmerged commits.".to_string(),
+        ]
+    } else {
+        vec![format!("All commits from branch {branch} were merged")]
+    }
+}
+
 pub fn render_commit_list(
     id: &'static str,
     commits: &[CommitSummary],
@@ -72,7 +109,7 @@ pub fn render_commit_list(
 }
 
 pub struct DeleteRemoteBranchDialog {
-    remote_branch: SharedString,
+    remote_branches: Vec<SharedString>,
     tracking_branches: Vec<SharedString>,
     delete_tracking_branches: bool,
     on_confirm: Option<DeleteRemoteConfirm>,
@@ -81,13 +118,13 @@ pub struct DeleteRemoteBranchDialog {
 
 impl DeleteRemoteBranchDialog {
     pub fn new(
-        remote_branch: SharedString,
+        remote_branches: Vec<SharedString>,
         tracking_branches: Vec<SharedString>,
         on_confirm: DeleteRemoteConfirm,
         cx: &mut Context<Self>,
     ) -> Self {
         Self {
-            remote_branch,
+            remote_branches,
             tracking_branches,
             delete_tracking_branches: false,
             on_confirm: Some(on_confirm),
@@ -104,6 +141,24 @@ impl DeleteRemoteBranchDialog {
             on_confirm(self.delete_tracking_branches, window, cx);
         }
         cx.emit(DismissEvent);
+    }
+
+    pub fn remote_branches(&self) -> &[SharedString] {
+        &self.remote_branches
+    }
+
+    pub fn tracking_branches(&self) -> &[SharedString] {
+        &self.tracking_branches
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_delete_tracking_branches(&mut self, delete: bool) {
+        self.delete_tracking_branches = delete;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn submit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.confirm(&Confirm, window, cx);
     }
 
     fn render_tracking_option(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
@@ -168,14 +223,13 @@ impl Render for DeleteRemoteBranchDialog {
                                     .size(IconSize::Small)
                                     .color(Color::Muted),
                             )
-                            .headline("Delete Remote Branch")
+                            .headline(delete_remote_branches_title(self.remote_branches.len()))
                             .show_dismiss_button(true),
                     )
                     .section(
                         Section::new()
-                            .child(Label::new(format!(
-                                "Delete remote branch {}?",
-                                self.remote_branch
+                            .child(Label::new(delete_remote_branches_question(
+                                &self.remote_branches,
                             )))
                             .children(tracking_option),
                     )
@@ -191,11 +245,16 @@ impl Render for DeleteRemoteBranchDialog {
                                         })),
                                 )
                                 .child(
-                                    DialogButton::new("delete-remote-confirm", "Delete")
-                                        .default_button(true)
-                                        .on_click(cx.listener(|this, _, window, cx| {
+                                    DialogButton::new(
+                                        "delete-remote-confirm",
+                                        delete_remote_branches_button(self.remote_branches.len()),
+                                    )
+                                    .default_button(true)
+                                    .on_click(cx.listener(
+                                        |this, _, window, cx| {
                                             this.confirm(&Confirm, window, cx);
-                                        })),
+                                        },
+                                    )),
                                 ),
                         ),
                     ),
@@ -232,7 +291,12 @@ impl UnmergedCommitsDialog {
         cx.emit(DismissEvent);
     }
 
-    fn restore(&mut self, _: &Confirm, window: &mut Window, cx: &mut Context<Self>) {
+    // IntelliJ makes Cancel the default button of this dialog, so Enter closes it.
+    fn confirm(&mut self, _: &Confirm, _window: &mut Window, cx: &mut Context<Self>) {
+        cx.emit(DismissEvent);
+    }
+
+    fn restore(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(on_restore) = self.on_restore.take() {
             on_restore(window, cx);
         }
@@ -256,7 +320,7 @@ impl Render for UnmergedCommitsDialog {
             .key_context("UnmergedCommitsDialog")
             .track_focus(&self.focus_handle)
             .on_action(cx.listener(Self::cancel))
-            .on_action(cx.listener(Self::restore))
+            .on_action(cx.listener(Self::confirm))
             .w(rems(UNMERGED_DIALOG_WIDTH))
             .elevation_3(cx)
             .overflow_hidden()
@@ -274,36 +338,39 @@ impl Render for UnmergedCommitsDialog {
                     )
                     .section(
                         Section::new()
-                            .child(Label::new(format!(
-                                "The branch {} was not fully merged to {}.",
-                                self.branch, self.base
-                            )))
-                            .child(Label::new("Below is the list of unmerged commits."))
-                            .child(render_commit_list(
-                                "unmerged-commits",
-                                &self.commits,
-                                "No unmerged commits",
-                            )),
+                            .children(
+                                unmerged_commits_description(
+                                    &self.branch,
+                                    &self.base,
+                                    !self.commits.is_empty(),
+                                )
+                                .into_iter()
+                                .map(Label::new),
+                            )
+                            .when(!self.commits.is_empty(), |section| {
+                                section.child(render_commit_list(
+                                    "unmerged-commits",
+                                    &self.commits,
+                                    "",
+                                ))
+                            }),
                     )
                     .footer(
-                        ModalFooter::new().end_slot(
-                            h_flex()
-                                .gap_2()
-                                .child(
-                                    DialogButton::new("unmerged-close", "Close")
-                                        .default_button(false)
-                                        .on_click(cx.listener(|_, _, _, cx| {
-                                            cx.emit(DismissEvent);
-                                        })),
-                                )
-                                .child(
-                                    DialogButton::new("unmerged-restore", "Restore")
-                                        .default_button(true)
-                                        .on_click(cx.listener(|this, _, window, cx| {
-                                            this.restore(&Confirm, window, cx);
-                                        })),
-                                ),
-                        ),
+                        ModalFooter::new()
+                            .start_slot(
+                                DialogButton::new("unmerged-restore", "Restore")
+                                    .default_button(false)
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.restore(window, cx);
+                                    })),
+                            )
+                            .end_slot(
+                                DialogButton::new("unmerged-cancel", "Cancel")
+                                    .default_button(true)
+                                    .on_click(cx.listener(|_, _, _, cx| {
+                                        cx.emit(DismissEvent);
+                                    })),
+                            ),
                     ),
             )
     }
@@ -341,6 +408,69 @@ mod tests {
             tracking_branches_label(&branches).as_deref(),
             Some("Delete tracking local branch feature/login as well")
         );
+    }
+
+    #[test]
+    fn one_remote_branch_is_deleted_with_delete_and_several_with_delete_all() {
+        let one = [SharedString::from("origin/x")];
+        assert_eq!(delete_remote_branches_title(1), "Delete Remote Branch");
+        assert_eq!(
+            delete_remote_branches_question(&one),
+            "Delete remote branch origin/x?"
+        );
+        assert_eq!(delete_remote_branches_button(1), "Delete");
+
+        let two = [
+            SharedString::from("origin/x"),
+            SharedString::from("origin/y"),
+        ];
+        assert_eq!(delete_remote_branches_title(2), "Delete Remote Branches");
+        assert_eq!(
+            delete_remote_branches_question(&two),
+            "Delete remote branches origin/x, origin/y?"
+        );
+        assert_eq!(delete_remote_branches_button(2), "Delete All");
+    }
+
+    #[test]
+    fn a_branch_without_unmerged_commits_is_described_as_merged() {
+        assert_eq!(
+            unmerged_commits_description("x", "main", false),
+            vec!["All commits from branch x were merged".to_string()]
+        );
+        assert_eq!(
+            unmerged_commits_description("x", "main", true),
+            vec![
+                "The branch x was not fully merged to main.".to_string(),
+                "Below is the list of unmerged commits.".to_string()
+            ]
+        );
+    }
+
+    #[gpui::test]
+    fn enter_closes_the_unmerged_commits_dialog_without_restoring(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| {
+            let settings_store = settings::SettingsStore::test(cx);
+            cx.set_global(settings_store);
+            theme_settings::init(theme::LoadThemes::JustBase, cx);
+        });
+        let restored = std::rc::Rc::new(std::cell::Cell::new(false));
+        let (dialog, cx) = cx.add_window_view(|_, cx| {
+            let restored = restored.clone();
+            UnmergedCommitsDialog::new(
+                "x".into(),
+                "main".into(),
+                Vec::new(),
+                Box::new(move |_, _| restored.set(true)),
+                cx,
+            )
+        });
+        dialog.update_in(cx, |dialog, window, cx| {
+            dialog.confirm(&Confirm, window, cx)
+        });
+        assert!(!restored.get(), "Enter restored the deleted branch");
+        dialog.update_in(cx, |dialog, window, cx| dialog.restore(window, cx));
+        assert!(restored.get());
     }
 
     #[test]

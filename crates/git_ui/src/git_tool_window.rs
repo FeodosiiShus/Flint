@@ -435,6 +435,28 @@ impl GitToolWindow {
         self.save(cx);
     }
 
+    pub(crate) fn open_log_tab_with_revisions(
+        &mut self,
+        revisions: Vec<SharedString>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.has_repositories(cx) {
+            return;
+        }
+        let id = persistence::new_log_tab_id(|candidate| {
+            candidate == MAIN_LOG_TAB_ID || self.log_tab(candidate).is_some()
+        });
+        let id = SharedString::from(id);
+        let tab = self.create_log_tab(id.clone(), window, cx);
+        tab.update(cx, |tab, cx| tab.set_branch_filter(revisions, window, cx));
+        let weight = order_weight_for_tab_name(&tab.read(cx).title());
+        let key = ContentTabKey::Log(id);
+        self.tabs.append(key.clone(), weight);
+        self.select_tab(&key, true, window, cx);
+        self.save(cx);
+    }
+
     fn ensure_console(
         &mut self,
         window: &mut Window,

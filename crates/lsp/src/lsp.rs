@@ -1741,7 +1741,7 @@ impl LanguageServer {
                 ws.workspace_folders.and_then(|folders| {
                     folders
                         .change_notifications
-                        .map(|caps| !matches!(caps, OneOf::Left(false)))
+                        .map(|caps| matches!(caps, OneOf::Left(false)))
                 })
             })
             .unwrap_or(true)
@@ -2586,6 +2586,85 @@ mod tests {
             name: "my project".to_string(),
         }];
         assert_eq!(workspace_folders, expected_workspace_folders);
+    }
+
+    #[gpui::test]
+    async fn test_workspace_folder_changes_follow_change_notifications_capability(
+        cx: &mut TestAppContext,
+    ) {
+        cx.update(|cx| {
+            release_channel::init(semver::Version::new(0, 0, 0), cx);
+        });
+        let (server, mut fake) = FakeLanguageServer::new(
+            LanguageServerId(0),
+            LanguageServerBinary {
+                path: "path/to/language-server".into(),
+                arguments: vec![],
+                env: None,
+            },
+            "test-lsp".to_string(),
+            Default::default(),
+            &mut cx.to_async(),
+        );
+        let folder_uri = Uri::from_file_path(std::env::temp_dir().join("second folder"))
+            .expect("workspace folder URI should be valid");
+        let set_change_notifications = |change_notifications: bool| {
+            server.update_capabilities(|capabilities| {
+                capabilities.workspace = Some(WorkspaceServerCapabilities {
+                    workspace_folders: Some(WorkspaceFoldersServerCapabilities {
+                        supported: Some(true),
+                        change_notifications: Some(OneOf::Left(change_notifications)),
+                    }),
+                    file_operations: None,
+                });
+            });
+        };
+
+        set_change_notifications(true);
+        server.add_workspace_folder(folder_uri.clone());
+        let added = fake
+            .receive_notification::<notification::DidChangeWorkspaceFolders>()
+            .await;
+        assert_eq!(added.event.added.len(), 1);
+        assert!(added.event.removed.is_empty());
+        assert!(server.workspace_folders().contains(&folder_uri));
+
+        server.remove_workspace_folder(folder_uri.clone());
+        let removed = fake
+            .receive_notification::<notification::DidChangeWorkspaceFolders>()
+            .await;
+        assert!(removed.event.added.is_empty());
+        assert_eq!(
+            removed
+                .event
+                .removed
+                .iter()
+                .map(|folder| folder.uri.clone())
+                .collect::<Vec<_>>(),
+            vec![folder_uri.clone()]
+        );
+        assert!(!server.workspace_folders().contains(&folder_uri));
+
+        server.add_workspace_folder(folder_uri.clone());
+        fake.receive_notification::<notification::DidChangeWorkspaceFolders>()
+            .await;
+        set_change_notifications(false);
+        server.remove_workspace_folder(folder_uri.clone());
+        server
+            .notify::<notification::DidChangeConfiguration>(DidChangeConfigurationParams {
+                settings: Value::Null,
+            })
+            .expect("notification should be sent");
+        let (next_method, _) = fake
+            .notifications_rx
+            .recv()
+            .await
+            .expect("fake server should receive the next notification");
+        assert_eq!(
+            next_method,
+            <notification::DidChangeConfiguration as notification::Notification>::METHOD,
+            "a server without change notifications must not be told about removed folders"
+        );
     }
 
     struct ShutdownTestOutput {

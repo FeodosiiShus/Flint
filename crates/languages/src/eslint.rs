@@ -24,12 +24,43 @@ use std::{
 use util::merge_json_value_into;
 use util::{fs::remove_matching, rel_path::RelPath};
 
+const DEFAULT_NODE_ARGUMENTS: &[&str] = &["--max-old-space-size=8192"];
+
 fn eslint_server_binary_arguments(server_path: &Path) -> Vec<OsString> {
-    vec![
-        "--max-old-space-size=8192".into(),
-        server_path.into(),
-        "--stdio".into(),
-    ]
+    DEFAULT_NODE_ARGUMENTS
+        .iter()
+        .map(OsString::from)
+        .chain([server_path.into(), "--stdio".into()])
+        .collect()
+}
+
+/// `execArgv` (VS Code's `eslint.execArgv`) replaces the Node arguments in front of the server script.
+fn apply_exec_argv(arguments: &mut Vec<OsString>, settings: Option<&Value>) {
+    let Some(exec_argv) = settings
+        .and_then(|settings| settings.get("execArgv"))
+        .and_then(Value::as_array)
+    else {
+        return;
+    };
+    let Some(server_index) = arguments
+        .iter()
+        .position(|argument| Path::new(argument).ends_with(EsLintLspAdapter::SERVER_PATH))
+    else {
+        return;
+    };
+    let node_arguments = exec_argv
+        .iter()
+        .filter_map(Value::as_str)
+        .map(OsString::from)
+        .collect::<Vec<_>>();
+    arguments.splice(..server_index, node_arguments);
+}
+
+fn runs_on_save(settings: Option<&Value>) -> bool {
+    settings
+        .and_then(|settings| settings.get("run"))
+        .and_then(Value::as_str)
+        == Some("onSave")
 }
 
 pub struct EsLintLspAdapter {
@@ -329,6 +360,18 @@ impl LspAdapter for EsLintLspAdapter {
 
     fn name(&self) -> LanguageServerName {
         Self::SERVER_NAME
+    }
+
+    fn apply_settings_to_server_binary(
+        &self,
+        binary: &mut LanguageServerBinary,
+        settings: Option<&Value>,
+    ) {
+        apply_exec_argv(&mut binary.arguments, settings);
+    }
+
+    fn pulls_diagnostics_only_on_save(&self, settings: Option<&Value>) -> bool {
+        runs_on_save(settings)
     }
 }
 
@@ -644,6 +687,53 @@ enum ResultWorkingDirectory {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn exec_argv_replaces_the_default_node_arguments() {
+        let server_path =
+            Path::new("/servers/eslint/vscode-eslint-3.0.24").join(EsLintLspAdapter::SERVER_PATH);
+        let mut arguments = eslint_server_binary_arguments(&server_path);
+        apply_exec_argv(&mut arguments, None);
+        assert_eq!(
+            arguments,
+            vec![
+                OsString::from("--max-old-space-size=8192"),
+                server_path.clone().into(),
+                OsString::from("--stdio"),
+            ],
+            "without execArgv the server keeps today's Node arguments"
+        );
+
+        apply_exec_argv(
+            &mut arguments,
+            Some(&json!({ "execArgv": ["--max-old-space-size=4096", "--expose-gc"] })),
+        );
+        assert_eq!(
+            arguments,
+            vec![
+                OsString::from("--max-old-space-size=4096"),
+                OsString::from("--expose-gc"),
+                server_path.clone().into(),
+                OsString::from("--stdio"),
+            ]
+        );
+
+        let mut arguments = eslint_server_binary_arguments(&server_path);
+        apply_exec_argv(&mut arguments, Some(&json!({ "execArgv": [] })));
+        assert_eq!(
+            arguments,
+            vec![server_path.into(), OsString::from("--stdio")],
+            "an empty execArgv leaves Node at its own heap limit"
+        );
+    }
+
+    #[test]
+    fn only_run_on_save_pulls_diagnostics_on_save_only() {
+        assert!(!runs_on_save(None));
+        assert!(!runs_on_save(Some(&json!({ "run": "onType" }))));
+        assert!(!runs_on_save(Some(&json!({ "validate": "on" }))));
+        assert!(runs_on_save(Some(&json!({ "run": "onSave" }))));
+    }
 
     mod glob_patterns {
         use super::*;

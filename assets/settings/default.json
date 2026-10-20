@@ -1523,6 +1523,13 @@
     //
     // Trailing slashes are ignored.
     "worktree_directory": "../worktrees",
+    // Branches that cannot be force-pushed and whose published commits are
+    // not silently rebased. Each entry is a regular expression that must match
+    // the whole branch name.
+    "protected_branches": ["master", "main"],
+    // Whether to restore the editors that were open on a branch when you
+    // check it out again, like IntelliJ's branch workspaces.
+    "restore_workspace_on_branch_switch": true,
   },
   // The list of custom Git hosting providers.
   "git_hosting_providers": [

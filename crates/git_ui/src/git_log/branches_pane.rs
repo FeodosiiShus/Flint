@@ -1,4 +1,3 @@
-mod matcher;
 mod model;
 
 use std::ops::Range;
@@ -23,7 +22,6 @@ use ui::{
 use util::ResultExt as _;
 use workspace::Workspace;
 
-use self::matcher::{BranchesTreeMatcher, Matching};
 use self::model::{ModelInput, Node, NodeKind, RefInfo, TreeRow};
 use super::properties::BranchesSingleClickAction;
 use crate::branch_operations::compare_view::{CompareRefs, CompareView};
@@ -32,6 +30,7 @@ use crate::branch_refs::{RefKind, RefTarget};
 use crate::branches_popup::ref_menu::{self, MenuContext, MenuRunner};
 use crate::branches_popup::state::{self, PopupState, SavedPopupStates};
 use crate::branches_popup::tree;
+use crate::ref_matcher::{BranchesTreeMatcher, Matching};
 use crate::remote_output::{RemoteAction, format_output};
 
 actions!(
@@ -1045,21 +1044,24 @@ impl BranchesPane {
         let Some(context) = self.branch_context() else {
             return;
         };
-        for branch in self.selected_branches() {
-            integrate::update_branch(context.clone(), branch.target, window, cx);
-        }
+        let targets = self
+            .selected_branches()
+            .into_iter()
+            .map(|branch| branch.target)
+            .collect();
+        integrate::update_branches(context, targets, window, cx);
     }
 
     fn delete_selected(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(context) = self.branch_context() else {
             return;
         };
-        if !delete_enabled(&self.selected_refs()) {
+        let refs = self.selected_refs();
+        if !delete_enabled(&refs, &integrate::protected_branch_patterns(cx)) {
             return;
         }
-        for info in self.selected_refs() {
-            manage::delete_ref(context.clone(), info.target, window, cx);
-        }
+        let targets = refs.into_iter().map(|info| info.target).collect();
+        manage::delete_refs(context, targets, window, cx);
     }
 
     fn compare_with_current(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -1108,7 +1110,8 @@ impl BranchesPane {
                     return;
                 }
                 let workspace_handle = workspace.weak_handle();
-                let view = cx.new(|cx| CompareView::new(refs, repository, workspace_handle, cx));
+                let view =
+                    cx.new(|cx| CompareView::new(refs, repository, workspace_handle, window, cx));
                 workspace.add_item_to_active_pane(Box::new(view), None, true, window, cx);
             })
             .log_err();
@@ -1147,13 +1150,25 @@ impl BranchesPane {
         .detach();
     }
 
-    fn menu_plan_for(&self, target: &RefTarget) -> Vec<ref_menu::MenuItemPlan> {
-        let has_tracked_branch = target.kind == RefKind::Local
-            && self
-                .data
-                .local
-                .iter()
-                .any(|branch| branch.name() == &*target.name && branch.upstream.is_some());
+    fn menu_plan_for(&self, target: &RefTarget, cx: &App) -> Vec<ref_menu::MenuItemPlan> {
+        let protected_branches = integrate::protected_branch_patterns(cx);
+        let local_branch = (target.kind == RefKind::Local)
+            .then(|| {
+                self.data
+                    .local
+                    .iter()
+                    .find(|branch| branch.name() == &*target.name)
+            })
+            .flatten();
+        let has_tracked_branch = local_branch.is_some_and(|branch| branch.upstream.is_some());
+        let tracked_branch = local_branch.and_then(ref_menu::tracked_remote_branch);
+        let other_worktrees = self
+            .repository
+            .as_ref()
+            .map(|repository| repository.read(cx).linked_worktrees.clone());
+        let other_worktree = local_branch.and_then(|branch| {
+            ref_menu::worktree_with_branch(branch.name(), other_worktrees.as_deref()?)
+        });
         let tag_commit_sha = match target.kind {
             RefKind::Tag => self
                 .data
@@ -1177,7 +1192,10 @@ impl BranchesPane {
             has_commits: self.data.has_commits,
             remotes: &self.data.remote_names,
             has_tracked_branch,
+            tracked_branch: tracked_branch.as_deref(),
+            other_worktree,
             fetching: self.fetching,
+            protected_branches: &protected_branches,
         })
     }
 
@@ -1195,7 +1213,7 @@ impl BranchesPane {
                 Some(info) => info.target.clone(),
                 None => RefTarget::local(self.data.current_branch.clone()?),
             };
-            let plan = self.menu_plan_for(&target);
+            let plan = self.menu_plan_for(&target, cx);
             let dismiss: Rc<dyn Fn(&mut Window, &mut App)> =
                 Rc::new(|_: &mut Window, _: &mut App| {});
             return Some(ref_menu::build_ref_menu(
@@ -1204,6 +1222,7 @@ impl BranchesPane {
                     context,
                     target,
                     dismiss,
+                    handles_delete_shortcut: false,
                 },
                 window,
                 cx,
@@ -1219,7 +1238,8 @@ impl BranchesPane {
             .map(|(first, second)| first.name != second.name);
         let show_update = several_refs && !self.data.remote_names.is_empty();
         let update_enabled = update_enabled(&self.selected_branches(), self.fetching);
-        let delete = several_refs.then(|| delete_enabled(&refs));
+        let delete =
+            several_refs.then(|| delete_enabled(&refs, &integrate::protected_branch_patterns(cx)));
         let delete_label = delete_label(&refs);
         let pane = cx.weak_entity();
         Some(ContextMenu::build(window, cx, move |menu, _, _| {
@@ -1383,7 +1403,7 @@ impl BranchesPane {
                 "git-log-branches-delete",
                 IconName::GeneralDelete,
                 tooltip(delete_label(&refs), None),
-                !delete_enabled(&refs),
+                !delete_enabled(&refs, &integrate::protected_branch_patterns(cx)),
                 |this, window, cx| this.delete_selected(window, cx),
                 cx,
             ))
@@ -1866,12 +1886,15 @@ fn tooltip(
     }
 }
 
-fn delete_enabled(refs: &[RefInfo]) -> bool {
+fn delete_enabled(refs: &[RefInfo], protected_branches: &[String]) -> bool {
     !refs.is_empty()
         && refs.iter().all(|info| {
             !info.is_current
                 && !(info.target.kind == RefKind::Remote
-                    && integrate::is_protected_remote_reference(&info.target.name))
+                    && integrate::is_protected_remote_reference(
+                        &info.target.name,
+                        protected_branches,
+                    ))
         })
 }
 
@@ -2211,6 +2234,82 @@ mod tests {
                 BranchesPaneEvent::SingleClickActionChanged(BranchesSingleClickAction::None),
             ]
         );
+    }
+
+    #[gpui::test]
+    async fn deleting_several_selected_remote_branches_asks_once(cx: &mut TestAppContext) {
+        init_test(cx);
+        let fs = project::FakeFs::new(cx.executor());
+        fs.insert_tree(
+            util::path!("/project"),
+            serde_json::json!({ ".git": {}, "file.txt": "content" }),
+        )
+        .await;
+        let dot_git = std::path::Path::new(util::path!("/project")).join(".git");
+        fs.set_head_for_repo(&dot_git, &[("file.txt", "content".to_string())], "deadbeef");
+        fs.insert_branches(&dot_git, &["main", "origin/a", "origin/b"]);
+        fs.set_remote_for_repo(&dot_git, "origin", "https://example.com/repo.git");
+        let project = project::Project::test(
+            fs.clone(),
+            [std::path::Path::new(util::path!("/project"))],
+            cx,
+        )
+        .await;
+        cx.run_until_parked();
+        let repository = project
+            .read_with(cx, |project, cx| project.active_repository(cx))
+            .expect("the project has a repository");
+        let window = cx.add_window(|window, cx| {
+            workspace::MultiWorkspace::test_new(project.clone(), window, cx)
+        });
+        let workspace = window
+            .read_with(cx, |multi_workspace, _| multi_workspace.workspace().clone())
+            .expect("the window is open");
+        let mut cx = VisualTestContext::from_window(window.into(), cx);
+        let pane = window
+            .update(&mut cx, |_, window, cx| {
+                cx.new(|cx| {
+                    BranchesPane::new(
+                        workspace.downgrade(),
+                        Some(repository),
+                        true,
+                        BranchesSingleClickAction::None,
+                        window,
+                        cx,
+                    )
+                })
+            })
+            .expect("the window is open");
+        cx.run_until_parked();
+
+        pane.update(&mut cx, |pane, cx| {
+            pane.expand_all(cx);
+            pane.selection = pane
+                .rows
+                .iter()
+                .filter(|row| {
+                    matches!(&row.kind, NodeKind::Ref(info) if info.target.kind == RefKind::Remote)
+                })
+                .map(|row| row.id.clone())
+                .collect();
+        });
+        pane.update_in(&mut cx, |pane, window, cx| pane.delete_selected(window, cx));
+        cx.run_until_parked();
+
+        let dialog = workspace
+            .read_with(&cx, |workspace, cx| {
+                workspace.active_modal::<crate::branch_operations::delete_dialogs::DeleteRemoteBranchDialog>(cx)
+            })
+            .expect("one dialog asks about every selected remote branch");
+        dialog.read_with(&cx, |dialog, _| {
+            assert_eq!(
+                dialog.remote_branches(),
+                &[
+                    SharedString::from("origin/a"),
+                    SharedString::from("origin/b")
+                ]
+            );
+        });
     }
 
     #[test]

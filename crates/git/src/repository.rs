@@ -658,6 +658,21 @@ fn probe_operation_in_progress(git_dir: &Path) -> Option<RepositoryOperation> {
     }
 }
 
+/// Like IntelliJ's `GitRepositoryReader.readRebaseDirBranchFile`; `head-name` holds
+/// `detached HEAD` when the rebase started on a detached HEAD.
+fn read_rebased_branch(git_dir: &Path) -> Option<String> {
+    [crate::REBASE_MERGE_DIR, crate::REBASE_APPLY_DIR]
+        .iter()
+        .find_map(|directory| {
+            let head_name =
+                std::fs::read_to_string(git_dir.join(directory).join("head-name")).ok()?;
+            head_name
+                .trim()
+                .strip_prefix("refs/heads/")
+                .map(str::to_string)
+        })
+}
+
 fn parse_tags(output: &str) -> Vec<Tag> {
     output
         .lines()
@@ -1307,6 +1322,34 @@ impl RemoteCommandOutput {
     pub fn is_empty(&self) -> bool {
         self.stdout.is_empty() && self.stderr.is_empty()
     }
+}
+
+/// What a remote advertises for a tag: the object the ref points to and the
+/// commit it peels to, which differ for annotated tags.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RemoteTagTarget {
+    pub object: String,
+    pub commit: String,
+}
+
+pub fn parse_remote_tag_target(output: &str, tag: &str) -> Option<RemoteTagTarget> {
+    let tag_ref = format!("refs/tags/{tag}");
+    let peeled_ref = format!("{tag_ref}^{{}}");
+    let mut object = None;
+    let mut peeled = None;
+    for line in output.lines() {
+        let Some((sha, reference)) = line.trim_end().split_once('\t') else {
+            continue;
+        };
+        if reference == tag_ref {
+            object = Some(sha.to_string());
+        } else if reference == peeled_ref {
+            peeled = Some(sha.to_string());
+        }
+    }
+    let object = object?;
+    let commit = peeled.unwrap_or_else(|| object.clone());
+    Some(RemoteTagTarget { object, commit })
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -1991,6 +2034,9 @@ pub trait GitRepository: Send + Sync {
         limit: usize,
     ) -> BoxFuture<'_, Result<Vec<CommitSummary>>>;
     fn operation_in_progress(&self) -> BoxFuture<'_, Result<Option<RepositoryOperation>>>;
+    /// The branch a rebase in progress is rebasing, from git's `head-name` file; HEAD is
+    /// detached during a rebase, so the branch is not known otherwise.
+    fn rebased_branch(&self) -> BoxFuture<'_, Result<Option<String>>>;
 
     fn checkout_detached(&self, revision: String) -> BoxFuture<'_, Result<()>>;
     fn checkout_force(&self, name: String) -> BoxFuture<'_, Result<()>>;
@@ -2072,6 +2118,41 @@ pub trait GitRepository: Send + Sync {
         env: Arc<HashMap<String, String>>,
         cx: AsyncApp,
     ) -> BoxFuture<'_, Result<RemoteCommandOutput>>;
+    /// Returns what `remote` advertises for `tag`, or `None` when the remote has no such tag.
+    fn remote_tag_target(
+        &self,
+        remote: String,
+        tag: String,
+        askpass: AskPassDelegate,
+        env: Arc<HashMap<String, String>>,
+        cx: AsyncApp,
+    ) -> BoxFuture<'_, Result<Option<RemoteTagTarget>>>;
+    /// Deletes `tag` on `remote` only while the remote tag still points to `expected_object`.
+    fn delete_remote_tag(
+        &self,
+        remote: String,
+        tag: String,
+        expected_object: String,
+        askpass: AskPassDelegate,
+        env: Arc<HashMap<String, String>>,
+        cx: AsyncApp,
+    ) -> BoxFuture<'_, Result<RemoteCommandOutput>>;
+    /// Runs `git checkout --ignore-other-worktrees`, with `--force` when `force` is set.
+    fn checkout_ignoring_other_worktrees(
+        &self,
+        name: String,
+        force: bool,
+    ) -> BoxFuture<'_, Result<()>>;
+    /// Runs `git cherry-pick --abort` or `git revert --abort`.
+    fn abort_operation(
+        &self,
+        operation: RepositoryOperation,
+        env: Arc<HashMap<String, String>>,
+    ) -> BoxFuture<'_, Result<()>>;
+    fn continue_cherry_pick(
+        &self,
+        env: Arc<HashMap<String, String>>,
+    ) -> BoxFuture<'_, Result<CherryPickOutcome>>;
 
     fn worktrees(&self) -> BoxFuture<'_, Result<Vec<Worktree>>>;
 
@@ -3828,6 +3909,13 @@ impl GitRepository for RealGitRepository {
             .boxed()
     }
 
+    fn rebased_branch(&self) -> BoxFuture<'_, Result<Option<String>>> {
+        let git_dir = self.path();
+        self.executor
+            .spawn(async move { anyhow::Ok(read_rebased_branch(&git_dir)) })
+            .boxed()
+    }
+
     fn checkout_detached(&self, revision: String) -> BoxFuture<'_, Result<()>> {
         let git = self.git_binary_in_worktree();
         classify_task(self.executor.spawn(async move {
@@ -4065,6 +4153,133 @@ impl GitRepository for RealGitRepository {
                 .map_err(into_git_failure)
         }
         .boxed()
+    }
+
+    fn remote_tag_target(
+        &self,
+        remote: String,
+        tag: String,
+        ask_pass: AskPassDelegate,
+        env: Arc<HashMap<String, String>>,
+        cx: AsyncApp,
+    ) -> BoxFuture<'_, Result<Option<RemoteTagTarget>>> {
+        let executor = cx.background_executor().clone();
+        let git = self.network_git_binary("list remote tags", executor.clone());
+        let tag_ref = format!("refs/tags/{tag}");
+        let args = vec![
+            "ls-remote".to_string(),
+            "--tags".to_string(),
+            remote,
+            tag_ref.clone(),
+            format!("{tag_ref}^{{}}"),
+        ];
+        async move {
+            let output = run_network_git_checked(git, args, ask_pass, env, executor)
+                .await
+                .map_err(into_git_failure)?;
+            Ok(parse_remote_tag_target(&output.stdout, &tag))
+        }
+        .boxed()
+    }
+
+    fn delete_remote_tag(
+        &self,
+        remote: String,
+        tag: String,
+        expected_object: String,
+        ask_pass: AskPassDelegate,
+        env: Arc<HashMap<String, String>>,
+        cx: AsyncApp,
+    ) -> BoxFuture<'_, Result<RemoteCommandOutput>> {
+        let executor = cx.background_executor().clone();
+        let git = self.network_git_binary("delete a remote tag", executor.clone());
+        let tag_ref = format!("refs/tags/{tag}");
+        let args = vec![
+            "push".to_string(),
+            remote,
+            format!("--force-with-lease={tag_ref}:{expected_object}"),
+            format!(":{tag_ref}"),
+        ];
+        async move {
+            run_network_git_checked(git, args, ask_pass, env, executor)
+                .await
+                .map_err(into_git_failure)
+        }
+        .boxed()
+    }
+
+    fn checkout_ignoring_other_worktrees(
+        &self,
+        name: String,
+        force: bool,
+    ) -> BoxFuture<'_, Result<()>> {
+        let git = self.git_binary_in_worktree();
+        classify_task(self.executor.spawn(async move {
+            let git = git?;
+            let mut args = vec!["checkout"];
+            if force {
+                args.push("--force");
+            }
+            args.extend(["--ignore-other-worktrees", name.as_str(), "--"]);
+            ensure_git_success(git.build_stable_command(&args).output().await?)?;
+            anyhow::Ok(())
+        }))
+    }
+
+    fn abort_operation(
+        &self,
+        operation: RepositoryOperation,
+        env: Arc<HashMap<String, String>>,
+    ) -> BoxFuture<'_, Result<()>> {
+        let git = self.git_binary_in_worktree();
+        classify_task(self.executor.spawn(async move {
+            let command = match operation {
+                RepositoryOperation::CherryPick => "cherry-pick",
+                RepositoryOperation::Revert => "revert",
+                RepositoryOperation::Merge => "merge",
+                RepositoryOperation::Rebase => "rebase",
+            };
+            let git = git?;
+            ensure_git_success(
+                git.build_stable_command_with_env(&[command, "--abort"], &env)
+                    .output()
+                    .await?,
+            )?;
+            anyhow::Ok(())
+        }))
+    }
+
+    fn continue_cherry_pick(
+        &self,
+        env: Arc<HashMap<String, String>>,
+    ) -> BoxFuture<'_, Result<CherryPickOutcome>> {
+        let git = self.git_binary_in_worktree();
+        let git_dir = self.path();
+        classify_task(self.executor.spawn(async move {
+            let git = git?;
+            let output = git
+                .build_stable_command_with_env(&["cherry-pick", "--continue"], &env)
+                .env("GIT_EDITOR", "true")
+                .output()
+                .await?;
+            if output.status.success() {
+                return anyhow::Ok(CherryPickOutcome::Completed {
+                    output: joined_output(&output),
+                });
+            }
+            let joined = joined_output(&output);
+            if joined.contains("previous cherry-pick is now empty")
+                || joined.contains("nothing to commit")
+            {
+                return anyhow::Ok(CherryPickOutcome::Empty { output: joined });
+            }
+            if probe_operation_in_progress(&git_dir) == Some(RepositoryOperation::CherryPick)
+                && joined.contains("CONFLICT")
+            {
+                return anyhow::Ok(CherryPickOutcome::Conflicted { output: joined });
+            }
+            Err(git_failure_from_output(&output))
+        }))
     }
 
     fn blame(
@@ -12024,6 +12239,280 @@ exit 2
             .await
             .expect_err("pushing an unknown tag must fail");
         assert!(error.downcast_ref::<GitFailure>().is_some());
+    }
+
+    #[test]
+    fn test_parse_remote_tag_target_reads_the_object_and_the_peeled_commit() {
+        let annotated = "1111\trefs/tags/v1\n2222\trefs/tags/v1^{}\n";
+        assert_eq!(
+            parse_remote_tag_target(annotated, "v1"),
+            Some(RemoteTagTarget {
+                object: "1111".to_string(),
+                commit: "2222".to_string(),
+            })
+        );
+        assert_eq!(
+            parse_remote_tag_target("3333\trefs/tags/v1\n", "v1"),
+            Some(RemoteTagTarget {
+                object: "3333".to_string(),
+                commit: "3333".to_string(),
+            })
+        );
+        assert_eq!(parse_remote_tag_target("4444\trefs/tags/v10\n", "v1"), None);
+        assert_eq!(parse_remote_tag_target("", "v1"), None);
+    }
+
+    #[gpui::test]
+    async fn test_delete_remote_tag_needs_the_tag_on_the_remote_and_respects_the_lease(
+        cx: &mut TestAppContext,
+    ) {
+        disable_git_global_config();
+        cx.executor().allow_parking();
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let (remote_directory, clone_directory) =
+            clone_remote_repository_with_main_and_feature(temp_dir.path());
+        git_command(
+            &clone_directory,
+            ["tag", "-a", "annotated", "-m", "release"],
+        );
+        git_command(&clone_directory, ["tag", "light"]);
+        git_command(&clone_directory, ["push", "origin", "annotated", "light"]);
+        let tag_object = git_command_output(&clone_directory, ["rev-parse", "annotated"]);
+        let commit = git_command_output(&clone_directory, ["rev-parse", "annotated^{}"]);
+        let repository = open_real_repository(&clone_directory, cx);
+
+        let annotated = repository
+            .remote_tag_target(
+                "origin".to_string(),
+                "annotated".to_string(),
+                noop_askpass(cx),
+                Arc::new(test_commit_envs()),
+                cx.to_async(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            annotated,
+            Some(RemoteTagTarget {
+                object: tag_object.clone(),
+                commit: commit.clone(),
+            })
+        );
+        let missing = repository
+            .remote_tag_target(
+                "origin".to_string(),
+                "missing".to_string(),
+                noop_askpass(cx),
+                Arc::new(test_commit_envs()),
+                cx.to_async(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(missing, None);
+
+        let error = repository
+            .delete_remote_tag(
+                "origin".to_string(),
+                "light".to_string(),
+                tag_object.clone(),
+                noop_askpass(cx),
+                Arc::new(test_commit_envs()),
+                cx.to_async(),
+            )
+            .await
+            .expect_err("a lease on another object must keep the remote tag");
+        assert!(error.downcast_ref::<GitFailure>().is_some());
+        assert!(format!("{error:#}").contains("stale info"), "{error:#}");
+
+        repository
+            .delete_remote_tag(
+                "origin".to_string(),
+                "annotated".to_string(),
+                tag_object,
+                noop_askpass(cx),
+                Arc::new(test_commit_envs()),
+                cx.to_async(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            git_command_output(&remote_directory, ["tag", "--list"]),
+            "light"
+        );
+    }
+
+    #[test]
+    fn test_rebased_branch_is_read_from_the_rebase_head_name() {
+        let git_dir = tempfile::tempdir().unwrap();
+        assert_eq!(read_rebased_branch(git_dir.path()), None);
+
+        let rebase_merge = git_dir.path().join(crate::REBASE_MERGE_DIR);
+        fs::create_dir_all(&rebase_merge).unwrap();
+        fs::write(rebase_merge.join("head-name"), "refs/heads/feature/login\n").unwrap();
+        assert_eq!(
+            read_rebased_branch(git_dir.path()).as_deref(),
+            Some("feature/login")
+        );
+
+        fs::write(rebase_merge.join("head-name"), "detached HEAD\n").unwrap();
+        assert_eq!(read_rebased_branch(git_dir.path()), None);
+
+        fs::remove_dir_all(&rebase_merge).unwrap();
+        let rebase_apply = git_dir.path().join(crate::REBASE_APPLY_DIR);
+        fs::create_dir_all(&rebase_apply).unwrap();
+        fs::write(rebase_apply.join("head-name"), "refs/heads/topic\n").unwrap();
+        assert_eq!(
+            read_rebased_branch(git_dir.path()).as_deref(),
+            Some("topic")
+        );
+    }
+
+    #[gpui::test]
+    async fn test_checkout_ignoring_other_worktrees_switches_to_a_branch_used_elsewhere(
+        cx: &mut TestAppContext,
+    ) {
+        disable_git_global_config();
+        cx.executor().allow_parking();
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let repo_dir = temp_dir.path().join("repo");
+        fs::create_dir_all(&repo_dir).unwrap();
+        init_repo_with_base_commit(&repo_dir);
+        git_command(&repo_dir, ["branch", "linked"]);
+        let linked_path = temp_dir.path().join("linked-tree");
+        git_command(
+            &repo_dir,
+            [
+                OsString::from("worktree"),
+                OsString::from("add"),
+                linked_path.as_os_str().into(),
+                OsString::from("linked"),
+            ],
+        );
+        let repository = open_real_repository(&repo_dir, cx);
+
+        let error = repository
+            .change_branch("linked".to_string())
+            .await
+            .expect_err("a plain checkout refuses a branch used by another worktree");
+        assert!(matches!(
+            failure_kind(&error),
+            GitFailureKind::BranchCheckedOutInWorktree { .. }
+        ));
+
+        repository
+            .checkout_ignoring_other_worktrees("linked".to_string(), false)
+            .await
+            .unwrap();
+        assert_eq!(current_branch_of(&repo_dir), "linked");
+
+        git_command(&repo_dir, ["checkout", "--detach"]);
+        let tracked_file = repo_dir.join("file.txt");
+        let committed = fs::read_to_string(&tracked_file).unwrap();
+        fs::write(&tracked_file, "local change\n").unwrap();
+        repository
+            .checkout_ignoring_other_worktrees("linked".to_string(), true)
+            .await
+            .unwrap();
+        assert_eq!(current_branch_of(&repo_dir), "linked");
+        assert_eq!(
+            fs::read_to_string(&tracked_file).unwrap(),
+            committed,
+            "the forced checkout drops local changes"
+        );
+    }
+
+    #[gpui::test]
+    async fn test_abort_operation_stops_a_cherry_pick_and_a_revert(cx: &mut TestAppContext) {
+        disable_git_global_config();
+        cx.executor().allow_parking();
+
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path();
+        init_repo_with_base_commit(path);
+        git_command(path, ["checkout", "-b", "topic"]);
+        commit_file(path, "file.txt", "topic\n", "topic change");
+        let topic = git_command_output(path, ["rev-parse", "HEAD"]);
+        git_command(path, ["checkout", "main"]);
+        commit_file(path, "file.txt", "main\n", "main change");
+        let main_before = git_command_output(path, ["rev-parse", "HEAD"]);
+        let repository = open_real_repository(path, cx);
+        let environment = Arc::new(test_commit_envs());
+
+        git_command_expecting_failure(path, ["cherry-pick", topic.as_str()]);
+        assert_eq!(
+            repository.operation_in_progress().await.unwrap(),
+            Some(RepositoryOperation::CherryPick)
+        );
+        repository
+            .abort_operation(RepositoryOperation::CherryPick, environment.clone())
+            .await
+            .unwrap();
+        assert_eq!(repository.operation_in_progress().await.unwrap(), None);
+        assert_eq!(git_command_output(path, ["rev-parse", "HEAD"]), main_before);
+
+        commit_file(path, "file.txt", "main again\n", "second main change");
+        git_command_expecting_failure(path, ["revert", "--no-edit", main_before.as_str()]);
+        assert_eq!(
+            repository.operation_in_progress().await.unwrap(),
+            Some(RepositoryOperation::Revert)
+        );
+        repository
+            .abort_operation(RepositoryOperation::Revert, environment.clone())
+            .await
+            .unwrap();
+        assert_eq!(repository.operation_in_progress().await.unwrap(), None);
+
+        repository
+            .abort_operation(RepositoryOperation::CherryPick, environment)
+            .await
+            .expect_err("there is no cherry-pick left to abort");
+    }
+
+    #[gpui::test]
+    async fn test_continue_cherry_pick_commits_the_resolved_pick(cx: &mut TestAppContext) {
+        disable_git_global_config();
+        cx.executor().allow_parking();
+
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path();
+        init_repo_with_base_commit(path);
+        git_command(path, ["checkout", "-b", "topic"]);
+        commit_file(path, "file.txt", "topic\n", "topic change");
+        let topic = git_command_output(path, ["rev-parse", "HEAD"]);
+        git_command(path, ["checkout", "main"]);
+        commit_file(path, "file.txt", "main\n", "main change");
+        let repository = open_real_repository(path, cx);
+        let environment = Arc::new(test_commit_envs());
+
+        git_command_expecting_failure(path, ["cherry-pick", topic.as_str()]);
+        let error = repository
+            .continue_cherry_pick(environment.clone())
+            .await
+            .expect_err("unresolved conflicts block the commit");
+        assert!(error.downcast_ref::<GitFailure>().is_some());
+
+        fs::write(path.join("file.txt"), "resolved\n").unwrap();
+        git_command(path, ["add", "file.txt"]);
+        let outcome = repository
+            .continue_cherry_pick(environment.clone())
+            .await
+            .unwrap();
+        assert!(
+            matches!(outcome, CherryPickOutcome::Completed { .. }),
+            "{outcome:?}"
+        );
+        assert_eq!(repository.operation_in_progress().await.unwrap(), None);
+        assert_eq!(
+            git_command_output(path, ["log", "-1", "--format=%s"]),
+            "topic change"
+        );
+
+        repository
+            .continue_cherry_pick(environment)
+            .await
+            .expect_err("nothing is left to continue");
     }
 
     #[gpui::test]

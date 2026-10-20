@@ -120,6 +120,8 @@
       "cmd-3": "search_panel::ToggleFocus",
       "cmd-6": "diagnostics::Deploy",
       "cmd-9": "git_panel::ToggleFocus",
+      "cmd-alt-`": "multi_workspace::NextProject", // JetBrains: Next Project Window
+      "cmd-alt-~": "multi_workspace::PreviousProject", // JetBrains: Previous Project Window (cmd-alt-shift-`)
     },
   },
   {

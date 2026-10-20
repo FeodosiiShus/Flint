@@ -1,8 +1,7 @@
 use std::rc::Rc;
 
 use gpui::{
-    Action, AnyView, Background, ClickEvent, CursorStyle, Hsla, KeyDownEvent, MouseButton, Role,
-    Toggled, hsla, linear_color_stop, linear_gradient, rgb,
+    Action, AnyView, ClickEvent, CursorStyle, Hsla, KeyDownEvent, MouseButton, Role, Toggled, hsla,
 };
 use ui::{
     COMPONENT_CORNER_RADII, ChromeRegion, CommonAnimationExt, KeyBinding, Tooltip, prelude::*,
@@ -14,18 +13,9 @@ const HOVER_LIGHT: f32 = 0x12 as f32 / 255.;
 const PRESSED_DARK: f32 = 0x29 as f32 / 255.;
 const PRESSED_LIGHT: f32 = 0x20 as f32 / 255.;
 
-pub(crate) const PROJECT_AVATAR_CHIP_DEBUG_SELECTOR: &str = "title_bar_project_avatar_chip";
 pub(crate) const TOOLBAR_WIDGET_ICON_DEBUG_SELECTOR: &str = "title_bar_widget_icon";
 pub(crate) const TOOLBAR_WIDGET_CHEVRON_DEBUG_SELECTOR: &str = "title_bar_widget_chevron";
-const PROJECT_AVATAR_SIDE: Pixels = px(16.);
-const PROJECT_AVATAR_ARC_RATIO: f32 = 0.4;
-const PROJECT_AVATAR_FONT_SIZE: Pixels = px(10.);
-// IntelliJ draws the initials in JetBrains Mono whatever the UI font
-// (`AvatarUtils.getNewUiFont`).
-const PROJECT_AVATAR_FONT_FAMILY: &str = "JetBrains Mono";
-// `RecentProject.Color7` `Avatar.End`, the bottom-left colour of the avatar gradient.
-const PROJECT_AVATAR_GRADIENT_END: u32 = 0xA84DE0;
-const TOOLBAR_WIDGET_ICON_SIDE: Pixels = px(16.);
+pub(crate) const TOOLBAR_WIDGET_ICON_SIDE: Pixels = px(16.);
 const TOOLBAR_WIDGET_ARROW_SIDE: Pixels = px(12.);
 // The focus ring is a permanent `border_2` that is transparent until focused, so the padding
 // shrinks by its width to keep IntelliJ's 10 px and 6 px insets.
@@ -69,21 +59,10 @@ pub(crate) fn toolbar_widget_icon_color(cx: &App) -> Color {
     Color::Custom(cx.theme().colors().icon)
 }
 
-/// IntelliJ's generated project avatar: a diagonal gradient from `Avatar.End` at the bottom-left
-/// to `Avatar.Start` (`color`) at the top-right (`AvatarUtils.generateColoredAvatar`).
-pub(crate) fn project_avatar_background(color: Hsla) -> Background {
-    linear_gradient(
-        45.,
-        linear_color_stop(rgb(PROJECT_AVATAR_GRADIENT_END), 0.),
-        linear_color_stop(color, 1.),
-    )
-}
-
 #[derive(IntoElement)]
 pub(crate) struct ToolbarWidget {
     id: ElementId,
     icon: Option<Icon>,
-    avatar: Option<(SharedString, Hsla)>,
     label: SharedString,
     upstream: Option<UpstreamTracking>,
     loading: bool,
@@ -112,7 +91,6 @@ impl ToolbarWidget {
         Self {
             id: id.into(),
             icon: None,
-            avatar: None,
             label: label.into(),
             upstream: None,
             loading: false,
@@ -122,18 +100,6 @@ impl ToolbarWidget {
             tooltip: None,
             on_click: None,
         }
-    }
-
-    pub(crate) fn avatar(id: impl Into<ElementId>, initials: SharedString, color: Hsla) -> Self {
-        Self {
-            avatar: Some((initials, color)),
-            ..Self::text(id, SharedString::new_static(""))
-        }
-    }
-
-    pub(crate) fn label(mut self, label: impl Into<SharedString>) -> Self {
-        self.label = label.into();
-        self
     }
 
     pub(crate) fn upstream(mut self, upstream: Option<UpstreamTracking>) -> Self {
@@ -191,8 +157,6 @@ impl RenderOnce for ToolbarWidget {
         let icon_scale = ui::chrome_icon_scale(ChromeRegion::TitleBar, cx).unwrap_or(1.);
         let icon_size = ui::exact_icon_size(TOOLBAR_WIDGET_ICON_SIDE * icon_scale, rem_size);
         let arrow_size = ui::exact_icon_size(TOOLBAR_WIDGET_ARROW_SIDE * icon_scale, rem_size);
-        let avatar_side = PROJECT_AVATAR_SIDE * icon_scale;
-        let avatar_font_size = PROJECT_AVATAR_FONT_SIZE * icon_scale;
         let leading_icon = if self.loading {
             Some(
                 Icon::new(IconName::LoadCircle)
@@ -210,27 +174,6 @@ impl RenderOnce for ToolbarWidget {
                 .debug_selector(|| TOOLBAR_WIDGET_ICON_DEBUG_SELECTOR.into())
                 .flex_none()
                 .child(icon)
-                .into_any_element()
-        });
-        let avatar = self.avatar.map(|(initials, color)| {
-            div()
-                .debug_selector(|| PROJECT_AVATAR_CHIP_DEBUG_SELECTOR.into())
-                .flex_none()
-                .size(avatar_side)
-                .rounded(avatar_side * (PROJECT_AVATAR_ARC_RATIO / 2.))
-                .bg(project_avatar_background(color))
-                .font_family(PROJECT_AVATAR_FONT_FAMILY)
-                .flex()
-                .items_center()
-                .justify_center()
-                .child(
-                    Label::new(initials)
-                        .size(LabelSize::Custom(rems(
-                            f32::from(avatar_font_size) / f32::from(rem_size),
-                        )))
-                        .weight(gpui::FontWeight::SEMIBOLD)
-                        .color(Color::Custom(gpui::white())),
-                )
                 .into_any_element()
         });
         let debug_label = self.label.clone();
@@ -282,7 +225,7 @@ impl RenderOnce for ToolbarWidget {
             .when_some(self.tooltip.filter(|_| !toggled), |this, tooltip| {
                 this.tooltip(move |window, cx| tooltip(window, cx))
             })
-            .when_some(leading_icon.or(avatar), |this, leading| this.child(leading))
+            .when_some(leading_icon, |this, leading| this.child(leading))
             .when(!self.label.is_empty(), |this| {
                 this.child(
                     h_flex()
@@ -421,60 +364,6 @@ fn upstream_tracking_icons(upstream: UpstreamTracking, arrow_size: IconSize) -> 
 pub(crate) struct UpstreamTracking {
     pub(crate) incoming: bool,
     pub(crate) outgoing: bool,
-}
-
-/// IntelliJ's `AvatarUtils.initials`: the camel-case initials when they give two letters,
-/// otherwise the first letters of the first and last words.
-pub(crate) fn avatar_initials(text: &str) -> String {
-    let filtered: String = text
-        .chars()
-        .filter(|character| !character.is_control())
-        .collect();
-    let filtered = filtered.trim();
-
-    let camel_case_initials: String = filtered
-        .trim_start_matches(|character: char| !character.is_alphabetic())
-        .chars()
-        .take_while(|character| character.is_alphanumeric())
-        .enumerate()
-        .filter(|(index, character)| *index == 0 || character.is_uppercase())
-        .map(|(_, character)| character)
-        .take(2)
-        .collect::<String>()
-        .to_uppercase();
-    if camel_case_initials.chars().count() == 2 {
-        return camel_case_initials;
-    }
-
-    for delimiters in [
-        &[' '][..],
-        &[','][..],
-        &['-'][..],
-        &['_'][..],
-        &['.'][..],
-        &['`', '\'', '"'][..],
-    ] {
-        let words: Vec<String> = filtered
-            .split(delimiters)
-            .map(|word| {
-                word.chars()
-                    .filter(|character| character.is_alphanumeric())
-                    .collect::<String>()
-            })
-            .filter(|word| !word.is_empty())
-            .collect();
-        if let (Some(first_word), Some(last_word)) = (words.first(), words.last())
-            && words.len() >= 2
-        {
-            return [first_word.chars().next(), last_word.chars().next()]
-                .into_iter()
-                .flatten()
-                .collect::<String>()
-                .to_uppercase();
-        }
-    }
-
-    camel_case_initials
 }
 
 /// The arrows shown for a branch that is behind or ahead of its upstream; only the non-zero

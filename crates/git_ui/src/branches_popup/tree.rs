@@ -7,6 +7,7 @@ use git::repository::{Branch, Tag, Upstream};
 use gpui::SharedString;
 
 use crate::branch_refs::RefTarget;
+use crate::ref_matcher::QueryMatcher;
 
 const MAX_RECENT_BRANCHES: usize = 5;
 const CLEAR_FILTER_QUERY: &str = "/";
@@ -42,6 +43,20 @@ impl SectionKind {
             SectionKind::Local => "Local",
             SectionKind::Remote => "Remote",
             SectionKind::Tags => "Tags",
+        }
+    }
+
+    /// The section header: with several repositories IntelliJ names the repository the popup
+    /// shows (`GitRefType.getInRepoText`).
+    pub fn title(self, repository_name: Option<&str>) -> String {
+        let Some(repository_name) = repository_name else {
+            return self.label().to_string();
+        };
+        match self {
+            SectionKind::Recent => format!("Recent Branches in {repository_name}"),
+            SectionKind::Local => format!("Local Branches in {repository_name}"),
+            SectionKind::Remote => format!("Remote Branches in {repository_name}"),
+            SectionKind::Tags => format!("Tags in {repository_name}"),
         }
     }
 }
@@ -111,6 +126,8 @@ pub struct TreeInput<'a> {
     pub favorites: &'a HashSet<RefTarget>,
     pub options: TreeOptions,
     pub expanded: &'a HashSet<SharedString>,
+    /// Expands every section and folder, for finding rows wherever they are.
+    pub expand_all: bool,
     pub query: &'a str,
 }
 
@@ -165,9 +182,35 @@ pub fn ancestor_node_ids(
     ids
 }
 
+/// How many nodes sit directly under a section, expanded or not, like `TreeModel.getChildCount`.
+pub fn section_child_count(input: &TreeInput<'_>, kind: SectionKind) -> usize {
+    let mut expanded = HashSet::default();
+    expanded.insert(node_id_for_section(kind));
+    let rows = build_rows(&TreeInput {
+        expanded: &expanded,
+        expand_all: false,
+        query: "",
+        ..input.clone()
+    });
+    let mut in_section = false;
+    let mut count = 0;
+    for row in &rows {
+        match row {
+            TreeRow::Section(section) => in_section = section.kind == kind,
+            TreeRow::Folder(FolderRow { depth: 1, .. }) | TreeRow::Ref(RefRow { depth: 1, .. })
+                if in_section =>
+            {
+                count += 1
+            }
+            TreeRow::Folder(_) | TreeRow::Ref(_) => {}
+        }
+    }
+    count
+}
+
 pub fn build_rows(input: &TreeInput<'_>) -> Vec<TreeRow> {
-    let query = active_query(input.query);
-    let filtering = query.is_some();
+    let matcher = active_query(input.query).map(QueryMatcher::new);
+    let query = matcher.as_ref();
     let recent_names = if input.options.show_recent {
         recent_branch_names(input)
     } else {
@@ -180,7 +223,7 @@ pub fn build_rows(input: &TreeInput<'_>) -> Vec<TreeRow> {
         if entries.is_empty() {
             continue;
         }
-        let expanded = filtering || input.expanded.contains(&node_id_for_section(kind));
+        let expanded = input.expand_all || input.expanded.contains(&node_id_for_section(kind));
         rows.push(TreeRow::Section(SectionRow { kind, expanded }));
         if !expanded {
             continue;
@@ -198,11 +241,23 @@ pub fn build_rows(input: &TreeInput<'_>) -> Vec<TreeRow> {
         let context = EmitContext {
             section: kind,
             expanded: input.expanded,
-            force_expanded: filtering,
+            force_expanded: input.expand_all,
         };
         emit_node(&root, "", 1, &context, &mut rows);
     }
     rows
+}
+
+/// Matches `text` against the popup query like IntelliJ's branches popup, returning the match
+/// degree and the matched character positions.
+pub fn match_popup_query(query: &str, text: &str) -> Option<(i64, Vec<usize>)> {
+    match_name(&QueryMatcher::new(query), text)
+}
+
+fn match_name(matcher: &QueryMatcher, text: &str) -> Option<(i64, Vec<usize>)> {
+    let found = matcher.match_name(text)?;
+    let positions = found.fragments.into_iter().flatten().collect();
+    Some((i64::from(found.degree), positions))
 }
 
 pub fn match_query(query: &str, text: &str) -> Option<(i64, Vec<usize>)> {
@@ -364,10 +419,10 @@ fn active_query(query: &str) -> Option<&str> {
     }
 }
 
-fn match_entry(query: Option<&str>, name: &str) -> Option<(i64, Vec<usize>)> {
+fn match_entry(query: Option<&QueryMatcher>, name: &str) -> Option<(i64, Vec<usize>)> {
     match query {
         None => Some((0, Vec::new())),
-        Some(query) => match_query(query, name),
+        Some(matcher) => match_name(matcher, name),
     }
 }
 
@@ -414,7 +469,11 @@ struct Entry {
     score: i64,
 }
 
-fn local_entry(branch: &Branch, input: &TreeInput<'_>, query: Option<&str>) -> Option<Entry> {
+fn local_entry(
+    branch: &Branch,
+    input: &TreeInput<'_>,
+    query: Option<&QueryMatcher>,
+) -> Option<Entry> {
     let name = branch.name();
     let (score, match_positions) = match_entry(query, name)?;
     let target = RefTarget::local(name.to_string());
@@ -431,7 +490,11 @@ fn local_entry(branch: &Branch, input: &TreeInput<'_>, query: Option<&str>) -> O
     })
 }
 
-fn remote_entry(branch: &Branch, input: &TreeInput<'_>, query: Option<&str>) -> Option<Entry> {
+fn remote_entry(
+    branch: &Branch,
+    input: &TreeInput<'_>,
+    query: Option<&QueryMatcher>,
+) -> Option<Entry> {
     let name = branch.name();
     if is_remote_head(name) {
         return None;
@@ -450,7 +513,7 @@ fn remote_entry(branch: &Branch, input: &TreeInput<'_>, query: Option<&str>) -> 
     })
 }
 
-fn tag_entry(tag: &Tag, input: &TreeInput<'_>, query: Option<&str>) -> Option<Entry> {
+fn tag_entry(tag: &Tag, input: &TreeInput<'_>, query: Option<&QueryMatcher>) -> Option<Entry> {
     let (score, match_positions) = match_entry(query, &tag.name)?;
     let target = RefTarget::tag(tag.name.clone());
     Some(Entry {
@@ -468,7 +531,7 @@ fn tag_entry(tag: &Tag, input: &TreeInput<'_>, query: Option<&str>) -> Option<En
 fn section_entries(
     kind: SectionKind,
     input: &TreeInput<'_>,
-    query: Option<&str>,
+    query: Option<&QueryMatcher>,
     recent_names: &[&str],
 ) -> Vec<Entry> {
     match kind {
@@ -726,6 +789,7 @@ mod tests {
         favorites: HashSet<RefTarget>,
         options: TreeOptions,
         expanded: HashSet<SharedString>,
+        expand_all: bool,
         query: String,
     }
 
@@ -741,6 +805,7 @@ mod tests {
                 favorites: &self.favorites,
                 options: self.options,
                 expanded: &self.expanded,
+                expand_all: self.expand_all,
                 query: &self.query,
             })
         }
@@ -967,6 +1032,7 @@ mod tests {
             local: locals(&["main"]),
             recent: shared_strings(&["main"]),
             query: "main".to_string(),
+            expand_all: true,
             ..Fixture::default()
         };
         assert_eq!(describe(&fixture.rows()), ["S:Recent", "  R:main"]);
@@ -1393,12 +1459,31 @@ mod tests {
     }
 
     #[test]
+    fn while_searching_only_the_expanded_sections_and_folders_are_open() {
+        let mut fixture = Fixture {
+            local: locals(&["main", "feature/login"]),
+            remote: remotes(&["origin/feature/login"]),
+            query: "login".to_string(),
+            ..Fixture::default()
+        };
+        assert_eq!(describe(&fixture.rows()), ["S:Local", "S:Remote"]);
+
+        fixture.expand_sections(&[SectionKind::Local]);
+        fixture.expand_folder(SectionKind::Local, "feature");
+        assert_eq!(
+            describe(&fixture.rows()),
+            ["S:Local", "  D:feature", "    R:login", "S:Remote"]
+        );
+    }
+
+    #[test]
     fn query_filters_refs_and_forces_ancestors_open_regardless_of_expanded_state() {
         let fixture = Fixture {
             local: locals(&["main", "feature/login", "feature/signup", "dev"]),
             remote: remotes(&["origin/main", "origin/feature/login"]),
             tags: vec![tag("v1")],
             query: "login".to_string(),
+            expand_all: true,
             ..Fixture::default()
         };
         let rows = fixture.rows();
@@ -1426,6 +1511,7 @@ mod tests {
         let fixture = Fixture {
             remote: remotes(&["origin/main", "origin/dev"]),
             query: "origin/ma".to_string(),
+            expand_all: true,
             ..Fixture::default()
         };
         let rows = fixture.rows();
@@ -1438,6 +1524,7 @@ mod tests {
         let fixture = Fixture {
             local: locals(&["feature/login"]),
             query: "login".to_string(),
+            expand_all: true,
             ..Fixture::default()
         };
         let rows = fixture.rows();
@@ -1453,6 +1540,7 @@ mod tests {
                 ..TreeOptions::default()
             },
             query: "login".to_string(),
+            expand_all: true,
             ..Fixture::default()
         };
         let rows = fixture.rows();
@@ -1464,6 +1552,7 @@ mod tests {
         let mut fixture = Fixture {
             local: locals(&["main"]),
             query: "zzz".to_string(),
+            expand_all: true,
             ..Fixture::default()
         };
         assert!(fixture.rows().is_empty());
@@ -1479,10 +1568,12 @@ mod tests {
         let mut fixture = Fixture {
             local: locals(&["main", "dev"]),
             query: "  dev ".to_string(),
+            expand_all: true,
             ..Fixture::default()
         };
         assert_eq!(describe(&fixture.rows()), ["S:Local", "  R:dev"]);
 
+        fixture.expand_all = false;
         fixture.query = "/".to_string();
         assert_eq!(describe(&fixture.rows()), ["S:Local"]);
 
@@ -1496,6 +1587,7 @@ mod tests {
             local: locals(&["main", "dev", "devops"]),
             recent: shared_strings(&["main", "dev"]),
             query: "dev".to_string(),
+            expand_all: true,
             ..Fixture::default()
         };
         assert_eq!(
@@ -1510,6 +1602,7 @@ mod tests {
             local: locals(&["a", "b", "c", "d", "e", "needle"]),
             recent: shared_strings(&["a", "b", "c", "d", "e", "needle"]),
             query: "needle".to_string(),
+            expand_all: true,
             ..Fixture::default()
         };
         assert_eq!(describe(&fixture.rows()), ["S:Local", "  R:needle"]);
@@ -1521,6 +1614,7 @@ mod tests {
             local: locals(&["dev-b", "dev-a", "dev-main"]),
             current: Some("dev-main".to_string()),
             query: "dev".to_string(),
+            expand_all: true,
             ..Fixture::default()
         };
         assert_eq!(
@@ -1539,6 +1633,7 @@ mod tests {
         let fixture = Fixture {
             remote: remotes(&["origin/HEAD"]),
             query: "head".to_string(),
+            expand_all: true,
             ..Fixture::default()
         };
         assert!(fixture.rows().is_empty());
@@ -1753,7 +1848,90 @@ mod tests {
             .iter()
             .find(|row| &*row.target.name == "a-main")
             .expect("a-main row");
-        assert_eq!(exact.score, match_query("main", "main").expect("matches").0);
-        assert_eq!(exact.score - later.score, 2);
+        assert_eq!(
+            exact.score,
+            match_popup_query("main", "main").expect("matches").0
+        );
+        assert!(exact.score > later.score);
+    }
+
+    #[test]
+    fn filtering_uses_intellij_word_starts_instead_of_any_subsequence() {
+        let mut fixture = Fixture {
+            local: locals(&["reformatCode", "feature/login", "main"]),
+            query: "fc".to_string(),
+            expand_all: true,
+            ..Fixture::default()
+        };
+        assert!(fixture.rows().is_empty());
+
+        fixture.query = "fl".to_string();
+        let rows = fixture.rows();
+        assert_eq!(describe(&rows), ["S:Local", "  D:feature", "    R:login"]);
+        assert_eq!(ref_rows(&rows)[0].highlight_positions, [0]);
+
+        fixture.query = "mn".to_string();
+        assert!(fixture.rows().is_empty());
+    }
+
+    #[test]
+    fn a_space_in_the_query_is_a_wildcard_inside_one_pattern() {
+        let fixture = Fixture {
+            local: locals(&["feature/login", "login/feature", "main"]),
+            options: TreeOptions {
+                group_by_directory: false,
+                ..TreeOptions::default()
+            },
+            query: "fea log".to_string(),
+            expand_all: true,
+            ..Fixture::default()
+        };
+        let rows = fixture.rows();
+        assert_eq!(describe(&rows), ["S:Local", "  R:feature/login"]);
+        assert_eq!(ref_rows(&rows)[0].highlight_positions, [0, 1, 2, 8, 9, 10]);
+    }
+
+    #[test]
+    fn section_child_count_counts_direct_children_even_when_collapsed() {
+        let fixture = Fixture {
+            local: locals(&["main", "feature/a", "feature/b", "fix/c", "dev"]),
+            recent: shared_strings(&["feature/a", "main"]),
+            ..Fixture::default()
+        };
+        let input = TreeInput {
+            local: &fixture.local,
+            remote: &fixture.remote,
+            tags: &fixture.tags,
+            recent: &fixture.recent,
+            current_branch: None,
+            head_tag: None,
+            favorites: &fixture.favorites,
+            options: fixture.options,
+            expanded: &fixture.expanded,
+            expand_all: false,
+            query: "fea",
+        };
+        assert_eq!(section_child_count(&input, SectionKind::Recent), 2);
+        assert_eq!(section_child_count(&input, SectionKind::Local), 4);
+        assert_eq!(section_child_count(&input, SectionKind::Remote), 0);
+    }
+
+    #[test]
+    fn section_titles_name_the_repository_only_when_one_is_given() {
+        assert_eq!(SectionKind::Local.title(None), "Local");
+        assert_eq!(SectionKind::Recent.title(None), "Recent");
+        assert_eq!(
+            SectionKind::Recent.title(Some("api")),
+            "Recent Branches in api"
+        );
+        assert_eq!(
+            SectionKind::Local.title(Some("api")),
+            "Local Branches in api"
+        );
+        assert_eq!(
+            SectionKind::Remote.title(Some("api")),
+            "Remote Branches in api"
+        );
+        assert_eq!(SectionKind::Tags.title(Some("api")), "Tags in api");
     }
 }

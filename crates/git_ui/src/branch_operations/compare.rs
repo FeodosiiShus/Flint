@@ -18,12 +18,18 @@ pub fn compare_with_current(
     let current_branch = context.current_branch_name(cx);
     let refs = CompareRefs::new(&target, current_branch.as_deref());
     let repository = context.repository.clone();
-    context
-        .workspace
-        .update(cx, |workspace, cx| {
-            open_compare_view(workspace, refs, repository, window, cx);
+    let saving = context.save_documents(cx);
+    let workspace = context.workspace;
+    window
+        .spawn(cx, async move |cx| {
+            saving.await;
+            workspace
+                .update_in(cx, |workspace, window, cx| {
+                    open_compare_view(workspace, refs, repository, window, cx);
+                })
+                .log_err();
         })
-        .log_err();
+        .detach();
 }
 
 pub fn show_diff_with_working_tree(
@@ -34,12 +40,18 @@ pub fn show_diff_with_working_tree(
 ) {
     let base_ref = ref_diff::working_tree_base_revision(&target);
     let repository = context.repository.clone();
-    context
-        .workspace
-        .update(cx, |workspace, cx| {
-            ref_diff::open_working_tree_diff(workspace, repository, base_ref, window, cx);
+    let saving = context.save_documents(cx);
+    let workspace = context.workspace;
+    window
+        .spawn(cx, async move |cx| {
+            saving.await;
+            workspace
+                .update_in(cx, |workspace, window, cx| {
+                    ref_diff::open_working_tree_diff(workspace, repository, base_ref, window, cx);
+                })
+                .log_err();
         })
-        .log_err();
+        .detach();
 }
 
 fn open_compare_view(
@@ -60,6 +72,6 @@ fn open_compare_view(
     }
 
     let workspace_handle = workspace.weak_handle();
-    let view = cx.new(|cx| CompareView::new(refs, repository, workspace_handle, cx));
+    let view = cx.new(|cx| CompareView::new(refs, repository, workspace_handle, window, cx));
     workspace.add_item_to_active_pane(Box::new(view), None, true, window, cx);
 }

@@ -15,6 +15,8 @@ pub struct RepositoryChoice {
     pub name: SharedString,
     pub branch: Option<SharedString>,
     pub is_active: bool,
+    /// The position among the repositories sorted by name, which picks the repository color.
+    pub color_index: usize,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -22,6 +24,7 @@ pub struct RepositoryRow {
     pub choice: RepositoryChoice,
     pub highlight_positions: Vec<usize>,
     pub score: i64,
+    pub matched: bool,
 }
 
 #[derive(Clone)]
@@ -57,6 +60,18 @@ pub enum RowKey {
 impl PopupRow {
     pub fn is_selectable(&self) -> bool {
         !matches!(self, PopupRow::Separator)
+    }
+
+    /// While a query filters the popup, IntelliJ's arrow keys move over leaves only, and over
+    /// actions and repositories only when the search results include them
+    /// (`GitBranchesTreeUtil.canSelect`).
+    pub fn is_selectable_while_filtering(&self) -> bool {
+        match self {
+            PopupRow::Ref(_) => true,
+            PopupRow::Action { matched, .. } => *matched,
+            PopupRow::Repository(row) => row.matched,
+            PopupRow::Separator | PopupRow::Section(_) | PopupRow::Folder(_) => false,
+        }
     }
 
     pub fn key(&self) -> Option<RowKey> {
@@ -110,10 +125,25 @@ pub fn is_filtering(query: &str) -> bool {
 pub struct RowsInput<'a> {
     pub query: &'a str,
     pub show_actions_in_search: bool,
+    pub show_repositories_in_search: bool,
     pub top_actions: &'a [TopActionItem],
     pub repositories: &'a [RepositoryChoice],
     pub tree_rows: Vec<TreeRow>,
     pub menu_handles: &'a mut HashMap<(SectionKind, RefTarget), PopoverMenuHandle<ContextMenu>>,
+}
+
+fn unfiltered_repository_rows(repositories: &[RepositoryChoice], matched: bool) -> Vec<PopupRow> {
+    repositories
+        .iter()
+        .map(|choice| {
+            PopupRow::Repository(RepositoryRow {
+                choice: choice.clone(),
+                highlight_positions: Vec::new(),
+                score: 0,
+                matched,
+            })
+        })
+        .collect()
 }
 
 fn unfiltered_action_rows(top_actions: &[TopActionItem], matched: bool) -> Vec<PopupRow> {
@@ -138,58 +168,58 @@ pub fn build_popup_rows(input: RowsInput<'_>) -> Vec<PopupRow> {
     let mut groups: Vec<Vec<PopupRow>> = Vec::new();
 
     if filtering {
-        if input.show_actions_in_search {
-            groups.push(
-                top_actions::matching_actions(input.top_actions, input.query.trim())
-                    .into_iter()
-                    .map(|matched| PopupRow::Action {
-                        action: matched.action,
-                        highlight_positions: matched.highlight_positions,
-                        score: matched.score,
-                        matched: true,
-                    })
-                    .collect(),
-            );
-            if multiple_repositories {
-                groups.push(
-                    input
-                        .repositories
-                        .iter()
-                        .filter_map(|choice| {
-                            tree::match_query(input.query, &choice.name).map(
-                                |(score, positions)| {
-                                    PopupRow::Repository(RepositoryRow {
-                                        choice: choice.clone(),
-                                        highlight_positions: positions,
-                                        score,
-                                    })
-                                },
-                            )
+        let matched_actions: Vec<PopupRow> = if input.show_actions_in_search {
+            top_actions::matching_actions(input.top_actions, input.query.trim())
+                .into_iter()
+                .map(|matched| PopupRow::Action {
+                    action: matched.action,
+                    highlight_positions: matched.highlight_positions,
+                    score: matched.score,
+                    matched: true,
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let matched_repositories: Vec<PopupRow> = if multiple_repositories
+            && input.show_repositories_in_search
+        {
+            input
+                .repositories
+                .iter()
+                .filter_map(|choice| {
+                    tree::match_popup_query(input.query, &choice.name).map(|(score, positions)| {
+                        PopupRow::Repository(RepositoryRow {
+                            choice: choice.clone(),
+                            highlight_positions: positions,
+                            score,
+                            matched: true,
                         })
-                        .collect(),
-                );
-            }
-        } else if !input.tree_rows.is_empty() {
-            // IntelliJ does not filter the actions when "Show Actions in Search Results" is off:
-            // the whole list stays above the matching refs and goes away only with them.
+                    })
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        // IntelliJ does not filter actions or repositories whose search toggle is off: the whole
+        // list stays above the matches and goes away only when nothing else matches.
+        let anything_matched = !matched_actions.is_empty()
+            || !matched_repositories.is_empty()
+            || !input.tree_rows.is_empty();
+        if input.show_actions_in_search {
+            groups.push(matched_actions);
+        } else if anything_matched {
             groups.push(unfiltered_action_rows(input.top_actions, false));
+        }
+        if input.show_repositories_in_search {
+            groups.push(matched_repositories);
+        } else if multiple_repositories && anything_matched {
+            groups.push(unfiltered_repository_rows(input.repositories, false));
         }
     } else {
         groups.push(unfiltered_action_rows(input.top_actions, true));
         if multiple_repositories {
-            groups.push(
-                input
-                    .repositories
-                    .iter()
-                    .map(|choice| {
-                        PopupRow::Repository(RepositoryRow {
-                            choice: choice.clone(),
-                            highlight_positions: Vec::new(),
-                            score: 0,
-                        })
-                    })
-                    .collect(),
-            );
+            groups.push(unfiltered_repository_rows(input.repositories, true));
         }
     }
 
@@ -247,7 +277,10 @@ fn match_rank(row: &PopupRow) -> Option<(u8, i64)> {
             ..
         } => Some((0, *score)),
         PopupRow::Action { matched: false, .. } => None,
-        PopupRow::Repository(repository_row) => Some((1, repository_row.score)),
+        PopupRow::Repository(repository_row) if repository_row.matched => {
+            Some((1, repository_row.score))
+        }
+        PopupRow::Repository(_) => None,
         PopupRow::Ref(entry) => {
             let priority = match entry.row.section {
                 SectionKind::Recent => RECENT_MATCH_PRIORITY,
@@ -282,6 +315,16 @@ pub fn best_match(rows: &[PopupRow]) -> Option<usize> {
 
 pub fn position_of_key(rows: &[PopupRow], key: &RowKey) -> Option<usize> {
     rows.iter().position(|row| row.key().as_ref() == Some(key))
+}
+
+pub fn position_of_local_branch(rows: &[PopupRow], name: &str) -> Option<usize> {
+    rows.iter().position(|row| {
+        matches!(
+            row,
+            PopupRow::Ref(entry)
+                if entry.row.target.kind == RefKind::Local && &*entry.row.target.name == name
+        )
+    })
 }
 
 // IntelliJ preselects the current branch, never the tag a detached HEAD sits on.
@@ -383,6 +426,7 @@ mod tests {
                 name: SharedString::from(name.to_string()),
                 branch: Some(SharedString::from("main")),
                 is_active: index == 0,
+                color_index: index,
             })
             .collect()
     }
@@ -400,6 +444,7 @@ mod tests {
         operation: Option<RepositoryOperation>,
         repositories: Vec<RepositoryChoice>,
         show_actions_in_search: bool,
+        show_repositories_in_search: bool,
     }
 
     impl Fixture {
@@ -421,6 +466,7 @@ mod tests {
                 operation: None,
                 repositories: repositories(&["only"]),
                 show_actions_in_search: true,
+                show_repositories_in_search: true,
             }
         }
 
@@ -443,6 +489,7 @@ mod tests {
                 favorites: &self.favorites,
                 options: tree::TreeOptions::default(),
                 expanded: &self.expanded,
+                expand_all: is_filtering(query),
                 query,
             });
             let top_actions = top_actions_plan(&TopActionsInput {
@@ -453,6 +500,7 @@ mod tests {
             build_popup_rows(RowsInput {
                 query,
                 show_actions_in_search: self.show_actions_in_search,
+                show_repositories_in_search: self.show_repositories_in_search,
                 top_actions: &top_actions,
                 repositories: &self.repositories,
                 tree_rows,
@@ -472,6 +520,7 @@ mod tests {
                 "action:Push…",
                 "---",
                 "action:New Branch…",
+                "action:New Worktree…",
                 "action:Checkout Tag or Revision…",
                 "---",
                 "section:Recent:open",
@@ -502,13 +551,14 @@ mod tests {
         fixture.operation = Some(RepositoryOperation::Rebase);
         let summary = summarize(&fixture.rows(""));
         assert_eq!(
-            summary[3..9].to_vec(),
+            summary[3..10].to_vec(),
             vec![
                 "---",
                 "action:Abort Rebase",
                 "action:Continue Rebase",
                 "action:Skip Commit",
                 "action:New Branch…",
+                "action:New Worktree…",
                 "action:Checkout Tag or Revision…",
             ]
         );
@@ -517,7 +567,10 @@ mod tests {
     #[test]
     fn query_shows_matching_actions_above_refs_and_forces_sections_open() {
         let rows = Fixture::new().rows("new");
-        assert_eq!(summarize(&rows), vec!["action:New Branch…"]);
+        assert_eq!(
+            summarize(&rows),
+            vec!["action:New Branch…", "action:New Worktree…"]
+        );
 
         let rows = Fixture::new().rows("top");
         assert_eq!(summarize(&rows), vec!["section:Recent:open", "  ref:topic"]);
@@ -557,6 +610,7 @@ mod tests {
                 "action:Push…",
                 "---",
                 "action:New Branch…",
+                "action:New Worktree…",
                 "action:Checkout Tag or Revision…",
                 "---",
                 "section:Recent:open",
@@ -628,6 +682,77 @@ mod tests {
         fixture.repositories = repositories(&["alpha", "beta"]);
         let summary = summarize(&fixture.rows("alp"));
         assert_eq!(summary, vec!["repo:alpha"]);
+    }
+
+    #[test]
+    fn repositories_have_their_own_search_toggle_independent_of_actions() {
+        let mut fixture = Fixture::new();
+        fixture.repositories = repositories(&["alpha", "beta"]);
+        fixture.show_actions_in_search = false;
+        let summary = summarize(&fixture.rows("alp"));
+        assert_eq!(summary.last().map(String::as_str), Some("repo:alpha"));
+        assert!(!summary.contains(&"repo:beta".to_string()));
+
+        fixture.show_actions_in_search = true;
+        fixture.show_repositories_in_search = false;
+        assert!(fixture.rows("alp").is_empty());
+
+        let rows = fixture.rows("top");
+        let summary = summarize(&rows);
+        assert!(summary.contains(&"repo:alpha".to_string()));
+        assert!(summary.contains(&"repo:beta".to_string()));
+        assert!(rows.iter().all(|row| match row {
+            PopupRow::Repository(row) => !row.matched && row.highlight_positions.is_empty(),
+            _ => true,
+        }));
+    }
+
+    #[test]
+    fn while_filtering_only_leaves_and_searched_rows_can_be_selected() {
+        let mut fixture = Fixture::new();
+        fixture.local.push(local("new"));
+        fixture.repositories = repositories(&["new-repo", "beta"]);
+        let rows = fixture.rows("new");
+        let selectable: Vec<String> = rows
+            .iter()
+            .filter(|row| row.is_selectable_while_filtering())
+            .flat_map(|row| summarize(std::slice::from_ref(row)))
+            .collect();
+        assert_eq!(
+            selectable,
+            vec![
+                "action:New Branch…",
+                "action:New Worktree…",
+                "repo:new-repo",
+                "  ref:new"
+            ]
+        );
+
+        fixture.show_actions_in_search = false;
+        fixture.show_repositories_in_search = false;
+        let rows = fixture.rows("new");
+        let selectable: Vec<String> = rows
+            .iter()
+            .filter(|row| row.is_selectable_while_filtering())
+            .flat_map(|row| summarize(std::slice::from_ref(row)))
+            .collect();
+        assert_eq!(selectable, vec!["  ref:new"]);
+    }
+
+    #[test]
+    fn a_local_branch_row_is_found_by_name_in_the_first_section_that_lists_it() {
+        let mut fixture = Fixture::new();
+        fixture
+            .expanded
+            .insert(tree::node_id_for_section(SectionKind::Local));
+        let rows = fixture.rows("");
+        let index = position_of_local_branch(&rows, "topic").expect("topic is listed");
+        assert!(matches!(
+            &rows[index],
+            PopupRow::Ref(entry) if entry.row.section == SectionKind::Recent
+        ));
+        assert_eq!(position_of_local_branch(&rows, "origin/main"), None);
+        assert_eq!(position_of_local_branch(&rows, "missing"), None);
     }
 
     #[test]
@@ -859,6 +984,7 @@ mod tests {
             summarize(&rows),
             vec![
                 "action:New Branch…",
+                "action:New Worktree…",
                 "---",
                 "section:Local:open",
                 "  ref:new"

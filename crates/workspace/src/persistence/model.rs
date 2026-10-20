@@ -108,14 +108,19 @@ pub struct MultiWorkspaceState {
     pub project_groups: Vec<SerializedProjectGroup>,
     #[serde(default)]
     pub sidebar_state: Option<String>,
+    /// The workspaces of the window in the order of their project tabs.
+    #[serde(default)]
+    pub workspace_order: Vec<WorkspaceId>,
 }
 
 /// The serialized state of a single MultiWorkspace window from a previous session:
-/// the active workspace to restore plus window-level state (project group keys,
-/// sidebar).
+/// the active workspace to restore, the other workspaces the window held, and
+/// window-level state (project group keys, sidebar).
 #[derive(Debug, Clone)]
 pub struct SerializedMultiWorkspace {
     pub active_workspace: SessionWorkspace,
+    /// The other workspaces of the window, in the order of their project tabs.
+    pub other_workspaces: Vec<SessionWorkspace>,
     pub state: MultiWorkspaceState,
 }
 

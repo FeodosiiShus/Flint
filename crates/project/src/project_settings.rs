@@ -28,6 +28,8 @@ use crate::{
     worktree_store::{WorktreeStore, WorktreeStoreEvent},
 };
 
+const DEFAULT_PROTECTED_BRANCHES: [&str; 2] = ["master", "main"];
+
 #[derive(Debug, Clone, RegisterSetting)]
 pub struct ProjectSettings {
     /// Configuration for language servers.
@@ -319,6 +321,14 @@ pub struct GitSettings {
     ///
     /// Default: ../worktrees
     pub worktree_directory: String,
+    /// Branches that must not be force-pushed or have their published commits rebased.
+    ///
+    /// Default: ["master", "main"]
+    pub protected_branches: Vec<String>,
+    /// Whether to restore the editors associated with a branch after checking it out.
+    ///
+    /// Default: true
+    pub restore_workspace_on_branch_switch: bool,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -522,6 +532,15 @@ impl Settings for ProjectSettings {
                 .worktree_directory
                 .clone()
                 .unwrap_or_else(|| DEFAULT_WORKTREE_DIRECTORY.to_string()),
+            protected_branches: git.protected_branches.clone().unwrap_or_else(|| {
+                DEFAULT_PROTECTED_BRANCHES
+                    .iter()
+                    .map(|branch| branch.to_string())
+                    .collect()
+            }),
+            restore_workspace_on_branch_switch: git
+                .restore_workspace_on_branch_switch
+                .unwrap_or(true),
         };
         Self {
             lsp: project

@@ -273,6 +273,7 @@ impl Render for WorktreeFetchFailedToast {
                                 window,
                                 focused_dock,
                                 RemoteBranchFetchMode::UseLocal,
+                                None,
                                 cx,
                             );
                             task.detach_and_log_err(cx);
@@ -693,6 +694,29 @@ pub fn handle_create_worktree(
         window,
         fallback_focused_dock,
         RemoteBranchFetchMode::Fetch,
+        None,
+        cx,
+    );
+    task.detach_and_log_err(cx);
+}
+
+/// Creates the worktree only in `repository`, for a ref that belongs to that repository
+/// (IntelliJ's `GitCreateWorkingTreeAction` offers no other repository then).
+pub fn handle_create_worktree_in_repository(
+    workspace: &mut Workspace,
+    repository: Entity<Repository>,
+    action: &zed_actions::CreateWorktree,
+    window: &mut gpui::Window,
+    fallback_focused_dock: Option<DockPosition>,
+    cx: &mut gpui::Context<Workspace>,
+) {
+    let task = create_worktree_workspace_inner(
+        workspace,
+        action,
+        window,
+        fallback_focused_dock,
+        RemoteBranchFetchMode::Fetch,
+        Some(repository),
         cx,
     );
     task.detach_and_log_err(cx);
@@ -704,6 +728,7 @@ fn create_worktree_workspace_inner(
     window: &mut gpui::Window,
     fallback_focused_dock: Option<DockPosition>,
     remote_branch_fetch_mode: RemoteBranchFetchMode,
+    only_repository: Option<Entity<Repository>>,
     cx: &mut gpui::Context<Workspace>,
 ) -> Task<anyhow::Result<Entity<Workspace>>> {
     let project = workspace.project().clone();
@@ -732,7 +757,10 @@ fn create_worktree_workspace_inner(
     let workspace_handle = workspace.weak_handle();
     let window_handle = window.window_handle().downcast::<MultiWorkspace>();
 
-    let (git_repos, non_git_paths) = classify_worktrees(project.read(cx), cx);
+    let (mut git_repos, non_git_paths) = classify_worktrees(project.read(cx), cx);
+    if let Some(only_repository) = &only_repository {
+        git_repos.retain(|repository| repository == only_repository);
+    }
 
     if git_repos.is_empty() {
         let toast_workspace = cx.entity();
@@ -1044,6 +1072,23 @@ async fn open_worktree_workspace(
     let window_handle = window_handle
         .ok_or_else(|| anyhow!("No window handle available for workspace creation"))?;
 
+    let path_list = util::path_list::PathList::new(&all_paths);
+    let open_in_another_window = cx.update(|_, cx| {
+        MultiWorkspace::workspace_in_other_window(&path_list, window_handle.window_id(), cx)
+    })?;
+    if let Some((other_window, open_workspace)) = open_in_another_window {
+        workspace
+            .update(cx, |workspace, cx| {
+                workspace.set_active_worktree_creation(None, false, cx);
+            })
+            .log_err();
+        other_window.update(cx, |multi_workspace, window, cx| {
+            window.activate_window();
+            multi_workspace.activate(open_workspace.clone(), None, window, cx);
+        })?;
+        return Ok(open_workspace);
+    }
+
     let focused_dock = previous_state.focused_dock;
 
     let is_creating_new_worktree = matches!(operation, WorktreeOperation::Create);
@@ -1057,8 +1102,6 @@ async fn open_worktree_workspace(
     };
 
     let workspace_task = window_handle.update(cx, |multi_workspace, window, cx| {
-        let path_list = util::path_list::PathList::new(&all_paths);
-
         let init: Option<
             Box<
                 dyn FnOnce(&mut Workspace, &mut gpui::Window, &mut gpui::Context<Workspace>) + Send,
@@ -1246,7 +1289,7 @@ mod tests {
     use project::{FakeFs, WorktreeSettings};
     use serde_json::json;
     use settings::SettingsStore;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
     use theme::LoadThemes;
     use util::path;
     use workspace::WorkspaceSettings;
@@ -1373,6 +1416,218 @@ mod tests {
         assert!(
             !has_modal,
             "security modal should not show for a linked worktree created from a trusted main worktree"
+        );
+    }
+
+    async fn git_project_with_a_worktree_folder(
+        cx: &mut TestAppContext,
+    ) -> (Arc<FakeFs>, Entity<Project>) {
+        init_test(cx);
+        let fs = FakeFs::new(cx.background_executor.clone());
+        cx.update(|cx| <dyn Fs>::set_global(fs.clone(), cx));
+        fs.insert_tree(
+            path!("/root"),
+            json!({
+                "project": {
+                    ".git": {},
+                    "src": { "main.rs": "fn main() {}" },
+                },
+                "feature": {
+                    "src": { "main.rs": "fn main() {}" },
+                },
+            }),
+        )
+        .await;
+        let project = Project::test(fs.clone(), [path!("/root/project").as_ref()], cx).await;
+        project
+            .update(cx, |project, cx| project.git_scans_complete(cx))
+            .await;
+        (fs, project)
+    }
+
+    fn switch_to_feature_worktree() -> zed_actions::SwitchWorktree {
+        zed_actions::SwitchWorktree {
+            path: PathBuf::from(path!("/root/feature")),
+            display_name: "feature".to_string(),
+        }
+    }
+
+    #[gpui::test]
+    async fn test_switching_worktree_keeps_the_source_project_in_the_window(
+        cx: &mut TestAppContext,
+    ) {
+        let (_fs, project) = git_project_with_a_worktree_folder(cx).await;
+        let (multi_workspace, cx) =
+            cx.add_window_view(|window, cx| MultiWorkspace::test_new(project, window, cx));
+        let main_workspace = multi_workspace.read_with(cx, |mw, _| mw.workspace().clone());
+
+        main_workspace.update_in(cx, |workspace, window, cx| {
+            handle_switch_worktree(workspace, &switch_to_feature_worktree(), window, None, cx);
+        });
+        cx.run_until_parked();
+
+        multi_workspace.read_with(cx, |multi_workspace, cx| {
+            assert_eq!(
+                multi_workspace.workspaces().count(),
+                2,
+                "the worktree opens next to the source project in the same window"
+            );
+            assert_ne!(multi_workspace.workspace(), &main_workspace);
+            assert!(
+                multi_workspace
+                    .workspaces()
+                    .any(|workspace| workspace == &main_workspace),
+                "the source project stays in the window"
+            );
+            assert_eq!(
+                multi_workspace.workspace().read(cx).root_paths(cx),
+                vec![Arc::from(Path::new(path!("/root/feature")))]
+            );
+        });
+        assert!(
+            main_workspace.read_with(cx, |workspace, _| workspace.session_id().is_some()),
+            "the source project is not detached from the session"
+        );
+        assert_eq!(cx.update(|_, cx| cx.windows().len()), 1);
+    }
+
+    #[gpui::test]
+    async fn test_switching_to_a_worktree_open_in_another_window_focuses_it(
+        cx: &mut TestAppContext,
+    ) {
+        let (fs, project) = git_project_with_a_worktree_folder(cx).await;
+        let feature_project = Project::test(fs, [path!("/root/feature").as_ref()], cx).await;
+        let main_window = cx.add_window(|window, cx| MultiWorkspace::test_new(project, window, cx));
+        let feature_window =
+            cx.add_window(|window, cx| MultiWorkspace::test_new(feature_project, window, cx));
+        cx.run_until_parked();
+        let feature_workspace = feature_window
+            .read_with(cx, |multi_workspace, _| multi_workspace.workspace().clone())
+            .unwrap();
+
+        main_window
+            .update(cx, |multi_workspace, window, cx| {
+                multi_workspace
+                    .workspace()
+                    .clone()
+                    .update(cx, |workspace, cx| {
+                        handle_switch_worktree(
+                            workspace,
+                            &switch_to_feature_worktree(),
+                            window,
+                            None,
+                            cx,
+                        );
+                    });
+            })
+            .unwrap();
+        cx.run_until_parked();
+
+        main_window
+            .read_with(cx, |multi_workspace, cx| {
+                assert_eq!(
+                    multi_workspace.workspaces().count(),
+                    1,
+                    "a worktree open in another window is not opened a second time"
+                );
+                assert!(
+                    multi_workspace
+                        .workspace()
+                        .read(cx)
+                        .active_worktree_creation()
+                        .label
+                        .is_none(),
+                    "the source title bar stops showing the loading state"
+                );
+            })
+            .unwrap();
+        feature_window
+            .read_with(cx, |multi_workspace, _| {
+                assert_eq!(multi_workspace.workspace(), &feature_workspace);
+            })
+            .unwrap();
+        assert_eq!(cx.update(|cx| cx.windows().len()), 2);
+    }
+
+    #[gpui::test]
+    async fn test_creating_a_worktree_in_one_repository_leaves_the_others_alone(
+        cx: &mut TestAppContext,
+    ) {
+        init_test(cx);
+        let fs = FakeFs::new(cx.background_executor.clone());
+        cx.update(|cx| <dyn Fs>::set_global(fs.clone(), cx));
+        fs.insert_tree(
+            path!("/root"),
+            json!({
+                "frontend": { ".git": {}, "main.rs": "" },
+                "backend": { ".git": {}, "main.rs": "" },
+            }),
+        )
+        .await;
+        fs.insert_branches(
+            Path::new(path!("/root/frontend/.git")),
+            &["main", "feature"],
+        );
+        fs.insert_branches(Path::new(path!("/root/backend/.git")), &["main"]);
+        let project = Project::test(
+            fs.clone(),
+            [
+                path!("/root/frontend").as_ref(),
+                path!("/root/backend").as_ref(),
+            ],
+            cx,
+        )
+        .await;
+        project
+            .update(cx, |project, cx| project.git_scans_complete(cx))
+            .await;
+        let frontend = project.read_with(cx, |project, cx| {
+            project
+                .repositories(cx)
+                .values()
+                .find(|repository| {
+                    repository.read(cx).work_directory_abs_path.as_ref()
+                        == Path::new(path!("/root/frontend"))
+                })
+                .cloned()
+                .expect("the frontend repository is found")
+        });
+        let (multi_workspace, cx) =
+            cx.add_window_view(|window, cx| MultiWorkspace::test_new(project, window, cx));
+        let main_workspace = multi_workspace.read_with(cx, |mw, _| mw.workspace().clone());
+
+        main_workspace.update_in(cx, |workspace, window, cx| {
+            handle_create_worktree_in_repository(
+                workspace,
+                frontend,
+                &zed_actions::CreateWorktree {
+                    worktree_name: Some("feature-tree".to_string()),
+                    branch_target: NewWorktreeBranchTarget::ExistingBranch {
+                        name: "feature".to_string(),
+                    },
+                },
+                window,
+                None,
+                cx,
+            );
+        });
+        cx.run_until_parked();
+
+        let roots = multi_workspace.read_with(cx, |multi_workspace, cx| {
+            assert_ne!(multi_workspace.workspace(), &main_workspace);
+            multi_workspace.workspace().read(cx).root_paths(cx)
+        });
+        assert_eq!(
+            roots.len(),
+            1,
+            "only the repository the ref belongs to gets a worktree: {roots:?}"
+        );
+        assert!(
+            roots
+                .iter()
+                .all(|root| root.ends_with("feature-tree/frontend")
+                    || root.ends_with("feature-tree")),
+            "{roots:?}"
         );
     }
 

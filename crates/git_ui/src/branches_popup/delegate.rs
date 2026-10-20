@@ -3,31 +3,32 @@ use std::sync::Arc;
 
 use collections::{HashMap, HashSet};
 use futures::channel::oneshot;
-use git::repository::{Branch, FetchOptions, RepositoryOperation, Tag};
+use git::repository::{Branch, FetchOptions, RepositoryOperation, Tag, Worktree};
 use gpui::{
-    Anchor, AnyElement, App, Context, DismissEvent, Entity, FocusHandle, SharedString,
-    Subscription, Task, WeakEntity, Window, point,
+    Anchor, AnyElement, App, Context, DismissEvent, Entity, EntityId, FocusHandle, Global,
+    HighlightStyle, Hsla, Pixels, SharedString, Subscription, Task, TextStyle, WeakEntity, Window,
+    point, rgb,
 };
 use picker::{Picker, PickerDelegate};
 use project::git_store::{GitStore, Repository, RepositoryEvent, RepositoryId, RepositorySnapshot};
 use ui::{
     CommonAnimationExt as _, ContextMenu, Divider, HighlightedLabel, KeyBinding, KeyBindingStyle,
-    ListItem, ListItemSpacing, PopoverMenu, PopoverMenuHandle, Tooltip, prelude::*,
+    ListItem, ListItemSpacing, PopoverMenu, PopoverMenuHandle, TextSize, Tooltip, prelude::*,
 };
 use ui_input::ErasedEditor;
 use util::ResultExt as _;
 use workspace::Workspace;
 
-use super::ref_menu::{self, MenuContext, MenuRunner};
+use super::ref_menu::{self, MenuAction, MenuContext, MenuItemPlan, MenuRunner};
 use super::rows::{
     PopupRow, RefEntry, RepositoryChoice, RepositoryRow, RowKey, RowsInput, best_match,
     build_popup_rows, first_child_index, first_selectable, is_filtering, parent_index,
-    position_of_current_branch, position_of_key,
+    position_of_current_branch, position_of_key, position_of_local_branch,
 };
-use super::state::{self, PopupState};
+use super::state::{self, PopupSize, PopupState};
 use super::top_actions::{self, TopAction, TopActionKind, TopActionsInput};
 use super::tree::{self, FolderRow, RefRow, SectionKind, SectionRow, TreeInput};
-use crate::branch_operations::{BranchContext, integrate};
+use crate::branch_operations::{BranchContext, BranchNotice, integrate};
 use crate::branch_refs::{RefKind, RefTarget};
 
 const MAX_RECENT_BRANCHES: usize = 5;
@@ -45,7 +46,44 @@ const INDENT_STEP_PX: f32 = 16.;
 // Separators are tree rows of the full row height in IntelliJ, with the line half a row down.
 pub(super) const SEPARATOR_HEIGHT_PX: f32 = ROW_HEIGHT_PX;
 pub(super) const FOLDER_ICON: IconName = IconName::Folder;
-const ROW_GROUP: &str = "list_item";
+pub(super) const ROW_ICON_SIZE: IconSize = IconSize::Medium;
+// `GitDefaultBranchesTreeRenderer` borders: incoming (1, 10, 0, 1), outgoing (1, 2, 0, 10), 10 px
+// before the tracked branch, and a 1 px gap between each arrow and its count.
+const INCOMING_MARGIN_LEFT_PX: f32 = 10.;
+const INCOMING_MARGIN_RIGHT_PX: f32 = 1.;
+const OUTGOING_MARGIN_LEFT_PX: f32 = 2.;
+const OUTGOING_MARGIN_RIGHT_PX: f32 = 10.;
+const COUNTER_MARGIN_TOP_PX: f32 = 1.;
+const COUNTER_ICON_TEXT_GAP_PX: f32 = 1.;
+const SECONDARY_TEXT_MARGIN_LEFT_PX: f32 = 10.;
+const REPOSITORY_COLOR_SIDE_PX: f32 = 14.;
+const REPOSITORY_COLOR_RADIUS_PX: f32 = 2.;
+// `RepositoryColors.NEW_UI_REPOSITORY_COLORS` as (light, dark).
+const REPOSITORY_COLORS: [(u32, u32); 14] = [
+    (0xFF6285, 0x865762),
+    (0x89C398, 0x436946),
+    (0x6D5FF3, 0x5B53AF),
+    (0xF2B181, 0x825845),
+    (0x32E0D9, 0x389895),
+    (0xFED277, 0x826A41),
+    (0xF95CFF, 0x88458A),
+    (0xBE906D, 0x947259),
+    (0x4FF2B7, 0x178E63),
+    (0xA177F4, 0x583D7A),
+    (0x3FB3B8, 0x227985),
+    (0xB979B9, 0x875887),
+    (0xECCA88, 0x8C7B58),
+    (0xC9CCD6, 0x5A5D6B),
+];
+// `GitIncomingOutgoingUi` as (light, dark).
+const INCOMING_COLOR: (u32, u32) = (0x3574F0, 0x548AF7);
+const OUTGOING_COLOR: (u32, u32) = (0x369650, 0x57965C);
+// `SearchMatch.startBackground` of the New UI themes and the text `SimpleColoredComponent` draws on
+// it, as (light, dark).
+const SEARCH_MATCH_BACKGROUND: (u32, u32) = (0xFEE6B1, 0xBA9752);
+const SEARCH_MATCH_FOREGROUND: (u32, u32) = (0x323232, 0x000000);
+const FETCH_SUCCESSFUL: &str = "Fetch successful";
+const FETCH_FAILED: &str = "Fetch failed";
 const SEARCH_PLACEHOLDER_WITH_ACTIONS: &str = "Search for branches and actions";
 const SEARCH_PLACEHOLDER_WITHOUT_ACTIONS: &str = "Search for branches";
 const NOTHING_FOUND: &str = "Nothing found";
@@ -55,6 +93,7 @@ const NO_REPOSITORY: &str = "No Git repository";
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PopupToggle {
     ShowActionsInSearch,
+    ShowRepositoriesInSearch,
     GroupByDirectory,
     ShowRecent,
     ShowTags,
@@ -64,6 +103,7 @@ impl PopupToggle {
     fn get(self, toggles: &state::PopupToggles) -> bool {
         match self {
             PopupToggle::ShowActionsInSearch => toggles.show_actions_in_search,
+            PopupToggle::ShowRepositoriesInSearch => toggles.show_repositories_in_search,
             PopupToggle::GroupByDirectory => toggles.group_by_directory,
             PopupToggle::ShowRecent => toggles.show_recent,
             PopupToggle::ShowTags => toggles.show_tags,
@@ -73,6 +113,7 @@ impl PopupToggle {
     fn set(self, toggles: &mut state::PopupToggles, value: bool) {
         match self {
             PopupToggle::ShowActionsInSearch => toggles.show_actions_in_search = value,
+            PopupToggle::ShowRepositoriesInSearch => toggles.show_repositories_in_search = value,
             PopupToggle::GroupByDirectory => toggles.group_by_directory = value,
             PopupToggle::ShowRecent => toggles.show_recent = value,
             PopupToggle::ShowTags => toggles.show_tags = value,
@@ -85,6 +126,7 @@ enum StateEdit {
     Toggle(PopupToggle, bool),
     Favorite(RefTarget, bool),
     Expanded(SharedString, bool),
+    Size(Option<PopupSize>),
 }
 
 impl StateEdit {
@@ -99,8 +141,17 @@ impl StateEdit {
             StateEdit::Expanded(node_id, expanded) => {
                 state.set_expanded(node_id.clone(), *expanded)
             }
+            StateEdit::Size(size) => state.size = *size,
         }
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LeafDirection {
+    Next,
+    Previous,
+    First,
+    Last,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -121,6 +172,7 @@ pub struct RepoData {
     pub head_short_sha: Option<SharedString>,
     pub head_sha: Option<SharedString>,
     pub has_commits: bool,
+    pub other_worktrees: Arc<[Worktree]>,
 }
 
 impl RepoData {
@@ -155,6 +207,7 @@ impl RepoData {
             .as_ref()
             .map(|commit| commit.sha.clone());
         self.has_commits = snapshot.head_commit.is_some();
+        self.other_worktrees = snapshot.linked_worktrees.clone();
     }
 }
 
@@ -214,6 +267,84 @@ pub fn ref_icon(is_current: bool, is_favorite: bool, is_tag: bool) -> IconName {
     }
 }
 
+/// `GitBranchesTreeIconProvider.forRef`: the selected row offers to add a favorite with a hollow
+/// star, even on the current branch.
+pub fn ref_row_icon(is_current: bool, is_favorite: bool, is_tag: bool, selected: bool) -> IconName {
+    if selected && !is_favorite {
+        IconName::FavoriteOutline
+    } else {
+        ref_icon(is_current, is_favorite, is_tag)
+    }
+}
+
+fn appearance_color((light, dark): (u32, u32), cx: &App) -> Hsla {
+    if cx.theme().appearance().is_light() {
+        rgb(light).into()
+    } else {
+        rgb(dark).into()
+    }
+}
+
+/// The filled background IntelliJ draws behind speed-search matches.
+pub fn search_match_style(cx: &App) -> HighlightStyle {
+    HighlightStyle {
+        color: Some(appearance_color(SEARCH_MATCH_FOREGROUND, cx)),
+        background_color: Some(appearance_color(SEARCH_MATCH_BACKGROUND, cx)),
+        ..Default::default()
+    }
+}
+
+/// The incoming and outgoing counter colors of `GitIncomingOutgoingUi`.
+pub fn commit_counter_colors(cx: &App) -> (Hsla, Hsla) {
+    (
+        appearance_color(INCOMING_COLOR, cx),
+        appearance_color(OUTGOING_COLOR, cx),
+    )
+}
+
+/// IntelliJ colors the repositories by their position among the repositories sorted by name.
+pub fn repository_color(index: usize, cx: &App) -> Hsla {
+    let palette_index = index % REPOSITORY_COLORS.len();
+    let colors = REPOSITORY_COLORS
+        .get(palette_index)
+        .copied()
+        .unwrap_or(REPOSITORY_COLORS[0]);
+    appearance_color(colors, cx)
+}
+
+/// Fetches started from a branches popup, by git store: like IntelliJ's project-wide
+/// `GitFetchSupport.isFetchRunning`, a popup opened while a fetch runs shows it as running.
+#[derive(Default)]
+pub(super) struct RunningFetches(HashSet<EntityId>);
+
+impl Global for RunningFetches {}
+
+fn is_fetch_running(git_store: Option<&Entity<GitStore>>, cx: &App) -> bool {
+    git_store.is_some_and(|git_store| {
+        cx.try_global::<RunningFetches>()
+            .is_some_and(|running| running.0.contains(&git_store.entity_id()))
+    })
+}
+
+/// `GitFetchResult.showNotification`: a title-only notice on success, the errors on failure.
+pub fn fetch_result_notice(failures: &[(SharedString, String)], several: bool) -> BranchNotice {
+    if failures.is_empty() {
+        return BranchNotice::info("").title(FETCH_SUCCESSFUL);
+    }
+    let message = failures
+        .iter()
+        .map(|(repository, error)| {
+            if several {
+                format!("{repository}: {error}")
+            } else {
+                error.clone()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    BranchNotice::error(message).title(FETCH_FAILED)
+}
+
 pub fn search_placeholder(show_actions: bool) -> &'static str {
     if show_actions {
         SEARCH_PLACEHOLDER_WITH_ACTIONS
@@ -238,7 +369,13 @@ pub struct BranchesDelegate {
     pub(super) selected_index: usize,
     pub(super) preferred_selection_pending: bool,
     pub(super) query: String,
-    pub(super) fetching: bool,
+    pub(super) previous_branch: Option<String>,
+    pub(super) section_repository_name: Option<SharedString>,
+    pub(super) pack_requested: bool,
+    pub(super) packed_size: Option<gpui::Size<Pixels>>,
+    filtered_leaves: Vec<RowKey>,
+    pending_selection: Option<RowKey>,
+    pub(super) _fetch_observation: Option<Subscription>,
     update_project_shows_options: bool,
     menu_handles: HashMap<(SectionKind, RefTarget), PopoverMenuHandle<ContextMenu>>,
     edits_before_load: Vec<StateEdit>,
@@ -246,6 +383,7 @@ pub struct BranchesDelegate {
     _full_load_task: Task<()>,
     _operation_load_task: Task<()>,
     _state_load_task: Task<()>,
+    _previous_branch_load_task: Task<()>,
     pending_save: Task<()>,
 }
 
@@ -276,7 +414,13 @@ impl BranchesDelegate {
             selected_index: 0,
             preferred_selection_pending: true,
             query: String::new(),
-            fetching: false,
+            previous_branch: None,
+            section_repository_name: None,
+            pack_requested: true,
+            packed_size: None,
+            filtered_leaves: Vec::new(),
+            pending_selection: None,
+            _fetch_observation: None,
             update_project_shows_options: true,
             menu_handles: HashMap::default(),
             edits_before_load: Vec::new(),
@@ -284,8 +428,27 @@ impl BranchesDelegate {
             _full_load_task: Task::ready(()),
             _operation_load_task: Task::ready(()),
             _state_load_task: Task::ready(()),
+            _previous_branch_load_task: Task::ready(()),
             pending_save: Task::ready(()),
         }
+    }
+
+    pub(super) fn fetching(&self, cx: &App) -> bool {
+        is_fetch_running(self.git_store(cx).as_ref(), cx)
+    }
+
+    /// IntelliJ's search field turns its text red when nothing matches the query.
+    pub(super) fn search_text_color(&self, cx: &App) -> Hsla {
+        if self.nothing_matches() {
+            Color::Error.color(cx)
+        } else {
+            cx.theme().colors().text
+        }
+    }
+
+    /// Whether the search field shows the "nothing matches" error color (`updateSpeedSearchColors`).
+    pub fn nothing_matches(&self) -> bool {
+        self.repository.is_some() && is_filtering(&self.query) && self.rows.is_empty()
     }
 
     #[cfg(test)]
@@ -296,6 +459,15 @@ impl BranchesDelegate {
     #[cfg(test)]
     pub fn selected_row(&self) -> Option<&PopupRow> {
         self.rows.get(self.selected_index)
+    }
+
+    #[cfg(test)]
+    pub fn has_another_open_menu_for_tests(&self, _cx: &App) -> bool {
+        self.gear_menu_handle.is_deployed()
+            || self
+                .rows
+                .iter()
+                .any(|row| matches!(row, PopupRow::Ref(entry) if entry.menu_handle.is_deployed()))
     }
 
     pub fn branch_context(&self) -> Option<BranchContext> {
@@ -310,9 +482,11 @@ impl BranchesDelegate {
         self._full_load_task = Task::ready(());
         self._operation_load_task = Task::ready(());
         self._state_load_task = Task::ready(());
+        self._previous_branch_load_task = Task::ready(());
         self.reveal_pending = true;
         self.state_loaded = false;
         self.data_loaded = false;
+        self.previous_branch = None;
         self.revealed.clear();
         self.edits_before_load.clear();
         self.update_project_shows_options = integrate::should_show_update_options(cx);
@@ -336,17 +510,48 @@ impl BranchesDelegate {
 
         let key = state::serialization_key(&repository.read(cx).common_dir_abs_path);
         self.state_key = Some(key.clone());
-        let persisted = state::load(key, cx);
-        self._state_load_task = cx.spawn_in(window, async move |picker, cx| {
-            let persisted = persisted.await;
-            picker
-                .update_in(cx, |picker, window, cx| {
-                    picker.delegate.apply_loaded_state(persisted, cx);
-                    picker.refresh_placeholder(window, cx);
-                    picker.refresh(window, cx);
-                })
-                .ok();
-        });
+        let saved = cx
+            .try_global::<state::SavedPopupStates>()
+            .and_then(|saved| saved.get(&key))
+            .cloned();
+        if let Some(saved) = saved {
+            self.apply_loaded_state(Some(saved), cx);
+        } else {
+            let persisted = state::load(key, cx);
+            self._state_load_task = cx.spawn_in(window, async move |picker, cx| {
+                let persisted = persisted.await;
+                picker
+                    .update_in(cx, |picker, window, cx| {
+                        picker.delegate.apply_loaded_state(persisted, cx);
+                        picker.refresh_placeholder(window, cx);
+                        picker.refresh(window, cx);
+                    })
+                    .ok();
+            });
+        }
+
+        let previous_branch_key =
+            state::previous_branch_key(&repository.read(cx).work_directory_abs_path);
+        match state::remembered_previous_branch(&previous_branch_key, cx) {
+            Some(previous_branch) => self.previous_branch = Some(previous_branch),
+            None => {
+                let load = state::load_previous_branch(previous_branch_key, cx);
+                self._previous_branch_load_task = cx.spawn_in(window, async move |picker, cx| {
+                    let Some(previous_branch) = load.await else {
+                        return;
+                    };
+                    picker
+                        .update_in(cx, |picker, window, cx| {
+                            picker.delegate.previous_branch = Some(previous_branch);
+                            if picker.delegate.preferred_selection_pending {
+                                picker.delegate.reveal_pending = true;
+                                picker.refresh(window, cx);
+                            }
+                        })
+                        .ok();
+                });
+            }
+        }
 
         self.start_loading(LoadScope::All, window, cx);
     }
@@ -367,6 +572,10 @@ impl BranchesDelegate {
                 picker
                     .delegate
                     .start_loading(LoadScope::Operation, window, cx);
+            }
+            RepositoryEvent::GitWorktreeListChanged => {
+                picker.delegate.refresh_snapshot_data(cx);
+                picker.refresh(window, cx);
             }
             _ => {}
         }
@@ -451,9 +660,14 @@ impl BranchesDelegate {
         }
         self.reveal_pending = false;
         self.revealed.clear();
-        let Some(current) = self.data.current_branch.clone() else {
-            return;
-        };
+        let current = self.data.current_branch.clone();
+        let previous = self.previous_local_branch().map(SharedString::from);
+        for name in [current, previous].into_iter().flatten() {
+            self.reveal_local_branch(&name);
+        }
+    }
+
+    fn reveal_local_branch(&mut self, name: &str) {
         let toggles = self.state.toggles;
         let in_recent = toggles.show_recent
             && self
@@ -461,7 +675,7 @@ impl BranchesDelegate {
                 .recent
                 .iter()
                 .take(MAX_RECENT_BRANCHES)
-                .any(|name| *name == current);
+                .any(|recent| recent == name);
         let section = if in_recent {
             SectionKind::Recent
         } else {
@@ -469,9 +683,21 @@ impl BranchesDelegate {
         };
         self.revealed.extend(tree::ancestor_node_ids(
             section,
-            &current,
+            name,
             toggles.group_by_directory,
         ));
+    }
+
+    /// IntelliJ preselects the branch HEAD was on before the last checkout, when it is still a
+    /// local branch other than the current one (`GitBranchesTreeModelUtil.getPreferredBranch`).
+    fn previous_local_branch(&self) -> Option<&str> {
+        let previous = self.previous_branch.as_deref()?;
+        let exists = self
+            .data
+            .local
+            .iter()
+            .any(|branch| branch.name() == previous);
+        (exists && self.data.current_branch.as_deref() != Some(previous)).then_some(previous)
     }
 
     fn git_store(&self, cx: &App) -> Option<Entity<GitStore>> {
@@ -510,6 +736,7 @@ impl BranchesDelegate {
                     name: repository.display_name(),
                     branch,
                     is_active: Some(repository.id) == active_id,
+                    color_index: 0,
                 }
             })
             .collect();
@@ -518,6 +745,9 @@ impl BranchesDelegate {
                 .cmp(&*right.name)
                 .then_with(|| left.id.cmp(&right.id))
         });
+        for (index, choice) in choices.iter_mut().enumerate() {
+            choice.color_index = index;
+        }
         choices
     }
 
@@ -541,16 +771,15 @@ impl BranchesDelegate {
             .map(|tag| &*tag.name)
     }
 
-    fn rebuild_rows(&mut self, cx: &App) {
-        if self.repository.is_none() {
-            self.rows.clear();
-            return;
-        }
-        self.reveal_current_branch_if_ready();
+    fn build_rows_with(
+        &self,
+        expanded: &HashSet<SharedString>,
+        expand_all: bool,
+        repositories: &[RepositoryChoice],
+        menu_handles: &mut HashMap<(SectionKind, RefTarget), PopoverMenuHandle<ContextMenu>>,
+    ) -> Vec<PopupRow> {
         let defaults = tree::default_favorites(&self.data.local, &self.data.remote);
         let favorites = self.state.resolve_favorites(&defaults);
-        let mut expanded = self.state.expanded().clone();
-        expanded.extend(self.revealed.iter().cloned());
         let tree_rows = tree::build_rows(&TreeInput {
             local: &self.data.local,
             remote: &self.data.remote,
@@ -560,7 +789,8 @@ impl BranchesDelegate {
             head_tag: self.head_tag(),
             favorites: &favorites,
             options: self.state.toggles.tree_options(),
-            expanded: &expanded,
+            expanded,
+            expand_all,
             query: &self.query,
         });
         let top_actions = top_actions::top_actions_plan(&TopActionsInput {
@@ -568,18 +798,117 @@ impl BranchesDelegate {
             operation: self.data.operation,
             update_project_shows_options: self.update_project_shows_options,
         });
-        let repositories = self.repository_choices(cx);
-        self.rows = build_popup_rows(RowsInput {
+        build_popup_rows(RowsInput {
             query: &self.query,
             show_actions_in_search: self.state.toggles.show_actions_in_search,
+            show_repositories_in_search: self.state.toggles.show_repositories_in_search,
             top_actions: &top_actions,
-            repositories: &repositories,
+            repositories,
             tree_rows,
-            menu_handles: &mut self.menu_handles,
-        });
+            menu_handles,
+        })
     }
 
-    fn choose_selection(&self, previous_key: Option<RowKey>, query_changed: bool) -> usize {
+    fn rebuild_rows(&mut self, reveal_matches: bool, cx: &App) {
+        if self.repository.is_none() {
+            self.rows.clear();
+            self.filtered_leaves.clear();
+            return;
+        }
+        self.reveal_current_branch_if_ready();
+        let repositories = self.repository_choices(cx);
+        self.section_repository_name = (repositories.len() > 1)
+            .then(|| repositories.iter().find(|choice| choice.is_active))
+            .flatten()
+            .map(|choice| choice.name.clone());
+        self.filtered_leaves.clear();
+        if is_filtering(&self.query) {
+            let all_rows = self.build_rows_with(
+                &HashSet::default(),
+                true,
+                &repositories,
+                &mut HashMap::default(),
+            );
+            self.filtered_leaves = all_rows
+                .iter()
+                .filter(|row| row.is_selectable_while_filtering())
+                .filter_map(PopupRow::key)
+                .collect();
+            if reveal_matches {
+                self.reveal_for_query(&all_rows);
+            }
+        }
+        let mut expanded = self.state.expanded().clone();
+        expanded.extend(self.revealed.iter().cloned());
+        let mut menu_handles = std::mem::take(&mut self.menu_handles);
+        self.rows = self.build_rows_with(&expanded, false, &repositories, &mut menu_handles);
+        self.menu_handles = menu_handles;
+    }
+
+    /// `GitBranchesPopupBase.applySearchPattern`: a search opens the paths of the current branch,
+    /// of the recent branches and of the best match; other sections and folders keep the state
+    /// they had, and what this opens stays open for the rest of the popup's life.
+    fn reveal_for_query(&mut self, all_rows: &[PopupRow]) {
+        let group_by_directory = self.state.toggles.group_by_directory;
+        let mut reveal = Vec::new();
+        if let Some(current) = &self.data.current_branch {
+            reveal.push(current.clone());
+        }
+        if self.state.toggles.show_recent {
+            reveal.extend(self.data.recent.iter().take(MAX_RECENT_BRANCHES).cloned());
+        }
+        for name in reveal {
+            self.reveal_local_branch(&name);
+        }
+        if let Some(PopupRow::Ref(entry)) = best_match(all_rows).and_then(|ix| all_rows.get(ix)) {
+            self.revealed.extend(tree::ancestor_node_ids(
+                entry.row.section,
+                &entry.row.target.name,
+                group_by_directory,
+            ));
+        }
+    }
+
+    /// Moves the selection to the next leaf of the search results, opening the sections and
+    /// folders on the way, like `GitBranchesTreeUtil.selectNext` and friends.
+    pub fn select_leaf(&mut self, direction: LeafDirection) -> bool {
+        let count = self.filtered_leaves.len();
+        if count == 0 {
+            return false;
+        }
+        let current = self
+            .rows
+            .get(self.selected_index)
+            .and_then(PopupRow::key)
+            .and_then(|key| self.filtered_leaves.iter().position(|leaf| *leaf == key));
+        let target = match direction {
+            LeafDirection::Next => current.map_or(0, |position| (position + 1) % count),
+            LeafDirection::Previous => {
+                current.map_or(count - 1, |position| (position + count - 1) % count)
+            }
+            LeafDirection::First => 0,
+            LeafDirection::Last => count - 1,
+        };
+        let Some(key) = self.filtered_leaves.get(target).cloned() else {
+            return false;
+        };
+        if let RowKey::Ref(section, target) = &key {
+            self.revealed.extend(tree::ancestor_node_ids(
+                *section,
+                &target.name,
+                self.state.toggles.group_by_directory,
+            ));
+        }
+        self.pending_selection = Some(key);
+        true
+    }
+
+    fn choose_selection(&mut self, previous_key: Option<RowKey>, query_changed: bool) -> usize {
+        if let Some(key) = self.pending_selection.take()
+            && let Some(position) = position_of_key(&self.rows, &key)
+        {
+            return position;
+        }
         let first = first_selectable(&self.rows).unwrap_or(0);
         let top_match = best_match(&self.rows).unwrap_or(first);
         let previous = previous_key.and_then(|key| position_of_key(&self.rows, &key));
@@ -590,11 +919,14 @@ impl BranchesDelegate {
                 previous.unwrap_or(top_match)
             };
         }
-        let current = position_of_current_branch(&self.rows);
+        let preferred = self
+            .previous_local_branch()
+            .and_then(|name| position_of_local_branch(&self.rows, name))
+            .or_else(|| position_of_current_branch(&self.rows));
         if self.preferred_selection_pending || query_changed {
-            return current.or(previous).unwrap_or(first);
+            return preferred.or(previous).unwrap_or(first);
         }
-        previous.or(current).unwrap_or(first)
+        previous.or(preferred).unwrap_or(first)
     }
 
     fn is_node_expanded(&self, node_id: &SharedString) -> bool {
@@ -602,9 +934,6 @@ impl BranchesDelegate {
     }
 
     fn toggle_node(&mut self, node_id: SharedString, cx: &App) {
-        if is_filtering(&self.query) {
-            return;
-        }
         let expand = !self.is_node_expanded(&node_id);
         if !expand {
             self.revealed.remove(&node_id);
@@ -666,6 +995,169 @@ impl BranchesDelegate {
         self.toggle_favorite_at(self.selected_index, cx)
     }
 
+    /// IntelliJ's `visibleRowCount`: the top-level rows plus the children of Recent (or of Local
+    /// without recent branches) plus one.
+    pub fn visible_row_count(&self) -> usize {
+        let top_level = self
+            .rows
+            .iter()
+            .filter(|row| matches!(row.tree_depth(), None | Some(0)))
+            .count();
+        let defaults = self.favorite_defaults();
+        let favorites = self.state.resolve_favorites(&defaults);
+        let expanded = HashSet::default();
+        let input = TreeInput {
+            local: &self.data.local,
+            remote: &self.data.remote,
+            tags: &self.data.tags,
+            recent: &self.data.recent,
+            current_branch: self.data.current_branch.as_deref(),
+            head_tag: self.head_tag(),
+            favorites: &favorites,
+            options: self.state.toggles.tree_options(),
+            expanded: &expanded,
+            expand_all: false,
+            query: "",
+        };
+        let section = if self.state.toggles.show_recent {
+            SectionKind::Recent
+        } else {
+            SectionKind::Local
+        };
+        top_level + tree::section_child_count(&input, section) + 1
+    }
+
+    /// The width of the widest row, which IntelliJ's `pack` gives the popup.
+    pub fn preferred_row_width(&self, window: &mut Window, cx: &App) -> Pixels {
+        let text_style = window.text_style();
+        let rem_size = window.rem_size();
+        let default_size = TextSize::Default.rems(cx).to_pixels(rem_size);
+        let small_size = TextSize::Small.rems(cx).to_pixels(rem_size);
+        let measure = |text: &str, small: bool, window: &mut Window| -> Pixels {
+            let font_size = if small { small_size } else { default_size };
+            text_width(text, font_size, &text_style, window)
+        };
+        let metrics = ui::PopupRowMetrics::for_style(ui::PopupRowStyle::List);
+        let chrome = (metrics.pill_inset_x + metrics.content_padding_x) * 2.;
+        let start_gap = DynamicSpacing::Base06.px(cx);
+        let slot = px(ICON_SLOT_PX);
+        let slot_gap = px(4.);
+        let arrow = px(22.) + px(4.);
+        let tree_prefix = |depth: usize| px(INDENT_STEP_PX * depth as f32) + (slot + slot_gap) * 2.;
+        let mut widest = px(0.);
+        for row in &self.rows {
+            let content = match row {
+                PopupRow::Separator => px(0.),
+                PopupRow::Action { action, .. } => {
+                    let shortcut = action
+                        .shortcut_action()
+                        .and_then(|shortcut_action| {
+                            KeyBinding::for_action_in(
+                                shortcut_action.as_ref(),
+                                &self.focus_handle,
+                                cx,
+                            )
+                            .keyboard_shortcut_text(window, cx)
+                        })
+                        .map(|text| px(4.) + measure(&text, false, window))
+                        .unwrap_or(px(0.));
+                    slot + start_gap + measure(&action.label, false, window) + shortcut
+                }
+                PopupRow::Repository(repository_row) => {
+                    let branch = repository_row
+                        .choice
+                        .branch
+                        .as_deref()
+                        .map(|branch| {
+                            px(SECONDARY_TEXT_MARGIN_LEFT_PX) + measure(branch, false, window)
+                        })
+                        .unwrap_or(px(0.));
+                    slot + start_gap
+                        + measure(&repository_row.choice.name, false, window)
+                        + branch
+                        + arrow
+                }
+                PopupRow::Section(section) => {
+                    let title = section.kind.title(self.section_repository_name.as_deref());
+                    slot + start_gap + measure(&title, false, window)
+                }
+                PopupRow::Folder(folder) => {
+                    tree_prefix(folder.depth) + start_gap + measure(&folder.label, false, window)
+                }
+                PopupRow::Ref(entry) => {
+                    let ref_row = &entry.row;
+                    let counter = |count: u32, margins: f32, window: &mut Window| {
+                        if count == 0 {
+                            return px(0.);
+                        }
+                        px(margins + COUNTER_ICON_TEXT_GAP_PX)
+                            + slot
+                            + measure(&commit_count_label(count), true, window)
+                    };
+                    let incoming = counter(
+                        ref_row.incoming,
+                        INCOMING_MARGIN_LEFT_PX + INCOMING_MARGIN_RIGHT_PX,
+                        window,
+                    );
+                    let outgoing = counter(
+                        ref_row.outgoing,
+                        OUTGOING_MARGIN_LEFT_PX + OUTGOING_MARGIN_RIGHT_PX,
+                        window,
+                    );
+                    let tracked = ref_row
+                        .tracked
+                        .as_deref()
+                        .map(|tracked| {
+                            px(SECONDARY_TEXT_MARGIN_LEFT_PX) + measure(tracked, false, window)
+                        })
+                        .unwrap_or(px(0.));
+                    tree_prefix(ref_row.depth)
+                        + start_gap
+                        + measure(&ref_row.label, false, window)
+                        + incoming
+                        + outgoing
+                        + tracked
+                        + arrow
+                }
+            };
+            widest = widest.max(content + chrome);
+        }
+        widest
+    }
+
+    /// The popup sizes itself once the saved state and the refs it shows are known, like
+    /// IntelliJ's `pack` at show time.
+    pub fn is_ready_to_pack(&self) -> bool {
+        self.state_loaded && self.data_loaded
+    }
+
+    pub fn user_size(&self) -> Option<PopupSize> {
+        self.state.size
+    }
+
+    pub fn set_user_size(&mut self, size: PopupSize, cx: &App) {
+        self.record_edit(StateEdit::Size(Some(size)), cx);
+    }
+
+    /// "Restore Popup Size": forget the user's size and size the popup to its rows again.
+    pub fn restore_popup_size(&mut self, cx: &App) {
+        self.record_edit(StateEdit::Size(None), cx);
+        self.pack_requested = true;
+    }
+
+    /// IntelliJ's `pack`: once the rows are known, the popup takes the size they need.
+    fn pack_if_requested(&mut self, window: &mut Window, cx: &App) {
+        if !self.pack_requested || !self.is_ready_to_pack() {
+            return;
+        }
+        self.pack_requested = false;
+        self.packed_size = Some(super::packed_size(
+            self.preferred_row_width(window, cx),
+            self.visible_row_count(),
+            DynamicSpacing::Base04.px(cx),
+        ));
+    }
+
     pub fn toggle_setting(&mut self, toggle: PopupToggle, cx: &App) {
         let value = !toggle.get(&self.state.toggles);
         self.record_edit(StateEdit::Toggle(toggle, value), cx);
@@ -710,37 +1202,99 @@ impl BranchesDelegate {
         });
     }
 
-    fn start_fetch(&mut self, window: &mut Window, cx: &mut Context<Picker<Self>>) {
-        if self.fetching {
-            return;
-        }
-        let (Some(context), Some(repository)) = (self.branch_context(), self.repository.clone())
-        else {
+    /// IntelliJ's popup Fetch fetches every repository of the project (`GitFetch.performFetch`).
+    pub(super) fn start_fetch(&mut self, window: &mut Window, cx: &mut Context<Picker<Self>>) {
+        let (Some(context), Some(git_store)) = (self.branch_context(), self.git_store(cx)) else {
             return;
         };
-        self.fetching = true;
+        if is_fetch_running(Some(&git_store), cx) {
+            return;
+        }
+        let mut repositories: Vec<(SharedString, Entity<Repository>)> = git_store
+            .read(cx)
+            .repositories()
+            .values()
+            .map(|repository| (repository.read(cx).display_name(), repository.clone()))
+            .collect();
+        repositories.sort_by(|left, right| left.0.cmp(&right.0));
+        let several = repositories.len() > 1;
+        let git_store_id = git_store.entity_id();
+        cx.default_global::<RunningFetches>().0.insert(git_store_id);
         cx.notify();
 
-        let askpass = context.askpass_delegate("git fetch", window, cx);
-        let receiver = repository.update(cx, |repository, cx| {
-            repository.fetch(FetchOptions::All, askpass, cx)
-        });
-        cx.spawn(async move |picker, cx| {
-            let result = receiver.await;
-            picker
-                .update(cx, |picker, cx| {
-                    picker.delegate.fetching = false;
-                    cx.notify();
-                })
-                .ok();
-            if let Ok(Err(error)) = result {
-                cx.update(|cx| context.notify_error("Fetch", error, cx));
+        let receivers: Vec<_> = repositories
+            .into_iter()
+            .map(|(name, repository)| {
+                let askpass = context.askpass_delegate("git fetch", window, cx);
+                let receiver = repository.update(cx, |repository, cx| {
+                    repository.fetch(FetchOptions::All, askpass, cx)
+                });
+                (name, receiver)
+            })
+            .collect();
+        cx.spawn(async move |_, cx| {
+            let mut failures = Vec::new();
+            let mut cancelled = false;
+            for (name, receiver) in receivers {
+                let error = match receiver.await {
+                    Ok(Ok(_)) => continue,
+                    Ok(Err(error)) => error,
+                    Err(canceled) => anyhow::Error::new(canceled),
+                };
+                match crate::branch_operations::failure_text(&error) {
+                    Some(text) => failures.push((name, text.trim().to_string())),
+                    None => cancelled = true,
+                }
             }
+            cx.update(|cx| {
+                cx.default_global::<RunningFetches>()
+                    .0
+                    .remove(&git_store_id);
+                if cancelled && failures.is_empty() {
+                    return;
+                }
+                context.notify(fetch_result_notice(&failures, several), cx);
+            });
         })
         .detach();
     }
 
-    fn run_top_action(
+    /// Runs `Delete` on the ref whose menu is open (the selected ref when no menu is open) when
+    /// its menu offers it, for IntelliJ's `$Delete` shortcut in the ref menu.
+    pub fn delete_selected_ref(&mut self, window: &mut Window, cx: &mut Context<Picker<Self>>) {
+        // Hovering keeps moving the selection while a ref menu is open, so the selection may
+        // be on another row than the menu.
+        let menu_entry = self.rows.iter().find_map(|row| match row {
+            PopupRow::Ref(entry) if entry.menu_handle.is_deployed() => Some(entry),
+            _ => None,
+        });
+        let entry = menu_entry.or_else(|| match self.rows.get(self.selected_index) {
+            Some(PopupRow::Ref(entry)) => Some(entry),
+            _ => None,
+        });
+        let Some(entry) = entry else {
+            return;
+        };
+        let target = entry.row.target.clone();
+        let deletable = self.menu_plan_for(&target, cx).iter().any(|planned| {
+            matches!(
+                planned,
+                MenuItemPlan::Item(item) if item.action == MenuAction::Delete && item.enabled
+            )
+        });
+        let Some(context) = self.branch_context() else {
+            return;
+        };
+        if !deletable {
+            return;
+        }
+        cx.emit(DismissEvent);
+        window.defer(cx, move |window, cx| {
+            ref_menu::run_menu_action(MenuAction::Delete, context, target, window, cx)
+        });
+    }
+
+    pub(super) fn run_top_action(
         &mut self,
         kind: TopActionKind,
         window: &mut Window,
@@ -766,16 +1320,21 @@ impl BranchesDelegate {
         cx.defer_in(window, |picker, window, cx| picker.refresh(window, cx));
     }
 
-    fn menu_plan_for(&self, target: &RefTarget) -> Vec<ref_menu::MenuItemPlan> {
-        let has_tracked_branch = match target.kind {
+    pub(super) fn menu_plan_for(&self, target: &RefTarget, cx: &App) -> Vec<MenuItemPlan> {
+        let protected_branches = integrate::protected_branch_patterns(cx);
+        let local_branch = match target.kind {
             RefKind::Local => self
                 .data
                 .local
                 .iter()
-                .find(|branch| branch.name() == &*target.name)
-                .is_some_and(|branch| branch.upstream.is_some()),
-            RefKind::Remote | RefKind::Tag => false,
+                .find(|branch| branch.name() == &*target.name),
+            RefKind::Remote | RefKind::Tag => None,
         };
+        let has_tracked_branch = local_branch.is_some_and(|branch| branch.upstream.is_some());
+        let tracked_branch = local_branch.and_then(ref_menu::tracked_remote_branch);
+        let other_worktree = local_branch.and_then(|branch| {
+            ref_menu::worktree_with_branch(branch.name(), &self.data.other_worktrees)
+        });
 
         let tag_commit_sha = match target.kind {
             RefKind::Tag => self
@@ -796,7 +1355,10 @@ impl BranchesDelegate {
             has_commits: self.data.has_commits,
             remotes: &self.data.remote_names,
             has_tracked_branch,
-            fetching: self.fetching,
+            tracked_branch: tracked_branch.as_deref(),
+            other_worktree,
+            fetching: self.fetching(cx),
+            protected_branches: &protected_branches,
         })
     }
 }
@@ -807,17 +1369,38 @@ impl Drop for BranchesDelegate {
     }
 }
 
+fn text_width(
+    text: &str,
+    font_size: Pixels,
+    text_style: &TextStyle,
+    window: &mut Window,
+) -> Pixels {
+    if text.is_empty() {
+        return px(0.);
+    }
+    let run = text_style.to_run(text.len());
+    window
+        .text_system()
+        .shape_line(
+            SharedString::from(text.to_string()),
+            font_size,
+            &[run],
+            None,
+        )
+        .width
+}
+
 fn chevron(expanded: bool) -> Icon {
     Icon::new(if expanded {
         IconName::ChevronDown
     } else {
         IconName::ChevronRight
     })
-    .size(IconSize::Small)
+    .size(ROW_ICON_SIZE)
     .color(Color::Muted)
 }
 
-fn icon_slot(icon: Option<Icon>) -> AnyElement {
+fn icon_slot(icon: Option<impl IntoElement>) -> AnyElement {
     h_flex()
         .flex_none()
         .size(rems_from_px(ICON_SLOT_PX))
@@ -840,6 +1423,33 @@ fn base_row(ix: usize, selected: bool) -> ListItem {
         .toggle_state(selected)
 }
 
+fn menu_arrow(ix: usize) -> IconButton {
+    IconButton::new(("branches-popup-ref-arrow", ix), IconName::MenuArrow)
+        .icon_size(IconSize::XSmall)
+        .icon_color(Color::Muted)
+        .style(ButtonStyle::Transparent)
+}
+
+/// Where a ref submenu opens relative to the arrow it is attached to: IntelliJ shows it 2 px
+/// left of the popup's right edge, level with the row (`GitBranchesPopupBase.handleNextStep`).
+/// The arrow sits inside the row's pill and content padding and is centered in the row; the
+/// popup's 1 px border lies outside the row.
+pub fn ref_menu_offset() -> gpui::Point<Pixels> {
+    let metrics = ui::PopupRowMetrics::for_style(ui::PopupRowStyle::List);
+    let arrow_to_row_right = metrics.pill_inset_x + metrics.content_padding_x;
+    let arrow_height = px(22.);
+    let arrow_top_in_row = (px(ROW_HEIGHT_PX) - arrow_height) / 2.;
+    point(arrow_to_row_right - px(1.), -arrow_top_in_row)
+}
+
+fn highlighted(label: &SharedString, positions: &[usize], cx: &App) -> HighlightedLabel {
+    HighlightedLabel::new(
+        label.clone(),
+        char_positions_to_byte_offsets(label, positions),
+    )
+    .highlight_style(search_match_style(cx))
+}
+
 fn render_separator() -> AnyElement {
     h_flex()
         .w_full()
@@ -849,10 +1459,15 @@ fn render_separator() -> AnyElement {
         .into_any_element()
 }
 
-fn render_section_row(ix: usize, selected: bool, section: &SectionRow) -> AnyElement {
+fn render_section_row(
+    ix: usize,
+    selected: bool,
+    section: &SectionRow,
+    repository_name: Option<&str>,
+) -> AnyElement {
     base_row(ix, selected)
         .start_slot(icon_slot(Some(chevron(section.expanded))))
-        .child(Label::new(section.kind.label()))
+        .child(Label::new(section.kind.title(repository_name)).truncate())
         .into_any_element()
 }
 
@@ -865,42 +1480,39 @@ fn render_folder_row(ix: usize, selected: bool, folder: &FolderRow) -> AnyElemen
                 .child(icon_slot(Some(chevron(folder.expanded))))
                 .child(icon_slot(Some(
                     Icon::new(FOLDER_ICON)
-                        .size(IconSize::Small)
+                        .size(ROW_ICON_SIZE)
                         .color(Color::Muted),
                 ))),
         )
-        .child(Label::new(folder.label.clone()))
+        .child(Label::new(folder.label.clone()).truncate())
         .into_any_element()
 }
 
-fn render_repository_row(ix: usize, selected: bool, row: &RepositoryRow) -> AnyElement {
+/// `GitDefaultBranchesTreeRenderer`: a repository row shows the repository color, its branch as
+/// secondary text, and the arrow of its nested popup.
+fn render_repository_row(ix: usize, selected: bool, row: &RepositoryRow, cx: &App) -> AnyElement {
     let choice = &row.choice;
-    let name_color = if choice.is_active {
-        Color::Accent
-    } else {
-        Color::Default
-    };
+    let color = div()
+        .size(rems_from_px(REPOSITORY_COLOR_SIDE_PX))
+        .rounded(px(REPOSITORY_COLOR_RADIUS_PX))
+        .bg(repository_color(choice.color_index, cx));
     base_row(ix, selected)
-        .start_slot(icon_slot(Some(
-            Icon::new(IconName::Folder)
-                .size(IconSize::Small)
-                .color(Color::Muted),
-        )))
+        .start_slot(icon_slot(Some(color)))
         .child(
             h_flex()
                 .w_full()
-                .gap_2()
+                .min_w_0()
                 .child(
-                    HighlightedLabel::new(
-                        choice.name.clone(),
-                        char_positions_to_byte_offsets(&choice.name, &row.highlight_positions),
-                    )
-                    .color(name_color),
+                    h_flex()
+                        .min_w_0()
+                        .flex_shrink_1()
+                        .child(highlighted(&choice.name, &row.highlight_positions, cx).truncate()),
                 )
                 .child(
                     h_flex()
                         .flex_1()
                         .min_w_0()
+                        .pl(rems_from_px(SECONDARY_TEXT_MARGIN_LEFT_PX))
                         .justify_end()
                         .overflow_hidden()
                         .children(
@@ -911,7 +1523,33 @@ fn render_repository_row(ix: usize, selected: bool, row: &RepositoryRow) -> AnyE
                         ),
                 ),
         )
+        .end_slot(menu_arrow(ix))
         .into_any_element()
+}
+
+fn render_commit_counter(
+    icon: IconName,
+    count: u32,
+    color: Hsla,
+    margin_left: f32,
+    margin_right: f32,
+) -> impl IntoElement {
+    h_flex()
+        .flex_none()
+        .mt(rems_from_px(COUNTER_MARGIN_TOP_PX))
+        .ml(rems_from_px(margin_left))
+        .mr(rems_from_px(margin_right))
+        .gap(rems_from_px(COUNTER_ICON_TEXT_GAP_PX))
+        .child(
+            Icon::new(icon)
+                .size(ROW_ICON_SIZE)
+                .color(Color::Custom(color)),
+        )
+        .child(
+            Label::new(commit_count_label(count))
+                .size(LabelSize::Small)
+                .color(Color::Custom(color)),
+        )
 }
 
 impl BranchesDelegate {
@@ -930,7 +1568,7 @@ impl BranchesDelegate {
         };
         let icon = action.icon.map(|icon| {
             Icon::new(icon)
-                .size(IconSize::Small)
+                .size(ROW_ICON_SIZE)
                 .color(if action.enabled {
                     Color::Muted
                 } else {
@@ -948,11 +1586,9 @@ impl BranchesDelegate {
         base_row(ix, selected)
             .start_slot(icon_slot(icon))
             .child(
-                HighlightedLabel::new(
-                    action.label.clone(),
-                    char_positions_to_byte_offsets(&action.label, highlight_positions),
-                )
-                .color(label_color),
+                highlighted(&action.label, highlight_positions, cx)
+                    .color(label_color)
+                    .truncate(),
             )
             .when_some(shortcut, |item, shortcut| item.end_slot(shortcut))
             .when_some(disabled_reason, |item, reason| {
@@ -970,44 +1606,21 @@ impl BranchesDelegate {
     ) -> AnyElement {
         let row: &RefRow = &entry.row;
         let is_tag = row.target.kind == RefKind::Tag;
-        let offers_favorite_on_hover = !row.is_favorite;
-        let icon_name = ref_icon(row.is_current, row.is_favorite, is_tag);
-        let icon_color = if row.is_current || row.is_favorite {
+        let icon_name = ref_row_icon(row.is_current, row.is_favorite, is_tag, selected);
+        let icon_color = if icon_name == IconName::FavoriteOutline {
+            Color::Muted
+        } else if row.is_current || row.is_favorite {
             Color::Warning
         } else {
             Color::Muted
         };
-        let base_icon = Icon::new(icon_name).size(IconSize::Small).color(icon_color);
 
-        let icon_area = div()
+        let icon_area = h_flex()
             .id(("branches-popup-ref-icon", ix))
-            .relative()
             .flex_none()
             .size(rems_from_px(ICON_SLOT_PX))
-            .child(
-                h_flex()
-                    .absolute()
-                    .inset_0()
-                    .justify_center()
-                    .when(offers_favorite_on_hover, |this| {
-                        this.group_hover(ROW_GROUP, |style| style.invisible())
-                    })
-                    .child(base_icon),
-            )
-            .when(offers_favorite_on_hover, |this| {
-                this.child(
-                    h_flex()
-                        .absolute()
-                        .inset_0()
-                        .justify_center()
-                        .visible_on_hover(ROW_GROUP)
-                        .child(
-                            Icon::new(IconName::FavoriteOutline)
-                                .size(IconSize::Small)
-                                .color(Color::Muted),
-                        ),
-                )
-            })
+            .justify_center()
+            .child(Icon::new(icon_name).size(ROW_ICON_SIZE).color(icon_color))
             .cursor_pointer()
             .on_click(cx.listener(move |picker, _, window, cx| {
                 cx.stop_propagation();
@@ -1016,57 +1629,37 @@ impl BranchesDelegate {
                 }
             }));
 
-        let label = HighlightedLabel::new(
-            row.label.clone(),
-            char_positions_to_byte_offsets(&row.label, &row.highlight_positions),
-        )
-        .flex_none();
+        let label = h_flex()
+            .debug_selector(move || format!("branches-popup-ref-label-{ix}"))
+            .min_w_0()
+            .flex_shrink_1()
+            .child(highlighted(&row.label, &row.highlight_positions, cx).truncate());
 
         let has_commit_counts = row.incoming > 0 || row.outgoing > 0;
-        let counters_tooltip = commit_counts_tooltip(row.incoming, row.outgoing);
-        let counters = h_flex()
-            .id(("branches-popup-ref-counters", ix))
-            .flex_none()
-            .gap_1()
-            .when(row.incoming > 0, |this| {
-                this.child(
-                    h_flex()
-                        .gap_0p5()
-                        .child(
-                            Icon::new(IconName::IncomingCommits)
-                                .size(IconSize::XSmall)
-                                .color(Color::Info),
-                        )
-                        .child(
-                            Label::new(commit_count_label(row.incoming))
-                                .size(LabelSize::XSmall)
-                                .color(Color::Info),
-                        ),
-                )
-            })
-            .when(row.outgoing > 0, |this| {
-                this.child(
-                    h_flex()
-                        .gap_0p5()
-                        .child(
-                            Icon::new(IconName::OutgoingCommits)
-                                .size(IconSize::XSmall)
-                                .color(Color::Success),
-                        )
-                        .child(
-                            Label::new(commit_count_label(row.outgoing))
-                                .size(LabelSize::XSmall)
-                                .color(Color::Success),
-                        ),
-                )
-            })
-            .when(has_commit_counts, |this| {
-                this.tooltip(Tooltip::text(counters_tooltip))
-            });
+        let (incoming_color, outgoing_color) = commit_counter_colors(cx);
+        let incoming = (row.incoming > 0).then(|| {
+            render_commit_counter(
+                IconName::IncomingCommits,
+                row.incoming,
+                incoming_color,
+                INCOMING_MARGIN_LEFT_PX,
+                INCOMING_MARGIN_RIGHT_PX,
+            )
+        });
+        let outgoing = (row.outgoing > 0).then(|| {
+            render_commit_counter(
+                IconName::OutgoingCommits,
+                row.outgoing,
+                outgoing_color,
+                OUTGOING_MARGIN_LEFT_PX,
+                OUTGOING_MARGIN_RIGHT_PX,
+            )
+        });
 
         let tracked = h_flex()
             .flex_1()
             .min_w_0()
+            .pl(rems_from_px(SECONDARY_TEXT_MARGIN_LEFT_PX))
             .justify_end()
             .overflow_hidden()
             .children(
@@ -1082,19 +1675,25 @@ impl BranchesDelegate {
                 h_flex()
                     .gap_1()
                     .child(indent(row.depth))
-                    .child(icon_slot(None))
+                    .child(icon_slot(None::<Icon>))
                     .child(icon_area),
             )
             .child(
                 h_flex()
                     .w_full()
                     .min_w_0()
-                    .gap_2()
                     .child(label)
-                    .child(counters)
+                    .children(incoming)
+                    .children(outgoing)
                     .child(tracked),
             )
             .end_slot(arrow)
+            .when(has_commit_counts, |item| {
+                item.tooltip(Tooltip::text(commit_counts_tooltip(
+                    row.incoming,
+                    row.outgoing,
+                )))
+            })
             .into_any_element()
     }
 
@@ -1104,16 +1703,13 @@ impl BranchesDelegate {
         entry: &RefEntry,
         cx: &mut Context<Picker<Self>>,
     ) -> AnyElement {
-        let trigger = IconButton::new(("branches-popup-ref-arrow", ix), IconName::MenuArrow)
-            .icon_size(IconSize::XSmall)
-            .icon_color(Color::Muted)
-            .style(ButtonStyle::Transparent);
+        let trigger = menu_arrow(ix);
         let Some(context) = self.branch_context() else {
             return trigger.into_any_element();
         };
 
         let target = entry.row.target.clone();
-        let plan = self.menu_plan_for(&target);
+        let plan = self.menu_plan_for(&target, cx);
         let picker = cx.weak_entity();
         let dismiss: Rc<dyn Fn(&mut Window, &mut App)> =
             Rc::new(move |_window: &mut Window, cx: &mut App| {
@@ -1124,29 +1720,34 @@ impl BranchesDelegate {
                     .ok();
             });
 
-        PopoverMenu::new(("branches-popup-ref-menu", ix))
-            .with_handle(entry.menu_handle.clone())
-            .trigger(trigger)
-            .menu(move |window, cx| {
-                Some(ref_menu::build_ref_menu(
-                    plan.clone(),
-                    MenuRunner {
-                        context: context.clone(),
-                        target: target.clone(),
-                        dismiss: dismiss.clone(),
-                    },
-                    window,
-                    cx,
-                ))
-            })
-            .anchor(Anchor::TopLeft)
-            .attach(Anchor::TopRight)
-            .offset(point(px(2.), px(-4.)))
+        div()
+            .debug_selector(move || format!("branches-popup-ref-arrow-{ix}"))
+            .child(
+                PopoverMenu::new(("branches-popup-ref-menu", ix))
+                    .with_handle(entry.menu_handle.clone())
+                    .trigger(trigger)
+                    .menu(move |window, cx| {
+                        Some(ref_menu::build_ref_menu(
+                            plan.clone(),
+                            MenuRunner {
+                                context: context.clone(),
+                                target: target.clone(),
+                                dismiss: dismiss.clone(),
+                                handles_delete_shortcut: true,
+                            },
+                            window,
+                            cx,
+                        ))
+                    })
+                    .anchor(Anchor::TopLeft)
+                    .attach(Anchor::TopRight)
+                    .offset(ref_menu_offset()),
+            )
             .into_any_element()
     }
 
     fn render_fetch_button(&self, cx: &mut Context<Picker<Self>>) -> AnyElement {
-        if self.fetching {
+        if self.fetching(cx) {
             return h_flex()
                 .id("branches-popup-fetching")
                 .flex_none()
@@ -1171,7 +1772,11 @@ impl BranchesDelegate {
     }
 
     fn render_gear_button(&self, cx: &mut Context<Picker<Self>>) -> AnyElement {
-        let toggles = self.state.toggles;
+        let options = GearMenuOptions {
+            toggles: self.state.toggles,
+            several_repositories: self.section_repository_name.is_some(),
+            user_resized: self.state.size.is_some(),
+        };
         let picker = cx.weak_entity();
         PopoverMenu::new("branches-popup-gear-menu")
             .with_handle(self.gear_menu_handle.clone())
@@ -1180,7 +1785,7 @@ impl BranchesDelegate {
                     .icon_size(IconSize::Small),
                 Tooltip::text("Settings"),
             )
-            .menu(move |window, cx| Some(build_gear_menu(toggles, picker.clone(), window, cx)))
+            .menu(move |window, cx| Some(build_gear_menu(options, picker.clone(), window, cx)))
             .anchor(Anchor::TopRight)
             .attach(Anchor::BottomRight)
             .offset(point(px(0.), px(2.)))
@@ -1188,72 +1793,124 @@ impl BranchesDelegate {
     }
 }
 
-fn add_toggle(
-    menu: ContextMenu,
-    label: &'static str,
-    toggled: bool,
-    toggle: PopupToggle,
-    picker: &WeakEntity<Picker<BranchesDelegate>>,
-) -> ContextMenu {
-    let picker = picker.clone();
-    menu.toggleable_entry(
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GearMenuOptions {
+    pub toggles: state::PopupToggles,
+    pub several_repositories: bool,
+    pub user_resized: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum GearMenuItem {
+    Header(&'static str),
+    Toggle {
+        label: &'static str,
+        toggle: PopupToggle,
+        checked: bool,
+    },
+    RestorePopupSize {
+        enabled: bool,
+    },
+    Separator,
+}
+
+/// `Git.Branches.Popup.Settings`: with several repositories the search filters get an
+/// "Add in Search Results" header and a "Repositories" filter.
+pub fn gear_menu_items(options: GearMenuOptions) -> Vec<GearMenuItem> {
+    let toggles = options.toggles;
+    let toggle = |label, toggle: PopupToggle| GearMenuItem::Toggle {
         label,
-        toggled,
-        IconPosition::Start,
-        None,
-        move |window, cx| {
-            let picker = picker.clone();
-            window
-                .spawn(cx, async move |cx| {
-                    picker
-                        .update_in(cx, |picker, window, cx| {
-                            picker.delegate.toggle_setting(toggle, cx);
-                            picker.refresh_placeholder(window, cx);
-                            picker.refresh(window, cx);
-                        })
-                        .ok();
-                })
-                .detach();
-        },
-    )
+        toggle,
+        checked: toggle.get(&toggles),
+    };
+    let mut items = Vec::new();
+    if options.several_repositories {
+        items.push(GearMenuItem::Header("Add in Search Results"));
+        items.push(toggle("Actions", PopupToggle::ShowActionsInSearch));
+        items.push(toggle(
+            "Repositories",
+            PopupToggle::ShowRepositoriesInSearch,
+        ));
+    } else {
+        items.push(toggle(
+            "Show Actions in Search Results",
+            PopupToggle::ShowActionsInSearch,
+        ));
+    }
+    items.push(GearMenuItem::Separator);
+    items.push(toggle("Group by Directory", PopupToggle::GroupByDirectory));
+    items.push(toggle("Show Recent Branches", PopupToggle::ShowRecent));
+    items.push(toggle("Show Tags", PopupToggle::ShowTags));
+    items.push(GearMenuItem::RestorePopupSize {
+        enabled: options.user_resized,
+    });
+    items
+}
+
+fn update_picker_later(
+    picker: &WeakEntity<Picker<BranchesDelegate>>,
+    window: &mut Window,
+    cx: &mut App,
+    update: impl FnOnce(
+        &mut Picker<BranchesDelegate>,
+        &mut Window,
+        &mut Context<Picker<BranchesDelegate>>,
+    ) + 'static,
+) {
+    let picker = picker.clone();
+    window
+        .spawn(cx, async move |cx| {
+            picker.update_in(cx, update).ok();
+        })
+        .detach();
 }
 
 fn build_gear_menu(
-    toggles: state::PopupToggles,
+    options: GearMenuOptions,
     picker: WeakEntity<Picker<BranchesDelegate>>,
     window: &mut Window,
     cx: &mut App,
 ) -> Entity<ContextMenu> {
     ContextMenu::build(window, cx, move |menu, _, _| {
-        let menu = add_toggle(
-            menu,
-            "Show Actions in Search Results",
-            toggles.show_actions_in_search,
-            PopupToggle::ShowActionsInSearch,
-            &picker,
-        )
-        .separator();
-        let menu = add_toggle(
-            menu,
-            "Group by Directory",
-            toggles.group_by_directory,
-            PopupToggle::GroupByDirectory,
-            &picker,
-        );
-        let menu = add_toggle(
-            menu,
-            "Show Recent Branches",
-            toggles.show_recent,
-            PopupToggle::ShowRecent,
-            &picker,
-        );
-        add_toggle(
-            menu,
-            "Show Tags",
-            toggles.show_tags,
-            PopupToggle::ShowTags,
-            &picker,
-        )
+        gear_menu_items(options)
+            .into_iter()
+            .fold(menu, |menu, item| match item {
+                GearMenuItem::Header(title) => menu.header(title),
+                GearMenuItem::Separator => menu.separator(),
+                GearMenuItem::Toggle {
+                    label,
+                    toggle,
+                    checked,
+                } => {
+                    let picker = picker.clone();
+                    menu.toggleable_entry(
+                        label,
+                        checked,
+                        IconPosition::Start,
+                        None,
+                        move |window, cx| {
+                            update_picker_later(&picker, window, cx, move |picker, window, cx| {
+                                picker.delegate.toggle_setting(toggle, cx);
+                                picker.refresh_placeholder(window, cx);
+                                picker.refresh(window, cx);
+                            });
+                        },
+                    )
+                }
+                GearMenuItem::RestorePopupSize { enabled } => {
+                    let picker = picker.clone();
+                    menu.item(
+                        ui::ContextMenuEntry::new("Restore Popup Size")
+                            .disabled(!enabled)
+                            .handler(move |window, cx| {
+                                update_picker_later(&picker, window, cx, |picker, window, cx| {
+                                    picker.delegate.restore_popup_size(cx);
+                                    picker.refresh(window, cx);
+                                });
+                            }),
+                    )
+                }
+            })
     })
 }
 
@@ -1305,14 +1962,15 @@ impl PickerDelegate for BranchesDelegate {
     fn update_matches(
         &mut self,
         query: String,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Picker<Self>>,
     ) -> Task<()> {
         let query_changed = self.query != query;
         let previous_key = self.rows.get(self.selected_index).and_then(PopupRow::key);
         self.query = query;
-        self.rebuild_rows(cx);
+        self.rebuild_rows(query_changed, cx);
         self.selected_index = self.choose_selection(previous_key, query_changed);
+        self.pack_if_requested(window, cx);
         Task::ready(())
     }
 
@@ -1373,9 +2031,7 @@ impl PickerDelegate for BranchesDelegate {
     ) -> Option<String> {
         let ix = self.selected_index;
         let row = self.rows.get(ix).cloned()?;
-        let collapsible = row.is_tree_container()
-            && row.is_expanded() == Some(true)
-            && !is_filtering(&self.query);
+        let collapsible = row.is_tree_container() && row.is_expanded() == Some(true);
         if collapsible {
             if let Some(node_id) = row.node_id() {
                 self.toggle_node(node_id, cx);
@@ -1402,6 +2058,7 @@ impl PickerDelegate for BranchesDelegate {
         cx: &mut Context<Picker<Self>>,
     ) -> Option<Div> {
         let border_color = cx.theme().colors().border_variant;
+        let text_color = self.search_text_color(cx);
         Some(
             v_flex().w_full().child(
                 h_flex()
@@ -1424,7 +2081,12 @@ impl PickerDelegate for BranchesDelegate {
                                     .size(IconSize::Small)
                                     .color(Color::Muted),
                             )
-                            .child(div().flex_1().min_w_0().child(editor.render(window, cx))),
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .child(editor.render_with_text_color(text_color, window, cx)),
+                            ),
                     )
                     .child(
                         h_flex()
@@ -1453,9 +2115,14 @@ impl PickerDelegate for BranchesDelegate {
                 ..
             } => self.render_action_row(ix, selected, action, highlight_positions, cx),
             PopupRow::Repository(repository_row) => {
-                render_repository_row(ix, selected, repository_row)
+                render_repository_row(ix, selected, repository_row, cx)
             }
-            PopupRow::Section(section) => render_section_row(ix, selected, section),
+            PopupRow::Section(section) => render_section_row(
+                ix,
+                selected,
+                section,
+                self.section_repository_name.as_deref(),
+            ),
             PopupRow::Folder(folder) => render_folder_row(ix, selected, folder),
             PopupRow::Ref(entry) => self.render_ref_row(ix, selected, entry, cx),
         })

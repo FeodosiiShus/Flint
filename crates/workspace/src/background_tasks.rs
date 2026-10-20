@@ -104,6 +104,16 @@ impl Workspace {
         cx.notify();
     }
 
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn background_task_titles(&self, cx: &App) -> Vec<SharedString> {
+        self.background_tasks
+            .entries
+            .iter()
+            .filter_map(|entry| entry.indicator.read(cx).task.upgrade())
+            .map(|task| task.read(cx).title().clone())
+            .collect()
+    }
+
     pub(crate) fn render_background_tasks(&self) -> Option<Div> {
         let entries = &self.background_tasks.entries;
         if entries.is_empty() {

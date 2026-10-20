@@ -18,7 +18,6 @@ const DIALOG_WIDTH: f32 = 34.;
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum RenameValidation {
-    Unchanged,
     Valid(String),
     Invalid(String),
 }
@@ -32,9 +31,6 @@ pub fn validate_rename(
     let name = clean_up_branch_name_on_apply(input);
     if name.is_empty() {
         return RenameValidation::Invalid("Specify name for the new branch".to_string());
-    }
-    if name == old_name {
-        return RenameValidation::Unchanged;
     }
     if name.eq_ignore_ascii_case("HEAD") {
         return RenameValidation::Invalid("HEAD is a reserved keyword".to_string());
@@ -67,8 +63,10 @@ pub fn validate_rename(
             "Branch name {name} conflicts with local branch {branch}"
         ));
     }
-    if local_branches.iter().any(|local| local.as_ref() == name) {
-        return RenameValidation::Invalid(format!("Branch name {name} already exists."));
+    // IntelliJ validates a rename like a new branch, so the unchanged name is
+    // reported as the existing branch it is.
+    if name == old_name || local_branches.iter().any(|local| local.as_ref() == name) {
+        return RenameValidation::Invalid(format!("Branch name {name} already exists"));
     }
     RenameValidation::Valid(name)
 }
@@ -161,7 +159,6 @@ impl RenameBranchDialog {
                 );
                 cx.emit(DismissEvent);
             }
-            RenameValidation::Unchanged => cx.emit(DismissEvent),
             RenameValidation::Invalid(_) => {}
         }
     }
@@ -182,7 +179,7 @@ impl Render for RenameBranchDialog {
         let validation = self.validation(cx);
         let error_message = match &validation {
             RenameValidation::Invalid(message) => Some(message.clone()),
-            RenameValidation::Unchanged | RenameValidation::Valid(_) => None,
+            RenameValidation::Valid(_) => None,
         };
         let can_rename = matches!(validation, RenameValidation::Valid(_));
 
@@ -395,10 +392,10 @@ mod tests {
     }
 
     #[test]
-    fn unchanged_name_is_not_reported_as_existing() {
+    fn unchanged_name_is_reported_as_the_existing_branch() {
         assert_eq!(
             validate_rename("main", "main", &names(&["main"]), &[]),
-            RenameValidation::Unchanged
+            RenameValidation::Invalid("Branch name main already exists".to_string())
         );
     }
 
@@ -425,7 +422,7 @@ mod tests {
     fn existing_local_branch_is_rejected() {
         assert_eq!(
             validate_rename("main", "dev", &names(&["main", "dev"]), &[]),
-            RenameValidation::Invalid("Branch name dev already exists.".to_string())
+            RenameValidation::Invalid("Branch name dev already exists".to_string())
         );
     }
 

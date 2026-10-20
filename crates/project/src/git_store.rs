@@ -46,10 +46,10 @@ use git::{
         DiffStatType, DiffType, FetchOptions, FileHistoryChangedFileSets, GitCommitTemplate,
         GitRepository, GitRepositoryCheckpoint, GitUser, InitialGraphCommitData, LogFilter,
         LogOrder, LogSource, LogTextFilter, MergeOutcome, PushOptions, RebaseAction, RebaseOutcome,
-        Remote, RemoteCommandOutput, RemoteProgressSender, RepoPath, RepositoryOperation,
-        ResetMode, RevertOutcome, SearchCommitArgs, Tag, UnmergedEntry, UnmergedStagePresence,
-        UpstreamTrackingStatus, Worktree as GitWorktree, conflicts_with_side, delete_branch_flag,
-        is_binary_content, split_conflicts_for_resolution,
+        Remote, RemoteCommandOutput, RemoteProgressSender, RemoteTagTarget, RepoPath,
+        RepositoryOperation, ResetMode, RevertOutcome, SearchCommitArgs, Tag, UnmergedEntry,
+        UnmergedStagePresence, UpstreamTrackingStatus, Worktree as GitWorktree,
+        conflicts_with_side, delete_branch_flag, is_binary_content, split_conflicts_for_resolution,
     },
     stash::{GitStash, StashEntry},
     status::{
@@ -10448,6 +10448,19 @@ impl Repository {
         })
     }
 
+    pub fn rebased_branch(&mut self) -> oneshot::Receiver<Result<Option<String>>> {
+        self.send_job("rebased_branch", None, move |repo, _cx| async move {
+            match repo {
+                RepositoryState::Local(LocalRepositoryState { backend, .. }) => {
+                    backend.rebased_branch().await
+                }
+                RepositoryState::Remote(_) => Err(anyhow!(
+                    "reading the rebased branch is not supported for remote repositories"
+                )),
+            }
+        })
+    }
+
     pub fn checkout_detached(&mut self, revision: String) -> oneshot::Receiver<Result<()>> {
         self.send_job(
             "checkout_detached",
@@ -10835,6 +10848,143 @@ impl Repository {
                     }
                     RepositoryState::Remote(_) => Err(anyhow!(
                         "pushing a tag is not supported for remote repositories"
+                    )),
+                }
+            },
+        )
+    }
+
+    pub fn remote_tag_target(
+        &mut self,
+        remote: String,
+        tag: String,
+        askpass: AskPassDelegate,
+    ) -> oneshot::Receiver<Result<Option<RemoteTagTarget>>> {
+        self.send_job(
+            "remote_tag_target",
+            Some(format!("git ls-remote --tags {remote} refs/tags/{tag}").into()),
+            move |repo, cx| async move {
+                match repo {
+                    RepositoryState::Local(LocalRepositoryState {
+                        backend,
+                        environment,
+                        ..
+                    }) => {
+                        backend
+                            .remote_tag_target(remote, tag, askpass, environment.clone(), cx)
+                            .await
+                    }
+                    RepositoryState::Remote(_) => Err(anyhow!(
+                        "listing remote tags is not supported for remote repositories"
+                    )),
+                }
+            },
+        )
+    }
+
+    pub fn delete_remote_tag(
+        &mut self,
+        remote: String,
+        tag: String,
+        expected_object: String,
+        askpass: AskPassDelegate,
+    ) -> oneshot::Receiver<Result<RemoteCommandOutput>> {
+        self.send_job(
+            "delete_remote_tag",
+            Some(format!("git push {remote} :refs/tags/{tag}").into()),
+            move |repo, cx| async move {
+                match repo {
+                    RepositoryState::Local(LocalRepositoryState {
+                        backend,
+                        environment,
+                        ..
+                    }) => {
+                        backend
+                            .delete_remote_tag(
+                                remote,
+                                tag,
+                                expected_object,
+                                askpass,
+                                environment.clone(),
+                                cx,
+                            )
+                            .await
+                    }
+                    RepositoryState::Remote(_) => Err(anyhow!(
+                        "deleting a remote tag is not supported for remote repositories"
+                    )),
+                }
+            },
+        )
+    }
+
+    pub fn checkout_ignoring_other_worktrees(
+        &mut self,
+        name: String,
+        force: bool,
+    ) -> oneshot::Receiver<Result<()>> {
+        let force_flag = if force { "--force " } else { "" };
+        self.send_job(
+            "checkout_ignoring_other_worktrees",
+            Some(format!("git checkout {force_flag}--ignore-other-worktrees {name}").into()),
+            move |repo, _cx| async move {
+                match repo {
+                    RepositoryState::Local(LocalRepositoryState { backend, .. }) => {
+                        backend.checkout_ignoring_other_worktrees(name, force).await
+                    }
+                    RepositoryState::Remote(_) => Err(anyhow!(
+                        "checking out a branch used by another worktree is not supported for remote repositories"
+                    )),
+                }
+            },
+        )
+    }
+
+    pub fn abort_operation(
+        &mut self,
+        operation: RepositoryOperation,
+    ) -> oneshot::Receiver<Result<()>> {
+        let command = match operation {
+            RepositoryOperation::Merge => "merge",
+            RepositoryOperation::Rebase => "rebase",
+            RepositoryOperation::CherryPick => "cherry-pick",
+            RepositoryOperation::Revert => "revert",
+        };
+        self.send_job(
+            "abort_operation",
+            Some(format!("git {command} --abort").into()),
+            move |repo, _cx| async move {
+                match repo {
+                    RepositoryState::Local(LocalRepositoryState {
+                        backend,
+                        environment,
+                        ..
+                    }) => {
+                        backend
+                            .abort_operation(operation, environment.clone())
+                            .await
+                    }
+                    RepositoryState::Remote(_) => Err(anyhow!(
+                        "aborting an operation is not supported for remote repositories"
+                    )),
+                }
+            },
+        )
+    }
+
+    pub fn continue_cherry_pick(&mut self) -> oneshot::Receiver<Result<CherryPickOutcome>> {
+        self.send_job(
+            "continue_cherry_pick",
+            Some(SharedString::new_static("git cherry-pick --continue")),
+            move |repo, _cx| async move {
+                match repo {
+                    RepositoryState::Local(LocalRepositoryState {
+                        backend,
+                        environment,
+                        ..
+                    }) => backend.continue_cherry_pick(environment.clone()).await,
+                    RepositoryState::Remote(_) => Err(anyhow!(
+                        "continuing a cherry-pick is not supported for remote repositories"
                     )),
                 }
             },

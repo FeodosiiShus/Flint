@@ -349,6 +349,9 @@ pub struct LocalLspStore {
     server_activation: Arc<ServerActivationGate>,
     _maintain_server_activation: Task<()>,
     registered_buffers: HashMap<BufferId, usize>,
+    /// Buffers whose first registration only reached some of their servers, so the next
+    /// unfiltered registration still has to open them in the rest.
+    partially_registered_buffers: HashSet<BufferId>,
     buffers_opened_in_servers: HashMap<BufferId, HashSet<LanguageServerId>>,
     /// Open buffers kept away from language servers because their file is in an excluded
     /// directory, so they can be opened in the servers once the directory is no longer excluded.
@@ -875,18 +878,21 @@ impl LocalLspStore {
                     }?
                 }
             };
-            let mut shell_env = delegate.shell_env().await;
-
-            shell_env.extend(binary.env.unwrap_or_default());
-
-            if let Some(settings) = settings.binary.as_ref() {
-                if let Some(arguments) = &settings.arguments {
-                    binary.arguments = arguments.iter().map(Into::into).collect();
-                }
-                if let Some(env) = &settings.env {
-                    shell_env.extend(env.iter().map(|(k, v)| (k.clone(), v.clone())));
-                }
+            adapter
+                .adapter
+                .apply_settings_to_server_binary(&mut binary, settings.settings.as_ref());
+            let user_binary_settings = settings.binary.as_ref();
+            if let Some(arguments) =
+                user_binary_settings.and_then(|binary_settings| binary_settings.arguments.as_ref())
+            {
+                binary.arguments = arguments.iter().map(Into::into).collect();
             }
+            let mut shell_env = language_server_env(
+                delegate.shell_env().await,
+                adapter.adapter.default_server_env(),
+                binary.env.take(),
+                user_binary_settings.and_then(|binary_settings| binary_settings.env.as_ref()),
+            );
 
             apply_dotnet_root_fallback(&mut shell_env, fs.as_ref()).await;
             binary.env = Some(shell_env);
@@ -4569,6 +4575,7 @@ pub struct LspStore {
     semantic_token_config: SemanticTokenConfig,
     lsp_data: HashMap<BufferId, BufferLspData>,
     buffer_reload_tasks: HashMap<BufferId, Task<anyhow::Result<()>>>,
+    buffer_save_diagnostics_pulls: HashMap<BufferId, Task<()>>,
     next_hint_id: Arc<AtomicUsize>,
 }
 
@@ -4938,6 +4945,7 @@ impl LspStore {
                 _maintain_server_activation: maintain_server_activation,
                 toolchain_store,
                 registered_buffers: HashMap::default(),
+                partially_registered_buffers: HashSet::default(),
                 buffers_opened_in_servers: HashMap::default(),
                 buffers_in_excluded_directories: HashSet::default(),
                 buffer_pull_diagnostics_result_ids: HashMap::default(),
@@ -4962,6 +4970,7 @@ impl LspStore {
             semantic_token_config: SemanticTokenConfig::new(cx),
             lsp_data: HashMap::default(),
             buffer_reload_tasks: HashMap::default(),
+            buffer_save_diagnostics_pulls: HashMap::default(),
             next_hint_id: Arc::default(),
             active_entry: None,
             _maintain_workspace_config,
@@ -5293,7 +5302,13 @@ impl LspStore {
                 return handle;
             }
 
-            if ignore_refcounts || *refcount == 1 {
+            let first_registration = *refcount == 1;
+            let widens_partial_registration = only_register_servers.is_empty()
+                && local.partially_registered_buffers.remove(&buffer_id);
+            if first_registration && !ignore_refcounts && !only_register_servers.is_empty() {
+                local.partially_registered_buffers.insert(buffer_id);
+            }
+            if ignore_refcounts || first_registration || widens_partial_registration {
                 local.register_buffer_with_language_servers(buffer, only_register_servers, cx);
             }
             if !ignore_refcounts {
@@ -5311,8 +5326,10 @@ impl LspStore {
                     if refcount == 0 {
                         lsp_store.lsp_data.remove(&buffer_id);
                         lsp_store.buffer_reload_tasks.remove(&buffer_id);
+                        lsp_store.buffer_save_diagnostics_pulls.remove(&buffer_id);
                         let local = lsp_store.as_local_mut().unwrap();
                         local.registered_buffers.remove(&buffer_id);
+                        local.partially_registered_buffers.remove(&buffer_id);
 
                         local.buffers_opened_in_servers.remove(&buffer_id);
                         local.buffers_in_excluded_directories.remove(&buffer_id);
@@ -8527,9 +8544,16 @@ impl LspStore {
             })
         } else {
             let servers = buffer.update(cx, |buffer, cx| {
-                self.running_language_servers_for_local_buffer(buffer, cx)
+                let mut servers = self
+                    .running_language_servers_for_local_buffer(buffer, cx)
                     .map(|(adapter, server)| (adapter.clone(), server.clone()))
-                    .collect::<Vec<_>>()
+                    .collect::<Vec<_>>();
+                if buffer.is_dirty() {
+                    servers.retain(|(adapter, _)| {
+                        !server_pulls_diagnostics_only_on_save(adapter, buffer, cx)
+                    });
+                }
+                servers
             });
 
             let pull_diagnostics = servers
@@ -9646,8 +9670,27 @@ impl LspStore {
         let language_servers = buffer.update(cx, |buffer, cx| {
             local.language_server_ids_for_buffer(buffer, cx)
         });
+        let pulls_saved_diagnostics = buffer.update(cx, |buffer, cx| {
+            let adapters = local
+                .language_servers_for_buffer(buffer, cx)
+                .map(|(adapter, _)| adapter.clone())
+                .collect::<Vec<_>>();
+            adapters
+                .iter()
+                .any(|adapter| server_pulls_diagnostics_only_on_save(adapter, buffer, cx))
+        });
         for language_server_id in language_servers {
             self.simulate_disk_based_diagnostics_events_if_needed(language_server_id, cx);
+        }
+        if pulls_saved_diagnostics {
+            let buffer_id = buffer.read(cx).remote_id();
+            let pull = self.pull_diagnostics_for_buffer(buffer, cx);
+            self.buffer_save_diagnostics_pulls.insert(
+                buffer_id,
+                cx.spawn(async move |_, _| {
+                    pull.await.log_err();
+                }),
+            );
         }
 
         None
@@ -16783,6 +16826,47 @@ fn user_dotnet_root(home_dir: &Path) -> PathBuf {
     home_dir.join(".dotnet")
 }
 
+fn server_pulls_diagnostics_only_on_save(
+    adapter: &CachedLspAdapter,
+    buffer: &Buffer,
+    cx: &App,
+) -> bool {
+    let settings = File::from_dyn(buffer.file()).and_then(|file| {
+        language_server_settings_for(
+            SettingsLocation {
+                worktree_id: file.worktree_id(cx),
+                path: file.path(),
+            },
+            &adapter.name,
+            cx,
+        )
+    });
+    adapter
+        .adapter
+        .pulls_diagnostics_only_on_save(settings.and_then(|settings| settings.settings.as_ref()))
+}
+
+/// Adapter defaults override the shell environment, and the user's `binary.env` overrides both.
+fn language_server_env(
+    mut shell_env: HashMap<String, String>,
+    default_env: HashMap<String, String>,
+    adapter_env: Option<HashMap<String, String>>,
+    user_env: Option<&BTreeMap<String, String>>,
+) -> HashMap<String, String> {
+    for (name, value) in default_env {
+        shell_env.entry(name).or_insert(value);
+    }
+    shell_env.extend(adapter_env.unwrap_or_default());
+    if let Some(user_env) = user_env {
+        shell_env.extend(
+            user_env
+                .iter()
+                .map(|(name, value)| (name.clone(), value.clone())),
+        );
+    }
+    shell_env
+}
+
 fn dotnet_root_fallback(
     env: &HashMap<String, String>,
     home_dir: &Path,
@@ -16811,6 +16895,35 @@ async fn apply_dotnet_root_fallback(env: &mut HashMap<String, String>, fs: &dyn 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn adapter_default_env_never_overrides_the_shell_or_the_user_binary_env() {
+        let default_env = HashMap::from_iter([("GOMEMLIMIT".to_string(), "4096MiB".to_string())]);
+        let shell_env = HashMap::from_iter([("PATH".to_string(), "/usr/bin".to_string())]);
+
+        let env = language_server_env(shell_env.clone(), default_env.clone(), None, None);
+        assert_eq!(env.get("GOMEMLIMIT").map(String::as_str), Some("4096MiB"));
+        assert_eq!(env.get("PATH").map(String::as_str), Some("/usr/bin"));
+
+        let mut shell_env_with_limit = shell_env.clone();
+        shell_env_with_limit.insert("GOMEMLIMIT".to_string(), "1GiB".to_string());
+        let env = language_server_env(shell_env_with_limit, default_env.clone(), None, None);
+        assert_eq!(
+            env.get("GOMEMLIMIT").map(String::as_str),
+            Some("1GiB"),
+            "a GOMEMLIMIT exported in the shell or by direnv must win over the adapter's default"
+        );
+
+        let adapter_env = HashMap::from_iter([("PATH".to_string(), "/servers/bin".to_string())]);
+        let user_env = BTreeMap::from_iter([("GOMEMLIMIT".to_string(), "6GiB".to_string())]);
+        let env = language_server_env(shell_env, default_env, Some(adapter_env), Some(&user_env));
+        assert_eq!(
+            env.get("GOMEMLIMIT").map(String::as_str),
+            Some("6GiB"),
+            "lsp.<server>.binary.env must win over the adapter's default"
+        );
+        assert_eq!(env.get("PATH").map(String::as_str), Some("/servers/bin"));
+    }
 
     #[test]
     fn dotnet_root_inserts_user_dotnet_directory_when_unset_and_installed() {

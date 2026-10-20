@@ -2,6 +2,7 @@ use git::repository::RepositoryOperation;
 use gpui::{Action, App, SharedString, Window};
 use ui::IconName;
 
+use super::ref_menu;
 use super::tree;
 use crate::branch_operations::BranchContext;
 use crate::branch_operations::checkout;
@@ -12,7 +13,7 @@ use crate::branch_operations::ongoing::{self, OngoingOperationAction};
 pub const NEW_BRANCH_IN_EMPTY_REPOSITORY_TOOLTIP: &str =
     "Cannot create new branch in empty repository. Make initial commit first";
 pub const CHECKOUT_IN_EMPTY_REPOSITORY_TOOLTIP: &str =
-    "Cannot checkout in empty repository. Make initial commit first";
+    "Checkout is not possible before the first commit.";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TopActionKind {
@@ -21,6 +22,7 @@ pub enum TopActionKind {
     Push,
     Ongoing(OngoingOperationAction),
     NewBranch,
+    NewWorktree,
     CheckoutTagOrRevision,
 }
 
@@ -41,7 +43,7 @@ impl TopAction {
             TopActionKind::Push => Some(git::PushDialog.boxed_clone()),
             TopActionKind::NewBranch => Some(git::NewBranch.boxed_clone()),
             TopActionKind::CheckoutTagOrRevision => Some(git::CheckoutTagOrRevision.boxed_clone()),
-            TopActionKind::Ongoing(_) => None,
+            TopActionKind::Ongoing(_) | TopActionKind::NewWorktree => None,
         }
     }
 }
@@ -103,6 +105,11 @@ pub fn top_actions_plan(input: &TopActionsInput) -> Vec<TopActionItem> {
         "New Branch…",
         Some(IconName::Plus),
     );
+    let new_worktree = action(
+        TopActionKind::NewWorktree,
+        "New Worktree…",
+        Some(IconName::GitWorktree),
+    );
     let mut checkout_revision = action(
         TopActionKind::CheckoutTagOrRevision,
         "Checkout Tag or Revision…",
@@ -115,6 +122,7 @@ pub fn top_actions_plan(input: &TopActionsInput) -> Vec<TopActionItem> {
         checkout_revision.disabled_reason = Some(CHECKOUT_IN_EMPTY_REPOSITORY_TOOLTIP);
     }
     items.push(TopActionItem::Action(new_branch));
+    items.push(TopActionItem::Action(new_worktree));
     items.push(TopActionItem::Action(checkout_revision));
     items
 }
@@ -130,10 +138,12 @@ pub fn matching_actions(plan: &[TopActionItem], query: &str) -> Vec<MatchedTopAc
     plan.iter()
         .filter_map(|item| match item {
             TopActionItem::Action(action) => {
-                tree::match_query(query, &action.label).map(|(score, positions)| MatchedTopAction {
-                    action: action.clone(),
-                    highlight_positions: positions,
-                    score,
+                tree::match_popup_query(query, &action.label).map(|(score, positions)| {
+                    MatchedTopAction {
+                        action: action.clone(),
+                        highlight_positions: positions,
+                        score,
+                    }
                 })
             }
             TopActionItem::Separator => None,
@@ -161,6 +171,7 @@ pub fn run_top_action(
             ongoing::run_ongoing_action(context, ongoing_action, window, cx)
         }
         TopActionKind::NewBranch => checkout::new_branch(context, window, cx),
+        TopActionKind::NewWorktree => ref_menu::open_worktree_picker(&context, window, cx),
         TopActionKind::CheckoutTagOrRevision => {
             checkout::checkout_tag_or_revision(context, window, cx)
         }
@@ -209,6 +220,7 @@ mod tests {
                 "Push…",
                 "---",
                 "New Branch…",
+                "New Worktree…",
                 "Checkout Tag or Revision…",
             ]
         );
@@ -227,6 +239,7 @@ mod tests {
                 "Continue Rebase",
                 "Skip Commit",
                 "New Branch…",
+                "New Worktree…",
                 "Checkout Tag or Revision…",
             ]
         );
@@ -264,11 +277,13 @@ mod tests {
     }
 
     #[test]
-    fn cherry_pick_in_progress_adds_no_ongoing_rows() {
-        assert_eq!(
-            labels(&plan(true, Some(RepositoryOperation::CherryPick))),
-            labels(&plan(true, None))
-        );
+    fn cherry_pick_and_revert_in_progress_add_their_ongoing_rows() {
+        let cherry_pick = labels(&plan(true, Some(RepositoryOperation::CherryPick)));
+        assert!(cherry_pick.contains(&"Abort Cherry-Pick".to_string()));
+        assert!(cherry_pick.contains(&"Continue Cherry-Pick".to_string()));
+        let revert = labels(&plan(true, Some(RepositoryOperation::Revert)));
+        assert!(revert.contains(&"Abort Revert".to_string()));
+        assert!(!revert.contains(&"Abort Cherry-Pick".to_string()));
     }
 
     #[test]
@@ -282,8 +297,12 @@ mod tests {
         );
         let checkout = find(&items, TopActionKind::CheckoutTagOrRevision);
         assert!(!checkout.enabled);
-        assert!(checkout.disabled_reason.is_some());
+        assert_eq!(
+            checkout.disabled_reason,
+            Some("Checkout is not possible before the first commit.")
+        );
         assert!(find(&items, TopActionKind::Commit).enabled);
+        assert!(find(&items, TopActionKind::NewWorktree).enabled);
     }
 
     #[test]
@@ -332,15 +351,49 @@ mod tests {
             .shortcut_action()
             .is_none()
         );
+        assert!(
+            find(&items, TopActionKind::NewWorktree)
+                .shortcut_action()
+                .is_none()
+        );
     }
 
     #[test]
     fn matching_actions_filters_by_fuzzy_label_and_reports_highlights() {
         let items = plan(true, None);
         let matched = matching_actions(&items, "new");
+        let kinds: Vec<TopActionKind> = matched.iter().map(|matched| matched.action.kind).collect();
+        assert_eq!(
+            kinds,
+            vec![TopActionKind::NewBranch, TopActionKind::NewWorktree]
+        );
+        assert_eq!(matched[0].highlight_positions, vec![0, 1, 2]);
+    }
+
+    #[test]
+    fn new_worktree_sits_between_new_branch_and_checkout_with_the_worktree_icon() {
+        let items = plan(true, None);
+        let labels = labels(&items);
+        let new_branch = labels.iter().position(|label| label == "New Branch…");
+        let new_worktree = labels.iter().position(|label| label == "New Worktree…");
+        let checkout = labels
+            .iter()
+            .position(|label| label == "Checkout Tag or Revision…");
+        assert_eq!(new_worktree, new_branch.map(|index| index + 1));
+        assert_eq!(checkout, new_worktree.map(|index| index + 1));
+        assert_eq!(
+            find(&items, TopActionKind::NewWorktree).icon,
+            Some(IconName::GitWorktree)
+        );
+    }
+
+    #[test]
+    fn matching_actions_use_intellij_word_starts() {
+        let matched = matching_actions(&plan(true, None), "nb");
         assert_eq!(matched.len(), 1);
         assert_eq!(matched[0].action.kind, TopActionKind::NewBranch);
-        assert_eq!(matched[0].highlight_positions, vec![0, 1, 2]);
+        assert_eq!(matched[0].highlight_positions, vec![0, 4]);
+        assert!(matching_actions(&plan(true, None), "ewb").is_empty());
     }
 
     #[test]
@@ -404,8 +457,8 @@ mod tests {
     fn matching_actions_report_a_higher_score_for_an_earlier_match() {
         let prefix = matching_actions(&plan(true, None), "new");
         let offset = matching_actions(&plan(true, None), "ew");
-        assert_eq!(prefix.len(), 1);
-        assert_eq!(offset.len(), 1);
+        assert_eq!(prefix.len(), 2);
+        assert_eq!(offset.len(), 2);
         assert!(prefix[0].score > offset[0].score);
     }
 }

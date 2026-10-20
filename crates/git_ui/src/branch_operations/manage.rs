@@ -1,18 +1,23 @@
 use anyhow::{Result, anyhow};
 use futures::channel::oneshot;
-use git::repository::{Branch, GitFailure, GitFailureKind, RemoteCommandOutput};
+use git::repository::{Branch, GitFailure, GitFailureKind, RemoteCommandOutput, RemoteTagTarget};
 use gpui::{App, AsyncWindowContext, Entity, SharedString, Window};
 use project::git_store::Repository;
 use util::ResultExt as _;
 
 use super::delete_dialogs::{DeleteRemoteBranchDialog, DeleteRemoteConfirm, UnmergedCommitsDialog};
-use super::push_dialog::PushDialog;
+use super::integrate::{
+    is_protected_branch_name, is_protected_remote_reference, protected_branch_patterns,
+};
+use super::push_dialog::{PushDialog, force_push_prohibited_message};
 use super::rename_dialog::RenameBranchDialog;
-use super::{BranchContext, BranchNotice, error_notice};
+use super::{
+    BranchContext, BranchNotice, deleting_progress_title, deleting_tag_on_remote_progress_title,
+    error_notice, renaming_progress_title,
+};
 use crate::branch_refs::{RefKind, RefTarget};
 
 const UNMERGED_COMMIT_LIMIT: usize = 200;
-const REMOTE_TAG_REF_PREFIX: &str = "refs/tags/";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DeleteDetails {
@@ -104,12 +109,36 @@ pub fn capture_delete_details(
     }
 }
 
-pub fn plan_delete_actions(details: &DeleteDetails, forced: bool) -> DeleteActionPlan {
+pub fn plan_delete_actions(
+    details: &DeleteDetails,
+    forced: bool,
+    protected_branches: &[String],
+) -> DeleteActionPlan {
     DeleteActionPlan {
         restore: details.tip.is_some(),
         view_commits: forced && details.tip.is_some(),
-        delete_tracked: details.orphaned_upstream.is_some(),
+        delete_tracked: details
+            .orphaned_upstream
+            .as_ref()
+            .is_some_and(|upstream| !is_protected_remote_reference(upstream, protected_branches)),
     }
+}
+
+/// The local branches IntelliJ offers to delete together with the given remote
+/// branches: the union of the branches tracking any of them, without repeats.
+pub fn tracking_local_branches_of_all(
+    branch_list: &[Branch],
+    remote_branches: &[SharedString],
+) -> Vec<SharedString> {
+    let mut union: Vec<SharedString> = Vec::new();
+    for remote_branch in remote_branches {
+        for branch in tracking_local_branches(branch_list, remote_branch) {
+            if !union.contains(&branch) {
+                union.push(branch);
+            }
+        }
+    }
+    union
 }
 
 pub fn tracking_local_branches(branch_list: &[Branch], remote_branch: &str) -> Vec<SharedString> {
@@ -156,8 +185,30 @@ pub fn deleted_tag_message(name: &str) -> String {
     format!("Deleted Tag: {name}")
 }
 
-pub fn deleted_tag_on_remotes_message(name: &str, remotes: &[String]) -> String {
-    format!("Deleted tag {name} on {}", remotes.join(", "))
+fn remotes_noun(remote_count: usize) -> &'static str {
+    if remote_count == 1 {
+        "Remote"
+    } else {
+        "Remotes"
+    }
+}
+
+pub fn deleted_tag_on_remotes_message(name: &str, remote_count: usize) -> String {
+    format!("Deleted Tag on {}: {name}", remotes_noun(remote_count))
+}
+
+pub fn tag_missing_on_remotes_message(name: &str, remote_count: usize) -> String {
+    format!(
+        "Tag Doesn't Exist on {}: {name}",
+        remotes_noun(remote_count)
+    )
+}
+
+pub fn failed_to_delete_tag_on_remotes_title(name: &str, remote_count: usize) -> String {
+    format!(
+        "Failed to delete tag {name} on {}",
+        remotes_noun(remote_count)
+    )
 }
 
 pub fn renamed_branch_message(old_name: &str, new_name: &str) -> String {
@@ -173,11 +224,50 @@ pub fn pushed_tag_notice(tag: &str, remote: &str, output: &RemoteCommandOutput) 
 }
 
 pub fn delete_ref(context: BranchContext, target: RefTarget, window: &mut Window, cx: &mut App) {
-    match target.kind {
-        RefKind::Local => delete_local_branch(context, target, window, cx),
-        RefKind::Remote => confirm_delete_remote_branch(context, target, window, cx),
-        RefKind::Tag => delete_tag(context, target, window, cx),
+    delete_refs(context, vec![target], window, cx);
+}
+
+/// Deletes the refs selected together like IntelliJ's branches dashboard:
+/// tags and local branches first, then every remote branch behind a single
+/// "Delete Remote Branches" confirmation.
+pub fn delete_refs(
+    context: BranchContext,
+    targets: Vec<RefTarget>,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let (remote, local_and_tags): (Vec<RefTarget>, Vec<RefTarget>) = targets
+        .into_iter()
+        .partition(|target| target.kind == RefKind::Remote);
+    if local_and_tags.is_empty() {
+        confirm_delete_remote_branches(context, remote, window, cx);
+        return;
     }
+    let names = local_and_tags
+        .iter()
+        .map(|target| target.name.clone())
+        .collect::<Vec<_>>();
+    let progress = context.start_progress(deleting_progress_title(&names), cx);
+    window
+        .spawn(cx, async move |cx| {
+            let (tags, locals): (Vec<RefTarget>, Vec<RefTarget>) = local_and_tags
+                .into_iter()
+                .partition(|target| target.kind == RefKind::Tag);
+            for tag in tags {
+                delete_tag_flow(&context, &tag, cx).await;
+            }
+            for local in locals {
+                delete_local_branch_flow(&context, &local, cx).await;
+            }
+            drop(progress);
+            if !remote.is_empty() {
+                cx.update(|window, cx| {
+                    confirm_delete_remote_branches(context.clone(), remote, window, cx)
+                })
+                .log_err();
+            }
+        })
+        .detach();
 }
 
 pub fn rename_branch(context: BranchContext, target: RefTarget, window: &mut Window, cx: &mut App) {
@@ -211,6 +301,50 @@ pub fn push_current(context: BranchContext, window: &mut Window, cx: &mut App) {
             cx,
         ),
     }
+}
+
+/// `git: force push` uses the Push dialog's guard, like IntelliJ's `ForcePushAction`: a protected
+/// target is refused, any other target asks first unless it was marked "Don't warn".
+pub fn force_push_current(context: BranchContext, window: &mut Window, cx: &mut App) {
+    let current = context.current_branch_name(cx).and_then(|name| {
+        context
+            .find_branch(&RefTarget::local(name.clone()), cx)
+            .map(|branch| (name, branch))
+    });
+    let Some((name, branch)) = current else {
+        context.notify(
+            BranchNotice::warning("There is no checked-out branch to push.").title("Cannot Push"),
+            cx,
+        );
+        return;
+    };
+    let remote_branch = branch
+        .upstream
+        .as_ref()
+        .and_then(|upstream| upstream.branch_name())
+        .map(str::to_string)
+        .unwrap_or_else(|| name.to_string());
+    if is_protected_branch_name(&remote_branch, &protected_branch_patterns(cx)) {
+        let target = match branch
+            .upstream
+            .as_ref()
+            .and_then(|upstream| upstream.remote_name())
+        {
+            Some(remote) => format!("{remote}/{remote_branch}"),
+            None => remote_branch,
+        };
+        context.notify(
+            BranchNotice::error(force_push_prohibited_message(&target)),
+            cx,
+        );
+        return;
+    }
+    let dialog_context = context.clone();
+    context.open_modal(window, cx, move |window, cx| {
+        let mut dialog = PushDialog::new(dialog_context, name, window, cx);
+        dialog.request_force_push(window, cx);
+        dialog
+    });
 }
 
 pub fn push_tag(
@@ -250,8 +384,10 @@ pub fn perform_rename(
     window: &mut Window,
     cx: &mut App,
 ) {
+    let progress = context.start_progress(renaming_progress_title(&old_name, &new_name), cx);
     window
         .spawn(cx, async move |cx| {
+            let _progress = progress;
             let rename = context.repository.update(cx, |repository, _| {
                 repository.rename_branch(old_name.to_string(), new_name.to_string())
             });
@@ -272,7 +408,9 @@ pub fn perform_rename(
                 let unset = context.repository.update(cx, |repository, _| {
                     repository.set_upstream(new_name.to_string(), None)
                 });
-                if let Err(error) = settle(unset).await {
+                if let Err(error) = settle(unset).await
+                    && !is_no_upstream_error(&error)
+                {
                     cx.update(|_window, cx| {
                         notify_failure(
                             &context,
@@ -282,6 +420,7 @@ pub fn perform_rename(
                         )
                     })
                     .log_err();
+                    return;
                 }
             }
 
@@ -296,6 +435,13 @@ pub fn perform_rename(
         .detach();
 }
 
+// IntelliJ's `GitRenameBranchOperation` ignores only this unset failure.
+fn is_no_upstream_error(error: &anyhow::Error) -> bool {
+    let text = format!("{error:#}");
+    text.lines()
+        .any(|line| line.contains("fatal:") && line.contains("has no upstream information"))
+}
+
 fn open_push_dialog(
     context: BranchContext,
     branch: SharedString,
@@ -308,51 +454,51 @@ fn open_push_dialog(
     });
 }
 
-fn delete_local_branch(
-    context: BranchContext,
-    target: RefTarget,
-    window: &mut Window,
-    cx: &mut App,
+async fn delete_local_branch_flow(
+    context: &BranchContext,
+    target: &RefTarget,
+    cx: &mut AsyncWindowContext,
 ) {
-    let Some(branch) = context.find_branch(&target, cx) else {
-        context.notify(
-            BranchNotice::error(format!("Branch {} was not found", target.name)),
-            cx,
-        );
+    let prepared = cx.update(|_window, cx| {
+        let Some(branch) = context.find_branch(target, cx) else {
+            context.notify(
+                BranchNotice::error(format!("Branch {} was not found", target.name)),
+                cx,
+            );
+            return None;
+        };
+        if branch.is_head {
+            context.notify(
+                BranchNotice::warning("The checked-out branch cannot be deleted.")
+                    .title("Cannot Delete Branch"),
+                cx,
+            );
+            return None;
+        }
+        let snapshot = context.snapshot(cx);
+        let current_branch = snapshot.branch.as_ref().map(|branch| branch.name());
+        Some((
+            capture_delete_details(&branch, &snapshot.branch_list, current_branch),
+            protected_branch_patterns(cx),
+        ))
+    });
+    let Ok(Some((details, protected_branches))) = prepared else {
         return;
     };
-    if branch.is_head {
-        context.notify(
-            BranchNotice::warning("The checked-out branch cannot be deleted.")
-                .title("Cannot Delete Branch"),
+    let outcome = delete_local_branch_with_fallback(&context.repository, &details.name, cx).await;
+    cx.update(|_window, cx| match outcome {
+        Ok(forced) => {
+            let notice = deleted_branch_notice(context, &details, forced, &protected_branches);
+            context.notify(notice, cx);
+        }
+        Err(error) => notify_failure(
+            context,
+            format!("Branch {} wasn't deleted", details.name),
+            error,
             cx,
-        );
-        return;
-    }
-
-    let snapshot = context.snapshot(cx);
-    let current_branch = snapshot.branch.as_ref().map(|branch| branch.name());
-    let details = capture_delete_details(&branch, &snapshot.branch_list, current_branch);
-
-    window
-        .spawn(cx, async move |cx| {
-            let outcome =
-                delete_local_branch_with_fallback(&context.repository, &details.name, cx).await;
-            cx.update(|_window, cx| match outcome {
-                Ok(forced) => {
-                    let notice = deleted_branch_notice(&context, &details, forced);
-                    context.notify(notice, cx);
-                }
-                Err(error) => notify_failure(
-                    &context,
-                    format!("Branch {} wasn't deleted", details.name),
-                    error,
-                    cx,
-                ),
-            })
-            .log_err();
-        })
-        .detach();
+        ),
+    })
+    .log_err();
 }
 
 async fn delete_local_branch_with_fallback(
@@ -380,8 +526,9 @@ fn deleted_branch_notice(
     context: &BranchContext,
     details: &DeleteDetails,
     forced: bool,
+    protected_branches: &[String],
 ) -> BranchNotice {
-    let plan = plan_delete_actions(details, forced);
+    let plan = plan_delete_actions(details, forced, protected_branches);
     let mut notice = BranchNotice::info(deleted_branch_message(&details.name, forced));
 
     if plan.restore {
@@ -394,7 +541,7 @@ fn deleted_branch_notice(
     if plan.view_commits {
         let context = context.clone();
         let details = details.clone();
-        notice = notice.action("View Commits", move |window, cx| {
+        notice = notice.action_keeping_notice("View Commits", move |window, cx| {
             view_unmerged_commits(context.clone(), details.clone(), window, cx);
         });
     }
@@ -403,9 +550,9 @@ fn deleted_branch_notice(
     {
         let context = context.clone();
         notice = notice.action("Delete Tracked Branch", move |window, cx| {
-            confirm_delete_remote_branch(
+            confirm_delete_remote_branches(
                 context.clone(),
-                RefTarget::remote(upstream.clone()),
+                vec![RefTarget::remote(upstream.clone())],
                 window,
                 cx,
             );
@@ -434,10 +581,7 @@ fn restore_branch(
             )
             .await;
             cx.update(|_window, cx| match result {
-                Ok(RestoreOutcome::Restored) => context.notify(
-                    BranchNotice::info(format!("Restored branch {}", details.name)),
-                    cx,
-                ),
+                Ok(RestoreOutcome::Restored) => {}
                 Ok(RestoreOutcome::WithoutUpstream(error)) => context.notify(
                     BranchNotice::warning(format!(
                         "Restored branch {} without its upstream: {:#}",
@@ -447,7 +591,7 @@ fn restore_branch(
                 ),
                 Err(error) => notify_failure(
                     &context,
-                    format!("Could not restore branch {}", details.name),
+                    format!("Could not Restore {}", details.name),
                     error,
                     cx,
                 ),
@@ -534,79 +678,99 @@ fn view_unmerged_commits(
         .detach();
 }
 
-fn confirm_delete_remote_branch(
+fn confirm_delete_remote_branches(
     context: BranchContext,
-    target: RefTarget,
+    targets: Vec<RefTarget>,
     window: &mut Window,
     cx: &mut App,
 ) {
-    let tracking_branches =
-        tracking_local_branches(&context.snapshot(cx).branch_list, &target.name);
-    let remote_branch = target.name.clone();
+    if targets.is_empty() {
+        return;
+    }
+    let branch_list = context.snapshot(cx).branch_list;
+    let remote_branches = targets
+        .iter()
+        .map(|target| target.name.clone())
+        .collect::<Vec<_>>();
+    let tracking_branches = tracking_local_branches_of_all(&branch_list, &remote_branches);
     let confirm_context = context.clone();
-    let confirm_tracking_branches = tracking_branches.clone();
     let on_confirm: DeleteRemoteConfirm = Box::new(move |delete_tracking, window, cx| {
-        let local_branches = if delete_tracking {
-            confirm_tracking_branches
-        } else {
-            Vec::new()
-        };
-        delete_remote_branch(confirm_context, target, local_branches, window, cx);
+        delete_remote_branches(confirm_context, targets, delete_tracking, window, cx);
     });
     context.open_modal(window, cx, move |_window, cx| {
-        DeleteRemoteBranchDialog::new(remote_branch, tracking_branches, on_confirm, cx)
+        DeleteRemoteBranchDialog::new(remote_branches, tracking_branches, on_confirm, cx)
     });
 }
 
-fn delete_remote_branch(
+fn delete_remote_branches(
     context: BranchContext,
-    target: RefTarget,
-    local_branches: Vec<SharedString>,
+    targets: Vec<RefTarget>,
+    delete_tracking: bool,
     window: &mut Window,
     cx: &mut App,
 ) {
+    let branch_list = context.snapshot(cx).branch_list;
+    let names = targets
+        .iter()
+        .map(|target| target.name.clone())
+        .collect::<Vec<_>>();
+    let progress = context.start_progress(deleting_progress_title(&names), cx);
+    window
+        .spawn(cx, async move |cx| {
+            for target in targets {
+                let local_branches = if delete_tracking {
+                    tracking_local_branches(&branch_list, &target.name)
+                } else {
+                    Vec::new()
+                };
+                delete_remote_branch_flow(&context, &target, &local_branches, cx).await;
+            }
+            drop(progress);
+        })
+        .detach();
+}
+
+async fn delete_remote_branch_flow(
+    context: &BranchContext,
+    target: &RefTarget,
+    local_branches: &[SharedString],
+    cx: &mut AsyncWindowContext,
+) {
     let Some(remote) = target.remote_name().map(str::to_string) else {
-        context.notify(
-            BranchNotice::error(format!("{} is not a remote branch", target.name)),
-            cx,
-        );
+        cx.update(|_window, cx| {
+            context.notify(
+                BranchNotice::error(format!("{} is not a remote branch", target.name)),
+                cx,
+            )
+        })
+        .log_err();
         return;
     };
     let branch = target.name_without_remote().to_string();
-
-    window
-        .spawn(cx, async move |cx| {
-            match delete_remote_ref_task(&context, &remote, &branch, cx).await {
-                Ok(()) => {
-                    let (deleted, failed) =
-                        delete_tracking_branches(&context.repository, &local_branches, cx).await;
-                    cx.update(|_window, cx| {
-                        context.notify(deleted_remote_branch_notice(&target.name, &deleted), cx);
-                        for (name, error) in failed {
-                            notify_failure(
-                                &context,
-                                format!("Branch {name} wasn't deleted"),
-                                error,
-                                cx,
-                            );
-                        }
-                    })
-                    .log_err();
+    match delete_remote_ref_task(context, &remote, &branch, cx).await {
+        Ok(()) => {
+            let (deleted, failed) =
+                delete_tracking_branches(&context.repository, local_branches, cx).await;
+            cx.update(|_window, cx| {
+                context.notify(deleted_remote_branch_notice(&target.name, &deleted), cx);
+                for (name, error) in failed {
+                    notify_failure(context, format!("Branch {name} wasn't deleted"), error, cx);
                 }
-                Err(error) => {
-                    cx.update(|_window, cx| {
-                        notify_failure(
-                            &context,
-                            format!("Failed to delete remote branch {}", target.name),
-                            error,
-                            cx,
-                        )
-                    })
-                    .log_err();
-                }
-            }
-        })
-        .detach();
+            })
+            .log_err();
+        }
+        Err(error) => {
+            cx.update(|_window, cx| {
+                notify_failure(
+                    context,
+                    format!("Failed to delete remote branch {}", target.name),
+                    error,
+                    cx,
+                )
+            })
+            .log_err();
+        }
+    }
 }
 
 async fn delete_remote_ref_task(
@@ -644,25 +808,21 @@ async fn delete_tracking_branches(
     (deleted, failed)
 }
 
-fn delete_tag(context: BranchContext, target: RefTarget, window: &mut Window, cx: &mut App) {
-    window
-        .spawn(cx, async move |cx| {
-            let outcome = delete_tag_task(&context.repository, &target.name, cx).await;
-            cx.update(|_window, cx| match outcome {
-                Ok(deleted) => {
-                    let notice = deleted_tag_notice(&context, &deleted);
-                    context.notify(notice, cx);
-                }
-                Err(error) => notify_failure(
-                    &context,
-                    format!("Tag {} wasn't deleted", target.name),
-                    error,
-                    cx,
-                ),
-            })
-            .log_err();
-        })
-        .detach();
+async fn delete_tag_flow(context: &BranchContext, target: &RefTarget, cx: &mut AsyncWindowContext) {
+    let outcome = delete_tag_task(&context.repository, &target.name, cx).await;
+    cx.update(|_window, cx| match outcome {
+        Ok(deleted) => {
+            let notice = deleted_tag_notice(context, &deleted);
+            context.notify(notice, cx);
+        }
+        Err(error) => notify_failure(
+            context,
+            format!("Tag {} wasn't deleted", target.name),
+            error,
+            cx,
+        ),
+    })
+    .log_err();
 }
 
 async fn delete_tag_task(
@@ -716,8 +876,17 @@ fn deleted_tag_notice(context: &BranchContext, deleted: &DeletedTag) -> BranchNo
     if let Some(label) = delete_tag_on_remotes_label(deleted.remote_count) {
         let remote_context = context.clone();
         let remote_name = deleted.name.clone();
+        let remote_sha = deleted.sha.clone();
+        let remote_count = deleted.remote_count;
         notice = notice.action(label, move |window, cx| {
-            delete_tag_on_remotes(remote_context.clone(), remote_name.clone(), window, cx);
+            delete_tag_on_remotes(
+                remote_context.clone(),
+                remote_name.clone(),
+                remote_sha.clone(),
+                remote_count,
+                window,
+                cx,
+            );
         });
     }
     notice
@@ -736,13 +905,12 @@ fn restore_tag(
                 repository.create_tag(name.to_string(), sha.to_string())
             });
             let result = settle(create).await;
-            cx.update(|_window, cx| match result {
-                Ok(()) => context.notify(BranchNotice::info(format!("Restored tag {name}")), cx),
-                Err(error) => {
-                    notify_failure(&context, format!("Could not restore tag {name}"), error, cx)
-                }
-            })
-            .log_err();
+            if let Err(error) = result {
+                cx.update(|_window, cx| {
+                    notify_failure(&context, format!("Could not Restore {name}"), error, cx)
+                })
+                .log_err();
+            }
         })
         .detach();
 }
@@ -750,9 +918,12 @@ fn restore_tag(
 fn delete_tag_on_remotes(
     context: BranchContext,
     name: SharedString,
+    expected_commit: SharedString,
+    known_remote_count: usize,
     window: &mut Window,
     cx: &mut App,
 ) {
+    let progress = context.start_progress(deleting_tag_on_remote_progress_title(&name), cx);
     window
         .spawn(cx, async move |cx| {
             let remotes = settle(
@@ -767,7 +938,7 @@ fn delete_tag_on_remotes(
                     cx.update(|_window, cx| {
                         notify_failure(
                             &context,
-                            format!("Could not delete tag {name} on remotes"),
+                            failed_to_delete_tag_on_remotes_title(&name, known_remote_count),
                             error,
                             cx,
                         )
@@ -777,36 +948,93 @@ fn delete_tag_on_remotes(
                 }
             };
 
-            let reference = format!("{REMOTE_TAG_REF_PREFIX}{name}");
-            let mut deleted_on = Vec::new();
-            for remote in remotes {
-                match delete_remote_ref_task(&context, &remote.name, &reference, cx).await {
-                    Ok(()) => deleted_on.push(remote.name.to_string()),
-                    Err(error) => {
-                        cx.update(|_window, cx| {
-                            notify_failure(
-                                &context,
-                                format!("Could not delete tag {name} on {}", remote.name),
-                                error,
-                                cx,
-                            )
-                        })
-                        .log_err();
-                    }
+            let mut deleted = 0;
+            let mut errors = Vec::new();
+            for remote in &remotes {
+                match delete_tag_on_remote(&context, &remote.name, &name, &expected_commit, cx)
+                    .await
+                {
+                    Ok(true) => deleted += 1,
+                    Ok(false) => {}
+                    Err(error) => errors.push(error),
                 }
             }
+            drop(progress);
 
-            if !deleted_on.is_empty() {
-                cx.update(|_window, cx| {
+            let remote_count = remotes.len();
+            cx.update(|_window, cx| {
+                if deleted > 0 {
                     context.notify(
-                        BranchNotice::info(deleted_tag_on_remotes_message(&name, &deleted_on)),
+                        BranchNotice::info(deleted_tag_on_remotes_message(&name, remote_count)),
                         cx,
                     );
-                })
-                .log_err();
-            }
+                } else if errors.is_empty() {
+                    context.notify(
+                        BranchNotice::info(tag_missing_on_remotes_message(&name, remote_count)),
+                        cx,
+                    );
+                }
+                for error in errors {
+                    notify_failure(
+                        &context,
+                        failed_to_delete_tag_on_remotes_title(&name, remote_count),
+                        error,
+                        cx,
+                    );
+                }
+            })
+            .log_err();
         })
         .detach();
+}
+
+/// IntelliJ's `GitDeleteRemoteTagOperation` for one remote: deletes the tag
+/// only where `ls-remote` finds it, leased on the commit it pointed to locally.
+/// Returns whether anything was deleted.
+async fn delete_tag_on_remote(
+    context: &BranchContext,
+    remote: &str,
+    tag: &str,
+    expected_commit: &str,
+    cx: &mut AsyncWindowContext,
+) -> Result<bool> {
+    let askpass = cx.update(|window, cx| {
+        context.askpass_delegate(
+            format!("git ls-remote --tags {remote} refs/tags/{tag}"),
+            window,
+            cx,
+        )
+    })?;
+    let listing = context.repository.update(cx, |repository, _| {
+        repository.remote_tag_target(remote.to_string(), tag.to_string(), askpass)
+    });
+    let Some(target) = settle(listing).await? else {
+        return Ok(false);
+    };
+    let expected_object = lease_object(&target, expected_commit);
+    let askpass = cx.update(|window, cx| {
+        context.askpass_delegate(format!("git push {remote} :refs/tags/{tag}"), window, cx)
+    })?;
+    let deletion = context.repository.update(cx, |repository, _| {
+        repository.delete_remote_tag(
+            remote.to_string(),
+            tag.to_string(),
+            expected_object,
+            askpass,
+        )
+    });
+    settle(deletion).await?;
+    Ok(true)
+}
+
+/// The remote ref of an annotated tag points to the tag object, not to the
+/// commit the local tag peeled to, so the lease must name that object.
+pub fn lease_object(target: &RemoteTagTarget, expected_commit: &str) -> String {
+    if target.commit == expected_commit {
+        target.object.clone()
+    } else {
+        expected_commit.to_string()
+    }
 }
 
 async fn push_tag_task(
@@ -853,6 +1081,10 @@ mod tests {
             }),
             most_recent_commit: tip.map(commit),
         }
+    }
+
+    fn protected() -> Vec<String> {
+        vec!["master".to_string(), "main".to_string()]
     }
 
     fn remote(name: &str) -> Branch {
@@ -945,7 +1177,7 @@ mod tests {
             Some("main"),
         );
         assert_eq!(
-            plan_delete_actions(&details, false),
+            plan_delete_actions(&details, false, &protected()),
             DeleteActionPlan {
                 restore: true,
                 view_commits: false,
@@ -953,7 +1185,7 @@ mod tests {
             }
         );
         assert_eq!(
-            plan_delete_actions(&details, true),
+            plan_delete_actions(&details, true, &protected()),
             DeleteActionPlan {
                 restore: true,
                 view_commits: true,
@@ -962,7 +1194,7 @@ mod tests {
         );
         details.tip = None;
         assert_eq!(
-            plan_delete_actions(&details, true),
+            plan_delete_actions(&details, true, &protected()),
             DeleteActionPlan {
                 restore: false,
                 view_commits: false,
@@ -976,7 +1208,68 @@ mod tests {
         let branch = local("feature", Some("origin/feature"), Some("abc"), false);
         let list = [branch.clone(), remote("origin/feature")];
         let details = capture_delete_details(&branch, &list, Some("main"));
-        assert!(plan_delete_actions(&details, false).delete_tracked);
+        assert!(plan_delete_actions(&details, false, &protected()).delete_tracked);
+    }
+
+    #[test]
+    fn delete_tracked_branch_is_not_offered_for_a_protected_upstream() {
+        let branch = local("main-copy", Some("origin/main"), Some("abc"), false);
+        let list = [branch.clone(), remote("origin/main")];
+        let details = capture_delete_details(&branch, &list, Some("feature"));
+        assert_eq!(details.orphaned_upstream.as_deref(), Some("origin/main"));
+        assert!(!plan_delete_actions(&details, false, &protected()).delete_tracked);
+        assert!(plan_delete_actions(&details, false, &[]).delete_tracked);
+    }
+
+    #[test]
+    fn several_remote_branches_offer_the_union_of_their_tracking_branches() {
+        let list = [
+            local("a", Some("origin/x"), None, false),
+            local("b", Some("origin/y"), None, false),
+            local("c", Some("origin/x"), None, false),
+            local("d", Some("origin/y"), None, true),
+            remote("origin/x"),
+            remote("origin/y"),
+        ];
+        let tracking = tracking_local_branches_of_all(
+            &list,
+            &[
+                SharedString::from("origin/x"),
+                SharedString::from("origin/y"),
+            ],
+        );
+        assert_eq!(
+            tracking,
+            vec![
+                SharedString::from("a"),
+                SharedString::from("c"),
+                SharedString::from("b")
+            ]
+        );
+    }
+
+    #[test]
+    fn an_annotated_remote_tag_is_leased_on_its_tag_object() {
+        let annotated = RemoteTagTarget {
+            object: "tag-object".to_string(),
+            commit: "commit".to_string(),
+        };
+        assert_eq!(lease_object(&annotated, "commit"), "tag-object");
+        assert_eq!(
+            lease_object(&annotated, "other-commit"),
+            "other-commit",
+            "a tag that moved on the remote must fail the lease"
+        );
+    }
+
+    #[test]
+    fn only_a_missing_upstream_is_ignored_when_unsetting_it_after_a_rename() {
+        assert!(is_no_upstream_error(&anyhow!(
+            "fatal: branch 'x' has no upstream information"
+        )));
+        assert!(!is_no_upstream_error(&anyhow!(
+            "fatal: could not lock config file .git/config"
+        )));
     }
 
     #[test]
@@ -1031,8 +1324,20 @@ mod tests {
     fn tag_and_rename_messages_follow_the_intellij_wording() {
         assert_eq!(deleted_tag_message("v1"), "Deleted Tag: v1");
         assert_eq!(
-            deleted_tag_on_remotes_message("v1", &["origin".to_string(), "fork".to_string()]),
-            "Deleted tag v1 on origin, fork"
+            deleted_tag_on_remotes_message("v1", 1),
+            "Deleted Tag on Remote: v1"
+        );
+        assert_eq!(
+            deleted_tag_on_remotes_message("v1", 2),
+            "Deleted Tag on Remotes: v1"
+        );
+        assert_eq!(
+            tag_missing_on_remotes_message("v1", 1),
+            "Tag Doesn't Exist on Remote: v1"
+        );
+        assert_eq!(
+            failed_to_delete_tag_on_remotes_title("v1", 2),
+            "Failed to delete tag v1 on Remotes"
         );
         assert_eq!(
             renamed_branch_message("old", "new"),

@@ -262,6 +262,7 @@ async fn opening_the_popup_lists_actions_recent_and_collapsed_sections(cx: &mut 
             "action:Push…",
             "---",
             "action:New Branch…",
+            "action:New Worktree…",
             "action:Checkout Tag or Revision…",
             "---",
             "section:Recent:open",
@@ -273,6 +274,10 @@ async fn opening_the_popup_lists_actions_recent_and_collapsed_sections(cx: &mut 
         ]
     );
     assert_eq!(fixture.selected().as_deref(), Some("  ref:main"));
+    let section_name = fixture.picker().read_with(&fixture.cx, |picker, _| {
+        picker.delegate.section_repository_name.clone()
+    });
+    assert_eq!(section_name, None, "one repository keeps the short titles");
 }
 
 #[gpui::test]
@@ -384,7 +389,10 @@ async fn typing_a_query_filters_rows_and_selects_the_top_match(cx: &mut TestAppC
     assert_eq!(fixture.selected().as_deref(), Some("  ref:topic"));
 
     fixture.set_query("new");
-    assert_eq!(fixture.rows(), vec!["action:New Branch…"]);
+    assert_eq!(
+        fixture.rows(),
+        vec!["action:New Branch…", "action:New Worktree…"]
+    );
     assert_eq!(fixture.selected().as_deref(), Some("action:New Branch…"));
 
     fixture.set_query("login");
@@ -764,6 +772,31 @@ async fn multiple_repositories_add_repository_rows_and_switching_changes_the_tre
     assert!(rows.contains(&"repo:branches-popup-multi-beta".to_string()));
     assert!(rows.contains(&"  ref:alpha-branch".to_string()));
     assert!(!rows.contains(&"  ref:beta-branch".to_string()));
+    let (section_name, color_indices) = fixture.picker().read_with(&fixture.cx, |picker, _| {
+        let color_indices: Vec<(String, usize)> = picker
+            .delegate
+            .rows()
+            .iter()
+            .filter_map(|row| match row {
+                PopupRow::Repository(row) => {
+                    Some((row.choice.name.to_string(), row.choice.color_index))
+                }
+                _ => None,
+            })
+            .collect();
+        (
+            picker.delegate.section_repository_name.clone(),
+            color_indices,
+        )
+    });
+    assert_eq!(section_name.as_deref(), Some("branches-popup-multi-alpha"));
+    assert_eq!(
+        color_indices,
+        vec![
+            ("branches-popup-multi-alpha".to_string(), 0),
+            ("branches-popup-multi-beta".to_string(), 1)
+        ]
+    );
 
     fixture.select("repo:branches-popup-multi-beta");
     fixture.update_picker(|picker, window, cx| picker.delegate.confirm(false, window, cx));
@@ -780,6 +813,10 @@ async fn multiple_repositories_add_repository_rows_and_switching_changes_the_tre
             .map(|repository| repository.read(cx).display_name())
     });
     assert_eq!(active_name.as_deref(), Some("branches-popup-multi-beta"));
+    let section_name = fixture.picker().read_with(&fixture.cx, |picker, _| {
+        picker.delegate.section_repository_name.clone()
+    });
+    assert_eq!(section_name.as_deref(), Some("branches-popup-multi-beta"));
 }
 
 #[gpui::test]
@@ -871,6 +908,10 @@ async fn a_change_made_before_the_saved_state_loads_is_merged_instead_of_overwri
         picker.delegate.toggle_setting(PopupToggle::ShowTags, cx);
     });
 
+    // Without a state saved in this session, the popup loads the stored one asynchronously.
+    fixture
+        .cx
+        .update(|_, cx| cx.set_global(state::SavedPopupStates::default()));
     fixture.popup = Fixture::create_popup(
         fixture.window,
         &fixture.workspace,
@@ -1029,4 +1070,845 @@ fn search_placeholder_mentions_actions_only_when_they_are_searchable() {
         "Search for branches and actions"
     );
     assert_eq!(delegate::search_placeholder(false), "Search for branches");
+}
+
+fn notice_titles(fixture: &Fixture) -> Vec<Option<String>> {
+    fixture.workspace.read_with(&fixture.cx, |workspace, cx| {
+        workspace
+            .notification_views()
+            .into_iter()
+            .filter_map(|view| {
+                view.downcast::<crate::branch_operations::branch_notification::BranchNotification>()
+                    .ok()
+            })
+            .map(|notification| {
+                notification
+                    .read(cx)
+                    .notice()
+                    .title
+                    .as_ref()
+                    .map(|title| title.to_string())
+            })
+            .collect()
+    })
+}
+
+fn drag(cx: &mut VisualTestContext, from: gpui::Point<Pixels>, by: gpui::Point<Pixels>) {
+    let modifiers = gpui::Modifiers::none();
+    cx.simulate_mouse_move(from, None, modifiers);
+    cx.simulate_mouse_down(from, MouseButton::Left, modifiers);
+    cx.simulate_mouse_move(
+        from + gpui::point(px(5.), px(5.)),
+        MouseButton::Left,
+        modifiers,
+    );
+    cx.simulate_mouse_move(from + by, MouseButton::Left, modifiers);
+    cx.simulate_mouse_up(from + by, MouseButton::Left, modifiers);
+    cx.run_until_parked();
+}
+
+fn bounds_of(cx: &mut VisualTestContext, selector: String) -> gpui::Bounds<Pixels> {
+    let selector: &'static str = Box::leak(selector.into_boxed_str());
+    cx.debug_bounds(selector)
+        .unwrap_or_else(|| panic!("{selector} is rendered"))
+}
+
+#[gpui::test]
+async fn the_previous_branch_is_preselected_after_a_checkout_from_flint(cx: &mut TestAppContext) {
+    let mut fixture =
+        Fixture::open(cx, path!("/branches-popup-previous"), standard_repository).await;
+    let context = crate::branch_operations::BranchContext::new(
+        fixture.workspace.downgrade(),
+        fixture.repository.clone(),
+    );
+    fixture.cx.update(|window, cx| {
+        crate::branch_operations::checkout::checkout(
+            context,
+            crate::branch_refs::RefTarget::local("topic"),
+            window,
+            cx,
+        )
+    });
+    fixture.cx.run_until_parked();
+    let current = fixture.repository.read_with(&fixture.cx, |repository, _| {
+        repository
+            .branch
+            .as_ref()
+            .map(|branch| branch.name().to_string())
+    });
+    assert_eq!(current.as_deref(), Some("topic"));
+
+    fixture.reopen();
+    assert!(fixture.ref_row("topic").is_current);
+    assert_eq!(fixture.selected().as_deref(), Some("  ref:main"));
+
+    let key = state::previous_branch_key(Path::new(path!("/branches-popup-previous")));
+    let stored = fixture
+        .cx
+        .update(|_, cx| state::load_previous_branch(key, cx));
+    assert_eq!(stored.await.as_deref(), Some("main"));
+}
+
+#[gpui::test]
+async fn the_current_branch_is_preselected_when_the_previous_one_is_gone(cx: &mut TestAppContext) {
+    let mut fixture = Fixture::open(
+        cx,
+        path!("/branches-popup-previous-gone"),
+        standard_repository,
+    )
+    .await;
+    let key = state::previous_branch_key(Path::new(path!("/branches-popup-previous-gone")));
+    fixture
+        .cx
+        .update(|_, cx| state::record_previous_branch(key, "deleted-branch".to_string(), cx))
+        .await;
+    fixture.reopen();
+    assert_eq!(fixture.selected().as_deref(), Some("  ref:main"));
+}
+
+#[gpui::test]
+async fn while_filtering_arrow_keys_move_over_leaves_only_and_wrap(cx: &mut TestAppContext) {
+    let mut fixture = Fixture::open(cx, path!("/branches-popup-leaf-keys"), |fs, dot_git| {
+        fs.insert_branches(
+            dot_git,
+            &[
+                "main",
+                "refs/heads/feature/alpha",
+                "refs/heads/feature/beta",
+            ],
+        );
+        fs.set_recent_branches_for_repo(dot_git, &["main"]);
+    })
+    .await;
+    fixture.open_in_modal_layer();
+    fixture.set_query("feature");
+    assert_eq!(
+        fixture.rows(),
+        vec![
+            "section:Local:open",
+            "  folder:feature:open",
+            "    ref:alpha",
+            "    ref:beta"
+        ]
+    );
+    assert_eq!(fixture.selected().as_deref(), Some("    ref:alpha"));
+
+    let press = |fixture: &mut Fixture, action: Box<dyn gpui::Action>| {
+        fixture
+            .cx
+            .update(|window, cx| window.dispatch_action(action, cx));
+        fixture.cx.run_until_parked();
+        fixture.selected()
+    };
+    assert_eq!(
+        press(&mut fixture, Box::new(menu::SelectNext)).as_deref(),
+        Some("    ref:beta")
+    );
+    assert_eq!(
+        press(&mut fixture, Box::new(menu::SelectNext)).as_deref(),
+        Some("    ref:alpha")
+    );
+    assert_eq!(
+        press(&mut fixture, Box::new(zed_actions::editor::MoveUp)).as_deref(),
+        Some("    ref:beta")
+    );
+    assert_eq!(
+        press(&mut fixture, Box::new(menu::SelectFirst)).as_deref(),
+        Some("    ref:alpha")
+    );
+}
+
+#[gpui::test]
+async fn searching_opens_only_intellij_paths_and_the_arrows_open_the_rest(cx: &mut TestAppContext) {
+    let mut fixture = Fixture::open(cx, path!("/branches-popup-search-paths"), |fs, dot_git| {
+        fs.insert_branches(
+            dot_git,
+            &["main", "refs/heads/feature/login", "origin/feature/login"],
+        );
+        fs.set_recent_branches_for_repo(dot_git, &["main"]);
+    })
+    .await;
+    fixture.open_in_modal_layer();
+    fixture.set_query("login");
+    assert_eq!(
+        fixture.rows(),
+        vec![
+            "section:Local:open",
+            "  folder:feature:open",
+            "    ref:login",
+            "section:Remote:closed",
+        ]
+    );
+    assert_eq!(fixture.selected().as_deref(), Some("    ref:login"));
+
+    fixture.cx.dispatch_action(menu::SelectNext);
+    fixture.cx.run_until_parked();
+    assert_eq!(
+        fixture.rows(),
+        vec![
+            "section:Local:open",
+            "  folder:feature:open",
+            "    ref:login",
+            "section:Remote:open",
+            "  folder:origin:open",
+            "    folder:feature:open",
+            "      ref:login",
+        ]
+    );
+    assert_eq!(fixture.selected().as_deref(), Some("      ref:login"));
+
+    fixture.set_query("");
+    assert!(
+        fixture.rows().contains(&"section:Remote:open".to_string()),
+        "what a search opened stays open, like IntelliJ's expanded paths"
+    );
+}
+
+#[gpui::test]
+async fn the_search_text_turns_red_when_nothing_matches(cx: &mut TestAppContext) {
+    let mut fixture = Fixture::open(cx, path!("/branches-popup-red"), standard_repository).await;
+    let nothing_matches = |fixture: &Fixture| {
+        fixture
+            .picker()
+            .read_with(&fixture.cx, |picker, _| picker.delegate.nothing_matches())
+    };
+    let search_text_color = |fixture: &Fixture| {
+        fixture.picker().read_with(&fixture.cx, |picker, cx| {
+            picker.delegate.search_text_color(cx)
+        })
+    };
+    let (error_color, text_color) = fixture.cx.update(|_, cx| {
+        (
+            ui::Color::Error.color(cx),
+            ui::ActiveTheme::theme(cx).colors().text,
+        )
+    });
+    assert!(!nothing_matches(&fixture));
+    assert_eq!(search_text_color(&fixture), text_color);
+    fixture.set_query("zzzz");
+    assert!(nothing_matches(&fixture));
+    assert_eq!(search_text_color(&fixture), error_color);
+    fixture.set_query("top");
+    assert!(!nothing_matches(&fixture));
+    fixture.set_query("/");
+    assert!(!nothing_matches(&fixture));
+}
+
+#[gpui::test]
+fn search_matches_use_the_intellij_search_match_colors(cx: &mut TestAppContext) {
+    init_test(cx);
+    cx.update(|cx| {
+        let style = delegate::search_match_style(cx);
+        let (background, foreground) = if cx.theme().appearance().is_light() {
+            (0xFEE6B1, 0x323232)
+        } else {
+            (0xBA9752, 0x000000)
+        };
+        assert_eq!(style.background_color, Some(gpui::rgb(background).into()));
+        assert_eq!(style.color, Some(gpui::rgb(foreground).into()));
+    });
+}
+
+#[gpui::test]
+async fn new_worktree_opens_the_worktree_picker(cx: &mut TestAppContext) {
+    let mut fixture = Fixture::open(
+        cx,
+        path!("/branches-popup-new-worktree"),
+        standard_repository,
+    )
+    .await;
+    fixture.select("action:New Worktree…");
+    fixture.update_picker(|picker, window, cx| picker.delegate.confirm(false, window, cx));
+    fixture.cx.run_until_parked();
+    let opened = fixture.workspace.read_with(&fixture.cx, |workspace, cx| {
+        workspace
+            .active_modal::<git_ui_core::worktree_picker::WorktreePicker>(cx)
+            .is_some()
+    });
+    assert!(opened, "New Worktree… opens the worktree picker");
+}
+
+#[gpui::test]
+async fn a_branch_checked_out_in_another_worktree_offers_open_worktree(cx: &mut TestAppContext) {
+    let fixture = Fixture::open(
+        cx,
+        path!("/branches-popup-other-worktree"),
+        standard_repository,
+    )
+    .await;
+    let worktree_path = PathBuf::from(path!("/branches-popup-other-worktree-topic"));
+    fixture
+        .fs
+        .add_linked_worktree_for_repo(
+            &fixture.dot_git,
+            true,
+            git::repository::Worktree {
+                path: worktree_path.clone(),
+                ref_name: Some("refs/heads/topic".into()),
+                sha: "deadbeef".into(),
+                is_main: false,
+                is_bare: false,
+            },
+        )
+        .await;
+    fixture.cx.run_until_parked();
+
+    let plan = fixture.picker().read_with(&fixture.cx, |picker, cx| {
+        picker
+            .delegate
+            .menu_plan_for(&crate::branch_refs::RefTarget::local("topic"), cx)
+    });
+    let actions: Vec<ref_menu::MenuAction> = plan
+        .iter()
+        .filter_map(|planned| match planned {
+            ref_menu::MenuItemPlan::Item(item) => Some(item.action.clone()),
+            _ => None,
+        })
+        .collect();
+    assert!(actions.contains(&ref_menu::MenuAction::OpenWorktree {
+        path: worktree_path
+    }));
+    assert!(!actions.contains(&ref_menu::MenuAction::CheckoutAndRebase));
+    assert!(actions.contains(&ref_menu::MenuAction::NewWorktreeFrom));
+}
+
+#[gpui::test]
+async fn open_worktree_adds_a_project_tab_instead_of_opening_a_window(cx: &mut TestAppContext) {
+    let mut fixture = Fixture::open(
+        cx,
+        path!("/branches-popup-open-worktree"),
+        standard_repository,
+    )
+    .await;
+    let worktree_path = PathBuf::from(path!("/branches-popup-open-worktree-topic"));
+    fixture
+        .fs
+        .insert_tree(&worktree_path, json!({ "file.txt": "content" }))
+        .await;
+    let fs = fixture.fs.clone();
+    fixture.cx.update(|_, cx| <dyn fs::Fs>::set_global(fs, cx));
+    let context = fixture
+        .picker()
+        .read_with(&fixture.cx, |picker, _| picker.delegate.branch_context())
+        .expect("the popup has a repository");
+    let windows_before = fixture.cx.update(|_, cx| cx.windows().len());
+
+    fixture.cx.update(|window, cx| {
+        ref_menu::run_menu_action(
+            ref_menu::MenuAction::OpenWorktree {
+                path: worktree_path.clone(),
+            },
+            context,
+            crate::branch_refs::RefTarget::local("topic"),
+            window,
+            cx,
+        )
+    });
+    fixture.cx.run_until_parked();
+
+    assert_eq!(
+        fixture.cx.update(|_, cx| cx.windows().len()),
+        windows_before,
+        "Open Worktree… never opens a window"
+    );
+    fixture
+        .window
+        .read_with(&fixture.cx, |multi_workspace, cx| {
+            assert_eq!(multi_workspace.workspaces().count(), 2);
+            assert!(
+                multi_workspace
+                    .workspaces()
+                    .any(|workspace| workspace == &fixture.workspace),
+                "the source project stays in the window"
+            );
+            assert_eq!(
+                multi_workspace.workspace().read(cx).root_paths(cx),
+                vec![Arc::from(worktree_path.as_path())]
+            );
+        })
+        .expect("window is alive");
+}
+
+#[gpui::test]
+async fn a_branch_with_an_upstream_gets_the_tracked_branch_submenu(cx: &mut TestAppContext) {
+    let fixture = Fixture::open(cx, path!("/branches-popup-tracked"), standard_repository).await;
+    let plan = fixture.picker().read_with(&fixture.cx, |picker, cx| {
+        picker
+            .delegate
+            .menu_plan_for(&crate::branch_refs::RefTarget::local("main"), cx)
+    });
+    let submenu = plan.iter().find_map(|planned| match planned {
+        ref_menu::MenuItemPlan::Submenu { label, .. } => Some(label.clone()),
+        _ => None,
+    });
+    assert_eq!(submenu.as_deref(), Some("Tracked Branch 'origin/main'"));
+}
+
+#[gpui::test]
+async fn the_delete_shortcut_deletes_the_selected_ref_only_when_delete_is_offered(
+    cx: &mut TestAppContext,
+) {
+    let mut fixture =
+        Fixture::open(cx, path!("/branches-popup-delete-key"), standard_repository).await;
+    let branch_names = |fixture: &Fixture| {
+        fixture.repository.read_with(&fixture.cx, |repository, _| {
+            repository
+                .branch_list
+                .iter()
+                .map(|branch| branch.name().to_string())
+                .collect::<Vec<_>>()
+        })
+    };
+
+    fixture.select("  ref:main");
+    fixture
+        .popup
+        .update_in(&mut fixture.cx, |popup, window, cx| {
+            popup.delete_ref(&DeleteRef, window, cx)
+        });
+    fixture.cx.run_until_parked();
+    assert!(branch_names(&fixture).contains(&"main".to_string()));
+
+    fixture.select("  ref:topic");
+    fixture
+        .popup
+        .update_in(&mut fixture.cx, |popup, window, cx| {
+            popup.delete_ref(&DeleteRef, window, cx)
+        });
+    fixture.cx.run_until_parked();
+    assert!(!branch_names(&fixture).contains(&"topic".to_string()));
+}
+
+#[gpui::test]
+fn the_ref_menu_binds_intellij_delete_and_shows_the_delete_key(cx: &mut TestAppContext) {
+    cx.update(|cx| {
+        let bindings = settings::KeymapFile::load_asset_allow_partial_failure(
+            "keymaps/default-macos.json",
+            cx,
+        )
+        .expect("the default keymap loads");
+        let delete: Vec<String> = bindings
+            .iter()
+            .filter(|binding| binding.action().partial_eq(&DeleteRef))
+            .flat_map(|binding| {
+                binding
+                    .keystrokes()
+                    .iter()
+                    .map(|keystroke| keystroke.unparse())
+            })
+            .collect();
+        assert_eq!(delete, vec!["backspace", "cmd-backspace", "delete"]);
+    });
+}
+
+#[gpui::test]
+async fn fetch_reports_success_and_shows_the_running_state(cx: &mut TestAppContext) {
+    let mut fixture = Fixture::open(cx, path!("/branches-popup-fetch"), standard_repository).await;
+    let fetching = fixture
+        .picker()
+        .update_in(&mut fixture.cx, |picker, window, cx| {
+            picker.delegate.start_fetch(window, cx);
+            picker.delegate.fetching(cx)
+        });
+    assert!(fetching);
+    fixture.cx.run_until_parked();
+    let fetching = fixture
+        .picker()
+        .read_with(&fixture.cx, |picker, cx| picker.delegate.fetching(cx));
+    assert!(!fetching);
+    assert_eq!(
+        notice_titles(&fixture),
+        vec![Some("Fetch successful".to_string())]
+    );
+}
+
+#[test]
+fn fetch_failures_name_the_repository_only_with_several_repositories() {
+    let failures = vec![(
+        SharedString::from("api"),
+        "fatal: could not read from remote".to_string(),
+    )];
+    let single = delegate::fetch_result_notice(&failures, false);
+    assert_eq!(single.title.as_deref(), Some("Fetch failed"));
+    assert_eq!(&*single.message, "fatal: could not read from remote");
+    let several = delegate::fetch_result_notice(&failures, true);
+    assert_eq!(&*several.message, "api: fatal: could not read from remote");
+    let success = delegate::fetch_result_notice(&[], true);
+    assert_eq!(success.title.as_deref(), Some("Fetch successful"));
+    assert!(success.message.is_empty());
+}
+
+#[gpui::test]
+async fn the_popup_opens_at_the_intellij_size_and_keeps_its_height_while_expanding(
+    cx: &mut TestAppContext,
+) {
+    let mut fixture = Fixture::open(cx, path!("/branches-popup-size"), standard_repository).await;
+    fixture.open_in_modal_layer();
+    let visible_rows = fixture
+        .picker()
+        .read_with(&fixture.cx, |picker, _| picker.delegate.visible_row_count());
+    // 6 actions, 2 separators and 4 sections, the 2 recent branches, plus one.
+    assert_eq!(visible_rows, 15);
+    let size = fixture
+        .popup
+        .read_with(&fixture.cx, |popup, cx| popup.popup_size(cx));
+    let list_padding = fixture.cx.update(|_, cx| DynamicSpacing::Base04.px(cx));
+    assert_eq!(size.width, px(MIN_WIDTH_PX));
+    assert_eq!(
+        size.height,
+        packed_size(px(0.), visible_rows, list_padding).height
+    );
+    let bounds = bounds_of(&mut fixture.cx, DEBUG_SELECTOR.to_string());
+    assert_eq!(bounds.size, size);
+
+    fixture.select("section:Local:closed");
+    fixture.select_child();
+    fixture.select("section:Remote:closed");
+    fixture.select_child();
+    let expanded = fixture
+        .popup
+        .read_with(&fixture.cx, |popup, cx| popup.popup_size(cx));
+    assert_eq!(expanded, size);
+}
+
+#[gpui::test]
+async fn the_popup_grows_to_the_widest_row(cx: &mut TestAppContext) {
+    let long_name = format!("feature-{}", "very-long-branch-name-".repeat(6));
+    let mut fixture = Fixture::open(cx, path!("/branches-popup-wide"), |fs, dot_git| {
+        fs.insert_branches(dot_git, &["main", &long_name]);
+        fs.set_recent_branches_for_repo(dot_git, &[long_name.as_str(), "main"]);
+    })
+    .await;
+    fixture.open_in_modal_layer();
+    let size = fixture
+        .popup
+        .read_with(&fixture.cx, |popup, cx| popup.popup_size(cx));
+    assert!(size.width > px(MIN_WIDTH_PX), "{size:?}");
+}
+
+#[test]
+fn packed_sizes_respect_the_intellij_minimum_and_the_twenty_row_cap() {
+    let minimum = packed_size(px(100.), 3, px(4.));
+    assert_eq!(minimum.width, px(MIN_WIDTH_PX));
+    assert_eq!(minimum.height, px(MIN_HEIGHT_PX));
+    let wide = packed_size(px(500.), 3, px(4.));
+    assert_eq!(wide.width, px(502.));
+    assert_eq!(
+        packed_size(px(0.), 40, px(4.)).height,
+        packed_size(px(0.), MAX_VISIBLE_ROWS, px(4.)).height
+    );
+}
+
+#[gpui::test]
+async fn resizing_is_remembered_until_the_size_is_restored(cx: &mut TestAppContext) {
+    let mut fixture = Fixture::open(cx, path!("/branches-popup-resize"), standard_repository).await;
+    fixture.open_in_modal_layer();
+    let packed = fixture
+        .popup
+        .read_with(&fixture.cx, |popup, cx| popup.popup_size(cx));
+    let corner = bounds_of(&mut fixture.cx, "branches-popup-resize-corner".to_string());
+    drag(
+        &mut fixture.cx,
+        corner.center(),
+        gpui::point(px(60.), px(50.)),
+    );
+    let resized = fixture
+        .popup
+        .read_with(&fixture.cx, |popup, cx| popup.popup_size(cx));
+    assert_eq!(
+        resized,
+        gpui::size(packed.width + px(60.), packed.height + px(50.))
+    );
+    let user_size = fixture
+        .picker()
+        .read_with(&fixture.cx, |picker, _| picker.delegate.user_size());
+    assert!(user_size.is_some());
+
+    fixture
+        .popup
+        .update(&mut fixture.cx, |_, cx| cx.emit(DismissEvent));
+    fixture.cx.run_until_parked();
+    fixture.open_in_modal_layer();
+    let reopened = fixture
+        .popup
+        .read_with(&fixture.cx, |popup, cx| popup.popup_size(cx));
+    assert_eq!(reopened, resized);
+    let restore_enabled = fixture.picker().read_with(&fixture.cx, |picker, _| {
+        delegate::gear_menu_items(delegate::GearMenuOptions {
+            toggles: picker.delegate.state.toggles,
+            several_repositories: false,
+            user_resized: picker.delegate.user_size().is_some(),
+        })
+        .contains(&delegate::GearMenuItem::RestorePopupSize { enabled: true })
+    });
+    assert!(restore_enabled);
+
+    fixture.update_picker(|picker, window, cx| {
+        picker.delegate.restore_popup_size(cx);
+        picker.refresh(window, cx);
+    });
+    let restored = fixture
+        .popup
+        .read_with(&fixture.cx, |popup, cx| popup.popup_size(cx));
+    assert_eq!(restored, packed);
+}
+
+#[gpui::test]
+async fn the_drag_area_moves_the_popup(cx: &mut TestAppContext) {
+    let mut fixture = Fixture::open(cx, path!("/branches-popup-move"), standard_repository).await;
+    fixture.open_in_modal_layer();
+    let before = bounds_of(&mut fixture.cx, DEBUG_SELECTOR.to_string());
+    let drag_area = bounds_of(&mut fixture.cx, "branches-popup-drag-area".to_string());
+    drag(
+        &mut fixture.cx,
+        drag_area.center(),
+        gpui::point(px(30.), px(20.)),
+    );
+    let offset = fixture
+        .popup
+        .read_with(&fixture.cx, |popup, _| popup.move_offset());
+    assert_eq!(offset, gpui::point(px(30.), px(20.)));
+    let after = bounds_of(&mut fixture.cx, DEBUG_SELECTOR.to_string());
+    assert_eq!(after.origin, before.origin + offset);
+}
+
+#[gpui::test]
+async fn a_ref_menu_opens_two_pixels_inside_the_popup_right_edge(cx: &mut TestAppContext) {
+    let mut fixture =
+        Fixture::open(cx, path!("/branches-popup-submenu"), standard_repository).await;
+    fixture.open_in_modal_layer();
+    let index = fixture.index_of("  ref:topic");
+    let popup = bounds_of(&mut fixture.cx, DEBUG_SELECTOR.to_string());
+    let arrow = bounds_of(&mut fixture.cx, format!("branches-popup-ref-arrow-{index}"));
+    let offset = delegate::ref_menu_offset();
+    assert_eq!(arrow.right() + offset.x, popup.right() - px(2.));
+}
+
+#[gpui::test]
+async fn long_branch_names_are_truncated_inside_a_narrow_popup(cx: &mut TestAppContext) {
+    let long_name = format!("feature-{}", "very-long-branch-name-".repeat(8));
+    let mut fixture = Fixture::open(cx, path!("/branches-popup-truncate"), |fs, dot_git| {
+        fs.insert_branches(dot_git, &["main", &long_name]);
+        fs.set_recent_branches_for_repo(dot_git, &[long_name.as_str(), "main"]);
+    })
+    .await;
+    fixture.open_in_modal_layer();
+    fixture.update_picker(|picker, _, cx| {
+        picker.delegate.set_user_size(
+            state::PopupSize {
+                width: MIN_WIDTH_PX as u32,
+                height: 400,
+            },
+            cx,
+        );
+        cx.notify();
+    });
+    let index = fixture.index_of(&format!("  ref:{long_name}"));
+    let popup = bounds_of(&mut fixture.cx, DEBUG_SELECTOR.to_string());
+    let arrow = bounds_of(&mut fixture.cx, format!("branches-popup-ref-arrow-{index}"));
+    assert!(arrow.right() <= popup.right(), "{arrow:?} {popup:?}");
+    let label = bounds_of(&mut fixture.cx, format!("branches-popup-ref-label-{index}"));
+    assert!(label.right() <= arrow.left(), "{label:?} {arrow:?}");
+}
+
+#[test]
+fn the_gear_menu_follows_intellij_for_one_and_several_repositories() {
+    let options = |several_repositories, user_resized| delegate::GearMenuOptions {
+        toggles: state::PopupToggles::default(),
+        several_repositories,
+        user_resized,
+    };
+    let labels = |items: Vec<delegate::GearMenuItem>| -> Vec<String> {
+        items
+            .into_iter()
+            .map(|item| match item {
+                delegate::GearMenuItem::Header(title) => format!("# {title}"),
+                delegate::GearMenuItem::Toggle { label, .. } => label.to_string(),
+                delegate::GearMenuItem::RestorePopupSize { enabled } => {
+                    format!("Restore Popup Size ({enabled})")
+                }
+                delegate::GearMenuItem::Separator => "---".to_string(),
+            })
+            .collect()
+    };
+    assert_eq!(
+        labels(delegate::gear_menu_items(options(false, false))),
+        vec![
+            "Show Actions in Search Results",
+            "---",
+            "Group by Directory",
+            "Show Recent Branches",
+            "Show Tags",
+            "Restore Popup Size (false)",
+        ]
+    );
+    assert_eq!(
+        labels(delegate::gear_menu_items(options(true, true))),
+        vec![
+            "# Add in Search Results",
+            "Actions",
+            "Repositories",
+            "---",
+            "Group by Directory",
+            "Show Recent Branches",
+            "Show Tags",
+            "Restore Popup Size (true)",
+        ]
+    );
+}
+
+#[test]
+fn the_selected_ref_offers_a_favorite_with_a_hollow_star() {
+    assert_eq!(
+        delegate::ref_row_icon(true, false, false, true),
+        IconName::FavoriteOutline
+    );
+    assert_eq!(
+        delegate::ref_row_icon(false, false, true, true),
+        IconName::FavoriteOutline
+    );
+    assert_eq!(
+        delegate::ref_row_icon(true, true, false, true),
+        IconName::CurrentBranchFavoriteLabel
+    );
+    assert_eq!(
+        delegate::ref_row_icon(true, false, false, false),
+        IconName::CurrentBranchLabel
+    );
+}
+
+#[test]
+fn row_icons_are_the_sixteen_pixel_intellij_size() {
+    assert!(delegate::ROW_ICON_SIZE == IconSize::Medium);
+}
+
+#[gpui::test]
+fn repositories_take_the_intellij_new_ui_colors_in_name_order(cx: &mut TestAppContext) {
+    init_test(cx);
+    cx.update(|cx| {
+        let light = cx.theme().appearance().is_light();
+        let expected = |light_color: u32, dark_color: u32| -> gpui::Hsla {
+            gpui::rgb(if light { light_color } else { dark_color }).into()
+        };
+        assert_eq!(
+            delegate::repository_color(0, cx),
+            expected(0xFF6285, 0x865762)
+        );
+        assert_eq!(
+            delegate::repository_color(1, cx),
+            expected(0x89C398, 0x436946)
+        );
+        assert_eq!(
+            delegate::repository_color(14, cx),
+            expected(0xFF6285, 0x865762)
+        );
+    });
+}
+
+#[gpui::test]
+fn incoming_and_outgoing_counters_use_the_intellij_colors(cx: &mut TestAppContext) {
+    init_test(cx);
+    cx.update(|cx| {
+        let light = cx.theme().appearance().is_light();
+        let (incoming, outgoing) = delegate::commit_counter_colors(cx);
+        let expected = |light_color: u32, dark_color: u32| -> gpui::Hsla {
+            gpui::rgb(if light { light_color } else { dark_color }).into()
+        };
+        assert_eq!(incoming, expected(0x3574F0, 0x548AF7));
+        assert_eq!(outgoing, expected(0x369650, 0x57965C));
+    });
+}
+
+#[gpui::test]
+async fn a_top_action_shortcut_closes_the_popup_and_runs_the_action(cx: &mut TestAppContext) {
+    let mut fixture =
+        Fixture::open(cx, path!("/branches-popup-shortcut"), standard_repository).await;
+    fixture.open_in_modal_layer();
+    let dismissed = Rc::new(Cell::new(false));
+    let _subscription = fixture.cx.update(|_, cx| {
+        let dismissed = dismissed.clone();
+        cx.subscribe(&fixture.popup, move |_, _: &DismissEvent, _| {
+            dismissed.set(true)
+        })
+    });
+    fixture.cx.dispatch_action(git::NewBranch);
+    fixture.cx.run_until_parked();
+    assert!(dismissed.get());
+    let popup_open = fixture.workspace.read_with(&fixture.cx, |workspace, cx| {
+        workspace.active_modal::<BranchesPopup>(cx).is_some()
+    });
+    assert!(!popup_open);
+    let dialog_open = fixture
+        .workspace
+        .update_in(&mut fixture.cx, |workspace, window, cx| {
+            workspace.has_active_modal(window, cx)
+        });
+    assert!(dialog_open, "New Branch… opens its dialog");
+}
+
+#[gpui::test]
+async fn delete_ref_dispatched_inside_the_popup_deletes_the_ref_of_the_open_menu(
+    cx: &mut TestAppContext,
+) {
+    let mut fixture = Fixture::open(
+        cx,
+        path!("/branches-popup-delete-menu"),
+        standard_repository,
+    )
+    .await;
+    fixture.open_in_modal_layer();
+    fixture.select("  ref:topic");
+    fixture.update_picker(|picker, window, cx| picker.delegate.confirm(false, window, cx));
+    let menu_open = fixture.picker().read_with(&fixture.cx, |picker, cx| {
+        picker.delegate.has_another_open_menu_for_tests(cx)
+    });
+    assert!(menu_open, "Enter opens the ref menu");
+
+    // The ref menu re-dispatches its `DeleteRef` entry inside the popup, like this.
+    fixture.cx.dispatch_action(DeleteRef);
+    fixture.cx.run_until_parked();
+    let branches = fixture.repository.read_with(&fixture.cx, |repository, _| {
+        repository
+            .branch_list
+            .iter()
+            .map(|branch| branch.name().to_string())
+            .collect::<Vec<_>>()
+    });
+    assert!(!branches.contains(&"topic".to_string()), "{branches:?}");
+}
+
+#[gpui::test]
+async fn delete_ref_deletes_the_ref_of_the_open_menu_after_the_selection_moved(
+    cx: &mut TestAppContext,
+) {
+    let mut fixture = Fixture::open(
+        cx,
+        path!("/branches-popup-delete-moved"),
+        standard_repository,
+    )
+    .await;
+    fixture.open_in_modal_layer();
+    fixture.select("  ref:topic");
+    fixture.update_picker(|picker, window, cx| picker.delegate.confirm(false, window, cx));
+    let main_index = fixture.index_of("  ref:main");
+    fixture.update_picker(|picker, window, cx| {
+        picker.set_selected_index(main_index, None, false, window, cx)
+    });
+    assert_eq!(fixture.selected().as_deref(), Some("  ref:main"));
+    let menu_open = fixture.picker().read_with(&fixture.cx, |picker, cx| {
+        picker.delegate.has_another_open_menu_for_tests(cx)
+    });
+    assert!(menu_open, "hovering another row keeps the ref menu open");
+
+    fixture.cx.dispatch_action(DeleteRef);
+    fixture.cx.run_until_parked();
+    let branches = fixture.repository.read_with(&fixture.cx, |repository, _| {
+        repository
+            .branch_list
+            .iter()
+            .map(|branch| branch.name().to_string())
+            .collect::<Vec<_>>()
+    });
+    assert!(!branches.contains(&"topic".to_string()), "{branches:?}");
+    assert!(branches.contains(&"main".to_string()), "{branches:?}");
 }

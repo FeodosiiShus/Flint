@@ -2,6 +2,7 @@ use std::{
     iter,
     ops::{Range, RangeInclusive},
     sync::Arc,
+    time::Duration,
 };
 
 use ::git::status::{FileStatus, StatusCode, TrackedStatus};
@@ -30,6 +31,9 @@ use crate::{
 };
 
 pub(crate) const CODE_VISION_GAP: Pixels = px(5.);
+/// Resolving a usages lens is a find-all-references in the server, so after edits the lenses
+/// are resolved again only once typing pauses for IntelliJ's default autoreparse delay.
+pub(crate) const CODE_LENS_RESOLVE_DEBOUNCE: Duration = Duration::from_millis(300);
 const CODE_AUTHOR_ICON_GAP: Pixels = px(2.);
 const CODE_AUTHOR_GROUP: &str = "code-vision-author";
 const NEW_CODE_TEXT: &str = "new *";
@@ -204,6 +208,7 @@ pub(super) struct CodeLensState {
     lines: HashMap<BufferId, Vec<CodeVisionLine>>,
     actions: HashMap<BufferId, CodeLensActions>,
     resolve_task: Task<()>,
+    resolved_versions: HashMap<BufferId, clock::Global>,
     blame_epoch: usize,
 }
 
@@ -213,6 +218,7 @@ impl Default for CodeLensState {
             lines: HashMap::default(),
             actions: HashMap::default(),
             resolve_task: Task::ready(()),
+            resolved_versions: HashMap::default(),
             blame_epoch: 0,
         }
     }
@@ -796,6 +802,21 @@ impl Editor {
             return;
         }
 
+        if let Some(code_lens) = self.code_lens.as_mut() {
+            let has_stale_resolves = buffers_to_query.iter().any(|buffer| {
+                let buffer = buffer.read(cx);
+                code_lens
+                    .resolved_versions
+                    .get(&buffer.remote_id())
+                    .is_some_and(|resolved_version| {
+                        buffer.version().changed_since(resolved_version)
+                    })
+            });
+            if has_stale_resolves {
+                code_lens.resolve_task = Task::ready(());
+            }
+        }
+
         let project = project.downgrade();
         self.refresh_code_lens_task = cx.spawn(async move |editor, cx| {
             cx.background_executor()
@@ -1109,21 +1130,20 @@ impl Editor {
             return;
         };
 
-        let lsp_store = project.read(cx).lsp_store();
-
-        let mut pending_resolves = Vec::new();
+        let mut lenses_to_resolve = Vec::new();
+        let mut edited_since_last_resolve = false;
         for (buffer_snapshot, visible_range, _) in self.visible_buffer_ranges(cx) {
             let buffer_id = buffer_snapshot.remote_id();
             let Some(buffer) = self.buffer.read(cx).buffer(buffer_id) else {
                 continue;
             };
-            let Some(actions) = self
-                .code_lens
-                .as_ref()
-                .and_then(|state| state.actions.get(&buffer_id))
-            else {
+            let Some(code_lens) = self.code_lens.as_ref() else {
                 continue;
             };
+            let Some(actions) = code_lens.actions.get(&buffer_id) else {
+                continue;
+            };
+            let mut buffer_has_lenses_to_resolve = false;
             for (lens_id, action) in actions {
                 if action.resolved {
                     continue;
@@ -1137,28 +1157,71 @@ impl Editor {
                 if action_offset < visible_range.start.0 || action_offset > visible_range.end.0 {
                     continue;
                 }
-                let resolve_task = lsp_store.update(cx, |lsp_store, cx| {
-                    lsp_store.resolve_code_lens(&buffer, action.server_id, *lens_id, cx)
-                });
-                pending_resolves.push((buffer_id, resolve_task));
+                lenses_to_resolve.push((buffer.clone(), action.server_id, *lens_id));
+                buffer_has_lenses_to_resolve = true;
+            }
+            if buffer_has_lenses_to_resolve
+                && code_lens
+                    .resolved_versions
+                    .get(&buffer_id)
+                    .is_some_and(|resolved_version| {
+                        buffer_snapshot.version().changed_since(resolved_version)
+                    })
+            {
+                edited_since_last_resolve = true;
             }
         }
-        if pending_resolves.is_empty() {
+        if lenses_to_resolve.is_empty() {
             return;
         }
 
+        let lsp_store = project.read(cx).lsp_store().downgrade();
         let code_lens = self.code_lens.get_or_insert_with(CodeLensState::default);
         code_lens.resolve_task = cx.spawn(async move |editor, cx| {
+            if edited_since_last_resolve {
+                cx.background_executor()
+                    .timer(CODE_LENS_RESOLVE_DEBOUNCE)
+                    .await;
+            }
+            let Ok(pending_resolves) = editor.update(cx, |editor, cx| {
+                let mut pending_resolves = Vec::with_capacity(lenses_to_resolve.len());
+                for (buffer, server_id, lens_id) in lenses_to_resolve {
+                    let buffer_id = buffer.read(cx).remote_id();
+                    let requested_version = buffer.read(cx).version();
+                    let Ok(resolve_task) = lsp_store.update(cx, |lsp_store, cx| {
+                        lsp_store.resolve_code_lens(&buffer, server_id, lens_id, cx)
+                    }) else {
+                        continue;
+                    };
+                    if let Some(code_lens) = editor.code_lens.as_mut() {
+                        code_lens
+                            .resolved_versions
+                            .insert(buffer_id, requested_version.clone());
+                    }
+                    pending_resolves.push((buffer, requested_version, resolve_task));
+                }
+                pending_resolves
+            }) else {
+                return;
+            };
             let mut resolves_in_progress = pending_resolves
                 .into_iter()
-                .map(|(buffer_id, task)| async move { (buffer_id, task.await) })
+                .map(|(buffer, requested_version, task)| async move {
+                    (buffer, requested_version, task.await)
+                })
                 .collect::<FuturesUnordered<_>>();
-            while let Some((buffer_id, resolve_result)) = resolves_in_progress.next().await {
+            while let Some((buffer, requested_version, resolve_result)) =
+                resolves_in_progress.next().await
+            {
                 let Some((resolved_id, resolved)) = resolve_result else {
                     continue;
                 };
                 editor
                     .update(cx, |editor, cx| {
+                        if buffer.read(cx).version().changed_since(&requested_version) {
+                            return;
+                        }
+                        let buffer_id = buffer.read(cx).remote_id();
                         let snapshot = editor.buffer().read(cx).snapshot(cx);
                         let Some(mut actions) = editor
                             .code_lens
@@ -1196,6 +1259,7 @@ impl Editor {
         for buffer_id in buffer_ids {
             code_lens.lines.remove(buffer_id);
             code_lens.actions.remove(buffer_id);
+            code_lens.resolved_versions.remove(buffer_id);
         }
         cx.notify();
     }
@@ -1223,8 +1287,8 @@ mod tests {
     use text::Point;
 
     use super::{
-        CODE_VISION_GAP, CodeVisionKind, DeclarationRow, code_author_label, code_authors,
-        hunk_changes_rows,
+        CODE_LENS_RESOLVE_DEBOUNCE, CODE_VISION_GAP, CodeVisionKind, DeclarationRow,
+        code_author_label, code_authors, hunk_changes_rows,
     };
     use crate::{
         DisplayPoint, DisplayRow, Editor, LSP_REQUEST_DEBOUNCE_TIMEOUT,
@@ -2972,6 +3036,125 @@ mod tests {
                 "code lens should be disabled after clearing"
             );
             assert_eq!(code_vision_line_count(editor), 0);
+        });
+    }
+
+    #[gpui::test]
+    async fn test_code_vision_resolves_again_only_after_typing_pauses(cx: &mut TestAppContext) {
+        init_test(cx, |_| {});
+        update_test_editor_settings(cx, &|settings| {
+            settings.code_lens = Some(CodeLens::On);
+        });
+
+        let mut cx = EditorLspTestContext::new_typescript(
+            lsp::ServerCapabilities {
+                code_lens_provider: Some(lsp::CodeLensOptions {
+                    resolve_provider: Some(true),
+                }),
+                ..lsp::ServerCapabilities::default()
+            },
+            cx,
+        )
+        .await;
+
+        let mut code_lens_request =
+            cx.set_request_handler::<lsp::request::CodeLensRequest, _, _>(move |_, _, _| async {
+                Ok(Some(vec![lsp::CodeLens {
+                    range: lsp::Range::new(lsp::Position::new(0, 0), lsp::Position::new(0, 19)),
+                    command: None,
+                    data: Some(serde_json::json!({"id": "lens_1"})),
+                }]))
+            });
+        let resolve_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let resolve_gate: Arc<Mutex<Option<futures::channel::oneshot::Receiver<()>>>> =
+            Arc::default();
+        cx.lsp
+            .set_request_handler::<lsp::request::CodeLensResolve, _, _>({
+                let resolve_count = resolve_count.clone();
+                let resolve_gate = resolve_gate.clone();
+                move |lens, _| {
+                    let count = resolve_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+                    let gate = resolve_gate.lock().take();
+                    async move {
+                        if let Some(gate) = gate {
+                            gate.await.ok();
+                        }
+                        Ok(lsp::CodeLens {
+                            command: Some(lsp::Command {
+                                title: format!("{count} references"),
+                                command: "resolved_cmd".to_owned(),
+                                arguments: None,
+                            }),
+                            ..lens
+                        })
+                    }
+                }
+            });
+        let resolves = || resolve_count.load(std::sync::atomic::Ordering::SeqCst);
+
+        cx.set_state("ˇfunction hello() {}\nfunction world() {}");
+        assert!(code_lens_request.next().await.is_some());
+        cx.run_until_parked();
+        assert_eq!(resolves(), 1, "the first lenses resolve right away");
+
+        for typed in ["a", "b"] {
+            cx.update_editor(|editor, window, cx| {
+                editor.move_to_end(&crate::actions::MoveToEnd, window, cx);
+                editor.handle_input(typed, window, cx);
+            });
+            cx.executor()
+                .advance_clock(LSP_REQUEST_DEBOUNCE_TIMEOUT + Duration::from_millis(10));
+            assert!(code_lens_request.next().await.is_some());
+            cx.run_until_parked();
+            assert_eq!(
+                resolves(),
+                1,
+                "lenses refetched while typing are not resolved again yet"
+            );
+        }
+        cx.editor(|editor, _, cx| {
+            assert_eq!(
+                code_vision_assertion_text(editor, cx),
+                "function hello() {}  [1 usage]\nfunction world() {}ab",
+                "the previous hint stays while typing"
+            );
+        });
+
+        cx.executor().advance_clock(CODE_LENS_RESOLVE_DEBOUNCE);
+        cx.run_until_parked();
+        assert_eq!(resolves(), 2, "a pause in typing resolves the lenses once");
+        cx.editor(|editor, _, cx| {
+            assert_eq!(
+                code_vision_assertion_text(editor, cx),
+                "function hello() {}  [2 usages]\nfunction world() {}ab"
+            );
+        });
+
+        let (release_resolve, gate) = futures::channel::oneshot::channel::<()>();
+        *resolve_gate.lock() = Some(gate);
+        cx.update_editor(|editor, window, cx| {
+            editor.handle_input("c", window, cx);
+        });
+        cx.executor()
+            .advance_clock(LSP_REQUEST_DEBOUNCE_TIMEOUT + Duration::from_millis(10));
+        assert!(code_lens_request.next().await.is_some());
+        cx.run_until_parked();
+        cx.executor().advance_clock(CODE_LENS_RESOLVE_DEBOUNCE);
+        cx.run_until_parked();
+        assert_eq!(resolves(), 3, "the third resolve is in flight");
+
+        cx.update_editor(|editor, window, cx| {
+            editor.handle_input("d", window, cx);
+        });
+        cx.run_until_parked();
+        release_resolve.send(()).ok();
+        cx.run_until_parked();
+        cx.editor(|editor, _, cx| {
+            assert_eq!(
+                code_vision_assertion_text(editor, cx),
+                "function hello() {}  [2 usages]\nfunction world() {}abcd",
+                "a resolve for text that changed since is dropped"
+            );
         });
     }
 

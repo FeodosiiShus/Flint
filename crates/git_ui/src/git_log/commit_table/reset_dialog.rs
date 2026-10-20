@@ -12,7 +12,9 @@ use util::ResultExt as _;
 use workspace::ModalView;
 
 use super::context_menu::MenuCommit;
-use crate::branch_operations::integrate::is_protected_remote_reference;
+use crate::branch_operations::integrate::{
+    is_protected_remote_reference, protected_branch_patterns,
+};
 use crate::branch_operations::{BranchContext, BranchNotice};
 use crate::git_panel::GitPanel;
 use crate::merge_tool::conflict_resolution::labels::short_hash;
@@ -305,10 +307,11 @@ fn pushed_to_protected_branch_message(branch: &str) -> String {
 fn find_protected_remote_branch(
     remote_branches: &[SharedString],
     containing_branches: &[SharedString],
+    patterns: &[String],
 ) -> Option<SharedString> {
     remote_branches
         .iter()
-        .filter(|branch| is_protected_remote_reference(branch))
+        .filter(|branch| is_protected_remote_reference(branch, patterns))
         .find(|branch| containing_branches.contains(branch))
         .cloned()
 }
@@ -474,10 +477,15 @@ async fn undo_commit_check(
         Ok(branches) => branches,
         Err(error) => return Some(format!("{error:#}")),
     };
-    let remote_branches = cx
-        .update(|_, app| remote_branch_names(context, app))
+    let (remote_branches, patterns) = cx
+        .update(|_, app| {
+            (
+                remote_branch_names(context, app),
+                protected_branch_patterns(app),
+            )
+        })
         .log_err()?;
-    find_protected_remote_branch(&remote_branches, &containing_branches)
+    find_protected_remote_branch(&remote_branches, &containing_branches, &patterns)
         .map(|branch| pushed_to_protected_branch_message(&branch))
 }
 
@@ -825,7 +833,8 @@ mod tests {
         ];
         let containing: [SharedString; 3] =
             ["main".into(), "origin/main".into(), "upstream/main".into()];
-        let found = find_protected_remote_branch(&remote_branches, &containing);
+        let patterns = vec!["master".to_string(), "main".to_string()];
+        let found = find_protected_remote_branch(&remote_branches, &containing, &patterns);
         assert_eq!(found.as_deref(), Some("upstream/main"));
         assert_eq!(
             pushed_to_protected_branch_message("upstream/main"),
@@ -833,7 +842,7 @@ mod tests {
         );
         let unpublished: [SharedString; 2] = ["main".into(), "origin/feature".into()];
         assert_eq!(
-            find_protected_remote_branch(&remote_branches, &unpublished),
+            find_protected_remote_branch(&remote_branches, &unpublished, &patterns),
             None
         );
     }

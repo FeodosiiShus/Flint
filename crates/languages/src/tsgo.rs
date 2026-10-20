@@ -14,11 +14,15 @@ use std::{
     path::{Path, PathBuf},
     sync::{Arc, LazyLock},
 };
+use sysinfo::{MemoryRefreshKind, RefreshKind, System};
 use util::{ResultExt, merge_json_value_into};
 
 const SERVER_NAME: LanguageServerName = LanguageServerName::new_static("tsgo");
 const CODE_LENS_SHOW_LOCATIONS_COMMAND: &str = "editor.action.showReferences";
 const EXECUTABLE_NAME: &str = if cfg!(windows) { "tsc.exe" } else { "tsc" };
+const GO_MEMORY_LIMIT_VARIABLE: &str = "GOMEMLIMIT";
+const MEBIBYTE: u64 = 1024 * 1024;
+const GIBIBYTE: u64 = 1024 * MEBIBYTE;
 
 pub struct TsgoLspAdapter {
     node: NodeRuntime,
@@ -53,6 +57,19 @@ fn current_platform_package_name() -> Result<String> {
     npm_platform_package_name(std::env::consts::OS, std::env::consts::ARCH)
 }
 
+/// Go keeps freed heap resident unless a soft memory limit asks it to return pages to the OS.
+fn go_memory_limit(total_memory_bytes: u64) -> String {
+    let limit = (total_memory_bytes / 4).clamp(2 * GIBIBYTE, 8 * GIBIBYTE);
+    format!("{}MiB", limit / MEBIBYTE)
+}
+
+fn default_go_memory_limit() -> String {
+    let system = System::new_with_specifics(
+        RefreshKind::nothing().with_memory(MemoryRefreshKind::nothing().with_ram()),
+    );
+    go_memory_limit(system.total_memory())
+}
+
 fn server_binary(container_dir: &Path, package_name: &str) -> LanguageServerBinary {
     LanguageServerBinary {
         path: container_dir
@@ -63,6 +80,64 @@ fn server_binary(container_dir: &Path, package_name: &str) -> LanguageServerBina
         arguments: vec!["--lsp".into(), "--stdio".into()],
         env: None,
     }
+}
+
+fn default_server_env() -> HashMap<String, String> {
+    HashMap::from_iter([(
+        GO_MEMORY_LIMIT_VARIABLE.to_string(),
+        default_go_memory_limit(),
+    )])
+}
+
+fn workspace_configuration_with_overrides(override_options: Option<Value>) -> Value {
+    let config = json!({
+        "inlayHints": {
+            "parameterNames": {
+                "enabled": "literals",
+                "suppressWhenArgumentMatchesName": false
+            },
+            "parameterTypes": {
+                "enabled": true
+            },
+            "variableTypes": {
+                "enabled": true,
+                "suppressWhenTypeMatchesName": false
+            },
+            "propertyDeclarationTypes": {
+                "enabled": true
+            },
+            "functionLikeReturnTypes": {
+                "enabled": true
+            },
+            "enumMemberValues": {
+                "enabled": true
+            }
+        },
+        "implementationsCodeLens": {
+            "enabled": true,
+            "showOnAllClassMethods": true,
+            "showOnInterfaceMethods": true
+        },
+        "referencesCodeLens": {
+            "enabled": true,
+            "showOnAllFunctions": true
+        },
+    });
+
+    // tsgo asks for the `js/ts` section too and lets it override `typescript` and `javascript`;
+    // its auto-import memory switches (`preferences.autoImportFileExcludePatterns`,
+    // `suggest.autoImports`) are usually set there.
+    let mut default_workspace_configuration = json!({
+        "typescript": config,
+        "javascript": config,
+        "js/ts": {},
+    });
+
+    if let Some(override_options) = override_options {
+        merge_json_value_into(override_options, &mut default_workspace_configuration)
+    }
+
+    default_workspace_configuration
 }
 
 impl LspInstaller for TsgoLspAdapter {
@@ -150,6 +225,10 @@ impl LspAdapter for TsgoLspAdapter {
         SERVER_NAME
     }
 
+    fn default_server_env(&self) -> HashMap<String, String> {
+        default_server_env()
+    }
+
     fn code_action_kinds(&self) -> Option<Vec<CodeActionKind>> {
         Some(vec![
             CodeActionKind::QUICKFIX,
@@ -184,55 +263,12 @@ impl LspAdapter for TsgoLspAdapter {
         _: Option<Uri>,
         cx: &mut AsyncApp,
     ) -> Result<Value> {
-        let config = json!({
-            "inlayHints": {
-                "parameterNames": {
-                    "enabled": "literals",
-                    "suppressWhenArgumentMatchesName": false
-                },
-                "parameterTypes": {
-                    "enabled": true
-                },
-                "variableTypes": {
-                    "enabled": true,
-                    "suppressWhenTypeMatchesName": false
-                },
-                "propertyDeclarationTypes": {
-                    "enabled": true
-                },
-                "functionLikeReturnTypes": {
-                    "enabled": true
-                },
-                "enumMemberValues": {
-                    "enabled": true
-                }
-            },
-            "implementationsCodeLens": {
-                "enabled": true,
-                "showOnAllClassMethods": true,
-                "showOnInterfaceMethods": true
-            },
-            "referencesCodeLens": {
-                "enabled": true,
-                "showOnAllFunctions": true
-            },
-        });
-
-        let mut default_workspace_configuration = json!({
-            "typescript": config,
-            "javascript": config,
-        });
-
         let override_options = cx.update(|cx| {
             language_server_settings(delegate.as_ref(), &SERVER_NAME, cx)
                 .and_then(|s| s.settings.clone())
         });
 
-        if let Some(override_options) = override_options {
-            merge_json_value_into(override_options, &mut default_workspace_configuration)
-        }
-
-        Ok(default_workspace_configuration)
+        Ok(workspace_configuration_with_overrides(override_options))
     }
 
     fn diagnostic_message_to_markdown(&self, message: &str) -> Option<String> {
@@ -300,7 +336,69 @@ fn completion_label(
 
 #[cfg(test)]
 mod tests {
-    use super::{enhance_diagnostic_message, npm_platform_package_name};
+    use super::{
+        GIBIBYTE, GO_MEMORY_LIMIT_VARIABLE, default_server_env, enhance_diagnostic_message,
+        go_memory_limit, npm_platform_package_name, workspace_configuration_with_overrides,
+    };
+    use serde_json::json;
+
+    #[test]
+    fn go_memory_limit_is_a_quarter_of_ram_clamped_to_two_to_eight_gibibytes() {
+        assert_eq!(go_memory_limit(16 * GIBIBYTE), "4096MiB");
+        assert_eq!(go_memory_limit(24 * GIBIBYTE), "6144MiB");
+        assert_eq!(go_memory_limit(4 * GIBIBYTE), "2048MiB");
+        assert_eq!(go_memory_limit(64 * GIBIBYTE), "8192MiB");
+        assert_eq!(
+            go_memory_limit(0),
+            "2048MiB",
+            "an unknown RAM size still gets the lower bound"
+        );
+    }
+
+    #[test]
+    fn tsgo_defaults_to_a_go_memory_limit() {
+        let env = default_server_env();
+        let limit = env
+            .get(GO_MEMORY_LIMIT_VARIABLE)
+            .expect("tsgo should start with a GOMEMLIMIT");
+        let mebibytes = limit
+            .strip_suffix("MiB")
+            .and_then(|mebibytes| mebibytes.parse::<u64>().ok())
+            .expect("GOMEMLIMIT should be a whole number of MiB");
+        assert!((2048..=8192).contains(&mebibytes), "{limit}");
+    }
+
+    #[test]
+    fn workspace_configuration_passes_js_ts_settings_through() {
+        let defaults = workspace_configuration_with_overrides(None);
+        assert_eq!(defaults["js/ts"], json!({}));
+        assert_eq!(
+            defaults["typescript"]["referencesCodeLens"]["enabled"],
+            true
+        );
+
+        let configuration = workspace_configuration_with_overrides(Some(json!({
+            "js/ts": {
+                "preferences": {
+                    "autoImportFileExcludePatterns": ["**/node_modules/@aws-sdk/**"]
+                },
+                "suggest": { "autoImports": false }
+            }
+        })));
+        assert_eq!(
+            configuration["js/ts"],
+            json!({
+                "preferences": {
+                    "autoImportFileExcludePatterns": ["**/node_modules/@aws-sdk/**"]
+                },
+                "suggest": { "autoImports": false }
+            })
+        );
+        assert_eq!(
+            configuration["javascript"]["inlayHints"]["parameterNames"]["enabled"],
+            "literals"
+        );
+    }
 
     #[test]
     fn enhance_diagnostic_message_formats_quoted_types() {

@@ -171,7 +171,7 @@ fn stripe_label_lines(name: &str) -> Vec<&str> {
 
 /// `ToolWindow.Stripe.separatorColor` (`toolbar-border`): `transparent-white-30`, `#FFFFFF21`,
 /// in Islands Dark and `transparent-black-30`, `#00000020`, in Islands Light.
-fn stripe_separator_color(is_light: bool) -> Hsla {
+pub fn stripe_separator_color(is_light: bool) -> Hsla {
     if is_light {
         hsla(0., 0., 0., 32. / 255.)
     } else {

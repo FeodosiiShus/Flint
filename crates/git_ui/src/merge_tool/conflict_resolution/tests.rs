@@ -1833,6 +1833,7 @@ fn smart_restore_params_put_leading_actions_before_resolve() {
     let view_saved_changes = NoticeAction {
         label: "View saved changes…".into(),
         handler: noop_resolve(),
+        expires: true,
     };
 
     let stash = ConflictParams::for_smart_restore("update", "main", true, vec![view_saved_changes]);

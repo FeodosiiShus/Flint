@@ -1,25 +1,31 @@
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
+use git::repository::{Branch, UpstreamTracking, Worktree};
 use gpui::{Action, App, SharedString, Window};
 use ui::{ContextMenu, ContextMenuEntry, DocumentationSide, prelude::*};
+use zed_actions::{CreateWorktree, NewWorktreeBranchTarget};
 
 use crate::branch_operations::{
     BranchContext, checkout, compare, integrate, manage, quoted_ref_label,
 };
 use crate::branch_refs::{RefKind, RefTarget};
+use crate::branches_popup::DeleteRef;
 
 const PUSH_TAG_SUBMENU_THRESHOLD: usize = 6;
 const PUSH_TAG_SUBMENU_LABEL: &str = "Push Tag";
 
 pub const DETACHED_HEAD_REBASE_TOOLTIP: &str = "Rebase is not possible in the detached HEAD state";
 pub const PROTECTED_BRANCH_DELETE_TOOLTIP: &str = "Cannot delete a protected branch";
-pub const EMPTY_REPOSITORY_TOOLTIP: &str =
-    "This action is not possible in an empty repository. Make initial commit first";
+pub const EMPTY_REPOSITORY_TOOLTIP: &str = "Action is not possible before the first commit.";
+/// The key context of the popup's ref menu, which binds the `$Delete` shortcut to `DeleteRef`.
+pub const REF_MENU_KEY_CONTEXT: &str = "menu BranchRefMenu";
 pub const FETCH_IN_PROGRESS_TOOLTIP: &str = "Update is already running";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum MenuAction {
     Checkout,
+    OpenWorktree { path: PathBuf },
     NewBranchFrom,
     CheckoutAndRebase,
     CheckoutAndUpdate,
@@ -27,6 +33,7 @@ pub enum MenuAction {
     ShowDiffWithWorkingTree,
     RebaseCurrentOnto,
     MergeIntoCurrent,
+    NewWorktreeFrom,
     Update,
     Push,
     PullUsingRebase,
@@ -42,6 +49,9 @@ pub struct MenuItem {
     pub label: String,
     pub enabled: bool,
     pub tooltip: Option<String>,
+    /// The ref the item acts on when it is not the ref the menu was opened for, like the items of
+    /// the "Tracked Branch" submenu.
+    pub target: Option<RefTarget>,
 }
 
 impl MenuItem {
@@ -51,7 +61,12 @@ impl MenuItem {
             label: label.into(),
             enabled: true,
             tooltip: None,
+            target: None,
         }
+    }
+
+    pub fn target_or<'a>(&'a self, menu_target: &'a RefTarget) -> &'a RefTarget {
+        self.target.as_ref().unwrap_or(menu_target)
     }
 
     fn disabled(mut self, reason: impl Into<String>) -> Self {
@@ -73,7 +88,10 @@ impl MenuItem {
 pub enum MenuItemPlan {
     Separator,
     Item(MenuItem),
-    Submenu { label: String, items: Vec<MenuItem> },
+    Submenu {
+        label: String,
+        items: Vec<MenuItemPlan>,
+    },
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -86,7 +104,12 @@ pub struct MenuContext<'a> {
     pub has_commits: bool,
     pub remotes: &'a [SharedString],
     pub has_tracked_branch: bool,
+    /// The remote branch a local branch tracks, which gets its own "Tracked Branch" submenu.
+    pub tracked_branch: Option<&'a str>,
+    /// Another working tree that has the local branch checked out.
+    pub other_worktree: Option<&'a Path>,
     pub fetching: bool,
+    pub protected_branches: &'a [String],
 }
 
 impl MenuContext<'_> {
@@ -118,13 +141,42 @@ impl MenuContext<'_> {
     }
 }
 
+/// The remote branch a local branch tracks, while it exists (`GitRepoInfo.getTrackingInfo`).
+pub fn tracked_remote_branch(branch: &Branch) -> Option<String> {
+    let upstream = branch.upstream.as_ref()?;
+    if matches!(upstream.tracking, UpstreamTracking::Gone) {
+        return None;
+    }
+    upstream.stripped_ref_name().map(str::to_string)
+}
+
+/// Another working tree that has `branch_name` checked out; `other_worktrees` leaves out the
+/// working tree the popup belongs to (`GitWorkingTreesUtil.findCheckedOutWorkingTree`).
+pub fn worktree_with_branch<'a>(
+    branch_name: &str,
+    other_worktrees: &'a [Worktree],
+) -> Option<&'a Path> {
+    let ref_name = format!("refs/heads/{branch_name}");
+    other_worktrees
+        .iter()
+        .find(|worktree| worktree.ref_name.as_deref() == Some(ref_name.as_str()))
+        .map(|worktree| worktree.path.as_path())
+}
+
 pub fn menu_plan(context: &MenuContext<'_>) -> Vec<MenuItemPlan> {
     let groups = match context.target.kind {
         RefKind::Local => local_groups(context),
         RefKind::Remote => remote_groups(context),
         RefKind::Tag => tag_groups(context),
     };
+    let mut plan = join_groups(groups);
+    if !context.has_commits {
+        disable_for_empty_repository(&mut plan);
+    }
+    plan
+}
 
+fn join_groups(groups: Vec<Vec<MenuItemPlan>>) -> Vec<MenuItemPlan> {
     let mut plan: Vec<MenuItemPlan> = Vec::new();
     for group in groups.into_iter().filter(|group| !group.is_empty()) {
         if !plan.is_empty() {
@@ -132,24 +184,52 @@ pub fn menu_plan(context: &MenuContext<'_>) -> Vec<MenuItemPlan> {
         }
         plan.extend(group);
     }
-
-    if !context.has_commits {
-        for item in &mut plan {
-            match item {
-                MenuItemPlan::Separator => {}
-                MenuItemPlan::Item(menu_item) => disable_for_empty_repository(menu_item),
-                MenuItemPlan::Submenu { items, .. } => {
-                    items.iter_mut().for_each(disable_for_empty_repository)
-                }
-            }
-        }
-    }
     plan
 }
 
-fn disable_for_empty_repository(item: &mut MenuItem) {
-    item.enabled = false;
-    item.tooltip = Some(EMPTY_REPOSITORY_TOOLTIP.to_string());
+fn disable_for_empty_repository(plan: &mut [MenuItemPlan]) {
+    for item in plan {
+        match item {
+            MenuItemPlan::Separator => {}
+            MenuItemPlan::Item(menu_item) => {
+                menu_item.enabled = false;
+                menu_item.tooltip = Some(EMPTY_REPOSITORY_TOOLTIP.to_string());
+            }
+            MenuItemPlan::Submenu { items, .. } => disable_for_empty_repository(items),
+        }
+    }
+}
+
+/// IntelliJ's "New Worktree from 'x'…" names the ref without shortening it.
+fn new_worktree_from_label(name: &str) -> String {
+    format!("New Worktree from '{name}'…")
+}
+
+/// `GitTrackedBranchActionGroup`: the remote branch actions, acting on the tracked branch.
+fn tracked_branch_submenu(context: &MenuContext<'_>, tracked_branch: &str) -> MenuItemPlan {
+    let target = RefTarget::remote(tracked_branch.to_string());
+    let tracked_context = MenuContext {
+        target: &target,
+        other_worktree: None,
+        tracked_branch: None,
+        ..*context
+    };
+    let mut items = join_groups(remote_groups(&tracked_context));
+    retarget(&mut items, &target);
+    MenuItemPlan::Submenu {
+        label: format!("Tracked Branch '{tracked_branch}'"),
+        items,
+    }
+}
+
+fn retarget(plan: &mut [MenuItemPlan], target: &RefTarget) {
+    for item in plan {
+        match item {
+            MenuItemPlan::Separator => {}
+            MenuItemPlan::Item(menu_item) => menu_item.target = Some(target.clone()),
+            MenuItemPlan::Submenu { items, .. } => retarget(items, target),
+        }
+    }
 }
 
 fn item(action: MenuAction, label: impl Into<String>) -> MenuItemPlan {
@@ -176,15 +256,26 @@ fn local_groups(context: &MenuContext<'_>) -> Vec<Vec<MenuItemPlan>> {
     if !is_current {
         checkout_group.push(item(MenuAction::Checkout, "Checkout"));
     }
+    if let Some(path) = context.other_worktree {
+        checkout_group.push(item(
+            MenuAction::OpenWorktree {
+                path: path.to_path_buf(),
+            },
+            "Open Worktree…",
+        ));
+    }
     checkout_group.push(item(
         MenuAction::NewBranchFrom,
         format!("New Branch from {quoted}…"),
     ));
     if !is_current {
-        checkout_group.push(item(
-            MenuAction::CheckoutAndRebase,
-            format!("Checkout and Rebase onto {current}"),
-        ));
+        // IntelliJ cannot rebase a branch that another working tree has checked out.
+        if context.other_worktree.is_none() {
+            checkout_group.push(item(
+                MenuAction::CheckoutAndRebase,
+                format!("Checkout and Rebase onto {current}"),
+            ));
+        }
         // Unlike Update, IntelliJ keeps Checkout and Update enabled while a fetch runs.
         if context.has_remotes() {
             checkout_group.push(MenuItemPlan::Item(
@@ -223,6 +314,11 @@ fn local_groups(context: &MenuContext<'_>) -> Vec<Vec<MenuItemPlan>> {
         ));
     }
 
+    let worktree_group = vec![item(
+        MenuAction::NewWorktreeFrom,
+        new_worktree_from_label(&context.target.name),
+    )];
+
     let mut update_group = Vec::new();
     if context.has_remotes() {
         update_group.push(MenuItemPlan::Item(with_update_state(MenuItem::new(
@@ -231,6 +327,9 @@ fn local_groups(context: &MenuContext<'_>) -> Vec<Vec<MenuItemPlan>> {
         ))));
     }
     update_group.push(item(MenuAction::Push, "Push…"));
+    if let Some(tracked_branch) = context.tracked_branch {
+        update_group.push(tracked_branch_submenu(context, tracked_branch));
+    }
 
     let mut manage_group = vec![item(MenuAction::Rename, "Rename…")];
     if !is_current {
@@ -241,6 +340,7 @@ fn local_groups(context: &MenuContext<'_>) -> Vec<Vec<MenuItemPlan>> {
         checkout_group,
         compare_group,
         integrate_group,
+        worktree_group,
         update_group,
         manage_group,
     ]
@@ -285,6 +385,10 @@ fn remote_groups(context: &MenuContext<'_>) -> Vec<Vec<MenuItemPlan>> {
             format!("Merge {quoted} into {current}"),
         ),
     ];
+    let worktree_group = vec![item(
+        MenuAction::NewWorktreeFrom,
+        new_worktree_from_label(&context.target.name),
+    )];
     let pull_group = vec![
         item(
             MenuAction::PullUsingRebase,
@@ -297,7 +401,10 @@ fn remote_groups(context: &MenuContext<'_>) -> Vec<Vec<MenuItemPlan>> {
     ];
     let manage_group = vec![MenuItemPlan::Item(
         MenuItem::new(MenuAction::Delete, "Delete").enabled_unless(
-            integrate::is_protected_remote_reference(&context.target.name),
+            integrate::is_protected_remote_reference(
+                &context.target.name,
+                context.protected_branches,
+            ),
             PROTECTED_BRANCH_DELETE_TOOLTIP,
         ),
     )];
@@ -306,6 +413,7 @@ fn remote_groups(context: &MenuContext<'_>) -> Vec<Vec<MenuItemPlan>> {
         checkout_group,
         compare_group,
         integrate_group,
+        worktree_group,
         pull_group,
         manage_group,
     ]
@@ -330,6 +438,10 @@ fn tag_groups(context: &MenuContext<'_>) -> Vec<Vec<MenuItemPlan>> {
         MenuAction::ShowDiffWithWorkingTree,
         "Show Diff with Working Tree",
     )];
+    let worktree_group = vec![item(
+        MenuAction::NewWorktreeFrom,
+        new_worktree_from_label(&context.target.name),
+    )];
 
     let push_items: Vec<MenuItem> = context
         .remotes
@@ -346,7 +458,7 @@ fn tag_groups(context: &MenuContext<'_>) -> Vec<Vec<MenuItemPlan>> {
     let push_group = if push_items.len() >= PUSH_TAG_SUBMENU_THRESHOLD {
         vec![MenuItemPlan::Submenu {
             label: PUSH_TAG_SUBMENU_LABEL.to_string(),
-            items: push_items,
+            items: push_items.into_iter().map(MenuItemPlan::Item).collect(),
         }]
     } else {
         push_items.into_iter().map(MenuItemPlan::Item).collect()
@@ -361,6 +473,7 @@ fn tag_groups(context: &MenuContext<'_>) -> Vec<Vec<MenuItemPlan>> {
         checkout_group,
         compare_group,
         integrate_group,
+        worktree_group,
         push_group,
         manage_group,
     ]
@@ -375,6 +488,8 @@ pub fn run_menu_action(
 ) {
     match action {
         MenuAction::Checkout => checkout::checkout(context, target, window, cx),
+        MenuAction::OpenWorktree { path } => context.open_worktree(path, window, cx),
+        MenuAction::NewWorktreeFrom => create_worktree_from(&context, &target, window, cx),
         MenuAction::NewBranchFrom => checkout::new_branch_from(context, target, window, cx),
         MenuAction::CheckoutAndRebase => {
             checkout::checkout_and_rebase_onto_current(context, target, window, cx)
@@ -408,43 +523,66 @@ pub struct MenuRunner {
     pub context: BranchContext,
     pub target: RefTarget,
     pub dismiss: Rc<dyn Fn(&mut Window, &mut App)>,
+    /// Whether the menu's owner handles `DeleteRef`, so `Delete` can show and take its shortcut.
+    pub handles_delete_shortcut: bool,
 }
 
 impl MenuRunner {
-    fn run(&self, action: MenuAction, window: &mut Window, cx: &mut App) {
+    fn run(&self, action: MenuAction, target: RefTarget, window: &mut Window, cx: &mut App) {
         (self.dismiss)(window, cx);
         let context = self.context.clone();
-        let target = self.target.clone();
         window.defer(cx, move |window, cx| {
             run_menu_action(action, context, target, window, cx)
         });
     }
 }
 
-fn shortcut_action(action: &MenuAction) -> Option<Box<dyn Action>> {
-    match action {
+/// The shortcut an item shows. `Delete` uses IntelliJ's `$Delete` only on the ref the menu was
+/// opened for, which is the ref `DeleteRef` deletes.
+fn shortcut_action(menu_item: &MenuItem, handles_delete_shortcut: bool) -> Option<Box<dyn Action>> {
+    match menu_item.action {
         MenuAction::Push => Some(Box::new(git::PushDialog)),
+        MenuAction::Delete if handles_delete_shortcut && menu_item.target.is_none() => {
+            Some(Box::new(DeleteRef))
+        }
         _ => None,
     }
 }
 
 fn add_item(menu: ContextMenu, menu_item: MenuItem, runner: &Rc<MenuRunner>) -> ContextMenu {
+    let shortcut = shortcut_action(&menu_item, runner.handles_delete_shortcut);
     if menu_item.enabled {
         let runner = runner.clone();
+        let target = menu_item.target_or(&runner.target).clone();
         let action = menu_item.action;
-        let shortcut = shortcut_action(&action);
         return menu.entry(menu_item.label, shortcut, move |window, cx| {
-            runner.run(action.clone(), window, cx)
+            runner.run(action.clone(), target.clone(), window, cx)
         });
     }
 
     let mut entry = ContextMenuEntry::new(menu_item.label).disabled(true);
+    if let Some(shortcut) = shortcut {
+        entry = entry.action(shortcut);
+    }
     if let Some(tooltip) = menu_item.tooltip {
         entry = entry.documentation_aside(DocumentationSide::Right, move |_| {
             Label::new(tooltip.clone()).into_any_element()
         });
     }
     menu.item(entry)
+}
+
+fn add_plan(menu: ContextMenu, plan: Vec<MenuItemPlan>, runner: &Rc<MenuRunner>) -> ContextMenu {
+    plan.into_iter().fold(menu, |menu, planned| match planned {
+        MenuItemPlan::Separator => menu.separator(),
+        MenuItemPlan::Item(menu_item) => add_item(menu, menu_item, runner),
+        MenuItemPlan::Submenu { label, items } => {
+            let runner = runner.clone();
+            menu.submenu(label, move |submenu, _, _| {
+                add_plan(submenu, items.clone(), &runner)
+            })
+        }
+    })
 }
 
 pub fn build_ref_menu(
@@ -455,19 +593,75 @@ pub fn build_ref_menu(
 ) -> gpui::Entity<ContextMenu> {
     let runner = Rc::new(runner);
     ContextMenu::build(window, cx, move |menu, _, _| {
-        plan.into_iter().fold(menu, |menu, planned| match planned {
-            MenuItemPlan::Separator => menu.separator(),
-            MenuItemPlan::Item(menu_item) => add_item(menu, menu_item, &runner),
-            MenuItemPlan::Submenu { label, items } => {
-                let runner = runner.clone();
-                menu.submenu(label, move |submenu, _, _| {
-                    items.iter().cloned().fold(submenu, |submenu, menu_item| {
-                        add_item(submenu, menu_item, &runner)
-                    })
-                })
-            }
-        })
+        let menu = if runner.handles_delete_shortcut {
+            menu.key_context(REF_MENU_KEY_CONTEXT)
+        } else {
+            menu
+        };
+        add_plan(menu, plan, &runner)
     })
+}
+
+/// IntelliJ asks for the new worktree in a dialog; Flint's worktree picker is where a new
+/// worktree is named and created.
+pub(super) fn open_worktree_picker(context: &BranchContext, window: &mut Window, cx: &mut App) {
+    let Some(workspace) = context.workspace.upgrade() else {
+        return;
+    };
+    workspace.update(cx, |workspace, cx| {
+        let project = workspace.project().clone();
+        let workspace_handle = workspace.weak_handle();
+        workspace.toggle_modal(window, cx, |window, cx| {
+            git_ui_core::worktree_picker::WorktreePicker::new_modal(
+                project,
+                workspace_handle,
+                None,
+                window,
+                cx,
+            )
+        });
+    });
+}
+
+pub fn worktree_branch_target(target: &RefTarget) -> NewWorktreeBranchTarget {
+    match target.kind {
+        RefKind::Local => NewWorktreeBranchTarget::ExistingBranch {
+            name: target.name.to_string(),
+        },
+        RefKind::Remote => match target.remote_name() {
+            Some(remote_name) => NewWorktreeBranchTarget::RemoteBranch {
+                remote_name: remote_name.to_string(),
+                branch_name: target.name_without_remote().to_string(),
+            },
+            None => NewWorktreeBranchTarget::ExistingBranch {
+                name: target.full_ref_name(),
+            },
+        },
+        RefKind::Tag => NewWorktreeBranchTarget::ExistingBranch {
+            name: target.full_ref_name(),
+        },
+    }
+}
+
+fn create_worktree_from(
+    context: &BranchContext,
+    target: &RefTarget,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let Some(workspace) = context.workspace.upgrade() else {
+        return;
+    };
+    let action = CreateWorktree {
+        worktree_name: None,
+        branch_target: worktree_branch_target(target),
+    };
+    let repository = context.repository.clone();
+    workspace.update(cx, |workspace, cx| {
+        git_ui_core::worktree_service::handle_create_worktree_in_repository(
+            workspace, repository, &action, window, None, cx,
+        )
+    });
 }
 
 #[cfg(test)]
@@ -483,7 +677,10 @@ mod tests {
         has_commits: bool,
         remotes: Vec<SharedString>,
         has_tracked_branch: bool,
+        tracked_branch: Option<String>,
+        other_worktree: Option<PathBuf>,
         fetching: bool,
+        protected_branches: Vec<String>,
     }
 
     impl Scenario {
@@ -497,7 +694,10 @@ mod tests {
                 has_commits: true,
                 remotes: vec![SharedString::from("origin")],
                 has_tracked_branch: true,
+                tracked_branch: None,
+                other_worktree: None,
                 fetching: false,
+                protected_branches: vec!["master".to_string(), "main".to_string()],
             }
         }
 
@@ -511,7 +711,10 @@ mod tests {
                 has_commits: self.has_commits,
                 remotes: &self.remotes,
                 has_tracked_branch: self.has_tracked_branch,
+                tracked_branch: self.tracked_branch.as_deref(),
+                other_worktree: self.other_worktree.as_deref(),
                 fetching: self.fetching,
+                protected_branches: &self.protected_branches,
             })
         }
     }
@@ -575,6 +778,8 @@ mod tests {
                 "Rebase 'main' onto 'feature/login'",
                 "Merge 'feature/login' into 'main'",
                 "---",
+                "New Worktree from 'feature/login'…",
+                "---",
                 "Update",
                 "Push…",
                 "---",
@@ -595,6 +800,8 @@ mod tests {
                 "New Branch from 'main'…",
                 "---",
                 "Show Diff with Working Tree",
+                "---",
+                "New Worktree from 'main'…",
                 "---",
                 "Update",
                 "Push…",
@@ -707,6 +914,8 @@ mod tests {
                 "Rebase 'main' onto 'origin/feature/x'",
                 "Merge 'origin/feature/x' into 'main'",
                 "---",
+                "New Worktree from 'origin/feature/x'…",
+                "---",
                 "Pull into 'main' Using Rebase",
                 "Pull into 'main' Using Merge",
                 "---",
@@ -766,7 +975,13 @@ mod tests {
         let plan = scenario.plan();
         assert_eq!(
             describe(&plan),
-            vec!["Show Diff with Working Tree", "---", "Push to origin"]
+            vec![
+                "Show Diff with Working Tree",
+                "---",
+                "New Worktree from 'v1.0'…",
+                "---",
+                "Push to origin"
+            ]
         );
         assert_well_formed(&plan);
     }
@@ -795,17 +1010,214 @@ mod tests {
     }
 
     #[test]
-    fn only_push_carries_a_shortcut_action() {
-        assert!(shortcut_action(&MenuAction::Push).is_some());
+    fn push_and_delete_carry_their_intellij_shortcuts() {
+        let shortcut = |action: MenuAction| shortcut_action(&MenuItem::new(action, "label"), true);
+        assert!(
+            shortcut(MenuAction::Push).is_some_and(|action| action.partial_eq(&git::PushDialog))
+        );
+        assert!(shortcut(MenuAction::Delete).is_some_and(|action| action.partial_eq(&DeleteRef)));
         for action in [
             MenuAction::Checkout,
             MenuAction::Update,
             MenuAction::Rename,
-            MenuAction::Delete,
             MenuAction::PullUsingRebase,
+            MenuAction::NewWorktreeFrom,
         ] {
-            assert!(shortcut_action(&action).is_none(), "{action:?}");
+            assert!(shortcut(action.clone()).is_none(), "{action:?}");
         }
+        let mut tracked_delete = MenuItem::new(MenuAction::Delete, "Delete");
+        tracked_delete.target = Some(RefTarget::remote("origin/main"));
+        assert!(shortcut_action(&tracked_delete, true).is_none());
+        assert!(shortcut_action(&MenuItem::new(MenuAction::Delete, "Delete"), false).is_none());
+    }
+
+    #[test]
+    fn empty_repository_reason_matches_intellij() {
+        let mut scenario = Scenario::new(RefTarget::local("topic"));
+        scenario.has_commits = false;
+        let checkout = find_item(&scenario.plan(), &MenuAction::Checkout);
+        assert_eq!(
+            checkout.tooltip.as_deref(),
+            Some("Action is not possible before the first commit.")
+        );
+    }
+
+    #[test]
+    fn a_branch_checked_out_in_another_worktree_offers_open_worktree_and_no_rebase_checkout() {
+        let mut scenario = Scenario::new(RefTarget::local("topic"));
+        scenario.other_worktree = Some(PathBuf::from("/work/topic-worktree"));
+        let plan = scenario.plan();
+        assert_eq!(
+            describe(&plan)[..4].to_vec(),
+            vec![
+                "Checkout",
+                "Open Worktree…",
+                "New Branch from 'topic'…",
+                "Checkout and Update",
+            ]
+        );
+        assert!(has_item(
+            &plan,
+            &MenuAction::OpenWorktree {
+                path: PathBuf::from("/work/topic-worktree")
+            }
+        ));
+        assert!(!has_item(&plan, &MenuAction::CheckoutAndRebase));
+        assert_well_formed(&plan);
+
+        scenario.other_worktree = None;
+        let plan = scenario.plan();
+        assert!(has_item(&plan, &MenuAction::CheckoutAndRebase));
+        assert!(
+            !plan
+                .iter()
+                .any(|planned| matches!(planned, MenuItemPlan::Item(item) if matches!(item.action, MenuAction::OpenWorktree { .. })))
+        );
+    }
+
+    #[test]
+    fn the_tracked_branch_submenu_follows_push_and_acts_on_the_remote_branch() {
+        let mut scenario = Scenario::new(RefTarget::local("topic"));
+        scenario.tracked_branch = Some("origin/topic".to_string());
+        let plan = scenario.plan();
+        let push = plan
+            .iter()
+            .position(|planned| matches!(planned, MenuItemPlan::Item(item) if item.action == MenuAction::Push))
+            .expect("push is listed");
+        let Some(MenuItemPlan::Submenu { label, items }) = plan.get(push + 1) else {
+            panic!(
+                "the tracked branch submenu follows Push…: {:?}",
+                describe(&plan)
+            );
+        };
+        assert_eq!(label, "Tracked Branch 'origin/topic'");
+        assert_eq!(
+            describe(items),
+            vec![
+                "Checkout",
+                "New Branch from 'origin/topic'…",
+                "Checkout and Rebase onto 'main'",
+                "---",
+                "Compare with 'main'",
+                "Show Diff with Working Tree",
+                "---",
+                "Rebase 'main' onto 'origin/topic'",
+                "Merge 'origin/topic' into 'main'",
+                "---",
+                "New Worktree from 'origin/topic'…",
+                "---",
+                "Pull into 'main' Using Rebase",
+                "Pull into 'main' Using Merge",
+                "---",
+                "Delete",
+            ]
+        );
+        let remote = RefTarget::remote("origin/topic");
+        let local = RefTarget::local("topic");
+        for planned in items {
+            if let MenuItemPlan::Item(item) = planned {
+                assert_eq!(item.target_or(&local), &remote, "{}", item.label);
+            }
+        }
+        assert_eq!(
+            find_item(&plan, &MenuAction::Push).target_or(&local),
+            &local
+        );
+
+        scenario.tracked_branch = None;
+        assert!(
+            !scenario
+                .plan()
+                .iter()
+                .any(|planned| matches!(planned, MenuItemPlan::Submenu { .. }))
+        );
+    }
+
+    #[test]
+    fn the_tracked_branch_is_the_remote_upstream_while_it_exists() {
+        let branch = |upstream: &str, tracking: UpstreamTracking| Branch {
+            is_head: false,
+            ref_name: SharedString::from("refs/heads/topic"),
+            upstream: Some(git::repository::Upstream {
+                ref_name: SharedString::from(upstream.to_string()),
+                tracking,
+            }),
+            most_recent_commit: None,
+        };
+        let tracked = UpstreamTracking::Tracked(git::repository::UpstreamTrackingStatus {
+            ahead: 0,
+            behind: 0,
+        });
+        assert_eq!(
+            tracked_remote_branch(&branch("refs/remotes/origin/topic", tracked)).as_deref(),
+            Some("origin/topic")
+        );
+        assert_eq!(
+            tracked_remote_branch(&branch("refs/remotes/origin/topic", UpstreamTracking::Gone)),
+            None
+        );
+        assert_eq!(
+            tracked_remote_branch(&branch("refs/heads/main", tracked)),
+            None
+        );
+    }
+
+    #[test]
+    fn the_worktree_of_a_branch_is_found_by_its_full_ref_name() {
+        let worktrees = vec![
+            Worktree {
+                path: PathBuf::from("/work/main"),
+                ref_name: Some(SharedString::from("refs/heads/main")),
+                sha: SharedString::from("aaa"),
+                is_main: true,
+                is_bare: false,
+            },
+            Worktree {
+                path: PathBuf::from("/work/topic"),
+                ref_name: Some(SharedString::from("refs/heads/feature/topic")),
+                sha: SharedString::from("bbb"),
+                is_main: false,
+                is_bare: false,
+            },
+        ];
+        assert_eq!(
+            worktree_with_branch("feature/topic", &worktrees),
+            Some(Path::new("/work/topic"))
+        );
+        assert_eq!(
+            worktree_with_branch("main", &worktrees),
+            Some(Path::new("/work/main"))
+        );
+        assert_eq!(worktree_with_branch("topic", &worktrees), None);
+    }
+
+    #[test]
+    fn new_worktree_from_keeps_long_names_and_targets_the_ref() {
+        let long_name = format!("feature/{}", "x".repeat(60));
+        let plan = Scenario::new(RefTarget::local(long_name.clone())).plan();
+        assert_eq!(
+            find_item(&plan, &MenuAction::NewWorktreeFrom).label,
+            format!("New Worktree from '{long_name}'…")
+        );
+        assert_eq!(
+            worktree_branch_target(&RefTarget::local("topic")),
+            NewWorktreeBranchTarget::ExistingBranch {
+                name: "topic".to_string()
+            }
+        );
+        assert_eq!(
+            worktree_branch_target(&RefTarget::remote("origin/feature/x")),
+            NewWorktreeBranchTarget::RemoteBranch {
+                remote_name: "origin".to_string(),
+                branch_name: "feature/x".to_string()
+            }
+        );
+        assert_eq!(
+            worktree_branch_target(&RefTarget::tag("v1.0")),
+            NewWorktreeBranchTarget::ExistingBranch {
+                name: "refs/tags/v1.0".to_string()
+            }
+        );
     }
 
     #[test]
@@ -821,6 +1233,8 @@ mod tests {
                 "Show Diff with Working Tree",
                 "---",
                 "Merge 'v1.0' into 'main'",
+                "---",
+                "New Worktree from 'v1.0'…",
                 "---",
                 "Push to origin",
                 "Push to upstream",
@@ -914,9 +1328,9 @@ mod tests {
                     MenuItemPlan::Item(menu_item) => {
                         assert!(!menu_item.enabled, "{} should be disabled", menu_item.label)
                     }
-                    MenuItemPlan::Submenu { items, .. } => {
-                        assert!(items.iter().all(|menu_item| !menu_item.enabled))
-                    }
+                    MenuItemPlan::Submenu { items, .. } => assert!(items.iter().all(
+                        |planned| !matches!(planned, MenuItemPlan::Item(menu_item) if menu_item.enabled)
+                    )),
                 }
             }
         }

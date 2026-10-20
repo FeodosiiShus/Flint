@@ -1,10 +1,12 @@
+use crate::git_log::changes_browser::ChangesBrowser;
 use crate::{branch_refs::RefTarget, commit_view::CommitView};
 use anyhow::{Result, anyhow};
 use futures::channel::oneshot;
+use git::Oid;
 use git::repository::CommitSummary;
 use gpui::{
-    App, Context, Entity, EventEmitter, FocusHandle, Focusable, SharedString, Subscription, Task,
-    UniformListScrollHandle, WeakEntity, Window, uniform_list,
+    App, ClickEvent, Context, Entity, EventEmitter, FocusHandle, Focusable, SharedString, Stateful,
+    Subscription, Task, UniformListScrollHandle, WeakEntity, Window, uniform_list,
 };
 use project::git_store::{Repository, RepositoryEvent};
 use std::sync::Arc;
@@ -19,6 +21,15 @@ use workspace::{
 pub const COMPARE_COMMIT_LIMIT: usize = 500;
 const SHORT_SHA_LENGTH: usize = 8;
 const CURRENT_HEAD_REVISION: &str = "HEAD";
+// IntelliJ's compare tab is two log panels whose changes tree takes the right
+// part of each panel, like the log's 0.7 table split.
+const COMMIT_LIST_FRACTION: f32 = 0.7;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CompareSide {
+    SelectedOnly,
+    CurrentOnly,
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CompareRefs {
@@ -150,6 +161,10 @@ pub struct CompareView {
     current_only: CommitList,
     selected_only_scroll: UniformListScrollHandle,
     current_only_scroll: UniformListScrollHandle,
+    selected_only_selection: Option<usize>,
+    current_only_selection: Option<usize>,
+    selected_only_changes: Entity<ChangesBrowser>,
+    current_only_changes: Entity<ChangesBrowser>,
     focus_handle: FocusHandle,
     _load_task: Task<()>,
     _repository_subscription: Subscription,
@@ -160,8 +175,11 @@ impl CompareView {
         refs: CompareRefs,
         repository: Entity<Repository>,
         workspace: WeakEntity<Workspace>,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
+        let selected_only_changes = cx.new(|cx| ChangesBrowser::new(workspace.clone(), window, cx));
+        let current_only_changes = cx.new(|cx| ChangesBrowser::new(workspace.clone(), window, cx));
         let repository_subscription =
             cx.subscribe(&repository, |this, _, event: &RepositoryEvent, cx| {
                 if matches!(
@@ -179,6 +197,10 @@ impl CompareView {
             current_only: CommitList::Loading,
             selected_only_scroll: UniformListScrollHandle::new(),
             current_only_scroll: UniformListScrollHandle::new(),
+            selected_only_selection: None,
+            current_only_selection: None,
+            selected_only_changes,
+            current_only_changes,
             focus_handle: cx.focus_handle(),
             _load_task: Task::ready(()),
             _repository_subscription: repository_subscription,
@@ -215,22 +237,76 @@ impl CompareView {
             this.update(cx, |this, cx| {
                 this.selected_only = selected_only;
                 this.current_only = current_only;
+                this.selected_only_selection = None;
+                this.current_only_selection = None;
+                this.show_changes(CompareSide::SelectedOnly, cx);
+                this.show_changes(CompareSide::CurrentOnly, cx);
                 cx.notify();
             })
             .log_err();
         });
     }
 
+    fn list(&self, side: CompareSide) -> &CommitList {
+        match side {
+            CompareSide::SelectedOnly => &self.selected_only,
+            CompareSide::CurrentOnly => &self.current_only,
+        }
+    }
+
+    pub fn selected_commit(&self, side: CompareSide) -> Option<Oid> {
+        let selection = match side {
+            CompareSide::SelectedOnly => self.selected_only_selection,
+            CompareSide::CurrentOnly => self.current_only_selection,
+        }?;
+        let CommitList::Loaded(commits) = self.list(side) else {
+            return None;
+        };
+        commits
+            .get(selection)
+            .and_then(|commit| commit.sha.parse::<Oid>().ok())
+    }
+
+    pub(crate) fn changes_browser(&self, side: CompareSide) -> &Entity<ChangesBrowser> {
+        match side {
+            CompareSide::SelectedOnly => &self.selected_only_changes,
+            CompareSide::CurrentOnly => &self.current_only_changes,
+        }
+    }
+
+    pub fn select_commit(&mut self, side: CompareSide, index: usize, cx: &mut Context<Self>) {
+        match side {
+            CompareSide::SelectedOnly => self.selected_only_selection = Some(index),
+            CompareSide::CurrentOnly => self.current_only_selection = Some(index),
+        }
+        self.show_changes(side, cx);
+        cx.notify();
+    }
+
+    fn show_changes(&mut self, side: CompareSide, cx: &mut Context<Self>) {
+        let commits = self.selected_commit(side).into_iter().collect::<Vec<_>>();
+        let repository = self.repository.clone();
+        self.changes_browser(side)
+            .clone()
+            .update(cx, |browser, cx| {
+                browser.set_commits(Some(repository), commits, cx)
+            });
+    }
+
     fn render_commit_row(
         id_prefix: &'static str,
+        side: CompareSide,
         index: usize,
+        selected: bool,
         commit: &CommitSummary,
+        view: &WeakEntity<Self>,
         repository: &WeakEntity<Repository>,
         workspace: &WeakEntity<Workspace>,
     ) -> ListItem {
         let sha = commit.sha.clone();
         let repository = repository.clone();
         let workspace = workspace.clone();
+        let view = view.clone();
         let author_and_time = format!(
             "{} {}",
             commit.author_name,
@@ -239,6 +315,7 @@ impl CompareView {
         ListItem::new((id_prefix, index))
             .inset(true)
             .spacing(ListItemSpacing::Dense)
+            .toggle_state(selected)
             .start_slot(
                 Icon::new(IconName::GitCommit)
                     .size(IconSize::Small)
@@ -266,26 +343,36 @@ impl CompareView {
                             .color(Color::Muted),
                     ),
             )
-            .on_click(move |_, window, cx| {
-                CommitView::open(
-                    sha.to_string(),
-                    repository.clone(),
-                    workspace.clone(),
-                    None,
-                    None,
-                    window,
-                    cx,
-                );
+            .on_click(move |event: &ClickEvent, window, cx| {
+                view.update(cx, |view, cx| view.select_commit(side, index, cx))
+                    .log_err();
+                if event.click_count() > 1 {
+                    CommitView::open(
+                        sha.to_string(),
+                        repository.clone(),
+                        workspace.clone(),
+                        None,
+                        None,
+                        window,
+                        cx,
+                    );
+                }
             })
     }
 
     fn render_list(
         &self,
         id_prefix: &'static str,
-        list: &CommitList,
+        side: CompareSide,
         empty_text: SharedString,
         scroll_handle: &UniformListScrollHandle,
+        cx: &Context<Self>,
     ) -> gpui::AnyElement {
+        let list = self.list(side);
+        let selection = match side {
+            CompareSide::SelectedOnly => self.selected_only_selection,
+            CompareSide::CurrentOnly => self.current_only_selection,
+        };
         let message = |text: SharedString, color: Color| {
             h_flex()
                 .size_full()
@@ -302,14 +389,18 @@ impl CompareView {
                 let commits = commits.clone();
                 let repository = self.repository.downgrade();
                 let workspace = self.workspace.clone();
+                let view = cx.weak_entity();
                 uniform_list(id_prefix, commits.len(), move |range, _window, _cx| {
                     range
                         .filter_map(|index| {
                             commits.get(index).map(|commit| {
                                 Self::render_commit_row(
                                     id_prefix,
+                                    side,
                                     index,
+                                    selection == Some(index),
                                     commit,
+                                    &view,
                                     &repository,
                                     &workspace,
                                 )
@@ -336,6 +427,37 @@ impl CompareView {
             .when_some(list.count_label(), |this, count| {
                 this.child(Label::new(count).size(LabelSize::Small).color(Color::Muted))
             })
+    }
+}
+
+impl CompareView {
+    fn render_panel(
+        heading: Div,
+        body: Stateful<Div>,
+        changes: Entity<ChangesBrowser>,
+        cx: &App,
+    ) -> Div {
+        h_flex()
+            .flex_1()
+            .min_h_0()
+            .w_full()
+            .child(
+                v_flex()
+                    .h_full()
+                    .min_w_0()
+                    .w(relative(COMMIT_LIST_FRACTION))
+                    .child(heading)
+                    .child(body),
+            )
+            .child(
+                div()
+                    .h_full()
+                    .min_w_0()
+                    .flex_1()
+                    .border_l_1()
+                    .border_color(cx.theme().colors().border)
+                    .child(changes),
+            )
     }
 }
 
@@ -380,9 +502,10 @@ impl Render for CompareView {
             .min_h_0()
             .child(self.render_list(
                 "compare-selected-only-list",
-                &self.selected_only,
+                CompareSide::SelectedOnly,
                 self.refs.selected_only_empty_text(),
                 &self.selected_only_scroll,
+                cx,
             ));
         if self.selected_only.has_rows() {
             selected_only_body =
@@ -395,9 +518,10 @@ impl Render for CompareView {
             .min_h_0()
             .child(self.render_list(
                 "compare-current-only-list",
-                &self.current_only,
+                CompareSide::CurrentOnly,
                 self.refs.current_only_empty_text(),
                 &self.current_only_scroll,
+                cx,
             ));
         if self.current_only.has_rows() {
             current_only_body =
@@ -410,21 +534,19 @@ impl Render for CompareView {
             .track_focus(&self.focus_handle)
             .size_full()
             .bg(cx.theme().colors().editor_background)
-            .child(
-                v_flex()
-                    .flex_1()
-                    .min_h_0()
-                    .child(selected_only_heading)
-                    .child(selected_only_body),
-            )
+            .child(Self::render_panel(
+                selected_only_heading,
+                selected_only_body,
+                self.selected_only_changes.clone(),
+                cx,
+            ))
             .child(Divider::horizontal())
-            .child(
-                v_flex()
-                    .flex_1()
-                    .min_h_0()
-                    .child(current_only_heading)
-                    .child(current_only_body),
-            )
+            .child(Self::render_panel(
+                current_only_heading,
+                current_only_body,
+                self.current_only_changes.clone(),
+                cx,
+            ))
     }
 }
 

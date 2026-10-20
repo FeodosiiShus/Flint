@@ -1,5 +1,6 @@
 use std::time::Duration;
 
+use db::kvp::KeyValueStore;
 use editor::{Editor, EditorEvent};
 use git::repository::{CommitSummary, PushOptions, Remote, Upstream};
 use gpui::{
@@ -7,19 +8,56 @@ use gpui::{
     IntoElement, Render, SharedString, Subscription, Window, rems,
 };
 use menu::{Cancel, Confirm};
-use ui::{DialogButton, Modal, ModalFooter, ModalHeader, Section, prelude::*};
+use ui::{Checkbox, DialogButton, Modal, ModalFooter, ModalHeader, Section, Tooltip, prelude::*};
 use util::ResultExt as _;
 use workspace::ModalView;
 
 use super::delete_dialogs::render_commit_list;
+use super::integrate::{is_protected_branch_name, protected_branch_patterns};
 use super::manage::{notify_failure, settle};
 use super::push_result::{PushTarget, push_failed_notice, push_succeeded_notice};
-use super::{BranchContext, PushProgress};
+use super::{BranchContext, OperationProgress, PUSH_PROGRESS_TITLE};
 use crate::branch_refs::RefTarget;
 
 const DIALOG_WIDTH: f32 = 44.;
 const REFRESH_DEBOUNCE: Duration = Duration::from_millis(150);
 const PUSH_COMMIT_LIMIT: usize = 100;
+const FORCE_PUSH_TITLE: &str = "Force Push";
+const DONT_WARN_LABEL: &str = "Don't warn about this target";
+const SILENT_FORCE_PUSH_KEY_PREFIX: &str = "git_silent_force_push";
+
+pub fn force_push_prohibited_message(target: &str) -> String {
+    format!("Force push to {target} is prohibited")
+}
+
+pub fn force_push_confirmation_message(target: &str) -> String {
+    format!(
+        "You're going to force push to '{target}'. It may overwrite commits at the remote. Are you sure you want to proceed?"
+    )
+}
+
+fn silent_force_push_key(repository: &std::path::Path, target: &str) -> String {
+    format!(
+        "{SILENT_FORCE_PUSH_KEY_PREFIX}:{}:{target}",
+        repository.display()
+    )
+}
+
+fn is_silent_force_push_allowed(repository: &std::path::Path, target: &str, cx: &App) -> bool {
+    KeyValueStore::global(cx)
+        .read_kvp(&silent_force_push_key(repository, target))
+        .log_err()
+        .flatten()
+        .is_some()
+}
+
+fn save_silent_force_push_target(repository: &std::path::Path, target: &str, cx: &App) {
+    let key = silent_force_push_key(repository, target);
+    let store = KeyValueStore::global(cx);
+    db::write_and_log(cx, move || async move {
+        store.write_kvp(key, "true".to_string()).await
+    });
+}
 
 pub fn needs_upstream(upstream: Option<&Upstream>) -> bool {
     match upstream {
@@ -112,7 +150,14 @@ pub struct PushDialog {
     remote_branch_editor: Entity<Editor>,
     outgoing: OutgoingCommits,
     refresh_generation: usize,
+    force_confirmation: Option<ForcePushConfirmation>,
+    confirmation_focus_handle: FocusHandle,
     _editor_subscription: Subscription,
+}
+
+struct ForcePushConfirmation {
+    target: SharedString,
+    dont_warn: bool,
 }
 
 impl PushDialog {
@@ -178,6 +223,8 @@ impl PushDialog {
             remote_branch_editor,
             outgoing: OutgoingCommits::Loading,
             refresh_generation: 0,
+            force_confirmation: None,
+            confirmation_focus_handle: cx.focus_handle(),
             _editor_subscription: editor_subscription,
         }
     }
@@ -293,12 +340,104 @@ impl PushDialog {
         self.remote.is_some() && !self.remote_branch(cx).is_empty()
     }
 
-    fn cancel(&mut self, _: &Cancel, _window: &mut Window, cx: &mut Context<Self>) {
+    fn force_push_target(&self, cx: &App) -> Option<String> {
+        let remote = self.remote.as_ref()?;
+        let remote_branch = self.remote_branch(cx);
+        (!remote_branch.is_empty()).then(|| format!("{remote}/{remote_branch}"))
+    }
+
+    /// IntelliJ's `ForcePushAction` refuses targets on protected branches.
+    fn force_push_prohibited(&self, cx: &App) -> bool {
+        is_protected_branch_name(&self.remote_branch(cx), &protected_branch_patterns(cx))
+    }
+
+    pub(crate) fn request_force_push(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.can_push(cx) || self.force_push_prohibited(cx) {
+            return;
+        }
+        let Some(target) = self.force_push_target(cx) else {
+            return;
+        };
+        let repository_path = self
+            .context
+            .repository
+            .read(cx)
+            .work_directory_abs_path
+            .clone();
+        if is_silent_force_push_allowed(&repository_path, &target, cx) {
+            self.push(true, window, cx);
+            return;
+        }
+        self.force_confirmation = Some(ForcePushConfirmation {
+            target: target.into(),
+            dont_warn: false,
+        });
+        // The confirmation replaces the branch editor, which held the focus, so Enter and
+        // Escape need a focused element inside the confirmation to reach this dialog.
+        window.focus(&self.confirmation_focus_handle, cx);
+        cx.notify();
+    }
+
+    fn confirm_force_push(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(confirmation) = self.force_confirmation.take() else {
+            return;
+        };
+        if confirmation.dont_warn {
+            let repository_path = self
+                .context
+                .repository
+                .read(cx)
+                .work_directory_abs_path
+                .clone();
+            save_silent_force_push_target(&repository_path, &confirmation.target, cx);
+        }
+        self.push(true, window, cx);
+    }
+
+    fn cancel(&mut self, _: &Cancel, window: &mut Window, cx: &mut Context<Self>) {
+        if self.force_confirmation.take().is_some() {
+            window.focus(&self.remote_branch_editor.focus_handle(cx), cx);
+            cx.notify();
+            return;
+        }
         cx.emit(DismissEvent);
     }
 
     fn confirm(&mut self, _: &Confirm, window: &mut Window, cx: &mut Context<Self>) {
-        self.push(false, window, cx);
+        if self.force_confirmation.is_some() {
+            self.confirm_force_push(window, cx);
+        } else {
+            self.push(false, window, cx);
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn click_force_push(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.request_force_push(window, cx);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn force_push_confirmation(&self) -> Option<(SharedString, bool)> {
+        self.force_confirmation
+            .as_ref()
+            .map(|confirmation| (confirmation.target.clone(), confirmation.dont_warn))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_dont_warn(&mut self, dont_warn: bool) {
+        if let Some(confirmation) = self.force_confirmation.as_mut() {
+            confirmation.dont_warn = dont_warn;
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn submit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.confirm(&Confirm, window, cx);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn is_force_push_prohibited(&self, cx: &App) -> bool {
+        self.force_push_prohibited(cx)
     }
 
     fn push(&mut self, force: bool, window: &mut Window, cx: &mut Context<Self>) {
@@ -328,8 +467,11 @@ impl PushDialog {
                             window,
                             cx,
                         );
-                        let (progress, progress_sender) =
-                            PushProgress::start(&context.workspace, cx);
+                        let (progress, progress_sender) = OperationProgress::start_reporting(
+                            &context.workspace,
+                            PUSH_PROGRESS_TITLE,
+                            cx,
+                        );
                         (askpass, progress, progress_sender)
                     })
                     .log_err();
@@ -449,13 +591,94 @@ impl ModalView for PushDialog {}
 
 impl Focusable for PushDialog {
     fn focus_handle(&self, cx: &App) -> FocusHandle {
+        if self.force_confirmation.is_some() {
+            return self.confirmation_focus_handle.clone();
+        }
         self.remote_branch_editor.focus_handle(cx)
+    }
+}
+
+impl PushDialog {
+    fn render_force_confirmation(
+        &self,
+        confirmation: &ForcePushConfirmation,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        v_flex()
+            .key_context("PushDialog")
+            .track_focus(&self.confirmation_focus_handle)
+            .on_action(cx.listener(Self::cancel))
+            .on_action(cx.listener(Self::confirm))
+            .w(rems(DIALOG_WIDTH))
+            .elevation_3(cx)
+            .overflow_hidden()
+            .child(
+                Modal::new("force-push-confirmation", None)
+                    .header(
+                        ModalHeader::new()
+                            .icon(
+                                Icon::new(IconName::Warning)
+                                    .size(IconSize::Small)
+                                    .color(Color::Warning),
+                            )
+                            .headline(FORCE_PUSH_TITLE)
+                            .show_dismiss_button(true),
+                    )
+                    .section(
+                        Section::new().child(Label::new(force_push_confirmation_message(
+                            &confirmation.target,
+                        ))),
+                    )
+                    .footer(
+                        ModalFooter::new()
+                            .start_slot(
+                                Checkbox::new(
+                                    "force-push-dont-warn",
+                                    confirmation.dont_warn.into(),
+                                )
+                                .label(DONT_WARN_LABEL)
+                                .on_click(cx.listener(
+                                    |this, state: &ToggleState, _, cx| {
+                                        if let Some(confirmation) = this.force_confirmation.as_mut()
+                                        {
+                                            confirmation.dont_warn = state.selected();
+                                        }
+                                        cx.notify();
+                                    },
+                                )),
+                            )
+                            .end_slot(
+                                h_flex()
+                                    .gap_2()
+                                    .child(
+                                        DialogButton::new("force-push-cancel", "Cancel")
+                                            .default_button(false)
+                                            .on_click(cx.listener(|this, _, window, cx| {
+                                                this.cancel(&Cancel, window, cx);
+                                            })),
+                                    )
+                                    .child(
+                                        DialogButton::new("force-push-confirm", FORCE_PUSH_TITLE)
+                                            .default_button(true)
+                                            .on_click(cx.listener(|this, _, window, cx| {
+                                                this.confirm_force_push(window, cx);
+                                            })),
+                                    ),
+                            ),
+                    ),
+            )
+            .into_any_element()
     }
 }
 
 impl Render for PushDialog {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if let Some(confirmation) = self.force_confirmation.as_ref() {
+            return self.render_force_confirmation(confirmation, cx);
+        }
         let can_push = self.can_push(cx);
+        let force_prohibited = can_push && self.force_push_prohibited(cx);
+        let force_target = self.force_push_target(cx).unwrap_or_default();
         let remote_selector = self.render_remote_selector(cx);
         let outgoing = self.render_outgoing();
         let colors = cx.theme().colors();
@@ -526,11 +749,16 @@ impl Render for PushDialog {
                                         })),
                                 )
                                 .child(
-                                    DialogButton::new("push-force", "Force Push")
+                                    DialogButton::new("push-force", FORCE_PUSH_TITLE)
                                         .default_button(false)
-                                        .disabled(!can_push)
+                                        .disabled(!can_push || force_prohibited)
+                                        .when(force_prohibited, |button| {
+                                            button.tooltip(Tooltip::text(
+                                                force_push_prohibited_message(&force_target),
+                                            ))
+                                        })
                                         .on_click(cx.listener(|this, _, window, cx| {
-                                            this.push(true, window, cx);
+                                            this.request_force_push(window, cx);
                                         })),
                                 )
                                 .child(
@@ -544,6 +772,7 @@ impl Render for PushDialog {
                         ),
                     ),
             )
+            .into_any_element()
     }
 }
 
@@ -573,6 +802,18 @@ mod tests {
                 has_parent: true,
             })
             .collect()
+    }
+
+    #[test]
+    fn force_push_texts_follow_the_intellij_push_dialog() {
+        assert_eq!(
+            force_push_prohibited_message("origin/main"),
+            "Force push to origin/main is prohibited"
+        );
+        assert_eq!(
+            force_push_confirmation_message("origin/feature"),
+            "You're going to force push to 'origin/feature'. It may overwrite commits at the remote. Are you sure you want to proceed?"
+        );
     }
 
     #[test]

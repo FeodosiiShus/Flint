@@ -368,14 +368,21 @@ impl LspStore {
         cx: &mut Context<Self>,
     ) -> CodeLensResolveTask {
         let buffer_id = buffer.read(cx).remote_id();
+        let buffer_version = buffer.read(cx).version();
 
-        let Some(code_lens) = self
-            .lsp_data
-            .get_mut(&buffer_id)
-            .and_then(|data| data.code_lens.as_mut())
-        else {
+        let Some(lsp_data) = self.lsp_data.get_mut(&buffer_id) else {
             return Task::ready(None).shared();
         };
+        let lenses_are_stale = buffer_version.changed_since(&lsp_data.buffer_version);
+        let Some(code_lens) = lsp_data.code_lens.as_mut() else {
+            return Task::ready(None).shared();
+        };
+        if lenses_are_stale {
+            // Dropping the in-flight resolves cancels their requests; the lenses of the new
+            // version are fetched and resolved separately.
+            code_lens.resolving.clear();
+            return Task::ready(None).shared();
+        }
         let key = (server_id, lens_id);
         if let Some(existing) = code_lens.resolving.get(&key) {
             return existing.clone();

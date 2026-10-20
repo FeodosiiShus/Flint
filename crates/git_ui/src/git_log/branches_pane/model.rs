@@ -3,9 +3,9 @@ use std::cmp::Ordering;
 use collections::HashSet;
 use gpui::SharedString;
 
-use super::matcher::{BranchesTreeMatcher, Matching, classify};
 use crate::branch_refs::{RefKind, RefTarget};
 use crate::git_log::properties::HEAD_REVISION;
+use crate::ref_matcher::{BranchesTreeMatcher, Matching, classify};
 
 pub(crate) const HEAD_NODE_ID: &str = "HEAD";
 pub(crate) const MANY_NODES_THRESHOLD: usize = 30_000;

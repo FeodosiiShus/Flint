@@ -10,11 +10,13 @@ use super::tree::{self, TreeOptions};
 use crate::branch_refs::{RefKind, RefTarget};
 
 const STATE_KEY_PREFIX: &str = "branches_popup";
+const PREVIOUS_BRANCH_KEY_PREFIX: &str = "branches_popup_previous_branch";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct PopupToggles {
     pub show_actions_in_search: bool,
+    pub show_repositories_in_search: bool,
     pub group_by_directory: bool,
     pub show_recent: bool,
     pub show_tags: bool,
@@ -24,6 +26,7 @@ impl Default for PopupToggles {
     fn default() -> Self {
         Self {
             show_actions_in_search: true,
+            show_repositories_in_search: true,
             group_by_directory: true,
             show_recent: true,
             show_tags: true,
@@ -79,6 +82,13 @@ impl From<&PersistedRef> for RefTarget {
     }
 }
 
+/// The popup size the user resized it to, in pixels. IntelliJ remembers it only after a resize.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PopupSize {
+    pub width: u32,
+    pub height: u32,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct PersistedPopupState {
@@ -86,11 +96,13 @@ pub struct PersistedPopupState {
     pub removed_favorites: Vec<PersistedRef>,
     pub expanded: Option<Vec<String>>,
     pub toggles: PopupToggles,
+    pub size: Option<PopupSize>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PopupState {
     pub toggles: PopupToggles,
+    pub size: Option<PopupSize>,
     added_favorites: HashSet<RefTarget>,
     removed_favorites: HashSet<RefTarget>,
     expanded: HashSet<SharedString>,
@@ -100,6 +112,7 @@ impl Default for PopupState {
     fn default() -> Self {
         Self {
             toggles: PopupToggles::default(),
+            size: None,
             added_favorites: HashSet::default(),
             removed_favorites: HashSet::default(),
             expanded: tree::default_expanded(),
@@ -115,6 +128,7 @@ impl PopupState {
         };
         Self {
             toggles: persisted.toggles,
+            size: persisted.size,
             added_favorites: persisted
                 .added_favorites
                 .iter()
@@ -149,6 +163,7 @@ impl PopupState {
             removed_favorites,
             expanded: Some(expanded),
             toggles: self.toggles,
+            size: self.size,
         }
     }
 
@@ -223,6 +238,39 @@ pub fn load(key: String, cx: &App) -> Task<Option<PersistedPopupState>> {
         let raw = store.read_kvp(&key).log_err().flatten()?;
         deserialize(&raw)
     })
+}
+
+pub fn previous_branch_key(work_directory_abs_path: &Path) -> String {
+    format!(
+        "{PREVIOUS_BRANCH_KEY_PREFIX}-{}",
+        work_directory_abs_path.to_string_lossy()
+    )
+}
+
+/// The branch or revision HEAD was on before the last checkout Flint made in a working tree, which
+/// IntelliJ preselects in the popup (`GitVcsSettings.recentBranchesByRepository`).
+#[derive(Default)]
+struct PreviousBranches(HashMap<String, String>);
+
+impl Global for PreviousBranches {}
+
+pub(crate) fn record_previous_branch(key: String, name: String, cx: &mut App) -> Task<()> {
+    cx.default_global::<PreviousBranches>()
+        .0
+        .insert(key.clone(), name.clone());
+    let store = KeyValueStore::global(cx);
+    cx.background_spawn(async move {
+        store.write_kvp(key, name).await.log_err();
+    })
+}
+
+pub(crate) fn remembered_previous_branch(key: &str, cx: &App) -> Option<String> {
+    cx.try_global::<PreviousBranches>()?.0.get(key).cloned()
+}
+
+pub(crate) fn load_previous_branch(key: String, cx: &App) -> Task<Option<String>> {
+    let store = KeyValueStore::global(cx);
+    cx.background_spawn(async move { store.read_kvp(&key).log_err().flatten() })
 }
 
 #[derive(Default)]
@@ -347,6 +395,11 @@ mod tests {
         state.set_expanded(node_id_for_folder(SectionKind::Remote, "origin"), true);
         state.toggles.group_by_directory = false;
         state.toggles.show_tags = false;
+        state.toggles.show_repositories_in_search = false;
+        state.size = Some(PopupSize {
+            width: 420,
+            height: 360,
+        });
 
         let raw = serialize(&state.to_persisted()).expect("state serializes");
         let restored = PopupState::from_persisted(deserialize(&raw).expect("state deserializes"));
@@ -382,6 +435,7 @@ mod tests {
         assert!(persisted.toggles.show_recent);
         assert!(persisted.toggles.group_by_directory);
         assert!(persisted.toggles.show_actions_in_search);
+        assert!(persisted.toggles.show_repositories_in_search);
     }
 
     #[test]
@@ -395,6 +449,28 @@ mod tests {
         let persisted = deserialize(r#"{"expanded":[]}"#).expect("deserializes");
         let state = PopupState::from_persisted(persisted);
         assert!(state.expanded().is_empty());
+    }
+
+    #[test]
+    fn the_popup_size_is_unset_until_the_user_resizes() {
+        assert_eq!(PopupState::default().size, None);
+        let persisted =
+            deserialize(r#"{"size":{"width":500,"height":400}}"#).expect("deserializes");
+        assert_eq!(
+            PopupState::from_persisted(persisted).size,
+            Some(PopupSize {
+                width: 500,
+                height: 400
+            })
+        );
+    }
+
+    #[test]
+    fn previous_branch_keys_are_scoped_by_the_working_tree() {
+        let first = previous_branch_key(Path::new("/work/one"));
+        let second = previous_branch_key(Path::new("/work/one-worktree"));
+        assert_ne!(first, second);
+        assert_ne!(first, serialization_key(Path::new("/work/one")));
     }
 
     #[test]

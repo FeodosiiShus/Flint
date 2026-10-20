@@ -173,6 +173,11 @@ impl ChangesBrowser {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn commits(&self) -> &[Oid] {
+        &self.commits
+    }
+
     pub(crate) fn set_toolbar_height(&mut self, height: Pixels, cx: &mut Context<Self>) {
         self.toolbar_height = height;
         cx.notify();

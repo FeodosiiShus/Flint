@@ -18,9 +18,9 @@ use git::{
         FileHistoryChangedFileSets, GRAPH_CHUNK_SIZE, GitFailure, GitFailureKind, GitRepository,
         GitRepositoryCheckpoint, GitUser, InitialGraphCommitData, LogFilter, LogOrder, LogSource,
         MergeOutcome, PushOptions, RebaseAction, RebaseOutcome, RefEdit, Remote,
-        RemoteCommandOutput, RemoteProgressSender, RepoPath, RepositoryOperation, ResetMode,
-        RevertOutcome, SearchCommitArgs, Tag, UnmergedEntry, UnmergedStagePresence, Upstream,
-        UpstreamTracking, UpstreamTrackingStatus, Worktree, commit_hash_search_query,
+        RemoteCommandOutput, RemoteProgressSender, RemoteTagTarget, RepoPath, RepositoryOperation,
+        ResetMode, RevertOutcome, SearchCommitArgs, Tag, UnmergedEntry, UnmergedStagePresence,
+        Upstream, UpstreamTracking, UpstreamTrackingStatus, Worktree, commit_hash_search_query,
         visible_graph_commits,
     },
     stash::GitStash,
@@ -103,6 +103,10 @@ pub struct FakeGitRepositoryState {
     pub rebase_session: Option<FakeRebaseSession>,
     pub simulated_failures: HashMap<FakeGitOperation, FakeGitFailure>,
     pub pushed_tags: Vec<(String, String)>,
+    /// Tags known to each remote, keyed by `(remote, tag)`, with the object each points to.
+    pub remote_tags: HashMap<(String, String), String>,
+    pub aborted_operations: Vec<RepositoryOperation>,
+    pub pushes: Vec<FakePush>,
     pub console: Option<GitConsoleSink>,
     pub current_user: Option<GitUser>,
     pub graph_commit_paths: HashMap<Oid, Vec<RepoPath>>,
@@ -153,6 +157,9 @@ impl FakeGitRepositoryState {
             rebase_session: None,
             simulated_failures: Default::default(),
             pushed_tags: Vec::new(),
+            remote_tags: Default::default(),
+            aborted_operations: Vec::new(),
+            pushes: Vec::new(),
             console: None,
             current_user: None,
             graph_commit_paths: Default::default(),
@@ -286,10 +293,22 @@ pub enum FakeGitOperation {
     DeleteRemoteBranch,
     FastForwardBranch,
     PushTag,
+    DeleteRemoteTag,
+    CheckoutIgnoringOtherWorktrees,
+    ContinueCherryPick,
     CherryPick,
     Revert,
     Commit,
     SkipCommit,
+    GetRemotes,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FakePush {
+    pub branch: String,
+    pub remote_branch: String,
+    pub remote: String,
+    pub options: Option<PushOptions>,
 }
 
 #[derive(Debug, Clone)]
@@ -546,6 +565,13 @@ fn note_checkout(state: &mut FakeGitRepositoryState, destination: Option<&str>) 
         state.recent_branches.retain(|name| name != destination);
         state.recent_branches.insert(0, destination.to_string());
     }
+}
+
+fn upstream_remote(state: &FakeGitRepositoryState, branch: &str) -> Option<Remote> {
+    let upstream = state.upstreams.get(branch)?;
+    Some(Remote {
+        name: upstream.remote_name()?.to_string().into(),
+    })
 }
 
 fn clear_merge_markers(state: &mut FakeGitRepositoryState) {
@@ -2495,6 +2521,15 @@ impl GitRepository for FakeGitRepository {
         })
     }
 
+    fn rebased_branch(&self) -> BoxFuture<'_, Result<Option<String>>> {
+        self.with_state_async(false, |state| {
+            Ok(state
+                .rebase_session
+                .as_ref()
+                .and_then(|session| session.original_branch.clone()))
+        })
+    }
+
     fn operation_in_progress(&self) -> BoxFuture<'_, Result<Option<RepositoryOperation>>> {
         self.with_state_async(false, |state| {
             let operation = if state.rebase_session.is_some() {
@@ -2529,6 +2564,15 @@ impl GitRepository for FakeGitRepository {
 
     fn checkout_force(&self, name: String) -> BoxFuture<'_, Result<()>> {
         self.with_state_async(true, move |state| {
+            // Like git, `--force` does not get past a branch used by another worktree.
+            if let Some(failure) = state.simulated_failures.get(&FakeGitOperation::Checkout)
+                && matches!(
+                    failure.kind,
+                    GitFailureKind::BranchCheckedOutInWorktree { .. }
+                )
+            {
+                return Err(git_failure(failure.kind.clone(), failure.message.clone()));
+            }
             if local_branch_key(state, &name).is_some() {
                 switch_to_branch(state, &name);
             } else if let Some(sha) = revision_sha(state, &name) {
@@ -2798,6 +2842,144 @@ impl GitRepository for FakeGitRepository {
         })
     }
 
+    fn remote_tag_target(
+        &self,
+        remote: String,
+        tag: String,
+        _askpass: AskPassDelegate,
+        _env: Arc<HashMap<String, String>>,
+        _cx: AsyncApp,
+    ) -> BoxFuture<'_, Result<Option<RemoteTagTarget>>> {
+        self.with_state_async(false, move |state| {
+            if !state.remotes.contains_key(&remote) {
+                return Err(git_failure(
+                    GitFailureKind::Other,
+                    format!("fatal: '{remote}' does not appear to be a git repository"),
+                ));
+            }
+            Ok(state
+                .remote_tags
+                .get(&(remote, tag))
+                .map(|object| RemoteTagTarget {
+                    object: object.clone(),
+                    commit: object.clone(),
+                }))
+        })
+    }
+
+    fn delete_remote_tag(
+        &self,
+        remote: String,
+        tag: String,
+        expected_object: String,
+        _askpass: AskPassDelegate,
+        _env: Arc<HashMap<String, String>>,
+        _cx: AsyncApp,
+    ) -> BoxFuture<'_, Result<RemoteCommandOutput>> {
+        self.with_state_async(true, move |state| {
+            simulated_failure(state, FakeGitOperation::DeleteRemoteTag)?;
+            let key = (remote.clone(), tag.clone());
+            if state.remote_tags.get(&key) != Some(&expected_object) {
+                return Err(git_failure(
+                    GitFailureKind::Other,
+                    format!(" ! [rejected]        (delete) -> {tag} (stale info)"),
+                ));
+            }
+            state.remote_tags.remove(&key);
+            state.pushed_tags.retain(|pushed| *pushed != key);
+            Ok(RemoteCommandOutput {
+                stdout: String::new(),
+                stderr: format!("To {remote}\n - [deleted]         {tag}\n"),
+            })
+        })
+    }
+
+    fn checkout_ignoring_other_worktrees(
+        &self,
+        name: String,
+        force: bool,
+    ) -> BoxFuture<'_, Result<()>> {
+        self.with_state_async(true, move |state| {
+            let blocked_by_local_changes = state
+                .simulated_failures
+                .get(&FakeGitOperation::CheckoutIgnoringOtherWorktrees)
+                .is_some_and(|failure| {
+                    matches!(
+                        failure.kind,
+                        GitFailureKind::LocalChangesWouldBeOverwritten { .. }
+                            | GitFailureKind::UntrackedFilesWouldBeOverwritten { .. }
+                    )
+                });
+            if !(force && blocked_by_local_changes) {
+                simulated_failure(state, FakeGitOperation::CheckoutIgnoringOtherWorktrees)?;
+            }
+            if local_branch_key(state, &name).is_none() {
+                return Err(git_failure(
+                    GitFailureKind::Other,
+                    format!("error: pathspec '{name}' did not match any file(s) known to git"),
+                ));
+            }
+            switch_to_branch(state, &name);
+            if force {
+                state.index_contents = state.head_contents.clone();
+            }
+            Ok(())
+        })
+    }
+
+    fn abort_operation(
+        &self,
+        operation: RepositoryOperation,
+        _env: Arc<HashMap<String, String>>,
+    ) -> BoxFuture<'_, Result<()>> {
+        self.with_state_async(true, move |state| {
+            let (marker, command) = match operation {
+                RepositoryOperation::CherryPick => ("CHERRY_PICK_HEAD", "cherry-pick"),
+                RepositoryOperation::Revert => ("REVERT_HEAD", "revert"),
+                RepositoryOperation::Merge => ("MERGE_HEAD", "merge"),
+                RepositoryOperation::Rebase => {
+                    anyhow::bail!("use rebase --abort to abort a rebase")
+                }
+            };
+            if state.refs.remove(marker).is_none() {
+                return Err(git_failure(
+                    GitFailureKind::Other,
+                    format!("error: no {command} in progress"),
+                ));
+            }
+            state.aborted_operations.push(operation);
+            state.index_contents = state.head_contents.clone();
+            state.unmerged_paths.clear();
+            state.conflict_stages.clear();
+            state.merge_message = None;
+            Ok(())
+        })
+    }
+
+    fn continue_cherry_pick(
+        &self,
+        _env: Arc<HashMap<String, String>>,
+    ) -> BoxFuture<'_, Result<CherryPickOutcome>> {
+        self.with_state_async(true, move |state| {
+            simulated_failure(state, FakeGitOperation::ContinueCherryPick)?;
+            if !state.refs.contains_key("CHERRY_PICK_HEAD") {
+                return Err(git_failure(
+                    GitFailureKind::Other,
+                    "error: no cherry-pick or revert in progress",
+                ));
+            }
+            ensure_no_unmerged_paths(
+                state,
+                "error: Committing is not possible because you have unmerged files.",
+            )?;
+            state.refs.remove("CHERRY_PICK_HEAD");
+            state.merge_message = None;
+            Ok(CherryPickOutcome::Completed {
+                output: String::new(),
+            })
+        })
+    }
+
     fn current_user(&self) -> BoxFuture<'_, Result<Option<GitUser>>> {
         self.with_state_async(false, |state| Ok(state.current_user.clone()))
     }
@@ -3006,6 +3188,14 @@ impl GitRepository for FakeGitRepository {
                 ));
             }
             let entry = (remote.clone(), tag.clone());
+            if let Some(object) = state
+                .tags
+                .iter()
+                .find(|existing| *existing.name == *tag)
+                .map(|existing| existing.commit_sha.to_string())
+            {
+                state.remote_tags.insert(entry.clone(), object);
+            }
             let stderr = if state.pushed_tags.contains(&entry) {
                 "Everything up-to-date\n".to_string()
             } else {
@@ -3318,11 +3508,53 @@ impl GitRepository for FakeGitRepository {
 
     fn stash_paths(
         &self,
-        _paths: Vec<RepoPath>,
-        _message: Option<String>,
+        paths: Vec<RepoPath>,
+        message: Option<String>,
         _env: Arc<HashMap<String, String>>,
     ) -> BoxFuture<'_, Result<()>> {
-        unimplemented!()
+        self.with_state_async(true, move |state| {
+            let branch = state.current_branch_name.clone();
+            let message = message.unwrap_or_else(|| "WIP".to_string());
+            let label = match &branch {
+                Some(branch) => format!("On {branch}: {message}"),
+                None => format!("On (no branch): {message}"),
+            };
+            let mut entries = state
+                .stash_entries
+                .entries
+                .iter()
+                .cloned()
+                .map(|mut entry| {
+                    entry.index += 1;
+                    entry
+                })
+                .collect::<Vec<_>>();
+            let marker = u8::try_from(entries.len() % 255).unwrap_or_default() + 1;
+            entries.insert(
+                0,
+                git::stash::StashEntry {
+                    index: 0,
+                    oid: Oid::from_bytes(&[marker; 20])?,
+                    message: label,
+                    branch,
+                    timestamp: 0,
+                },
+            );
+            state.stash_entries = git::stash::GitStash {
+                entries: entries.into(),
+            };
+            for path in paths {
+                match state.head_contents.get(&path).cloned() {
+                    Some(head) => {
+                        state.index_contents.insert(path, head);
+                    }
+                    None => {
+                        state.index_contents.remove(&path);
+                    }
+                }
+            }
+            Ok(())
+        })
     }
 
     fn stash_staged(
@@ -3335,10 +3567,37 @@ impl GitRepository for FakeGitRepository {
 
     fn stash_pop(
         &self,
-        _index: Option<usize>,
+        index: Option<usize>,
         _env: Arc<HashMap<String, String>>,
     ) -> BoxFuture<'_, Result<()>> {
-        unimplemented!()
+        self.with_state_async(true, move |state| {
+            let index = index.unwrap_or_default();
+            if !state
+                .stash_entries
+                .entries
+                .iter()
+                .any(|entry| entry.index == index)
+            {
+                bail!("error: stash@{{{index}}} is not a valid reference");
+            }
+            let entries = state
+                .stash_entries
+                .entries
+                .iter()
+                .filter(|entry| entry.index != index)
+                .cloned()
+                .map(|mut entry| {
+                    if entry.index > index {
+                        entry.index -= 1;
+                    }
+                    entry
+                })
+                .collect::<Vec<_>>();
+            state.stash_entries = git::stash::GitStash {
+                entries: entries.into(),
+            };
+            Ok(())
+        })
     }
 
     fn stash_apply(
@@ -3417,16 +3676,28 @@ impl GitRepository for FakeGitRepository {
 
     fn push(
         &self,
-        _branch: String,
-        _remote_branch: String,
-        _remote: String,
-        _options: Option<PushOptions>,
+        branch: String,
+        remote_branch: String,
+        remote: String,
+        options: Option<PushOptions>,
         _askpass: AskPassDelegate,
         _progress: Option<RemoteProgressSender>,
         _env: Arc<HashMap<String, String>>,
         _cx: AsyncApp,
     ) -> BoxFuture<'_, Result<git::repository::RemoteCommandOutput>> {
-        unimplemented!()
+        self.with_state_async(true, move |state| {
+            let stderr = format!("To {remote}\n   0000000..1111111  {branch} -> {remote_branch}\n");
+            state.pushes.push(FakePush {
+                branch,
+                remote_branch,
+                remote,
+                options,
+            });
+            Ok(RemoteCommandOutput {
+                stdout: String::new(),
+                stderr,
+            })
+        })
     }
 
     fn pull(
@@ -3448,11 +3719,18 @@ impl GitRepository for FakeGitRepository {
         _env: Arc<HashMap<String, String>>,
         _cx: AsyncApp,
     ) -> BoxFuture<'_, Result<git::repository::RemoteCommandOutput>> {
-        unimplemented!()
+        async {
+            Ok(RemoteCommandOutput {
+                stdout: String::new(),
+                stderr: String::new(),
+            })
+        }
+        .boxed()
     }
 
     fn get_all_remotes(&self) -> BoxFuture<'_, Result<Vec<Remote>>> {
         self.with_state_async(false, move |state| {
+            simulated_failure(state, FakeGitOperation::GetRemotes)?;
             let remotes = state
                 .remotes
                 .keys()
@@ -3464,12 +3742,12 @@ impl GitRepository for FakeGitRepository {
         })
     }
 
-    fn get_push_remote(&self, _branch: String) -> BoxFuture<'_, Result<Option<Remote>>> {
-        unimplemented!()
+    fn get_push_remote(&self, branch: String) -> BoxFuture<'_, Result<Option<Remote>>> {
+        self.with_state_async(false, move |state| Ok(upstream_remote(state, &branch)))
     }
 
-    fn get_branch_remote(&self, _branch: String) -> BoxFuture<'_, Result<Option<Remote>>> {
-        unimplemented!()
+    fn get_branch_remote(&self, branch: String) -> BoxFuture<'_, Result<Option<Remote>>> {
+        self.with_state_async(false, move |state| Ok(upstream_remote(state, &branch)))
     }
 
     fn check_for_pushed_commit(&self) -> BoxFuture<'_, Result<Vec<gpui::SharedString>>> {

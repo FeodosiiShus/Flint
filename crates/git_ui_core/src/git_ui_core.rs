@@ -113,3 +113,64 @@ pub fn open_file_history(
     };
     opener(workspace, path, window, cx);
 }
+
+/// IntelliJ leaves branch names up to this many characters over the limit untouched.
+const BRANCH_NAME_LENGTH_DELTA: usize = 4;
+/// IntelliJ keeps this many trailing characters of a shortened branch name.
+const BRANCH_NAME_SUFFIX_LENGTH: usize = 5;
+
+/// `GitBranchPresentation.truncateBranchName`: a name longer than `max_length` (with a few
+/// characters of slack) is shortened to `max_length` characters with an ellipsis in the middle,
+/// keeping its last characters. Flint has no issue navigation patterns, so no issue id is
+/// protected from the cut.
+pub fn truncate_branch_name(name: &str, max_length: usize) -> String {
+    let length = name.chars().count();
+    if length <= max_length + BRANCH_NAME_LENGTH_DELTA {
+        return name.to_string();
+    }
+    let shortened_length = max_length.saturating_sub(1);
+    let Some(prefix_length) = shortened_length.checked_sub(BRANCH_NAME_SUFFIX_LENGTH + 1) else {
+        return name.to_string();
+    };
+    let prefix: String = name.chars().take(prefix_length).collect();
+    let suffix: String = name
+        .chars()
+        .skip(length - BRANCH_NAME_SUFFIX_LENGTH)
+        .collect();
+    format!("{prefix}\u{2026}{suffix}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn short_branch_names_and_names_within_the_slack_are_kept() {
+        assert_eq!(truncate_branch_name("main", 80), "main");
+        let within_slack = "a".repeat(84);
+        assert_eq!(truncate_branch_name(&within_slack, 80), within_slack);
+    }
+
+    #[test]
+    fn long_branch_names_get_a_middle_ellipsis_keeping_the_last_five_characters() {
+        let name = format!("feature/{}-12345", "x".repeat(90));
+        let truncated = truncate_branch_name(&name, 80);
+        assert_eq!(truncated.chars().count(), 79);
+        assert!(truncated.starts_with("feature/xxx"));
+        assert!(truncated.ends_with("\u{2026}12345"));
+    }
+
+    #[test]
+    fn truncation_counts_characters_not_bytes() {
+        let name = "\u{e9}".repeat(100);
+        let truncated = truncate_branch_name(&name, 80);
+        assert_eq!(truncated.chars().count(), 79);
+        assert!(truncated.ends_with(&format!("\u{2026}{}", "\u{e9}".repeat(5))));
+    }
+
+    #[test]
+    fn a_limit_too_small_for_the_suffix_keeps_the_name() {
+        let name = "a".repeat(20);
+        assert_eq!(truncate_branch_name(&name, 3), name);
+    }
+}

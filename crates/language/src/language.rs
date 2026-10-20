@@ -660,6 +660,28 @@ pub trait LspAdapter: 'static + Send + Sync + DynLspInstaller {
         false
     }
 
+    /// Environment variables a server this adapter installed starts with unless the shell
+    /// environment or the user's `lsp.<server>.binary.env` already sets them.
+    fn default_server_env(&self) -> HashMap<String, String> {
+        HashMap::default()
+    }
+
+    /// Adjusts the command of a server this adapter installed, given the `lsp.<server>.settings`
+    /// that apply where it starts. A user's `binary.arguments` still replace the result.
+    fn apply_settings_to_server_binary(
+        &self,
+        _binary: &mut LanguageServerBinary,
+        _settings: Option<&Value>,
+    ) {
+    }
+
+    /// Whether diagnostics are pulled from this server only for saved content, given the
+    /// `lsp.<server>.settings` that apply to the buffer: edits then leave them alone and a save
+    /// pulls them again.
+    fn pulls_diagnostics_only_on_save(&self, _settings: Option<&Value>) -> bool {
+        false
+    }
+
     /// Support custom initialize params.
     fn prepare_initialize_params(
         &self,
@@ -928,6 +950,7 @@ pub struct FakeLspAdapter {
     pub disk_based_diagnostics_sources: Vec<String>,
     pub language_server_binary: LanguageServerBinary,
     pub opt_in_languages: HashSet<LanguageName>,
+    pub pulls_diagnostics_only_on_save: Option<fn(Option<&Value>) -> bool>,
 
     pub capabilities: lsp::ServerCapabilities,
     pub initializer: Option<Box<dyn 'static + Send + Sync + Fn(&mut lsp::FakeLanguageServer)>>,
@@ -1545,6 +1568,7 @@ impl Default for FakeLspAdapter {
                 env: Default::default(),
             },
             opt_in_languages: HashSet::default(),
+            pulls_diagnostics_only_on_save: None,
             label_for_completion: None,
         }
     }
@@ -1649,6 +1673,11 @@ impl LspAdapter for FakeLspAdapter {
 
     fn is_opt_in_for(&self, language: &LanguageName) -> bool {
         self.opt_in_languages.contains(language)
+    }
+
+    fn pulls_diagnostics_only_on_save(&self, settings: Option<&Value>) -> bool {
+        self.pulls_diagnostics_only_on_save
+            .is_some_and(|pulls_only_on_save| pulls_only_on_save(settings))
     }
 
     fn is_extension(&self) -> bool {

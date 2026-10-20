@@ -1,11 +1,13 @@
 use anyhow::Result;
 use git::repository::{
-    GitFailureKind, RebaseAction, RebaseOutcome, RepositoryOperation, UnmergedEntry,
+    CherryPickOutcome, GitFailureKind, RebaseAction, RebaseOutcome, RepositoryOperation,
+    UnmergedEntry,
 };
 use gpui::{Action as _, App, AsyncWindowContext, PromptLevel, Window};
+use util::ResultExt as _;
 
 use super::integrate;
-use super::smart_operation::{RestoreLabels, stash_local_changes};
+use super::smart_operation::{RestoreLabels, rebase_stash_message, stash_local_changes};
 use super::{BranchContext, BranchNotice};
 use crate::merge_tool::conflict_resolution::{
     ConflictParams, RebaseCustomizerSpec, RebaseUpstream, ResolveMode, ResolverBehavior,
@@ -29,6 +31,13 @@ const MERGE_RESTORE_OPERATION_TITLE: &str = "merge";
 const MERGE_RESTORE_DESTINATION_NAME: &str = "HEAD";
 const STASHED_BEFORE_REBASE_NOTE: &str = "Local changes were stashed before rebase.";
 const VIEW_STASH_LABEL: &str = "View Stash…";
+const CHERRY_PICK_CONTINUE_PROGRESS_TITLE: &str = "Continuing cherry-pick\u{2026}";
+const CHERRY_PICK_CONTINUE_SUCCESS_TITLE: &str = "Cherry-pick continue successful";
+const CHERRY_PICK_CONTINUE_FAILED_TITLE: &str = "Continue cherry-pick failed";
+const CHERRY_PICK_PERFORMED_WITH_CONFLICTS_TITLE: &str = "Cherry-pick was performed with conflicts";
+const UNRESOLVED_CONFLICTS_TEXT: &str = "There are unresolved conflicts in the working tree.";
+const SHORT_SHA_LENGTH: usize = 8;
+const APPLIED_COMMIT_LIMIT: usize = 1000;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OngoingOperationAction {
@@ -36,6 +45,9 @@ pub enum OngoingOperationAction {
     ContinueRebase,
     SkipCommit,
     AbortMerge,
+    AbortCherryPick,
+    ContinueCherryPick,
+    AbortRevert,
 }
 
 impl OngoingOperationAction {
@@ -45,10 +57,16 @@ impl OngoingOperationAction {
             Self::ContinueRebase => "Continue Rebase",
             Self::SkipCommit => "Skip Commit",
             Self::AbortMerge => "Abort Merge",
+            Self::AbortCherryPick => "Abort Cherry-Pick",
+            Self::ContinueCherryPick => "Continue Cherry-Pick",
+            Self::AbortRevert => "Abort Revert",
         }
     }
 }
 
+/// The visible part of IntelliJ's `Git.Ongoing.Rebase.Actions` group, in its
+/// order: Abort Rebase, Abort Merge, Abort Cherry-Pick, Continue Cherry-Pick,
+/// Abort Revert, Continue Rebase, Skip Commit.
 pub fn ongoing_actions(operation: Option<RepositoryOperation>) -> Vec<OngoingOperationAction> {
     match operation {
         Some(RepositoryOperation::Rebase) => vec![
@@ -57,24 +75,53 @@ pub fn ongoing_actions(operation: Option<RepositoryOperation>) -> Vec<OngoingOpe
             OngoingOperationAction::SkipCommit,
         ],
         Some(RepositoryOperation::Merge) => vec![OngoingOperationAction::AbortMerge],
-        Some(RepositoryOperation::CherryPick) | Some(RepositoryOperation::Revert) | None => {
-            Vec::new()
-        }
+        Some(RepositoryOperation::CherryPick) => vec![
+            OngoingOperationAction::AbortCherryPick,
+            OngoingOperationAction::ContinueCherryPick,
+        ],
+        Some(RepositoryOperation::Revert) => vec![OngoingOperationAction::AbortRevert],
+        None => Vec::new(),
     }
 }
 
+/// The names IntelliJ's `GitAbortOperationAction` uses in its texts: the
+/// lowercase operation name and its capitalized form.
+fn abort_operation_names(operation: RepositoryOperation) -> (&'static str, &'static str) {
+    match operation {
+        RepositoryOperation::Merge => ("merge", "Merge"),
+        RepositoryOperation::Rebase => ("rebase", "Rebase"),
+        RepositoryOperation::CherryPick => ("cherry-pick", "Cherry-Pick"),
+        RepositoryOperation::Revert => ("revert", "Revert"),
+    }
+}
+
+fn abort_progress_title(operation: RepositoryOperation) -> String {
+    format!("Aborting {} Process", abort_operation_names(operation).1)
+}
+
+fn abort_dialog_title(operation: RepositoryOperation) -> String {
+    format!("Abort {}", abort_operation_names(operation).1)
+}
+
+fn abort_dialog_message(operation: RepositoryOperation, mention: &str) -> String {
+    format!("Abort {}{mention}?", abort_operation_names(operation).0)
+}
+
+fn abort_succeeded_message(operation: RepositoryOperation) -> String {
+    format!("{} abort succeeded", abort_operation_names(operation).1)
+}
+
+fn abort_failed_title(operation: RepositoryOperation) -> String {
+    format!("{} abort failed", abort_operation_names(operation).1)
+}
+
 fn smart_stash_present(context: &BranchContext, cx: &App) -> bool {
-    context
-        .repository
-        .read(cx)
+    let repository = context.repository.read(cx);
+    repository
         .cached_stash()
         .entries
         .first()
-        .is_some_and(|entry| {
-            entry
-                .message
-                .contains(super::smart_operation::STASH_MESSAGE)
-        })
+        .is_some_and(|entry| super::smart_operation::is_operation_stash(repository, entry, cx))
 }
 
 pub fn run_ongoing_action(
@@ -97,7 +144,143 @@ pub fn run_ongoing_action(
             advance_rebase_in_background(context, report, RebaseAction::Skip, window, cx)
         }
         OngoingOperationAction::AbortMerge => abort_merge(context, stashed, window, cx),
+        OngoingOperationAction::AbortCherryPick => {
+            abort_operation(context, RepositoryOperation::CherryPick, window, cx)
+        }
+        OngoingOperationAction::AbortRevert => {
+            abort_operation(context, RepositoryOperation::Revert, window, cx)
+        }
+        OngoingOperationAction::ContinueCherryPick => continue_cherry_pick(context, window, cx),
     }
+}
+
+fn abort_operation(
+    context: BranchContext,
+    operation: RepositoryOperation,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    window
+        .spawn(cx, async move |cx| {
+            if let Err(error) = abort_operation_flow(&context, operation, cx).await {
+                integrate::notify_failure(&context, abort_failed_title(operation), &error, cx);
+            }
+        })
+        .detach();
+}
+
+async fn abort_operation_flow(
+    context: &BranchContext,
+    operation: RepositoryOperation,
+    cx: &mut AsyncWindowContext,
+) -> Result<()> {
+    let mention = cx.update(|_, app| integrate::repository_mention(context, app))?;
+    let message = abort_dialog_message(operation, &mention);
+    let title = abort_dialog_title(operation);
+    let answer = cx.prompt(
+        PromptLevel::Info,
+        &title,
+        Some(message.as_str()),
+        &[ABORT_LABEL, CANCEL_LABEL],
+    );
+    if !matches!(answer.await, Ok(0)) {
+        return Ok(());
+    }
+    let progress =
+        cx.update(|_, app| context.start_progress(abort_progress_title(operation), app))?;
+    let receiver = context
+        .repository
+        .update(cx, |repository, _| repository.abort_operation(operation));
+    let result = receiver.await?;
+    drop(progress);
+    result?;
+    integrate::notify(
+        context,
+        BranchNotice::info(abort_succeeded_message(operation)),
+        cx,
+    );
+    Ok(())
+}
+
+fn continue_cherry_pick(context: BranchContext, window: &mut Window, cx: &mut App) {
+    let progress = context.start_progress(CHERRY_PICK_CONTINUE_PROGRESS_TITLE, cx);
+    window
+        .spawn(cx, async move |cx| {
+            if let Err(error) = continue_cherry_pick_flow(&context, cx).await {
+                integrate::notify_failure(&context, CHERRY_PICK_CONTINUE_FAILED_TITLE, &error, cx);
+            }
+            drop(progress);
+        })
+        .detach();
+}
+
+pub(super) fn applied_commits_message(commits: &[(String, String)]) -> String {
+    commits
+        .iter()
+        .map(|(sha, subject)| {
+            let short_sha = sha.get(..SHORT_SHA_LENGTH).unwrap_or(sha);
+            format!("{short_sha} {subject}")
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+async fn continue_cherry_pick_flow(
+    context: &BranchContext,
+    cx: &mut AsyncWindowContext,
+) -> Result<()> {
+    let head_before = context
+        .repository
+        .update(cx, |repository, _| repository.head_sha())
+        .await??;
+    loop {
+        if conflicts_remain(context, cx).await {
+            let resolution = cx.update(|window, app| {
+                context.resolve_conflicts(
+                    ConflictParams::for_unmerged_files(),
+                    ResolverBehavior::Plain,
+                    ResolveMode::Initial,
+                    window,
+                    app,
+                )
+            })?;
+            if !resolution.await.proceed {
+                let notice = BranchNotice::warning(UNRESOLVED_CONFLICTS_TEXT)
+                    .title(CHERRY_PICK_PERFORMED_WITH_CONFLICTS_TITLE);
+                integrate::notify(context, notice, cx);
+                return Ok(());
+            }
+        }
+        let receiver = context
+            .repository
+            .update(cx, |repository, _| repository.continue_cherry_pick());
+        match receiver.await?? {
+            CherryPickOutcome::Conflicted { .. } => continue,
+            CherryPickOutcome::Completed { .. } | CherryPickOutcome::Empty { .. } => break,
+        }
+    }
+    let applied = match head_before {
+        Some(head_before) => {
+            let receiver = context.repository.update(cx, |repository, _| {
+                repository.commits_between(head_before, "HEAD".to_string(), APPLIED_COMMIT_LIMIT)
+            });
+            receiver
+                .await?
+                .log_err()
+                .unwrap_or_default()
+                .into_iter()
+                .map(|commit| (commit.sha.to_string(), commit.subject.to_string()))
+                .collect::<Vec<_>>()
+        }
+        None => Vec::new(),
+    };
+    integrate::notify(
+        context,
+        BranchNotice::info(applied_commits_message(&applied))
+            .title(CHERRY_PICK_CONTINUE_SUCCESS_TITLE),
+        cx,
+    );
+    Ok(())
 }
 
 #[derive(Clone, Debug)]
@@ -158,7 +341,7 @@ pub(super) async fn start_rebase(
     cx: &mut AsyncWindowContext,
 ) -> Result<()> {
     report.stashed = cx
-        .update(|_, app| stash_local_changes(context, app))?
+        .update(|_, app| stash_local_changes(context, rebase_stash_message(), app))?
         .await?;
     let action = RebaseAction::Start {
         upstream,
@@ -518,10 +701,71 @@ mod tests {
     }
 
     #[test]
-    fn no_ongoing_actions_without_a_rebase_or_merge() {
+    fn no_ongoing_actions_without_an_operation_in_progress() {
         assert!(ongoing_actions(None).is_empty());
-        assert!(ongoing_actions(Some(RepositoryOperation::CherryPick)).is_empty());
-        assert!(ongoing_actions(Some(RepositoryOperation::Revert)).is_empty());
+    }
+
+    #[test]
+    fn cherry_pick_and_revert_offer_the_intellij_abort_and_continue_actions() {
+        assert_eq!(
+            ongoing_actions(Some(RepositoryOperation::CherryPick)),
+            vec![
+                OngoingOperationAction::AbortCherryPick,
+                OngoingOperationAction::ContinueCherryPick,
+            ]
+        );
+        assert_eq!(
+            ongoing_actions(Some(RepositoryOperation::Revert)),
+            vec![OngoingOperationAction::AbortRevert]
+        );
+        assert_eq!(
+            OngoingOperationAction::AbortCherryPick.label(),
+            "Abort Cherry-Pick"
+        );
+        assert_eq!(
+            OngoingOperationAction::ContinueCherryPick.label(),
+            "Continue Cherry-Pick"
+        );
+        assert_eq!(OngoingOperationAction::AbortRevert.label(), "Abort Revert");
+    }
+
+    #[test]
+    fn abort_texts_follow_the_intellij_abort_operation_action() {
+        assert_eq!(
+            abort_dialog_title(RepositoryOperation::CherryPick),
+            "Abort Cherry-Pick"
+        );
+        assert_eq!(
+            abort_dialog_message(RepositoryOperation::CherryPick, ""),
+            "Abort cherry-pick?"
+        );
+        assert_eq!(
+            abort_dialog_message(RepositoryOperation::Revert, " in flint"),
+            "Abort revert in flint?"
+        );
+        assert_eq!(
+            abort_succeeded_message(RepositoryOperation::Revert),
+            "Revert abort succeeded"
+        );
+        assert_eq!(
+            abort_failed_title(RepositoryOperation::CherryPick),
+            "Cherry-Pick abort failed"
+        );
+        assert_eq!(
+            abort_progress_title(RepositoryOperation::CherryPick),
+            "Aborting Cherry-Pick Process"
+        );
+    }
+
+    #[test]
+    fn applied_commits_are_listed_with_short_hashes() {
+        assert_eq!(
+            applied_commits_message(&[
+                ("0123456789abcdef".to_string(), "first".to_string()),
+                ("abc".to_string(), "second".to_string()),
+            ]),
+            "01234567 first\nabc second"
+        );
     }
 
     #[test]

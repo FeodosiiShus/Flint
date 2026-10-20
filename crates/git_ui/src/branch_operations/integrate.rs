@@ -1,21 +1,32 @@
 use std::path::Path;
 
 use anyhow::Result;
+use collections::HashSet;
 use db::kvp::KeyValueStore;
+use git::repository::RepoPath;
 use git::repository::{
     Branch, FetchOptions, GitFailure, GitFailureKind, MergeOutcome, Remote, RepositoryOperation,
 };
-use git::status::DiffTreeType;
-use gpui::{App, AsyncWindowContext, PromptLevel, SharedString, Window};
+use git::status::{DiffTreeType, FileStatus, StatusCode};
+use gpui::{App, AsyncWindowContext, PromptLevel, SharedString, Task, Window};
+use project::project_settings::ProjectSettings;
+use regex::Regex;
+use settings::Settings as _;
 use util::ResultExt as _;
 
 use super::ongoing::{self, RebaseReport, UpdateProgress};
 use super::smart_operation::{
     RestoreLabels, SmartChoice, SmartOperation, UPDATE_OPERATION_TITLE, confirm_smart_operation,
     local_changes_not_restored_notice, restore_local_changes, stash_local_changes,
+    stash_message_now,
 };
-use super::update_dialog::{ResetTarget, UpdateOptionsDialog};
-use super::{BranchContext, BranchNotice, error_notice, quoted_ref_label};
+use super::update_dialog::{
+    FixTrackedBranchDialog, ResetTarget, TrackedBranchChoice, UpdateOptionsDialog,
+};
+use super::{
+    BranchContext, BranchNotice, UPDATE_BRANCHES_PROGRESS_TITLE, UPDATE_PROGRESS_TITLE,
+    error_notice, merging_progress_title, quoted_ref_label, rebasing_onto_progress_title,
+};
 use crate::branch_refs::{RefKind, RefTarget};
 use crate::merge_tool::conflict_resolution::{
     ConflictParams, ResolveMode, ResolveOutcome, ResolverBehavior,
@@ -24,10 +35,12 @@ use crate::merge_tool::conflict_resolution::{
 const UPDATE_METHOD_KEY: &str = "git_update_method";
 const SHOW_UPDATE_OPTIONS_KEY: &str = "git_update_show_options";
 const COMMIT_COUNT_LIMIT: usize = 10_000;
-const PROTECTED_BRANCH_NAMES: [&str; 2] = ["main", "master"];
 const DETACHED_HEAD_LABEL: &str = "HEAD";
 const MERGE_OPERATION_TITLE: &str = "merge";
 const RESET_OPERATION_TITLE: &str = "reset";
+const VIEW_COMMITS_LABEL: &str = "View Commits";
+const NO_TRACKED_BRANCH_TITLE: &str = "Cannot update";
+const CHOOSE_UPSTREAM_BRANCH_LABEL: &str = "Choose upstream branch";
 const PUBLISHED_COMMIT_DETAIL: &str = "You are trying to rebase some commits already pushed to a protected branch.\n\nRebasing them would duplicate commits, which is not recommended and most likely unwanted.";
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -102,11 +115,15 @@ pub fn merge_into_current(
     cx: &mut App,
 ) {
     let failure_title = format!("Could Not Merge {}", target.name);
+    let saving = context.save_documents(cx);
+    let progress = context.start_progress(merging_progress_title(&target.name), cx);
     window
         .spawn(cx, async move |cx| {
+            saving.await;
             if let Err(error) = merge_flow(&context, &target, cx).await {
                 notify_failure(&context, failure_title, &error, cx);
             }
+            drop(progress);
         })
         .detach();
 }
@@ -117,11 +134,15 @@ pub fn rebase_current_onto(
     window: &mut Window,
     cx: &mut App,
 ) {
+    let saving = context.save_documents(cx);
+    let progress = context.start_progress(rebasing_onto_progress_title(&target.name), cx);
     window
         .spawn(cx, async move |cx| {
+            saving.await;
             if let Err(error) = rebase_flow(&context, &target, cx).await {
                 notify_failure(&context, "Rebase failed", &error, cx);
             }
+            drop(progress);
         })
         .detach();
 }
@@ -133,21 +154,65 @@ pub fn pull_into_current(
     window: &mut Window,
     cx: &mut App,
 ) {
+    let saving = context.save_documents(cx);
+    let progress = context.start_progress(UPDATE_PROGRESS_TITLE, cx);
     window
         .spawn(cx, async move |cx| {
+            saving.await;
             if let Err(error) = pull_flow(&context, &target, rebase, cx).await {
                 notify_failure(&context, "Update failed", &error, cx);
             }
+            drop(progress);
         })
         .detach();
 }
 
 pub fn update_branch(context: BranchContext, target: RefTarget, window: &mut Window, cx: &mut App) {
+    update_branches(context, vec![target], window, cx);
+}
+
+/// Updates the selected local branches like IntelliJ's `updateBranches`: the
+/// checked-out one through the update process, every other one with a single
+/// `remote:local` fetch reported in one notification.
+pub fn update_branches(
+    context: BranchContext,
+    targets: Vec<RefTarget>,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let mut current = None;
+    let mut others = Vec::new();
+    for target in targets {
+        match context.find_branch(&target, cx) {
+            Some(branch) if branch.is_head => current = Some(target),
+            _ => others.push(target),
+        }
+    }
+    let saving = if current.is_some() {
+        context.save_documents(cx)
+    } else {
+        Task::ready(())
+    };
+    let progress = context.start_progress(UPDATE_BRANCHES_PROGRESS_TITLE, cx);
     window
         .spawn(cx, async move |cx| {
-            if let Err(error) = update_branch_flow(&context, &target, cx).await {
+            if !others.is_empty()
+                && let Err(error) = fast_forward_branches(&context, &others, cx).await
+            {
                 notify_failure(&context, "Update failed", &error, cx);
             }
+            if current.is_some() {
+                saving.await;
+                let method = cx.update(|_, app| saved_update_method(app));
+                let result = match method {
+                    Ok(method) => update_current_flow(&context, method, cx).await,
+                    Err(error) => Err(error),
+                };
+                if let Err(error) = result {
+                    notify_failure(&context, "Update failed", &error, cx);
+                }
+            }
+            drop(progress);
         })
         .detach();
 }
@@ -184,18 +249,43 @@ pub fn update_current_branch(
     window: &mut Window,
     cx: &mut App,
 ) {
+    let saving = context.save_documents(cx);
+    let progress = context.start_progress(UPDATE_PROGRESS_TITLE, cx);
     window
         .spawn(cx, async move |cx| {
+            saving.await;
             if let Err(error) = update_current_flow(&context, method, cx).await {
                 notify_failure(&context, "Update failed", &error, cx);
             }
+            drop(progress);
+        })
+        .detach();
+}
+
+pub(super) fn update_from_chosen_branch(
+    context: BranchContext,
+    choice: TrackedBranchChoice,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let saving = context.save_documents(cx);
+    let progress = context.start_progress(UPDATE_PROGRESS_TITLE, cx);
+    window
+        .spawn(cx, async move |cx| {
+            saving.await;
+            if let Err(error) = update_from_choice(&context, choice, cx).await {
+                notify_failure(&context, "Update failed", &error, cx);
+            }
+            drop(progress);
         })
         .detach();
 }
 
 pub fn reset_to_remote_branch(context: BranchContext, window: &mut Window, cx: &mut App) {
+    let saving = context.save_documents(cx);
     window
         .spawn(cx, async move |cx| {
+            saving.await;
             if let Err(error) = reset_flow(&context, cx).await {
                 notify_failure(&context, "Reset failed", &error, cx);
             }
@@ -429,21 +519,47 @@ pub(super) fn repository_mention(context: &BranchContext, cx: &App) -> String {
     }
 }
 
-pub(crate) fn is_protected_branch_name(name: &str) -> bool {
-    PROTECTED_BRANCH_NAMES.contains(&name)
+pub(crate) fn protected_branch_patterns(cx: &App) -> Vec<String> {
+    ProjectSettings::get_global(cx)
+        .git
+        .protected_branches
+        .clone()
 }
 
-pub(crate) fn is_protected_remote_reference(reference: &str) -> bool {
+// IntelliJ's `GitSharedSettings.isBranchProtected` anchors each pattern so that
+// "master" matches only "master" and not "any-master-here".
+fn matches_whole_branch_name(name: &str, pattern: &str) -> bool {
+    match Regex::new(&format!("^{pattern}$")) {
+        Ok(regex) => regex.is_match(name),
+        Err(error) => {
+            log::debug!("invalid protected branch pattern {pattern:?}: {error}");
+            false
+        }
+    }
+}
+
+pub(crate) fn is_protected_branch_name(name: &str, patterns: &[String]) -> bool {
+    patterns
+        .iter()
+        .any(|pattern| matches_whole_branch_name(name, pattern))
+}
+
+pub(crate) fn is_protected_remote_reference(reference: &str, patterns: &[String]) -> bool {
     reference
         .split_once('/')
-        .is_some_and(|(_, branch)| is_protected_branch_name(branch))
+        .is_some_and(|(_, branch)| is_protected_branch_name(branch, patterns))
 }
 
-fn should_prompt_for_published_commits(pushed: &[SharedString], rebased_commits: usize) -> bool {
-    rebased_commits > 0
-        && pushed
-            .iter()
-            .any(|reference| is_protected_remote_reference(reference))
+/// IntelliJ's `isRebasingPublishedCommit`: some commit about to be rebased is
+/// already reachable from a protected remote branch, so it is missing from
+/// that branch's own `protected..branch` range.
+fn rebases_published_commit(
+    rebased: &HashSet<SharedString>,
+    unpublished_per_protected_branch: &[HashSet<SharedString>],
+) -> bool {
+    unpublished_per_protected_branch
+        .iter()
+        .any(|unpublished| rebased.iter().any(|sha| !unpublished.contains(sha)))
 }
 
 fn pluralize(count: usize, singular: &str, plural: &str) -> String {
@@ -472,7 +588,7 @@ fn update_message(branch: Option<&str>, onto: Option<&str>) -> String {
 }
 
 fn fetched_targets_message(count: usize) -> String {
-    format!("Fetched {}", pluralize(count, "target", "targets"))
+    format!("Fetched {count} targets")
 }
 
 fn reset_confirmation_message(branch: &str, upstream: &str) -> String {
@@ -603,30 +719,78 @@ pub(super) async fn update_notice(
     let files = updated_file_count(context, progress.head_before.as_deref(), cx)
         .await
         .log_err();
-    BranchNotice::info(update_message(branch, onto)).title(update_title(files, progress.commits))
+    let head_after = head_sha(context, cx).await.log_err().flatten();
+    let notice = BranchNotice::info(update_message(branch, onto))
+        .title(update_title(files, progress.commits));
+    match updated_commits_range(progress.head_before.as_deref(), head_after.as_deref()) {
+        Some(range) => {
+            let workspace = context.workspace.clone();
+            notice.action_keeping_notice(VIEW_COMMITS_LABEL, move |window, cx| {
+                crate::git_panel::show_log_for_revisions(
+                    &workspace,
+                    vec![SharedString::from(range.clone())],
+                    window,
+                    cx,
+                );
+            })
+        }
+        None => notice,
+    }
 }
 
-async fn pushed_remote_branches(
+pub(super) fn updated_commits_range(before: Option<&str>, after: Option<&str>) -> Option<String> {
+    match (before, after) {
+        (Some(before), Some(after)) if before != after => Some(format!("{before}..{after}")),
+        _ => None,
+    }
+}
+
+async fn commit_shas_between(
     context: &BranchContext,
+    base: &str,
+    head: &str,
     cx: &mut AsyncWindowContext,
-) -> Result<Vec<SharedString>> {
-    let receiver = context
-        .repository
-        .update(cx, |repository, _| repository.check_for_pushed_commits());
-    receiver.await?
+) -> Result<HashSet<SharedString>> {
+    let (base, head) = (base.to_string(), head.to_string());
+    let receiver = context.repository.update(cx, |repository, _| {
+        repository.commits_between(base, head, COMMIT_COUNT_LIMIT)
+    });
+    Ok(receiver
+        .await??
+        .into_iter()
+        .map(|commit| commit.sha)
+        .collect())
 }
 
-async fn confirm_published_rebase(
+pub(super) async fn confirm_published_rebase(
     context: &BranchContext,
     onto: &str,
+    branch: &str,
     cx: &mut AsyncWindowContext,
 ) -> Result<bool> {
-    let rebased_commits = count_commits(context, onto, "HEAD", cx).await?;
-    if rebased_commits == 0 {
+    let rebased = commit_shas_between(context, onto, branch, cx).await?;
+    if rebased.is_empty() {
         return Ok(true);
     }
-    let pushed = pushed_remote_branches(context, cx).await?;
-    if !should_prompt_for_published_commits(&pushed, rebased_commits) {
+    let protected_remote_branches = cx.update(|_, app| {
+        let patterns = protected_branch_patterns(app);
+        context
+            .repository
+            .read(app)
+            .branch_list
+            .iter()
+            .filter(|candidate| candidate.is_remote())
+            .map(|candidate| candidate.name().to_string())
+            .filter(|name| is_protected_remote_reference(name, &patterns))
+            .collect::<Vec<_>>()
+    })?;
+    let mut unpublished_per_protected_branch = Vec::new();
+    for remote_branch in protected_remote_branches {
+        let base = format!("refs/remotes/{remote_branch}");
+        unpublished_per_protected_branch
+            .push(commit_shas_between(context, &base, branch, cx).await?);
+    }
+    if !rebases_published_commit(&rebased, &unpublished_per_protected_branch) {
         return Ok(true);
     }
     let answer = cx.prompt(
@@ -703,6 +867,23 @@ pub(super) async fn restore_stash(
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum StashAfterConflicts {
+    Restore,
+    KeepAndReport,
+    Nothing,
+}
+
+/// IntelliJ's `GitMergeOperation` unstashes only once the conflicts are
+/// handled, and reports the kept stash only if they were left unresolved.
+fn stash_after_conflicts(stashed: bool, conflicts_resolved: bool) -> StashAfterConflicts {
+    match (stashed, conflicts_resolved) {
+        (false, _) => StashAfterConflicts::Nothing,
+        (true, true) => StashAfterConflicts::Restore,
+        (true, false) => StashAfterConflicts::KeepAndReport,
+    }
+}
+
 fn merge_restore_labels(reference: &str) -> RestoreLabels {
     RestoreLabels::new(MERGE_OPERATION_TITLE, reference.to_string())
 }
@@ -741,8 +922,9 @@ async fn merge_with_smart_stash(
     if !matches!(choice, SmartChoice::Smart) {
         return Ok(MergeAttempt::Cancelled);
     }
+    let message = SmartOperation::Merge.stash_message();
     let stashed = cx
-        .update(|_, app| stash_local_changes(context, app))?
+        .update(|_, app| stash_local_changes(context, message, app))?
         .await?;
     match merge_once(context, reference, cx).await {
         Ok(outcome) => Ok(MergeAttempt::Finished { outcome, stashed }),
@@ -787,19 +969,29 @@ async fn resolve_merge_conflicts(
     Ok(resolution.await)
 }
 
-fn merged_notice(context: &BranchContext, target: &RefTarget, current: &str) -> BranchNotice {
+fn merged_notice(
+    context: &BranchContext,
+    target: &RefTarget,
+    current: &str,
+    protected_branches: &[String],
+) -> BranchNotice {
     let mut notice = BranchNotice::info(merge_success_message(&target.name, current));
-    if target.kind == RefKind::Local && !is_protected_branch_name(&target.name) {
+    if target.kind == RefKind::Local && !is_protected_branch_name(&target.name, protected_branches)
+    {
         let delete_context = context.clone();
         let delete_target = target.clone();
         notice = notice.action(
-            format!("Delete {}", quoted_ref_label(&target.name)),
+            delete_merged_branch_label(&target.name),
             move |window, cx| {
                 super::manage::delete_ref(delete_context.clone(), delete_target.clone(), window, cx)
             },
         );
     }
     notice
+}
+
+fn delete_merged_branch_label(name: &str) -> String {
+    format!("Delete {name}")
 }
 
 async fn merge_flow(
@@ -820,6 +1012,7 @@ async fn merge_flow(
         return Ok(());
     }
 
+    let protected_branches = cx.update(|_, app| protected_branch_patterns(app))?;
     match merge_with_smart_stash(context, &reference, cx).await? {
         MergeAttempt::Cancelled => {}
         MergeAttempt::Failed(error) => report_merge_failure(context, &reference, &error, cx),
@@ -830,16 +1023,13 @@ async fn merge_flow(
             }
             MergeOutcome::Merged { .. } => {
                 restore_stash(context, stashed, merge_restore_labels(&reference), cx).await;
-                notify(context, merged_notice(context, target, &current), cx);
+                notify(
+                    context,
+                    merged_notice(context, target, &current, &protected_branches),
+                    cx,
+                );
             }
             MergeOutcome::Conflicted { .. } => {
-                if stashed {
-                    notify(
-                        context,
-                        local_changes_not_restored_notice(MERGE_OPERATION_TITLE),
-                        cx,
-                    );
-                }
                 let params = ConflictParams::for_user_merge(&reference);
                 let resolution = resolve_merge_conflicts(
                     context,
@@ -848,9 +1038,23 @@ async fn merge_flow(
                     cx,
                 )
                 .await?;
+                match stash_after_conflicts(stashed, resolution.proceed) {
+                    StashAfterConflicts::Restore => {
+                        restore_stash(context, stashed, merge_restore_labels(&reference), cx).await;
+                    }
+                    StashAfterConflicts::KeepAndReport => notify(
+                        context,
+                        local_changes_not_restored_notice(MERGE_OPERATION_TITLE),
+                        cx,
+                    ),
+                    StashAfterConflicts::Nothing => {}
+                }
                 if resolution.proceed {
-                    restore_stash(context, stashed, merge_restore_labels(&reference), cx).await;
-                    notify(context, merged_notice(context, target, &current), cx);
+                    notify(
+                        context,
+                        merged_notice(context, target, &current, &protected_branches),
+                        cx,
+                    );
                 }
             }
         },
@@ -879,7 +1083,7 @@ async fn rebase_flow(
     }
 
     let upstream = target.full_ref_name();
-    if !confirm_published_rebase(context, &upstream, cx).await? {
+    if !confirm_published_rebase(context, &upstream, "HEAD", cx).await? {
         return Ok(());
     }
     let report = RebaseReport {
@@ -889,6 +1093,24 @@ async fn rebase_flow(
         update: None,
     };
     ongoing::start_rebase(context, upstream, report, cx).await
+}
+
+/// The checks IntelliJ's `GitRebaseProcess` runs before every rebase: no
+/// unfinished operation, and confirmation before rebasing published commits.
+pub(super) async fn rebase_may_start(
+    context: &BranchContext,
+    onto: &str,
+    branch: &str,
+    cx: &mut AsyncWindowContext,
+) -> Result<bool> {
+    if let Some(operation) = unfinished_operation(context, cx).await {
+        let name = repository_name(context, cx)?;
+        let notice = BranchNotice::error(rebase_not_allowed_message(operation, &name))
+            .title("Rebase not allowed");
+        notify(context, notice, cx);
+        return Ok(false);
+    }
+    confirm_published_rebase(context, onto, branch, cx).await
 }
 
 async fn pull_flow(
@@ -934,12 +1156,7 @@ async fn update_current_flow(
     };
     let branch_name = branch.name().to_string();
     let Some(tracked) = tracked_upstream(&branch) else {
-        let notice = BranchNotice::error(format!(
-            "Tracked branch is not configured for {}",
-            quoted_ref_label(&branch_name)
-        ))
-        .title("Cannot Update");
-        notify(context, notice, cx);
+        notify(context, no_tracked_branch_notice(context, &branch_name), cx);
         return Ok(());
     };
     let rebase = resolve_rebase(context, method, &branch_name, cx).await?;
@@ -948,6 +1165,58 @@ async fn update_current_flow(
         upstream: tracked.reference,
         remote: tracked.remote,
         rebase,
+    };
+    update_from(context, request, cx).await
+}
+
+fn no_tracked_branch_message(branch: &str) -> String {
+    format!("{branch} has no tracked branch")
+}
+
+fn no_tracked_branch_notice(context: &BranchContext, branch: &str) -> BranchNotice {
+    let dialog_context = context.clone();
+    BranchNotice::error(no_tracked_branch_message(branch))
+        .title(NO_TRACKED_BRANCH_TITLE)
+        .action(CHOOSE_UPSTREAM_BRANCH_LABEL, move |window, cx| {
+            open_fix_tracked_branch_dialog(dialog_context.clone(), window, cx)
+        })
+}
+
+pub(super) fn open_fix_tracked_branch_dialog(
+    context: BranchContext,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let method = match saved_update_method(cx) {
+        UpdateMethod::Rebase => UpdateMethod::Rebase,
+        UpdateMethod::Merge | UpdateMethod::BranchDefault => UpdateMethod::Merge,
+    };
+    let dialog_context = context.clone();
+    context.open_modal(window, cx, move |window, cx| {
+        FixTrackedBranchDialog::new(dialog_context, method, window, cx)
+    });
+}
+
+async fn update_from_choice(
+    context: &BranchContext,
+    choice: TrackedBranchChoice,
+    cx: &mut AsyncWindowContext,
+) -> Result<()> {
+    let Some(branch) = cx.update(|_, app| context.current_branch_name(app))? else {
+        return Ok(());
+    };
+    let upstream = format!("{}/{}", choice.remote, choice.branch);
+    if choice.set_as_tracked {
+        let receiver = context.repository.update(cx, |repository, _| {
+            repository.set_upstream(branch.to_string(), Some(upstream.clone()))
+        });
+        receiver.await??;
+    }
+    let request = UpdateRequest {
+        branch: branch.to_string(),
+        upstream,
+        remote: choice.remote.to_string(),
+        rebase: choice.method == UpdateMethod::Rebase,
     };
     update_from(context, request, cx).await
 }
@@ -1015,7 +1284,7 @@ async fn update_from(
     if request.rebase {
         rebase_update(context, &request, upstream_ref, progress, cx).await
     } else {
-        merge_update(context, &request, progress, cx).await
+        merge_update(context, &request, &upstream_ref, progress, cx).await
     }
 }
 
@@ -1026,7 +1295,7 @@ async fn rebase_update(
     progress: UpdateProgress,
     cx: &mut AsyncWindowContext,
 ) -> Result<()> {
-    if !confirm_published_rebase(context, &upstream_ref, cx).await? {
+    if !confirm_published_rebase(context, &upstream_ref, "HEAD", cx).await? {
         return Ok(());
     }
     let report = RebaseReport {
@@ -1038,13 +1307,83 @@ async fn rebase_update(
     ongoing::start_rebase(context, upstream_ref, report, cx).await
 }
 
+/// Mirrors IntelliJ's `GitMergeUpdater.isSaveNeeded`: local changes are stashed
+/// before an update by merge only when something is staged, or when a locally
+/// changed file is also changed by the incoming commits.
+fn merge_update_needs_stash(
+    local_changes: &[(RepoPath, FileStatus)],
+    incoming_paths: &HashSet<RepoPath>,
+) -> bool {
+    local_changes.iter().any(|(path, status)| {
+        let staged = match status {
+            FileStatus::Tracked(tracked) => tracked.index_status != StatusCode::Unmodified,
+            FileStatus::Unmerged(_) => true,
+            FileStatus::Untracked | FileStatus::Ignored => false,
+        };
+        let tracked_change = !matches!(status, FileStatus::Untracked | FileStatus::Ignored);
+        staged || (tracked_change && incoming_paths.contains(path))
+    })
+}
+
+async fn merge_update_save_needed(
+    context: &BranchContext,
+    upstream_ref: &str,
+    cx: &mut AsyncWindowContext,
+) -> bool {
+    let local_changes = context.repository.read_with(cx, |repository, _| {
+        repository
+            .cached_status()
+            .map(|entry| (entry.repo_path, entry.status))
+            .collect::<Vec<_>>()
+    });
+    if local_changes.is_empty() {
+        return false;
+    }
+    let diff_type = DiffTreeType::Since {
+        base: SharedString::new_static("HEAD"),
+        head: SharedString::from(upstream_ref.to_string()),
+    };
+    let receiver = context
+        .repository
+        .update(cx, |repository, cx| repository.diff_tree(diff_type, cx));
+    let incoming = receiver
+        .await
+        .map_err(anyhow::Error::from)
+        .and_then(|diff| diff);
+    match incoming {
+        Ok(diff) => {
+            let incoming_paths = diff.entries.into_keys().collect::<HashSet<_>>();
+            merge_update_needs_stash(&local_changes, &incoming_paths)
+        }
+        Err(error) => {
+            log::info!("could not list the files changed by the update: {error:#}");
+            true
+        }
+    }
+}
+
 async fn merge_update(
     context: &BranchContext,
     request: &UpdateRequest,
+    upstream_ref: &str,
     progress: UpdateProgress,
     cx: &mut AsyncWindowContext,
 ) -> Result<()> {
-    match merge_with_smart_stash(context, &request.upstream, cx).await? {
+    let stashed = if merge_update_save_needed(context, upstream_ref, cx).await {
+        let message = stash_message_now(UPDATE_OPERATION_TITLE);
+        cx.update(|_, app| stash_local_changes(context, message, app))?
+            .await?
+    } else {
+        false
+    };
+    let attempt = match merge_once(context, &request.upstream, cx).await {
+        Ok(outcome) => MergeAttempt::Finished { outcome, stashed },
+        Err(error) => {
+            restore_stash(context, stashed, RestoreLabels::update(), cx).await;
+            MergeAttempt::Failed(error)
+        }
+    };
+    match attempt {
         MergeAttempt::Cancelled => {}
         MergeAttempt::Failed(error) => report_merge_failure(context, &request.upstream, &error, cx),
         MergeAttempt::Finished { outcome, stashed } => match outcome {
@@ -1073,8 +1412,18 @@ async fn merge_update(
                     cx,
                 )
                 .await?;
+                match stash_after_conflicts(stashed, resolution.proceed) {
+                    StashAfterConflicts::Restore => {
+                        restore_stash(context, stashed, RestoreLabels::update(), cx).await;
+                    }
+                    StashAfterConflicts::KeepAndReport => notify(
+                        context,
+                        local_changes_not_restored_notice(UPDATE_OPERATION_TITLE),
+                        cx,
+                    ),
+                    StashAfterConflicts::Nothing => {}
+                }
                 if resolution.proceed {
-                    restore_stash(context, stashed, RestoreLabels::update(), cx).await;
                     let notice = update_notice(
                         context,
                         Some(&request.branch),
@@ -1084,12 +1433,6 @@ async fn merge_update(
                     )
                     .await;
                     notify(context, notice, cx);
-                } else if stashed {
-                    notify(
-                        context,
-                        local_changes_not_restored_notice(UPDATE_OPERATION_TITLE),
-                        cx,
-                    );
                 }
             }
         },
@@ -1097,49 +1440,54 @@ async fn merge_update(
     Ok(())
 }
 
-async fn update_branch_flow(
+async fn fast_forward_branches(
     context: &BranchContext,
-    target: &RefTarget,
+    targets: &[RefTarget],
     cx: &mut AsyncWindowContext,
 ) -> Result<()> {
-    let Some(branch) = cx.update(|_, app| context.find_branch(target, app))? else {
-        let notice = BranchNotice::error(format!(
-            "Branch {} was not found",
-            quoted_ref_label(&target.name)
-        ))
-        .title("Update failed");
-        notify(context, notice, cx);
-        return Ok(());
-    };
-    if branch.is_head {
-        let method = cx.update(|_, app| saved_update_method(app))?;
-        return update_current_flow(context, method, cx).await;
+    let mut fetches = Vec::new();
+    for target in targets {
+        let Some(branch) = cx.update(|_, app| context.find_branch(target, app))? else {
+            let notice = BranchNotice::error(format!(
+                "Branch {} was not found",
+                quoted_ref_label(&target.name)
+            ))
+            .title("Update failed");
+            notify(context, notice, cx);
+            return Ok(());
+        };
+        let Some(tracked) = tracked_upstream(&branch) else {
+            let notice = BranchNotice::error(format!(
+                "Tracked branch is not configured for {}",
+                quoted_ref_label(&target.name)
+            ))
+            .title("Update failed");
+            notify(context, notice, cx);
+            return Ok(());
+        };
+        fetches.push((branch.name().to_string(), tracked));
     }
-    let Some(tracked) = tracked_upstream(&branch) else {
-        let notice = BranchNotice::error(format!(
-            "Tracked branch is not configured for {}",
-            quoted_ref_label(&target.name)
-        ))
-        .title("Update failed");
-        notify(context, notice, cx);
-        return Ok(());
-    };
 
-    let local_branch = branch.name().to_string();
-    let askpass = cx.update(|window, app| {
-        context.askpass_delegate(format!("git fetch {}", tracked.remote), window, app)
-    })?;
-    let receiver = context.repository.update(cx, |repository, cx| {
-        repository.fast_forward_branch(
-            tracked.remote.clone(),
-            tracked.branch_name.clone(),
-            local_branch,
-            askpass,
-            cx,
-        )
-    });
-    receiver.await??;
-    notify(context, BranchNotice::info(fetched_targets_message(1)), cx);
+    for (local_branch, tracked) in &fetches {
+        let askpass = cx.update(|window, app| {
+            context.askpass_delegate(format!("git fetch {}", tracked.remote), window, app)
+        })?;
+        let receiver = context.repository.update(cx, |repository, cx| {
+            repository.fast_forward_branch(
+                tracked.remote.clone(),
+                tracked.branch_name.clone(),
+                local_branch.clone(),
+                askpass,
+                cx,
+            )
+        });
+        receiver.await??;
+    }
+    notify(
+        context,
+        BranchNotice::info(fetched_targets_message(fetches.len())),
+        cx,
+    );
     Ok(())
 }
 
@@ -1180,9 +1528,11 @@ async fn reset_flow(context: &BranchContext, cx: &mut AsyncWindowContext) -> Res
         return Ok(());
     }
 
+    let _progress = cx.update(|_, app| context.start_progress(UPDATE_PROGRESS_TITLE, app))?;
     fetch_remote(context, &tracked.remote, cx).await?;
+    let message = stash_message_now(UPDATE_OPERATION_TITLE);
     let stashed = cx
-        .update(|_, app| stash_local_changes(context, app))?
+        .update(|_, app| stash_local_changes(context, message, app))?
         .await?;
     let upstream_ref = format!("refs/remotes/{}", tracked.reference);
     let result = reset_hard(context, &upstream_ref, cx).await;
@@ -1273,33 +1623,138 @@ mod tests {
         assert_eq!(parse_rebase_preference("  true\n"), Some(true));
     }
 
+    fn default_patterns() -> Vec<String> {
+        vec!["master".to_string(), "main".to_string()]
+    }
+
     #[test]
-    fn only_main_and_master_are_protected_branch_names() {
-        assert!(is_protected_branch_name("main"));
-        assert!(is_protected_branch_name("master"));
-        assert!(!is_protected_branch_name("feature/main"));
-        assert!(!is_protected_branch_name("main2"));
+    fn only_main_and_master_are_protected_branch_names_by_default() {
+        let patterns = default_patterns();
+        assert!(is_protected_branch_name("main", &patterns));
+        assert!(is_protected_branch_name("master", &patterns));
+        assert!(!is_protected_branch_name("feature/main", &patterns));
+        assert!(!is_protected_branch_name("main2", &patterns));
+    }
+
+    #[test]
+    fn protected_branch_patterns_are_regular_expressions_matching_the_whole_name() {
+        let patterns = vec!["release/.*".to_string(), "dev".to_string(), "[".to_string()];
+        assert!(is_protected_branch_name("release/1.0", &patterns));
+        assert!(is_protected_branch_name("dev", &patterns));
+        assert!(!is_protected_branch_name("develop", &patterns));
+        assert!(!is_protected_branch_name("main", &patterns));
+        assert!(
+            !is_protected_branch_name("[", &patterns),
+            "invalid patterns match nothing"
+        );
     }
 
     #[test]
     fn remote_reference_is_protected_when_its_branch_part_is_protected() {
-        assert!(is_protected_remote_reference("origin/main"));
-        assert!(is_protected_remote_reference("upstream/master"));
-        assert!(!is_protected_remote_reference("origin/feature/main"));
-        assert!(!is_protected_remote_reference("main"));
+        let patterns = default_patterns();
+        assert!(is_protected_remote_reference("origin/main", &patterns));
+        assert!(is_protected_remote_reference("upstream/master", &patterns));
+        assert!(!is_protected_remote_reference(
+            "origin/feature/main",
+            &patterns
+        ));
+        assert!(!is_protected_remote_reference("main", &patterns));
+    }
+
+    fn shas(values: &[&str]) -> HashSet<SharedString> {
+        values
+            .iter()
+            .map(|value| SharedString::from(*value))
+            .collect()
     }
 
     #[test]
-    fn published_commit_prompt_needs_commits_to_rebase_and_a_protected_remote() {
-        let protected = vec![SharedString::from("origin/main")];
-        let unprotected = vec![SharedString::from("origin/feature")];
-        assert!(should_prompt_for_published_commits(&protected, 3));
-        assert!(
-            !should_prompt_for_published_commits(&protected, 0),
-            "nothing is rebased when the branch is already contained in the base"
+    fn a_rebase_is_published_when_a_protected_branch_already_has_one_of_the_commits() {
+        let rebased = shas(&["a", "b"]);
+        assert!(rebases_published_commit(&rebased, &[shas(&["b"])]));
+        assert!(!rebases_published_commit(&rebased, &[shas(&["a", "b"])]));
+        assert!(!rebases_published_commit(&rebased, &[]));
+        assert!(rebases_published_commit(
+            &rebased,
+            &[shas(&["a", "b"]), shas(&["a"])]
+        ));
+        assert!(!rebases_published_commit(&HashSet::default(), &[shas(&[])]));
+    }
+
+    #[test]
+    fn stashed_changes_wait_for_the_conflicts_to_be_handled() {
+        assert_eq!(
+            stash_after_conflicts(true, true),
+            StashAfterConflicts::Restore
         );
-        assert!(!should_prompt_for_published_commits(&unprotected, 3));
-        assert!(!should_prompt_for_published_commits(&[], 3));
+        assert_eq!(
+            stash_after_conflicts(true, false),
+            StashAfterConflicts::KeepAndReport
+        );
+        assert_eq!(
+            stash_after_conflicts(false, true),
+            StashAfterConflicts::Nothing
+        );
+        assert_eq!(
+            stash_after_conflicts(false, false),
+            StashAfterConflicts::Nothing
+        );
+    }
+
+    #[test]
+    fn a_merged_branch_is_offered_for_deletion_without_quotes() {
+        assert_eq!(delete_merged_branch_label("feature/x"), "Delete feature/x");
+    }
+
+    #[test]
+    fn an_update_by_merge_stashes_only_staged_or_overlapping_changes() {
+        use git::status::TrackedStatus;
+        let path = |name: &str| git::repository::repo_path(name);
+        let staged = FileStatus::Tracked(TrackedStatus {
+            index_status: StatusCode::Modified,
+            worktree_status: StatusCode::Unmodified,
+        });
+        let unstaged = FileStatus::Tracked(TrackedStatus {
+            index_status: StatusCode::Unmodified,
+            worktree_status: StatusCode::Modified,
+        });
+        let incoming: HashSet<RepoPath> = [path("shared.rs")].into_iter().collect();
+
+        assert!(merge_update_needs_stash(
+            &[(path("other.rs"), staged)],
+            &incoming
+        ));
+        assert!(merge_update_needs_stash(
+            &[(path("shared.rs"), unstaged)],
+            &incoming
+        ));
+        assert!(!merge_update_needs_stash(
+            &[(path("other.rs"), unstaged)],
+            &incoming
+        ));
+        assert!(
+            !merge_update_needs_stash(&[(path("shared.rs"), FileStatus::Untracked)], &incoming),
+            "untracked files are not local changes in IntelliJ's change lists"
+        );
+        assert!(!merge_update_needs_stash(&[], &incoming));
+    }
+
+    #[test]
+    fn view_commits_covers_exactly_the_updated_commits() {
+        assert_eq!(
+            updated_commits_range(Some("c1"), Some("c2")).as_deref(),
+            Some("c1..c2")
+        );
+        assert_eq!(updated_commits_range(Some("c1"), Some("c1")), None);
+        assert_eq!(updated_commits_range(None, Some("c2")), None);
+    }
+
+    #[test]
+    fn a_branch_without_a_tracked_branch_is_reported_like_intellij() {
+        assert_eq!(
+            no_tracked_branch_message("main"),
+            "main has no tracked branch"
+        );
     }
 
     #[test]
@@ -1334,8 +1789,8 @@ mod tests {
     }
 
     #[test]
-    fn fetched_targets_message_pluralizes() {
-        assert_eq!(fetched_targets_message(1), "Fetched 1 target");
+    fn fetched_targets_message_uses_the_intellij_wording_for_every_count() {
+        assert_eq!(fetched_targets_message(1), "Fetched 1 targets");
         assert_eq!(fetched_targets_message(3), "Fetched 3 targets");
     }
 

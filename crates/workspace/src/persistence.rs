@@ -335,12 +335,12 @@ pub fn read_serialized_multi_workspaces(
 
     window_groups
         .into_iter()
-        .filter_map(|group| {
+        .filter_map(|mut group| {
             let window_id = group.first().and_then(|sw| sw.window_id);
             let state = window_id
                 .map(|wid| read_multi_workspace_state(wid, cx))
                 .unwrap_or_default();
-            let active_workspace = state
+            let active_index = state
                 .active_workspace_id
                 .and_then(|id| group.iter().position(|ws| ws.workspace_id == id))
                 // If the persisted active workspace can't be matched (e.g. its
@@ -350,10 +350,22 @@ pub fn read_serialized_multi_workspaces(
                 // restored as the focused window. Only if none have paths do we
                 // fall back to the first entry.
                 .or_else(|| group.iter().position(|ws| !ws.paths.is_empty()))
-                .or(Some(0))
-                .and_then(|index| group.into_iter().nth(index))?;
+                .unwrap_or(0);
+            if active_index >= group.len() {
+                return None;
+            }
+            let active_workspace = group.remove(active_index);
+            let mut other_workspaces = group;
+            other_workspaces.sort_by_key(|workspace| {
+                state
+                    .workspace_order
+                    .iter()
+                    .position(|id| *id == workspace.workspace_id)
+                    .unwrap_or(usize::MAX)
+            });
             Some(model::SerializedMultiWorkspace {
                 active_workspace,
+                other_workspaces,
                 state,
             })
         })
@@ -4025,6 +4037,7 @@ mod tests {
                 project_groups: vec![],
                 sidebar_open: true,
                 sidebar_state: None,
+                workspace_order: vec![WorkspaceId(6), WorkspaceId(2), WorkspaceId(1)],
             },
         )
         .await;
@@ -4037,16 +4050,23 @@ mod tests {
                 project_groups: vec![],
                 sidebar_open: false,
                 sidebar_state: None,
+                workspace_order: Vec::new(),
             },
         )
         .await;
 
-        // Build session workspaces: two in window 10, one in window 20, one with no window.
+        // Build session workspaces: three in window 10, one in window 20, one with no window.
         let session_workspaces = vec![
             SessionWorkspace {
                 workspace_id: WorkspaceId(1),
                 location: SerializedWorkspaceLocation::Local,
                 paths: PathList::new(&["/a"]),
+                window_id: Some(window_10),
+            },
+            SessionWorkspace {
+                workspace_id: WorkspaceId(6),
+                location: SerializedWorkspaceLocation::Local,
+                paths: PathList::new(&["/e"]),
                 window_id: Some(window_10),
             },
             SessionWorkspace {
@@ -4079,12 +4099,22 @@ mod tests {
         assert_eq!(group_10.active_workspace.workspace_id, WorkspaceId(2));
         assert_eq!(group_10.state.active_workspace_id, Some(WorkspaceId(2)));
         assert_eq!(group_10.state.sidebar_open, true);
+        assert_eq!(
+            group_10
+                .other_workspaces
+                .iter()
+                .map(|workspace| workspace.workspace_id)
+                .collect::<Vec<_>>(),
+            vec![WorkspaceId(6), WorkspaceId(1)],
+            "the other projects of a window are all kept, in the order of their project tabs"
+        );
 
         // Window 20: active_workspace_id = 3 picks workspace 3 (paths /c), sidebar closed.
         let group_20 = &results[1];
         assert_eq!(group_20.active_workspace.workspace_id, WorkspaceId(3));
         assert_eq!(group_20.state.active_workspace_id, Some(WorkspaceId(3)));
         assert_eq!(group_20.state.sidebar_open, false);
+        assert!(group_20.other_workspaces.is_empty());
 
         // Orphan: no active_workspace_id, falls back to first workspace (id 4).
         let group_none = &results[2];
@@ -5368,6 +5398,18 @@ mod tests {
             serialized.active_workspace.workspace_id,
             active_db_id.unwrap(),
         );
+        assert_eq!(
+            serialized
+                .other_workspaces
+                .iter()
+                .map(|workspace| workspace.paths.clone())
+                .collect::<Vec<_>>(),
+            vec![
+                PathList::new(&["/other-project"]),
+                PathList::new(&["/repo"]),
+            ],
+            "the projects next to the active one are kept for the restore, in tab order"
+        );
         assert_eq!(serialized.state.project_groups.len(), 2,);
 
         // Verify the serialized project group keys round-trip back to the
@@ -5430,6 +5472,32 @@ mod tests {
             active_paths,
             vec![PathBuf::from("/worktree-feature")],
             "The restored active workspace should be the linked worktree project"
+        );
+
+        // Every project the window held comes back next to the active one, in the
+        // order of the project tabs.
+        let restored_paths: Vec<Vec<PathBuf>> = restored_handle
+            .read_with(cx, |mw: &MultiWorkspace, cx| {
+                mw.workspaces()
+                    .map(|workspace| {
+                        workspace
+                            .read(cx)
+                            .root_paths(cx)
+                            .into_iter()
+                            .map(|path| path.to_path_buf())
+                            .collect()
+                    })
+                    .collect()
+            })
+            .unwrap();
+        assert_eq!(
+            restored_paths,
+            vec![
+                vec![PathBuf::from("/other-project")],
+                vec![PathBuf::from("/repo")],
+                vec![PathBuf::from("/worktree-feature")],
+            ],
+            "all three projects of the window are restored in their tab order"
         );
     }
 

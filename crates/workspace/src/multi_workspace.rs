@@ -4,25 +4,28 @@ use fs::Fs;
 use gpui::{
     AnyView, App, Context, DragMoveEvent, Entity, EntityId, EventEmitter, FocusHandle, Focusable,
     ManagedView, MouseButton, Pixels, Render, Subscription, Task, TaskExt, WeakEntity, Window,
-    WindowId, actions, deferred, px,
+    WindowHandle, WindowId, actions, deferred, px,
 };
-use project::Project;
 pub use project::ProjectGroupKey;
+use project::{Project, Worktree};
 pub use settings::SidebarSide;
+use settings::{DefaultOpenBehavior, Settings as _};
 use std::cell::Cell;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::sync::Arc;
 use theme::ClientDecorationsExt as _;
 use ui::prelude::*;
 use util::ResultExt;
 use util::path_list::PathList;
+use util::paths::PathExt as _;
 
 const SIDEBAR_RESIZE_HANDLE_SIZE: Pixels = px(6.0);
 
 use crate::{
     CloseIntent, CloseWindow, DockPosition, Event as WorkspaceEvent, Item, ModalView, OpenMode,
-    Panel, Workspace, WorkspaceId, client_side_decorations,
-    persistence::model::MultiWorkspaceState,
+    OpenOptions, OpenResult, Panel, Workspace, WorkspaceId, WorkspaceSettings,
+    client_side_decorations, persistence::model::MultiWorkspaceState,
 };
 
 actions!(
@@ -34,15 +37,15 @@ actions!(
         CloseWorkspaceSidebar,
         /// Moves focus to or from the workspace sidebar without closing it.
         FocusWorkspaceSidebar,
-        /// Activates the next project in the sidebar.
+        /// Switches to the next project in this window.
         NextProject,
-        /// Activates the previous project in the sidebar.
+        /// Switches to the previous project in this window.
         PreviousProject,
         /// Moves the active project up in the sidebar.
         MoveProjectUp,
         /// Moves the active project down in the sidebar.
         MoveProjectDown,
-        /// Moves the active project to a new window.
+        /// Moves the active project from this window to a new window.
         MoveProjectToNewWindow,
     ]
 );
@@ -193,6 +196,23 @@ pub enum RemovalIntent {
     CloseProject,
 }
 
+/// Which workspace takes over the window when the displayed one is removed.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum ReplacementPolicy {
+    /// Another workspace of the same project group, then the nearest project group.
+    ProjectGroups,
+    /// The neighbouring project tab, else an empty workspace.
+    ProjectTabs,
+}
+
+/// One button of the project tab strip in the title bar.
+#[derive(Clone, Debug)]
+pub struct ProjectTab {
+    pub workspace: Entity<Workspace>,
+    pub title: SharedString,
+    pub path: Arc<Path>,
+}
+
 /// One row per workspace held by this window. The displayed workspace is
 /// always one of these rows. `pinned` records whether the workspace survives
 /// being navigated away from; `activated_at` records when it was last
@@ -254,7 +274,7 @@ impl MultiWorkspace {
         workspace.update(cx, |workspace, _cx| {
             workspace.set_multi_workspace(weak_self, active_workspace_id.clone());
         });
-        let this = Self {
+        Self {
             window_id: window.window_handle().window_id(),
             held: vec![HeldWorkspace {
                 workspace,
@@ -270,15 +290,7 @@ impl MultiWorkspace {
             _serialize_task: None,
             _subscriptions: vec![release_subscription],
             previous_focus_handle: None,
-        };
-        #[cfg(any(test, feature = "test-support"))]
-        let this = {
-            let mut this = this;
-            let sidebar = cx.new(TestSidebar::new);
-            this.register_sidebar(sidebar, cx);
-            this
-        };
-        this
+        }
     }
 
     pub fn register_sidebar<T: Sidebar>(&mut self, sidebar: Entity<T>, cx: &mut Context<Self>) {
@@ -310,6 +322,14 @@ impl MultiWorkspace {
 
     pub fn multi_workspace_enabled(&self) -> bool {
         self.sidebar.is_some()
+    }
+
+    /// Whether opening or switching to another project keeps the current one open in this
+    /// window, as a project tab, instead of replacing it or opening a new window.
+    pub fn retains_workspaces(&self, cx: &App) -> bool {
+        self.sidebar.is_some()
+            || WorkspaceSettings::get_global(cx).default_open_behavior
+                == DefaultOpenBehavior::ExistingWindow
     }
 
     pub fn toggle_sidebar(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -909,6 +929,23 @@ impl MultiWorkspace {
             .cloned()
     }
 
+    /// A window other than `excluded_window` that already holds a workspace for exactly
+    /// `path_list`, with that workspace, so a project is focused instead of opened twice.
+    pub fn workspace_in_other_window(
+        path_list: &PathList,
+        excluded_window: WindowId,
+        cx: &App,
+    ) -> Option<(WindowHandle<MultiWorkspace>, Entity<Workspace>)> {
+        cx.windows()
+            .into_iter()
+            .filter_map(|window| window.downcast::<MultiWorkspace>())
+            .filter(|window| window.window_id() != excluded_window)
+            .find_map(|window| {
+                let workspace = window.read(cx).ok()?.workspace_for_paths(path_list, cx)?;
+                Some((window, workspace))
+            })
+    }
+
     pub fn find_or_create_workspace(
         &mut self,
         paths: PathList,
@@ -1052,9 +1089,17 @@ impl MultiWorkspace {
 
         let old_active_workspace = self.workspace().clone();
         let old_active_was_retained = self.active_workspace_is_retained();
-        let should_retain_workspaces = self.multi_workspace_enabled();
+        let should_retain_workspaces = self.retains_workspaces(cx);
+        // Dropping unsaved edits needs a save prompt, which only the callers that replace a
+        // project can show, so a workspace with unsaved edits is kept in the window instead.
+        let retain_old_active = !old_active_was_retained
+            && (should_retain_workspaces
+                || old_active_workspace
+                    .read(cx)
+                    .items(cx)
+                    .any(|item| item.is_dirty(cx)));
 
-        if should_retain_workspaces && !old_active_was_retained {
+        if retain_old_active {
             let key = old_active_workspace.read(cx).project_group_key(cx);
             let index = self.hold(old_active_workspace.clone(), window, cx);
             self.pin(index, key, cx);
@@ -1078,7 +1123,7 @@ impl MultiWorkspace {
             .map_or(0, |max| max + 1);
         self.held[displayed].activated_at = Some(stamp);
 
-        if !should_retain_workspaces && !old_active_was_retained {
+        if !old_active_was_retained && !retain_old_active {
             self.detach_workspace(&old_active_workspace, cx);
         }
 
@@ -1109,6 +1154,18 @@ impl MultiWorkspace {
         self.pin(index, key, cx);
         self.serialize(cx);
         cx.notify();
+    }
+
+    /// Drops the empty workspace a project was opened over once that project is shown, since
+    /// an empty workspace has no project tab to reach it by.
+    pub(crate) fn detach_replaced_empty_workspace(
+        &mut self,
+        empty_workspace: &Entity<Workspace>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.held_index(empty_workspace).is_some() && self.workspace() != empty_workspace {
+            self.detach_workspace(empty_workspace, cx);
+        }
     }
 
     /// Detaches a workspace: clears session state, DB binding, cached
@@ -1175,6 +1232,11 @@ impl MultiWorkspace {
                 .collect::<Vec<_>>(),
             sidebar_open: self.sidebar_open,
             sidebar_state: self.sidebar.as_ref().and_then(|s| s.serialized_state(cx)),
+            workspace_order: self
+                .held
+                .iter()
+                .filter_map(|held| held.workspace.read(cx).database_id())
+                .collect(),
         };
         let window_id = self.window_id;
         let kvp = db::kvp::KeyValueStore::global(cx);
@@ -1334,6 +1396,14 @@ impl MultiWorkspace {
         Self::new(workspace, window, cx)
     }
 
+    /// Registers a placeholder sidebar, for tests of the sidebar actions. Flint ships no
+    /// sidebar, so every other test runs without one, like the app.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn test_register_sidebar(&mut self, cx: &mut Context<Self>) {
+        let sidebar = cx.new(TestSidebar::new);
+        self.register_sidebar(sidebar, cx);
+    }
+
     #[cfg(any(test, feature = "test-support"))]
     pub fn test_add_workspace(
         &mut self,
@@ -1423,15 +1493,20 @@ impl MultiWorkspace {
 
         let mut tasks: Vec<Task<()>> = Vec::new();
         for workspace in self.workspaces() {
-            tasks.push(workspace.update(cx, |ws, cx| ws.flush_serialization(window, cx)));
+            let flush = workspace.update(cx, |ws, cx| ws.flush_serialization(window, cx));
             if let Some(db_id) = workspace.read(cx).database_id() {
                 let db = crate::persistence::WorkspaceDb::global(cx);
                 let session_id = session_id.clone();
+                // Every test workspace has a session of its own, so the binding to the
+                // window's session is written after the workspace saved its own one.
                 tasks.push(cx.background_spawn(async move {
+                    flush.await;
                     db.set_session_binding(db_id, session_id, Some(window_id_u64))
                         .await
                         .log_err();
                 }));
+            } else {
+                tasks.push(flush);
             }
         }
         tasks.push(self.flush_serialization(cx));
@@ -1479,8 +1554,23 @@ impl MultiWorkspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Task<Result<bool>> {
-        let workspaces: Vec<_> = workspaces.into_iter().collect();
+        self.remove_workspaces(
+            workspaces.into_iter().collect(),
+            intent,
+            ReplacementPolicy::ProjectGroups,
+            window,
+            cx,
+        )
+    }
 
+    fn remove_workspaces(
+        &mut self,
+        workspaces: Vec<Entity<Workspace>>,
+        intent: RemovalIntent,
+        policy: ReplacementPolicy,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<bool>> {
         if workspaces.is_empty() {
             return Task::ready(Ok(false));
         }
@@ -1527,6 +1617,15 @@ impl MultiWorkspace {
             let (removed_any, reopen_key) = this.update_in(cx, |this, window, cx| {
                 let mut removed_any = false;
                 let displayed_workspace = this.workspace().clone();
+                let removed_keys: Vec<ProjectGroupKey> = workspaces
+                    .iter()
+                    .map(|workspace| workspace.read(cx).project_group_key(cx))
+                    .collect();
+                // The neighbouring tab is looked up before any row is deleted, so it is the
+                // tab that sat next to the closed one.
+                let tab_neighbor = (policy == ReplacementPolicy::ProjectTabs)
+                    .then(|| this.project_tab_neighbor(&displayed_workspace, &workspaces, cx))
+                    .flatten();
 
                 for workspace in &workspaces {
                     if *workspace == displayed_workspace {
@@ -1542,44 +1641,50 @@ impl MultiWorkspace {
                 if workspaces.contains(&displayed_workspace) {
                     let doomed = std::slice::from_ref(&displayed_workspace);
 
-                    let same_group = this
-                        .held
-                        .iter()
-                        .filter(|held| held.pinned && held.workspace != displayed_workspace)
-                        .map(|held| held.workspace.clone())
-                        .find(|workspace| workspace.read(cx).project_group_key(cx) == group_key);
-                    if intent == RemovalIntent::KeepProject
-                        && same_group.is_none()
-                        && !group_key.path_list().is_empty()
-                    {
-                        reopen_key = Some(group_key.clone());
-                    }
-
-                    let replacement = same_group
-                        .or_else(|| {
-                            neighbor_keys
+                    let replacement = match policy {
+                        ReplacementPolicy::ProjectTabs => tab_neighbor,
+                        ReplacementPolicy::ProjectGroups => {
+                            let same_group = this
+                                .held
                                 .iter()
-                                .find_map(|key| this.live_member_for_group(key, doomed, cx))
-                        })
-                        .unwrap_or_else(|| {
-                            if reopen_key.is_none() {
+                                .filter(|held| held.pinned && held.workspace != displayed_workspace)
+                                .map(|held| held.workspace.clone())
+                                .find(|workspace| {
+                                    workspace.read(cx).project_group_key(cx) == group_key
+                                });
+                            if intent == RemovalIntent::KeepProject
+                                && same_group.is_none()
+                                && !group_key.path_list().is_empty()
+                            {
+                                reopen_key = Some(group_key.clone());
+                            }
+                            let replacement = same_group.or_else(|| {
+                                neighbor_keys
+                                    .iter()
+                                    .find_map(|key| this.live_member_for_group(key, doomed, cx))
+                            });
+                            if replacement.is_none() && reopen_key.is_none() {
                                 reopen_key = adjacent_key
                                     .clone()
                                     .filter(|key| !key.path_list().is_empty());
                             }
-                            let app_state = displayed_workspace.read(cx).app_state().clone();
-                            let project = Project::local(
-                                app_state.client.clone(),
-                                app_state.node_runtime.clone(),
-                                app_state.user_store.clone(),
-                                app_state.languages.clone(),
-                                app_state.fs.clone(),
-                                None,
-                                project::LocalProjectFlags::default(),
-                                cx,
-                            );
-                            cx.new(|cx| Workspace::new(None, project, app_state, window, cx))
-                        });
+                            replacement
+                        }
+                    };
+                    let replacement = replacement.unwrap_or_else(|| {
+                        let app_state = displayed_workspace.read(cx).app_state().clone();
+                        let project = Project::local(
+                            app_state.client.clone(),
+                            app_state.node_runtime.clone(),
+                            app_state.user_store.clone(),
+                            app_state.languages.clone(),
+                            app_state.fs.clone(),
+                            None,
+                            project::LocalProjectFlags::default(),
+                            cx,
+                        );
+                        cx.new(|cx| Workspace::new(None, project, app_state, window, cx))
+                    });
 
                     this.activate(replacement, None, window, cx);
                     this.detach_workspace(&displayed_workspace, cx);
@@ -1590,6 +1695,23 @@ impl MultiWorkspace {
                     // Prompting switched the display away from where the user
                     // was; go back.
                     this.activate(original_active.clone(), None, window, cx);
+                }
+
+                if policy == ReplacementPolicy::ProjectTabs {
+                    // A closed tab takes its project group along unless another tab still
+                    // belongs to it, so a later close never reopens a project the user closed.
+                    let held_keys: Vec<ProjectGroupKey> = this
+                        .held
+                        .iter()
+                        .map(|held| held.workspace.read(cx).project_group_key(cx))
+                        .collect();
+                    let groups_before = this.project_groups.len();
+                    this.project_groups.retain(|group| {
+                        !removed_keys.contains(&group.key) || held_keys.contains(&group.key)
+                    });
+                    if this.project_groups.len() != groups_before {
+                        cx.emit(MultiWorkspaceEvent::ProjectGroupsChanged);
+                    }
                 }
 
                 if removed_any {
@@ -1619,6 +1741,253 @@ impl MultiWorkspace {
         })
     }
 
+    /// The workspaces shown as project tabs, in strip order: every held workspace whose
+    /// project has a visible worktree.
+    fn project_tab_workspaces<'a>(
+        &'a self,
+        cx: &'a App,
+    ) -> impl Iterator<Item = &'a Entity<Workspace>> + 'a {
+        self.held
+            .iter()
+            .map(|held| &held.workspace)
+            .filter(|workspace| {
+                workspace
+                    .read(cx)
+                    .project()
+                    .read(cx)
+                    .visible_worktrees(cx)
+                    .next()
+                    .is_some()
+            })
+    }
+
+    /// The project tabs of this window in strip order.
+    ///
+    /// Like IntelliJ's `PlatformFrameTitleBuilder.getProjectTitle`, a tab is titled with the
+    /// project name, and with `name [~/path]` when another project has the same name.
+    pub fn project_tabs(&self, cx: &App) -> Vec<ProjectTab> {
+        let tabs: Vec<(Entity<Workspace>, SharedString, Arc<Path>)> = self
+            .project_tab_workspaces(cx)
+            .filter_map(|workspace| {
+                let worktree = project_title_worktree(workspace.read(cx).project().read(cx), cx)?;
+                let worktree = worktree.read(cx);
+                let path = worktree.abs_path();
+                let name = worktree
+                    .root_name()
+                    .file_name()
+                    .map(|name| SharedString::from(name.to_string()))
+                    .unwrap_or_else(|| {
+                        SharedString::from(path.compact().to_string_lossy().into_owned())
+                    });
+                Some((workspace.clone(), name, path))
+            })
+            .collect();
+
+        tabs.iter()
+            .map(|(workspace, name, path)| {
+                let shares_its_name = tabs
+                    .iter()
+                    .filter(|(_, other_name, _)| other_name == name)
+                    .count()
+                    > 1;
+                let title = if shares_its_name {
+                    SharedString::from(format!("{name} [{}]", path.compact().to_string_lossy()))
+                } else {
+                    name.clone()
+                };
+                ProjectTab {
+                    workspace: workspace.clone(),
+                    title,
+                    path: path.clone(),
+                }
+            })
+            .collect()
+    }
+
+    /// The tab that takes over when `workspace` closes: the next project tab, else the
+    /// previous one, else any other workspace this window holds.
+    fn project_tab_neighbor(
+        &self,
+        workspace: &Entity<Workspace>,
+        excluding: &[Entity<Workspace>],
+        cx: &App,
+    ) -> Option<Entity<Workspace>> {
+        let tabs: Vec<&Entity<Workspace>> = self.project_tab_workspaces(cx).collect();
+        let is_candidate = |candidate: &&&Entity<Workspace>| {
+            **candidate != workspace && !excluding.contains(**candidate)
+        };
+        let tab_neighbor = match tabs.iter().position(|tab| *tab == workspace) {
+            Some(index) => tabs
+                .iter()
+                .skip(index + 1)
+                .find(is_candidate)
+                .or_else(|| tabs.iter().take(index).rev().find(is_candidate)),
+            None => tabs.iter().find(is_candidate),
+        };
+        tab_neighbor.map(|tab| (*tab).clone()).or_else(|| {
+            self.held
+                .iter()
+                .map(|held| &held.workspace)
+                .find(|candidate| *candidate != workspace && !excluding.contains(candidate))
+                .cloned()
+        })
+    }
+
+    /// Closes one project tab, asking to save its changes first, and switches to the
+    /// neighbouring tab. Closing the last project leaves an empty workspace in the window.
+    pub fn close_workspace(
+        &mut self,
+        workspace: &Entity<Workspace>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<bool>> {
+        if self.held_index(workspace).is_none() {
+            return Task::ready(Ok(false));
+        }
+        self.remove_workspaces(
+            vec![workspace.clone()],
+            RemovalIntent::CloseProject,
+            ReplacementPolicy::ProjectTabs,
+            window,
+            cx,
+        )
+    }
+
+    /// Closes every project of this window except `workspace`, which becomes the active one.
+    pub fn close_other_workspaces(
+        &mut self,
+        workspace: &Entity<Workspace>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<bool>> {
+        if self.held_index(workspace).is_none() {
+            return Task::ready(Ok(false));
+        }
+        let others: Vec<Entity<Workspace>> = self
+            .held
+            .iter()
+            .map(|held| held.workspace.clone())
+            .filter(|other| other != workspace)
+            .collect();
+        self.activate(workspace.clone(), None, window, cx);
+        self.remove_workspaces(
+            others,
+            RemovalIntent::CloseProject,
+            ReplacementPolicy::ProjectTabs,
+            window,
+            cx,
+        )
+    }
+
+    /// Moves one project of this window to a new window, like IntelliJ's
+    /// "Move Tab to New Window". The project is saved, removed from this window and reopened
+    /// from the database, so pending tasks never end up in the wrong window.
+    pub fn move_workspace_to_new_window(
+        &mut self,
+        workspace: &Entity<Workspace>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<()>> {
+        let paths: Vec<PathBuf> = workspace
+            .read(cx)
+            .root_paths(cx)
+            .iter()
+            .map(|path| path.to_path_buf())
+            .collect();
+        let has_other_project_tabs = self
+            .project_tab_workspaces(cx)
+            .any(|project_tab| project_tab != workspace);
+        if paths.is_empty() || self.held_index(workspace).is_none() || !has_other_project_tabs {
+            return Task::ready(Ok(()));
+        }
+        let app_state = workspace.read(cx).app_state().clone();
+        let serialization = workspace.update(cx, |workspace, cx| {
+            workspace.flush_serialization(window, cx)
+        });
+        let remove_task = self.remove_workspaces(
+            vec![workspace.clone()],
+            RemovalIntent::KeepProject,
+            ReplacementPolicy::ProjectTabs,
+            window,
+            cx,
+        );
+
+        cx.spawn(async move |_this, cx| {
+            serialization.await;
+            if !remove_task.await? {
+                return Ok(());
+            }
+            cx.update(|cx| {
+                Workspace::new_local(paths, app_state, None, None, None, OpenMode::NewWindow, cx)
+            })
+            .await?;
+            Ok(())
+        })
+    }
+
+    /// Moves the `dragged` project tab to the place of the `target` tab.
+    pub fn move_workspace_to_tab_of(
+        &mut self,
+        dragged: &Entity<Workspace>,
+        target: &Entity<Workspace>,
+        cx: &mut Context<Self>,
+    ) {
+        let (Some(from), Some(to)) = (self.held_index(dragged), self.held_index(target)) else {
+            return;
+        };
+        if from == to {
+            return;
+        }
+        let row = self.held.remove(from);
+        self.held.insert(to, row);
+        self.serialize(cx);
+        cx.notify();
+    }
+
+    /// Activates the next or previous project tab, wrapping around, like IntelliJ's
+    /// Next and Previous Project Window.
+    pub fn cycle_workspace(&mut self, forward: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let tabs: Vec<Entity<Workspace>> = self.project_tab_workspaces(cx).cloned().collect();
+        let active = self.workspace().clone();
+        let next = match tabs.iter().position(|tab| *tab == active) {
+            Some(index) => {
+                let count = tabs.len();
+                let next_index = if forward {
+                    (index + 1) % count
+                } else {
+                    (index + count - 1) % count
+                };
+                tabs.get(next_index).filter(|tab| **tab != active).cloned()
+            }
+            None if forward => tabs.first().cloned(),
+            None => tabs.last().cloned(),
+        };
+        if let Some(next) = next {
+            self.activate(next, None, window, cx);
+        }
+    }
+
+    /// Puts the restored workspaces back in the order of their project tabs.
+    pub fn restore_workspace_order(&mut self, order: &[WorkspaceId], cx: &mut Context<Self>) {
+        if order.is_empty() {
+            return;
+        }
+        let position = |held: &HeldWorkspace| {
+            held.workspace
+                .read(cx)
+                .database_id()
+                .and_then(|id| order.iter().position(|ordered| *ordered == id))
+                .unwrap_or(usize::MAX)
+        };
+        let mut rows: Vec<(usize, HeldWorkspace)> = std::mem::take(&mut self.held)
+            .into_iter()
+            .map(|held| (position(&held), held))
+            .collect();
+        rows.sort_by_key(|(position, _)| *position);
+        self.held = rows.into_iter().map(|(_, held)| held).collect();
+        cx.notify();
+    }
+
     pub fn open_project(
         &mut self,
         paths: Vec<PathBuf>,
@@ -1626,7 +1995,7 @@ impl MultiWorkspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Task<Result<Entity<Workspace>>> {
-        if self.multi_workspace_enabled() {
+        if self.retains_workspaces(cx) {
             let empty_workspace = if self
                 .workspace()
                 .read(cx)
@@ -1640,6 +2009,8 @@ impl MultiWorkspace {
             } else {
                 None
             };
+            let app_state = self.workspace().read(cx).app_state().clone();
+            let this_window = window.window_handle().downcast::<MultiWorkspace>();
 
             cx.spawn_in(window, async move |this, cx| {
                 if let Some(empty_workspace) = empty_workspace.as_ref() {
@@ -1653,26 +2024,29 @@ impl MultiWorkspace {
                     }
                 }
 
-                let create_task = this.update_in(cx, |this, window, cx| {
-                    this.find_or_create_local_workspace(
-                        PathList::new(&paths),
-                        None,
-                        None,
-                        OpenMode::Activate,
-                        None,
-                        window,
-                        cx,
-                    )
-                })?;
-                let new_workspace = create_task.await?;
+                // `open_paths` focuses a project that is already open in any window, opens
+                // files in the active project, and adds a new project to this window.
+                let OpenResult {
+                    workspace: new_workspace,
+                    ..
+                } = cx
+                    .update(|_, cx| {
+                        crate::open_paths(
+                            &paths,
+                            app_state,
+                            OpenOptions {
+                                requesting_window: this_window,
+                                open_mode: OpenMode::Activate,
+                                ..OpenOptions::default()
+                            },
+                            cx,
+                        )
+                    })?
+                    .await?;
 
-                if let Some(empty_workspace) = empty_workspace
-                    && empty_workspace != new_workspace
-                {
+                if let Some(empty_workspace) = empty_workspace {
                     this.update(cx, |this, cx| {
-                        if this.is_workspace_retained(&empty_workspace) {
-                            this.detach_workspace(&empty_workspace, cx);
-                        }
+                        this.detach_replaced_empty_workspace(&empty_workspace, cx);
                     })?;
                 }
 
@@ -1680,24 +2054,50 @@ impl MultiWorkspace {
             })
         } else {
             let workspace = self.workspace().clone();
-            cx.spawn_in(window, async move |_this, cx| {
+            cx.spawn_in(window, async move |this, cx| {
                 let should_continue = workspace
                     .update_in(cx, |workspace, window, cx| {
                         workspace.prepare_to_close(crate::CloseIntent::ReplaceWindow, window, cx)
                     })?
                     .await?;
-                if should_continue {
-                    workspace
-                        .update_in(cx, |workspace, window, cx| {
-                            workspace.open_workspace_for_paths(open_mode, paths, window, cx)
-                        })?
-                        .await
-                } else {
-                    Ok(workspace)
+                if !should_continue {
+                    return Ok(workspace);
                 }
+                let new_workspace = workspace
+                    .update_in(cx, |workspace, window, cx| {
+                        workspace.open_workspace_for_paths(open_mode, paths, window, cx)
+                    })?
+                    .await?;
+                // The user already answered the save prompt, so the replaced project leaves
+                // the window even when it still has unsaved edits.
+                this.update(cx, |this, cx| {
+                    if new_workspace != workspace
+                        && *this.workspace() != workspace
+                        && this.held_index(&workspace).is_some()
+                    {
+                        this.detach_workspace(&workspace, cx);
+                    }
+                })?;
+                Ok(new_workspace)
             })
         }
     }
+}
+
+/// The worktree that names a project: the one holding its active repository, else its first
+/// visible worktree, the same choice the title bar makes.
+fn project_title_worktree(project: &Project, cx: &App) -> Option<Entity<Worktree>> {
+    if let Some(repository) = project.active_repository(cx) {
+        let repository_path = repository.read(cx).work_directory_abs_path.clone();
+        let repository_worktree = project.visible_worktrees(cx).find(|worktree| {
+            let worktree_path = worktree.read(cx).abs_path();
+            worktree_path == repository_path || worktree_path.starts_with(repository_path.as_ref())
+        });
+        if repository_worktree.is_some() {
+            return repository_worktree;
+        }
+    }
+    project.visible_worktrees(cx).next()
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -1839,6 +2239,7 @@ impl Render for MultiWorkspace {
                 .unwrap_or_default(),
         );
 
+        let has_several_project_tabs = self.project_tab_workspaces(cx).nth(1).is_some();
         let workspace = self.workspace().clone();
         let workspace_key_context = workspace.update(cx, |workspace, cx| workspace.key_context(cx));
         let root = workspace.update(cx, |workspace, cx| workspace.actions(h_flex(), window, cx));
@@ -1856,6 +2257,23 @@ impl Render for MultiWorkspace {
                 .font(ui_font)
                 .text_color(text_color)
                 .on_action(cx.listener(Self::close_window))
+                .on_action(cx.listener(|this: &mut Self, _: &NextProject, window, cx| {
+                    this.cycle_workspace(true, window, cx);
+                }))
+                .on_action(
+                    cx.listener(|this: &mut Self, _: &PreviousProject, window, cx| {
+                        this.cycle_workspace(false, window, cx);
+                    }),
+                )
+                .when(has_several_project_tabs, |el| {
+                    el.on_action(cx.listener(
+                        |this: &mut Self, _: &MoveProjectToNewWindow, window, cx| {
+                            let workspace = this.workspace().clone();
+                            this.move_workspace_to_new_window(&workspace, window, cx)
+                                .detach_and_log_err(cx);
+                        },
+                    ))
+                })
                 .when(self.multi_workspace_enabled(), |this| {
                     this.on_action(cx.listener(
                         |this: &mut Self, _: &ToggleWorkspaceSidebar, window, cx| {
@@ -1872,40 +2290,18 @@ impl Render for MultiWorkspace {
                             this.focus_sidebar(window, cx);
                         },
                     ))
-                    .on_action(cx.listener(|this: &mut Self, _: &NextProject, window, cx| {
-                        if let Some(sidebar) = &this.sidebar {
-                            sidebar.cycle_project(true, window, cx);
-                        }
-                    }))
-                    .on_action(
-                        cx.listener(|this: &mut Self, _: &PreviousProject, window, cx| {
-                            if let Some(sidebar) = &this.sidebar {
-                                sidebar.cycle_project(false, window, cx);
-                            }
-                        }),
-                    )
                     .on_action(
                         cx.listener(|this: &mut Self, _: &MoveProjectUp, _window, cx| {
                             let key = this.project_group_key_for_workspace(this.workspace(), cx);
                             this.move_project_group_up(&key, cx);
                         }),
                     )
-                    .on_action(
-                        cx.listener(|this: &mut Self, _: &MoveProjectDown, _window, cx| {
+                    .on_action(cx.listener(
+                        |this: &mut Self, _: &MoveProjectDown, _window, cx| {
                             let key = this.project_group_key_for_workspace(this.workspace(), cx);
                             this.move_project_group_down(&key, cx);
-                        }),
-                    )
-                    .when(self.project_group_keys().len() >= 2, |el| {
-                        el.on_action(cx.listener(
-                            |this: &mut Self, _: &MoveProjectToNewWindow, window, cx| {
-                                let key =
-                                    this.project_group_key_for_workspace(this.workspace(), cx);
-                                this.open_project_group_in_new_window(&key, window, cx)
-                                    .detach_and_log_err(cx);
-                            },
-                        ))
-                    })
+                        },
+                    ))
                 })
                 .when(
                     self.sidebar_open() && self.multi_workspace_enabled(),

@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use super::*;
 use crate::{AppState, item::test::TestItem};
 use fs::{FakeFs, Fs};
-use gpui::{TestAppContext, VisualTestContext};
+use gpui::{TestAppContext, UpdateGlobal as _, VisualTestContext};
 use serde_json::json;
 use settings::SettingsStore;
 use util::path;
@@ -124,6 +124,8 @@ async fn test_move_active_project_group_actions(cx: &mut TestAppContext) {
     let (multi_workspace, cx) =
         cx.add_window_view(|window, cx| MultiWorkspace::test_new(project_a, window, cx));
     multi_workspace.update_in(cx, |multi_workspace, window, cx| {
+        // Moving project groups up and down is a sidebar action.
+        multi_workspace.test_register_sidebar(cx);
         multi_workspace.test_add_workspace(project_b, window, cx);
     });
 
@@ -246,6 +248,136 @@ async fn test_open_directory_in_existing_window_retains_workspace_without_openin
             );
         })
         .unwrap();
+}
+
+#[gpui::test]
+async fn test_explicit_existing_window_request_is_honored_with_the_new_window_setting(
+    cx: &mut TestAppContext,
+) {
+    init_test(cx);
+    set_default_open_behavior(cx, settings::DefaultOpenBehavior::NewWindow);
+
+    let app_state = cx.update(AppState::test);
+    let fs = app_state.fs.as_fake();
+    fs.insert_tree(path!("/project_a"), json!({ "file.txt": "" }))
+        .await;
+    fs.insert_tree(path!("/project_b"), json!({ "file.txt": "" }))
+        .await;
+    fs.insert_tree(path!("/project_c"), json!({ "file.txt": "" }))
+        .await;
+
+    let project = Project::test(app_state.fs.clone(), [path!("/project_a").as_ref()], cx).await;
+    let window = cx.add_window(|window, cx| MultiWorkspace::test_new(project, window, cx));
+    cx.run_until_parked();
+    let workspace_a = window
+        .read_with(cx, |multi_workspace, _| multi_workspace.workspace().clone())
+        .unwrap();
+
+    let opened = cx
+        .update(|cx| {
+            open_paths(
+                &[PathBuf::from(path!("/project_b"))],
+                app_state.clone(),
+                OpenOptions {
+                    add_dirs_to_sidebar: true,
+                    ..OpenOptions::default()
+                },
+                cx,
+            )
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        opened.window, window,
+        "`flint -e` adds to the existing window"
+    );
+    assert_eq!(cx.update(|cx| cx.windows().len()), 1);
+
+    window
+        .update(cx, |multi_workspace, window, cx| {
+            multi_workspace.activate(workspace_a.clone(), None, window, cx);
+        })
+        .unwrap();
+    cx.update(|cx| {
+        open_paths(
+            &[PathBuf::from(path!("/project_c"))],
+            app_state,
+            OpenOptions {
+                add_dirs_to_sidebar: true,
+                ..OpenOptions::default()
+            },
+            cx,
+        )
+    })
+    .await
+    .unwrap();
+    cx.run_until_parked();
+
+    window
+        .read_with(cx, |multi_workspace, _| {
+            assert!(
+                multi_workspace
+                    .workspaces()
+                    .any(|workspace| workspace == &opened.workspace),
+                "the project added by the explicit request stays in the window after a switch"
+            );
+            assert_eq!(multi_workspace.workspaces().count(), 3);
+        })
+        .unwrap();
+    assert_eq!(cx.update(|cx| cx.windows().len()), 1);
+}
+
+#[gpui::test]
+async fn test_opening_a_folder_over_the_empty_workspace_replaces_it(cx: &mut TestAppContext) {
+    init_test(cx);
+
+    let app_state = cx.update(AppState::test);
+    let fs = app_state.fs.as_fake();
+    fs.insert_tree(path!("/project"), json!({ "file.txt": "" }))
+        .await;
+
+    let project = Project::test(app_state.fs.clone(), [], cx).await;
+    let window = cx.add_window(|window, cx| {
+        let multi_workspace = MultiWorkspace::test_new(project, window, cx);
+        multi_workspace.workspace().update(cx, |workspace, cx| {
+            workspace.active_pane().update(cx, |pane, cx| {
+                let item = cx.new(|cx| item::test::TestItem::new(cx));
+                pane.add_item(Box::new(item), false, false, None, window, cx);
+            });
+        });
+        multi_workspace
+    });
+    let empty_workspace = window
+        .read_with(cx, |multi_workspace, _| multi_workspace.workspace().clone())
+        .unwrap();
+
+    let opened = cx
+        .update(|cx| {
+            open_paths(
+                &[PathBuf::from(path!("/project"))],
+                app_state,
+                OpenOptions::default(),
+                cx,
+            )
+        })
+        .await
+        .unwrap();
+    cx.run_until_parked();
+
+    assert_eq!(opened.window, window);
+    window
+        .read_with(cx, |multi_workspace, _| {
+            assert_eq!(
+                multi_workspace.workspaces().cloned().collect::<Vec<_>>(),
+                vec![opened.workspace.clone()],
+                "the empty workspace has no tab, so it leaves the window"
+            );
+        })
+        .unwrap();
+    assert!(
+        empty_workspace.read_with(cx, |workspace, _| workspace.session_id().is_none()),
+        "the replaced empty workspace is detached from the session"
+    );
 }
 
 #[gpui::test]
@@ -1226,6 +1358,675 @@ async fn test_nearest_retained_workspace(cx: &mut TestAppContext) {
             ),
             None,
             "no workspace should be returned when every candidate is excluded"
+        );
+    });
+}
+
+fn set_default_open_behavior(cx: &mut TestAppContext, behavior: settings::DefaultOpenBehavior) {
+    cx.update(|cx| {
+        SettingsStore::update_global(cx, |store, cx| {
+            store.update_user_settings(cx, |settings| {
+                settings.workspace.default_open_behavior = Some(behavior);
+            });
+        });
+    });
+}
+
+#[gpui::test]
+async fn test_switching_projects_without_a_sidebar_keeps_both_in_the_window(
+    cx: &mut TestAppContext,
+) {
+    init_test(cx);
+    let fs = FakeFs::new(cx.executor());
+    fs.insert_tree("/root_a", json!({ "file_a.txt": "" })).await;
+    fs.insert_tree("/root_b", json!({ "file_b.txt": "" })).await;
+    let project_a = Project::test(fs.clone(), ["/root_a".as_ref()], cx).await;
+    let project_b = Project::test(fs, ["/root_b".as_ref()], cx).await;
+
+    let (multi_workspace, cx) =
+        cx.add_window_view(|window, cx| MultiWorkspace::test_new(project_a, window, cx));
+    let workspace_a = multi_workspace.read_with(cx, |multi_workspace, cx| {
+        assert!(
+            multi_workspace.sidebar().is_none(),
+            "Flint ships no sidebar, so the window under test has none either"
+        );
+        assert!(
+            multi_workspace.retains_workspaces(cx),
+            "the default `existing_window` behaviour keeps every project in the window"
+        );
+        multi_workspace.workspace().clone()
+    });
+
+    let workspace_b = multi_workspace.update_in(cx, |multi_workspace, window, cx| {
+        multi_workspace.test_add_workspace(project_b, window, cx)
+    });
+    cx.run_until_parked();
+    multi_workspace.update_in(cx, |multi_workspace, window, cx| {
+        multi_workspace.activate(workspace_a.clone(), None, window, cx);
+    });
+    cx.run_until_parked();
+
+    multi_workspace.read_with(cx, |multi_workspace, _cx| {
+        assert_eq!(
+            multi_workspace.workspaces().cloned().collect::<Vec<_>>(),
+            vec![workspace_a.clone(), workspace_b.clone()],
+            "switching projects keeps both of them in the window"
+        );
+        assert_eq!(multi_workspace.workspace(), &workspace_a);
+    });
+    for workspace in [&workspace_a, &workspace_b] {
+        assert!(
+            workspace.read_with(cx, |workspace, _cx| workspace.session_id().is_some()),
+            "a project kept in the window stays part of the session"
+        );
+    }
+}
+
+#[gpui::test]
+async fn test_new_window_setting_replaces_the_project_but_never_drops_unsaved_edits(
+    cx: &mut TestAppContext,
+) {
+    init_test(cx);
+    set_default_open_behavior(cx, settings::DefaultOpenBehavior::NewWindow);
+    let fs = FakeFs::new(cx.executor());
+    fs.insert_tree("/root_a", json!({ "file_a.txt": "" })).await;
+    fs.insert_tree("/root_b", json!({ "file_b.txt": "" })).await;
+    fs.insert_tree("/root_c", json!({ "file_c.txt": "" })).await;
+    let project_a = Project::test(fs.clone(), ["/root_a".as_ref()], cx).await;
+    let project_b = Project::test(fs.clone(), ["/root_b".as_ref()], cx).await;
+    let project_c = Project::test(fs, ["/root_c".as_ref()], cx).await;
+
+    let (multi_workspace, cx) =
+        cx.add_window_view(|window, cx| MultiWorkspace::test_new(project_a, window, cx));
+    let workspace_a = multi_workspace.read_with(cx, |multi_workspace, cx| {
+        assert!(!multi_workspace.retains_workspaces(cx));
+        multi_workspace.workspace().clone()
+    });
+
+    let workspace_b = multi_workspace.update_in(cx, |multi_workspace, window, cx| {
+        multi_workspace.test_add_workspace(project_b, window, cx)
+    });
+    cx.run_until_parked();
+    multi_workspace.read_with(cx, |multi_workspace, _cx| {
+        assert_eq!(
+            multi_workspace.workspaces().cloned().collect::<Vec<_>>(),
+            vec![workspace_b.clone()],
+            "with `new_window` a project without unsaved edits is replaced, as before"
+        );
+    });
+    assert!(workspace_a.read_with(cx, |workspace, _cx| workspace.session_id().is_none()));
+
+    let dirty_item = cx.new(|cx| TestItem::new(cx).with_dirty(true));
+    workspace_b.update_in(cx, |workspace, window, cx| {
+        workspace.add_item_to_active_pane(Box::new(dirty_item), None, true, window, cx);
+    });
+    let workspace_c = multi_workspace.update_in(cx, |multi_workspace, window, cx| {
+        multi_workspace.test_add_workspace(project_c, window, cx)
+    });
+    cx.run_until_parked();
+
+    multi_workspace.read_with(cx, |multi_workspace, _cx| {
+        assert_eq!(
+            multi_workspace.workspaces().cloned().collect::<Vec<_>>(),
+            vec![workspace_b.clone(), workspace_c.clone()],
+            "a project with unsaved edits is never dropped without a save prompt"
+        );
+        assert_eq!(multi_workspace.workspace(), &workspace_c);
+    });
+    assert!(workspace_b.read_with(cx, |workspace, _cx| workspace.session_id().is_some()));
+}
+
+#[gpui::test]
+async fn test_open_project_focuses_a_project_open_in_another_window(cx: &mut TestAppContext) {
+    init_test(cx);
+    let app_state = cx.update(AppState::test);
+    let fs = app_state.fs.as_fake();
+    fs.insert_tree(path!("/project_a"), json!({ "file_a.txt": "" }))
+        .await;
+    fs.insert_tree(path!("/project_b"), json!({ "file_b.txt": "" }))
+        .await;
+    let project_a = Project::test(app_state.fs.clone(), [path!("/project_a").as_ref()], cx).await;
+    let project_b = Project::test(app_state.fs.clone(), [path!("/project_b").as_ref()], cx).await;
+
+    let window_a = cx.add_window(|window, cx| MultiWorkspace::test_new(project_a, window, cx));
+    let window_b = cx.add_window(|window, cx| MultiWorkspace::test_new(project_b, window, cx));
+    cx.run_until_parked();
+    let workspace_a = window_a
+        .read_with(cx, |multi_workspace, _| multi_workspace.workspace().clone())
+        .unwrap();
+
+    let opened = window_b
+        .update(cx, |multi_workspace, window, cx| {
+            multi_workspace.open_project(
+                vec![PathBuf::from(path!("/project_a"))],
+                OpenMode::Activate,
+                window,
+                cx,
+            )
+        })
+        .unwrap()
+        .await
+        .unwrap();
+    cx.run_until_parked();
+
+    assert_eq!(
+        opened, workspace_a,
+        "a project open in another window is focused there instead of opened twice"
+    );
+    window_b
+        .read_with(cx, |multi_workspace, _| {
+            assert_eq!(multi_workspace.workspaces().count(), 1);
+        })
+        .unwrap();
+    assert_eq!(cx.update(|cx| cx.windows().len()), 2);
+}
+
+#[gpui::test]
+async fn test_next_and_previous_project_cycle_the_project_tabs(cx: &mut TestAppContext) {
+    init_test(cx);
+    let fs = FakeFs::new(cx.executor());
+    fs.insert_tree("/root_a", json!({ "file_a.txt": "" })).await;
+    fs.insert_tree("/root_b", json!({ "file_b.txt": "" })).await;
+    fs.insert_tree("/root_c", json!({ "file_c.txt": "" })).await;
+    let project_a = Project::test(fs.clone(), ["/root_a".as_ref()], cx).await;
+    let project_b = Project::test(fs.clone(), ["/root_b".as_ref()], cx).await;
+    let project_c = Project::test(fs, ["/root_c".as_ref()], cx).await;
+
+    let (multi_workspace, cx) =
+        cx.add_window_view(|window, cx| MultiWorkspace::test_new(project_a, window, cx));
+    let workspace_a =
+        multi_workspace.read_with(cx, |multi_workspace, _| multi_workspace.workspace().clone());
+    let workspace_b = multi_workspace.update_in(cx, |multi_workspace, window, cx| {
+        multi_workspace.test_add_workspace(project_b, window, cx)
+    });
+    let workspace_c = multi_workspace.update_in(cx, |multi_workspace, window, cx| {
+        multi_workspace.test_add_workspace(project_c, window, cx)
+    });
+    cx.run_until_parked();
+
+    for (action, expected) in [
+        (true, &workspace_a),
+        (true, &workspace_b),
+        (false, &workspace_a),
+        (false, &workspace_c),
+    ] {
+        if action {
+            cx.dispatch_action(NextProject);
+        } else {
+            cx.dispatch_action(PreviousProject);
+        }
+        cx.run_until_parked();
+        multi_workspace.read_with(cx, |multi_workspace, _| {
+            assert_eq!(
+                multi_workspace.workspace(),
+                expected,
+                "Next and Previous Project walk the project tabs in order and wrap around"
+            );
+        });
+    }
+}
+
+#[gpui::test]
+async fn test_closing_a_project_tab_activates_its_neighbour_and_forgets_the_project(
+    cx: &mut TestAppContext,
+) {
+    init_test(cx);
+    let fs = FakeFs::new(cx.executor());
+    fs.insert_tree("/root_a", json!({ "file_a.txt": "" })).await;
+    fs.insert_tree("/root_b", json!({ "file_b.txt": "" })).await;
+    fs.insert_tree("/root_c", json!({ "file_c.txt": "" })).await;
+    cx.update(|cx| <dyn Fs>::set_global(fs.clone(), cx));
+    let project_a = Project::test(fs.clone(), ["/root_a".as_ref()], cx).await;
+    let project_b = Project::test(fs.clone(), ["/root_b".as_ref()], cx).await;
+    let project_c = Project::test(fs, ["/root_c".as_ref()], cx).await;
+    let key_b = project_b.read_with(cx, |project, cx| project.project_group_key(cx));
+
+    let (multi_workspace, cx) =
+        cx.add_window_view(|window, cx| MultiWorkspace::test_new(project_a, window, cx));
+    let workspace_a =
+        multi_workspace.read_with(cx, |multi_workspace, _| multi_workspace.workspace().clone());
+    let workspace_b = multi_workspace.update_in(cx, |multi_workspace, window, cx| {
+        multi_workspace.test_add_workspace(project_b, window, cx)
+    });
+    let workspace_c = multi_workspace.update_in(cx, |multi_workspace, window, cx| {
+        multi_workspace.test_add_workspace(project_c, window, cx)
+    });
+    multi_workspace.update_in(cx, |multi_workspace, window, cx| {
+        multi_workspace.activate(workspace_b.clone(), None, window, cx);
+    });
+    cx.run_until_parked();
+
+    let close = |workspace: &Entity<Workspace>, cx: &mut VisualTestContext| {
+        multi_workspace.update_in(cx, |multi_workspace, window, cx| {
+            multi_workspace.close_workspace(workspace, window, cx)
+        })
+    };
+
+    assert!(close(&workspace_b, cx).await.unwrap());
+    cx.run_until_parked();
+    multi_workspace.read_with(cx, |multi_workspace, _| {
+        assert_eq!(
+            multi_workspace.workspaces().cloned().collect::<Vec<_>>(),
+            vec![workspace_a.clone(), workspace_c.clone()],
+            "closing a tab closes only that project"
+        );
+        assert_eq!(
+            multi_workspace.workspace(),
+            &workspace_c,
+            "the tab after the closed one becomes active"
+        );
+        assert!(
+            !multi_workspace.project_group_keys().contains(&key_b),
+            "a closed project is not reopened by a later close"
+        );
+    });
+
+    assert!(close(&workspace_c, cx).await.unwrap());
+    cx.run_until_parked();
+    multi_workspace.read_with(cx, |multi_workspace, _| {
+        assert_eq!(
+            multi_workspace.workspace(),
+            &workspace_a,
+            "closing the last tab activates the tab before it"
+        );
+    });
+
+    assert!(close(&workspace_a, cx).await.unwrap());
+    cx.run_until_parked();
+    multi_workspace.read_with(cx, |multi_workspace, cx| {
+        assert_eq!(multi_workspace.workspaces().count(), 1);
+        assert_ne!(multi_workspace.workspace(), &workspace_a);
+        assert!(
+            multi_workspace.project_tabs(cx).is_empty(),
+            "closing the last project leaves the empty welcome workspace"
+        );
+        assert!(multi_workspace.project_group_keys().is_empty());
+    });
+}
+
+#[gpui::test]
+async fn test_closing_a_project_tab_stops_only_its_language_servers(cx: &mut TestAppContext) {
+    use futures::{StreamExt as _, future};
+
+    init_test(cx);
+    let fs = FakeFs::new(cx.executor());
+    fs.insert_tree(path!("/root_a"), json!({ "a.rs": "fn a() {}" }))
+        .await;
+    fs.insert_tree(path!("/root_b"), json!({ "b.rs": "fn b() {}" }))
+        .await;
+    cx.update(|cx| <dyn Fs>::set_global(fs.clone(), cx));
+    let project_a = Project::test(fs.clone(), [path!("/root_a").as_ref()], cx).await;
+    let project_b = Project::test(fs, [path!("/root_b").as_ref()], cx).await;
+    let register_fake_server = |project: &Entity<Project>, cx: &mut TestAppContext| {
+        let language_registry = project.read_with(cx, |project, _| project.languages().clone());
+        language_registry.add(language::rust_lang());
+        language_registry.register_fake_lsp("Rust", language::FakeLspAdapter::default())
+    };
+    let mut fake_servers_a = register_fake_server(&project_a, cx);
+    let mut fake_servers_b = register_fake_server(&project_b, cx);
+
+    let (buffer_a, _handle_a) = project_a
+        .update(cx, |project, cx| {
+            project.open_local_buffer_with_lsp(path!("/root_a/a.rs"), cx)
+        })
+        .await
+        .unwrap();
+    let mut fake_server_a = fake_servers_a.next().await.unwrap();
+    let (buffer_b, handle_b) = project_b
+        .update(cx, |project, cx| {
+            project.open_local_buffer_with_lsp(path!("/root_b/b.rs"), cx)
+        })
+        .await
+        .unwrap();
+    let mut fake_server_b = fake_servers_b.next().await.unwrap();
+    fake_server_b.set_request_handler::<lsp::request::Shutdown, _, _>(|_, _| future::ready(Ok(())));
+
+    let (multi_workspace, cx) =
+        cx.add_window_view(|window, cx| MultiWorkspace::test_new(project_a.clone(), window, cx));
+    let workspace_b = multi_workspace.update_in(cx, |multi_workspace, window, cx| {
+        multi_workspace.test_add_workspace(project_b.clone(), window, cx)
+    });
+    multi_workspace.update_in(cx, |multi_workspace, window, cx| {
+        multi_workspace.activate(workspace_b.clone(), None, window, cx);
+    });
+    cx.run_until_parked();
+
+    fake_server_a.notify::<lsp::notification::PublishDiagnostics>(lsp::PublishDiagnosticsParams {
+        uri: lsp::Uri::from_file_path(path!("/root_a/a.rs")).unwrap(),
+        version: None,
+        diagnostics: vec![lsp::Diagnostic {
+            range: lsp::Range::new(lsp::Position::new(0, 3), lsp::Position::new(0, 4)),
+            severity: Some(lsp::DiagnosticSeverity::ERROR),
+            message: lsp::DiagnosticMessage::String("background error".to_string()),
+            ..Default::default()
+        }],
+    });
+    cx.run_until_parked();
+    assert_eq!(
+        project_a.read_with(cx, |project, cx| project
+            .diagnostic_summary(false, cx)
+            .error_count),
+        1,
+        "the project in the background tab keeps receiving its server's diagnostics"
+    );
+
+    let lsp_store_b = project_b.read_with(cx, |project, _| project.lsp_store().downgrade());
+    let weak_project_b = project_b.downgrade();
+    drop((project_b, buffer_b, handle_b));
+    let close = multi_workspace.update_in(cx, |multi_workspace, window, cx| {
+        multi_workspace.close_workspace(&workspace_b, window, cx)
+    });
+    assert!(close.await.unwrap());
+    drop(workspace_b);
+    // Dropped entities are released at the end of the next effect cycle.
+    cx.update(|_, _| {});
+    cx.run_until_parked();
+
+    weak_project_b.assert_released();
+    lsp_store_b.assert_released();
+    fake_server_b
+        .receive_notification::<lsp::notification::Exit>()
+        .await;
+
+    buffer_a.update(cx, |buffer, cx| buffer.edit([(0..0, "// ")], None, cx));
+    assert_eq!(
+        fake_server_a
+            .receive_notification::<lsp::notification::DidChangeTextDocument>()
+            .await
+            .text_document
+            .uri,
+        lsp::Uri::from_file_path(path!("/root_a/a.rs")).unwrap(),
+        "the remaining project's server keeps running"
+    );
+}
+
+#[gpui::test]
+async fn test_closing_a_project_tab_with_unsaved_edits_asks_first(cx: &mut TestAppContext) {
+    init_test(cx);
+    let fs = FakeFs::new(cx.executor());
+    fs.insert_tree("/root_a", json!({ "file_a.txt": "" })).await;
+    fs.insert_tree("/root_b", json!({ "file_b.txt": "" })).await;
+    let project_a = Project::test(fs.clone(), ["/root_a".as_ref()], cx).await;
+    let project_b = Project::test(fs, ["/root_b".as_ref()], cx).await;
+
+    let (multi_workspace, cx) =
+        cx.add_window_view(|window, cx| MultiWorkspace::test_new(project_a, window, cx));
+    let workspace_b = multi_workspace.update_in(cx, |multi_workspace, window, cx| {
+        multi_workspace.test_add_workspace(project_b, window, cx)
+    });
+    let dirty_item = cx.new(|cx| TestItem::new(cx).with_dirty(true));
+    workspace_b.update_in(cx, |workspace, window, cx| {
+        workspace.add_item_to_active_pane(Box::new(dirty_item), None, true, window, cx);
+    });
+    cx.run_until_parked();
+
+    let close_task = multi_workspace.update_in(cx, |multi_workspace, window, cx| {
+        multi_workspace.close_workspace(&workspace_b, window, cx)
+    });
+    cx.run_until_parked();
+    assert!(cx.has_pending_prompt(), "unsaved edits ask before closing");
+    cx.simulate_prompt_answer("Cancel");
+    cx.run_until_parked();
+
+    assert!(!close_task.await.unwrap());
+    multi_workspace.read_with(cx, |multi_workspace, _| {
+        assert_eq!(multi_workspace.workspaces().count(), 2);
+        assert_eq!(multi_workspace.workspace(), &workspace_b);
+    });
+}
+
+#[gpui::test]
+async fn test_close_other_project_tabs_keeps_only_the_chosen_project(cx: &mut TestAppContext) {
+    init_test(cx);
+    let fs = FakeFs::new(cx.executor());
+    fs.insert_tree("/root_a", json!({ "file_a.txt": "" })).await;
+    fs.insert_tree("/root_b", json!({ "file_b.txt": "" })).await;
+    fs.insert_tree("/root_c", json!({ "file_c.txt": "" })).await;
+    let project_a = Project::test(fs.clone(), ["/root_a".as_ref()], cx).await;
+    let project_b = Project::test(fs.clone(), ["/root_b".as_ref()], cx).await;
+    let project_c = Project::test(fs, ["/root_c".as_ref()], cx).await;
+
+    let (multi_workspace, cx) =
+        cx.add_window_view(|window, cx| MultiWorkspace::test_new(project_a, window, cx));
+    let workspace_b = multi_workspace.update_in(cx, |multi_workspace, window, cx| {
+        multi_workspace.test_add_workspace(project_b, window, cx)
+    });
+    multi_workspace.update_in(cx, |multi_workspace, window, cx| {
+        multi_workspace.test_add_workspace(project_c, window, cx);
+    });
+    cx.run_until_parked();
+
+    let closed = multi_workspace
+        .update_in(cx, |multi_workspace, window, cx| {
+            multi_workspace.close_other_workspaces(&workspace_b, window, cx)
+        })
+        .await
+        .unwrap();
+    cx.run_until_parked();
+
+    assert!(closed);
+    multi_workspace.read_with(cx, |multi_workspace, _| {
+        assert_eq!(
+            multi_workspace.workspaces().cloned().collect::<Vec<_>>(),
+            vec![workspace_b.clone()]
+        );
+        assert_eq!(multi_workspace.workspace(), &workspace_b);
+    });
+}
+
+#[gpui::test]
+async fn test_moving_a_project_tab_to_a_new_window_moves_only_that_project(
+    cx: &mut TestAppContext,
+) {
+    init_test(cx);
+    let app_state = cx.update(AppState::test);
+    let fs = app_state.fs.as_fake();
+    fs.insert_tree(path!("/project_a"), json!({ "file_a.txt": "" }))
+        .await;
+    fs.insert_tree(path!("/project_b"), json!({ "file_b.txt": "" }))
+        .await;
+    let project_a = Project::test(app_state.fs.clone(), [path!("/project_a").as_ref()], cx).await;
+    let project_b = Project::test(app_state.fs.clone(), [path!("/project_b").as_ref()], cx).await;
+
+    let (multi_workspace, cx) =
+        cx.add_window_view(|window, cx| MultiWorkspace::test_new(project_a, window, cx));
+    let workspace_a =
+        multi_workspace.read_with(cx, |multi_workspace, _| multi_workspace.workspace().clone());
+    let workspace_b = multi_workspace.update_in(cx, |multi_workspace, window, cx| {
+        multi_workspace.test_add_workspace(project_b, window, cx)
+    });
+    cx.run_until_parked();
+
+    multi_workspace
+        .update_in(cx, |multi_workspace, window, cx| {
+            multi_workspace.move_workspace_to_new_window(&workspace_b, window, cx)
+        })
+        .await
+        .unwrap();
+    cx.run_until_parked();
+
+    multi_workspace.read_with(cx, |multi_workspace, _| {
+        assert_eq!(
+            multi_workspace.workspaces().cloned().collect::<Vec<_>>(),
+            vec![workspace_a.clone()],
+            "the moved project leaves this window"
+        );
+    });
+    let moved_project_paths = cx.update(|window, cx| {
+        let this_window_id = window.window_handle().window_id();
+        cx.windows()
+            .into_iter()
+            .filter_map(|window| window.downcast::<MultiWorkspace>())
+            .filter(|window| window.window_id() != this_window_id)
+            .filter_map(|window| {
+                window
+                    .read(cx)
+                    .ok()
+                    .map(|multi_workspace| multi_workspace.workspace().read(cx).root_paths(cx))
+            })
+            .collect::<Vec<_>>()
+    });
+    assert_eq!(
+        moved_project_paths,
+        vec![vec![Arc::from(Path::new(path!("/project_b")))]],
+        "the project opens in a new window of its own"
+    );
+}
+
+#[gpui::test]
+async fn test_dragging_a_project_tab_reorders_the_tabs(cx: &mut TestAppContext) {
+    init_test(cx);
+    let fs = FakeFs::new(cx.executor());
+    fs.insert_tree("/root_a", json!({ "file_a.txt": "" })).await;
+    fs.insert_tree("/root_b", json!({ "file_b.txt": "" })).await;
+    fs.insert_tree("/root_c", json!({ "file_c.txt": "" })).await;
+    let project_a = Project::test(fs.clone(), ["/root_a".as_ref()], cx).await;
+    let project_b = Project::test(fs.clone(), ["/root_b".as_ref()], cx).await;
+    let project_c = Project::test(fs, ["/root_c".as_ref()], cx).await;
+
+    let (multi_workspace, cx) =
+        cx.add_window_view(|window, cx| MultiWorkspace::test_new(project_a, window, cx));
+    let workspace_a =
+        multi_workspace.read_with(cx, |multi_workspace, _| multi_workspace.workspace().clone());
+    let workspace_b = multi_workspace.update_in(cx, |multi_workspace, window, cx| {
+        multi_workspace.test_add_workspace(project_b, window, cx)
+    });
+    let workspace_c = multi_workspace.update_in(cx, |multi_workspace, window, cx| {
+        multi_workspace.test_add_workspace(project_c, window, cx)
+    });
+    cx.run_until_parked();
+
+    let tab_order = |cx: &mut VisualTestContext| {
+        multi_workspace.read_with(cx, |multi_workspace, cx| {
+            multi_workspace
+                .project_tabs(cx)
+                .into_iter()
+                .map(|tab| tab.workspace)
+                .collect::<Vec<_>>()
+        })
+    };
+
+    multi_workspace.update(cx, |multi_workspace, cx| {
+        multi_workspace.move_workspace_to_tab_of(&workspace_c, &workspace_a, cx);
+    });
+    assert_eq!(
+        tab_order(cx),
+        vec![
+            workspace_c.clone(),
+            workspace_a.clone(),
+            workspace_b.clone()
+        ]
+    );
+
+    multi_workspace.update(cx, |multi_workspace, cx| {
+        multi_workspace.move_workspace_to_tab_of(&workspace_c, &workspace_b, cx);
+    });
+    assert_eq!(
+        tab_order(cx),
+        vec![workspace_a, workspace_b, workspace_c.clone()]
+    );
+    multi_workspace.read_with(cx, |multi_workspace, _| {
+        assert_eq!(
+            multi_workspace.workspace(),
+            &workspace_c,
+            "reordering the tabs keeps the active project"
+        );
+    });
+}
+
+#[gpui::test]
+async fn test_project_tabs_tell_projects_with_the_same_name_apart_like_intellij(
+    cx: &mut TestAppContext,
+) {
+    init_test(cx);
+    let fs = FakeFs::new(cx.executor());
+    fs.insert_tree("/work/flint", json!({ "main.rs": "" }))
+        .await;
+    fs.insert_tree("/worktrees/feature/flint", json!({ "main.rs": "" }))
+        .await;
+    fs.insert_tree("/work/zed", json!({ "main.rs": "" })).await;
+    let main_checkout = Project::test(fs.clone(), ["/work/flint".as_ref()], cx).await;
+    let worktree_checkout =
+        Project::test(fs.clone(), ["/worktrees/feature/flint".as_ref()], cx).await;
+    let other_project = Project::test(fs.clone(), ["/work/zed".as_ref()], cx).await;
+    let empty_project = Project::test(fs, [], cx).await;
+
+    let (multi_workspace, cx) =
+        cx.add_window_view(|window, cx| MultiWorkspace::test_new(main_checkout, window, cx));
+    multi_workspace.update_in(cx, |multi_workspace, window, cx| {
+        multi_workspace.test_add_workspace(worktree_checkout, window, cx);
+        multi_workspace.test_add_workspace(other_project, window, cx);
+        multi_workspace.test_add_workspace(empty_project, window, cx);
+    });
+    cx.run_until_parked();
+
+    let titles = multi_workspace.read_with(cx, |multi_workspace, cx| {
+        multi_workspace
+            .project_tabs(cx)
+            .into_iter()
+            .map(|tab| tab.title.to_string())
+            .collect::<Vec<_>>()
+    });
+    assert_eq!(
+        titles,
+        vec![
+            "flint [/work/flint]".to_string(),
+            "flint [/worktrees/feature/flint]".to_string(),
+            "zed".to_string(),
+        ],
+        "same-named projects get their folder in brackets, and an empty workspace gets no tab"
+    );
+}
+
+#[gpui::test]
+async fn test_jetbrains_keymap_switches_projects_like_next_and_previous_project_window(
+    cx: &mut TestAppContext,
+) {
+    init_test(cx);
+    let fs = FakeFs::new(cx.executor());
+    fs.insert_tree("/root_a", json!({ "file_a.txt": "" })).await;
+    fs.insert_tree("/root_b", json!({ "file_b.txt": "" })).await;
+    fs.insert_tree("/root_c", json!({ "file_c.txt": "" })).await;
+    let project_a = Project::test(fs.clone(), ["/root_a".as_ref()], cx).await;
+    let project_b = Project::test(fs.clone(), ["/root_b".as_ref()], cx).await;
+    let project_c = Project::test(fs, ["/root_c".as_ref()], cx).await;
+
+    let (multi_workspace, cx) =
+        cx.add_window_view(|window, cx| MultiWorkspace::test_new(project_a, window, cx));
+    let workspace_a =
+        multi_workspace.read_with(cx, |multi_workspace, _| multi_workspace.workspace().clone());
+    multi_workspace.update_in(cx, |multi_workspace, window, cx| {
+        multi_workspace.test_add_workspace(project_b, window, cx);
+    });
+    let workspace_c = multi_workspace.update_in(cx, |multi_workspace, window, cx| {
+        multi_workspace.test_add_workspace(project_c, window, cx)
+    });
+    cx.update(|_, cx| {
+        for asset_path in ["keymaps/default-macos.json", "keymaps/macos/jetbrains.json"] {
+            cx.bind_keys(
+                settings::KeymapFile::load_asset_allow_partial_failure(asset_path, cx)
+                    .expect("the shipped keymap loads"),
+            );
+        }
+    });
+    cx.run_until_parked();
+
+    cx.simulate_keystrokes("cmd-alt-`");
+    multi_workspace.read_with(cx, |multi_workspace, _| {
+        assert_eq!(
+            multi_workspace.workspace(),
+            &workspace_a,
+            "cmd-alt-` is IntelliJ's Next Project Window"
+        );
+    });
+
+    // macOS reports cmd-alt-shift-` as cmd-alt-~.
+    cx.simulate_keystrokes("cmd-alt-~");
+    multi_workspace.read_with(cx, |multi_workspace, _| {
+        assert_eq!(
+            multi_workspace.workspace(),
+            &workspace_c,
+            "cmd-alt-shift-` is IntelliJ's Previous Project Window"
         );
     });
 }

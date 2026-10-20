@@ -4663,6 +4663,7 @@ dependencies = [
  "smallvec",
  "smol",
  "snippet",
+ "sysinfo",
  "terminal",
  "theme",
  "tree-sitter",
@@ -9609,13 +9610,11 @@ checksum = "1f3ccbac311fea05f86f61904b462b55fb3df8837a366dfc601a0161d0532f20"
 name = "title_bar"
 version = "0.1.0"
 dependencies = [
- "editor",
  "git",
  "git_ui_core",
  "gpui",
  "platform_title_bar",
  "project",
- "recent_projects",
  "schemars",
  "serde",
  "settings",
@@ -11905,6 +11904,7 @@ dependencies = [
  "itertools 0.14.0",
  "language",
  "log",
+ "lsp",
  "markdown",
  "menu",
  "node_runtime",

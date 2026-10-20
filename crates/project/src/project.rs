@@ -2065,6 +2065,24 @@ impl Project {
         })
     }
 
+    /// Opens the buffer only in the selected servers. A later unfiltered registration, such
+    /// as opening the buffer in an editor, still opens it in the others.
+    pub fn register_buffer_with_language_servers_for(
+        &self,
+        buffer: &Entity<Buffer>,
+        only_register_servers: HashSet<LanguageServerSelector>,
+        cx: &mut App,
+    ) -> OpenLspBufferHandle {
+        self.lsp_store.update(cx, |lsp_store, cx| {
+            lsp_store.register_buffer_with_language_servers(
+                buffer,
+                only_register_servers,
+                false,
+                cx,
+            )
+        })
+    }
+
     pub fn open_unstaged_diff(
         &mut self,
         buffer: Entity<Buffer>,

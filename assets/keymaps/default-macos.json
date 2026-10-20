@@ -1617,6 +1617,15 @@
     },
   },
   {
+    // IntelliJ's `$Delete` in the branches popup's ref menu; the last binding is the one shown.
+    "context": "BranchRefMenu",
+    "bindings": {
+      "backspace": "branches_popup::DeleteRef",
+      "cmd-backspace": "branches_popup::DeleteRef",
+      "delete": "branches_popup::DeleteRef",
+    },
+  },
+  {
     "context": "WorktreePicker || (WorktreePicker > Picker > Editor)",
     "use_key_equivalents": true,
     "bindings": {

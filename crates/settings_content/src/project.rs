@@ -662,6 +662,17 @@ pub struct GitSettings {
     ///
     /// Default: ../worktrees
     pub worktree_directory: Option<String>,
+    /// Branches that must not be force-pushed or have their published commits
+    /// rebased. Each entry is a regular expression matched against the whole
+    /// branch name.
+    ///
+    /// Default: ["master", "main"]
+    pub protected_branches: Option<Vec<String>>,
+    /// Whether to save the open editors before a branch checkout and restore
+    /// the editors that were open on the checked-out branch last time.
+    ///
+    /// Default: true
+    pub restore_workspace_on_branch_switch: Option<bool>,
 }
 
 #[with_fallible_options]

@@ -9,7 +9,7 @@ use std::{
     sync::{Arc, OnceLock},
 };
 
-use gpui::{FocusHandle, Subscription};
+use gpui::{FocusHandle, Hsla, Subscription};
 pub use input_field::*;
 use ui::{AnyElement, App, Window};
 
@@ -33,6 +33,16 @@ pub trait ErasedEditor: 'static {
         cx: &mut App,
     ) -> Subscription;
     fn render(&self, window: &mut Window, cx: &App) -> AnyElement;
+    /// Renders the editor with its text in `_text_color` instead of the theme's text color, like a
+    /// search field that turns red when nothing matches.
+    fn render_with_text_color(
+        &self,
+        _text_color: Hsla,
+        window: &mut Window,
+        cx: &App,
+    ) -> AnyElement {
+        self.render(window, cx)
+    }
     fn as_any(&self) -> &dyn Any;
 }
 

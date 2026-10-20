@@ -56,6 +56,7 @@ pub mod merge_tool;
 pub mod multi_diff_view;
 pub mod picker_prompt;
 pub mod project_diff;
+mod ref_matcher;
 pub(crate) mod remote_output;
 pub mod repository_selector;
 pub mod solo_diff_view;
@@ -198,12 +199,11 @@ pub fn init(cx: &mut App) {
                 });
             });
             workspace.register_action(|workspace, _: &git::ForcePush, window, cx| {
-                let Some(panel) = workspace.panel::<git_panel::GitPanel>(cx) else {
-                    return;
-                };
-                panel.update(cx, |panel, cx| {
-                    panel.push(true, false, window, cx);
-                });
+                if let Some(context) = active_branch_context(workspace, cx) {
+                    window.defer(cx, move |window, cx| {
+                        branch_operations::manage::force_push_current(context, window, cx);
+                    });
+                }
             });
             workspace.register_action(|workspace, _: &git::Pull, window, cx| {
                 let Some(panel) = workspace.panel::<git_panel::GitPanel>(cx) else {

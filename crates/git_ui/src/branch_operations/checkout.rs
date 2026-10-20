@@ -8,10 +8,10 @@ use git::repository::{Branch, GitFailure, GitFailureKind, RebaseAction, RebaseOu
 use gpui::{App, AsyncWindowContext, Entity, PromptButton, PromptLevel, Window};
 use project::git_store::{Repository, RepositoryEvent};
 use util::ResultExt as _;
+use util::paths::PathExt as _;
 
-use crate::branch_operations::checkout_revision_dialog;
 use crate::branch_operations::integrate::{
-    resolve_unmerged_files, unmerged_files_error_notice, update_branch,
+    self, resolve_unmerged_files, unmerged_files_error_notice, update_branch,
 };
 use crate::branch_operations::new_branch_dialog::{
     self, NewBranchDialogOptions, NewBranchRequest, initial_branch_name,
@@ -21,7 +21,12 @@ use crate::branch_operations::smart_operation::{
     RestoreLabels, SmartChoice, SmartOperation, confirm_smart_operation, restore_local_changes,
     stash_local_changes,
 };
-use crate::branch_operations::{BranchContext, BranchNotice};
+use crate::branch_operations::{
+    BranchContext, BranchNotice, checking_out_from_progress_title,
+    checking_out_new_branch_progress_title, checking_out_progress_title,
+    creating_branch_progress_title, rebasing_progress_title,
+};
+use crate::branch_operations::{branch_workspace, checkout_revision_dialog};
 use crate::branch_refs::{RefKind, RefTarget};
 use crate::merge_tool::conflict_resolution::{
     ConflictParams, RebaseCustomizerSpec, RebaseUpstream, ResolveMode, ResolverBehavior,
@@ -36,6 +41,11 @@ const EMPTY_REPOSITORY_MESSAGE: &str =
     "Cannot create new branch in empty repository. Make initial commit first";
 const CHECKOUT_AND_REBASE_FAILED: &str = "Checkout and Rebase failed";
 const REBASE_FAILED: &str = "Rebase failed";
+const LOCAL_CHANGES_NOT_RESTORED_TITLE: &str = "Local changes were not restored";
+const WORKTREE_CONFLICT_TITLE: &str = "Worktree Conflict";
+const CHECKOUT_ANYWAY_LABEL: &str = "Checkout Anyway";
+const OPEN_EXISTING_WORKTREE_LABEL: &str = "Open Existing Worktree";
+const CANCEL_LABEL: &str = "Cancel";
 
 pub fn checkout(context: BranchContext, target: RefTarget, window: &mut Window, cx: &mut App) {
     match target.kind {
@@ -50,6 +60,15 @@ pub fn checkout(context: BranchContext, target: RefTarget, window: &mut Window, 
             let reference = target.full_ref_name();
             spawn_step(context, StepRun::detach(&reference), window, cx);
         }
+    }
+}
+
+fn progress_title(run: &StepRun) -> String {
+    match &run.step {
+        CheckoutStep::SwitchBranch { name, .. } => checking_out_progress_title(name),
+        CheckoutStep::Detach { revision } => checking_out_progress_title(revision),
+        CheckoutStep::CreateBranch { name, .. } => creating_branch_progress_title(name),
+        CheckoutStep::RebaseOnto { branch, .. } => rebasing_progress_title(branch),
     }
 }
 
@@ -71,7 +90,17 @@ pub fn checkout_and_rebase_onto_current(
                 &base,
                 CHECKOUT_AND_REBASE_FAILED,
             );
-            spawn_step(context, run, window, cx);
+            let saving = context.save_documents(cx);
+            let progress = context.start_progress(progress_title(&run), cx);
+            window
+                .spawn(cx, async move |cx| {
+                    saving.await;
+                    if rebase_may_start(&context, &target.name, cx).await {
+                        run_step_async(context, run, cx).await;
+                    }
+                    drop(progress);
+                })
+                .detach();
         }
         RefKind::Remote => checkout_and_rebase_remote(context, target, window, cx),
         RefKind::Tag => {}
@@ -90,11 +119,16 @@ pub fn checkout_and_update(
     }
     let name = target.name.to_string();
     let already_current = is_current_branch(&context, &name, cx);
+    let saving = context.save_documents(cx);
+    let progress =
+        (!already_current).then(|| context.start_progress(checking_out_progress_title(&name), cx));
     window
         .spawn(cx, async move |cx| {
+            saving.await;
             if !already_current {
                 let switched =
                     run_step_async(context.clone(), StepRun::switch_branch(&name), cx).await;
+                drop(progress);
                 if !switched {
                     return;
                 }
@@ -194,6 +228,22 @@ impl CreateBranchRequest {
         }
     }
 
+    fn progress_title(&self) -> String {
+        if !self.checkout {
+            creating_branch_progress_title(&self.name)
+        } else if self.start == HEAD_REFERENCE {
+            checking_out_new_branch_progress_title(&self.name)
+        } else {
+            checking_out_from_progress_title(&self.name, &self.start)
+        }
+    }
+
+    /// IntelliJ checks out a remote branch through a checkout of the remote
+    /// reference, so a failure is titled after the remote branch.
+    fn checks_out_remote_branch(&self) -> bool {
+        self.checkout && !self.peel_start && self.start != HEAD_REFERENCE
+    }
+
     fn git_start_point(&self) -> String {
         if self.peel_start {
             format!("{}^0", self.start)
@@ -207,6 +257,7 @@ impl CreateBranchRequest {
 enum CheckoutStep {
     SwitchBranch {
         name: String,
+        ignore_other_worktrees: bool,
     },
     Detach {
         revision: String,
@@ -273,6 +324,7 @@ impl StepRun {
         Self {
             step: CheckoutStep::SwitchBranch {
                 name: name.to_string(),
+                ignore_other_worktrees: false,
             },
             completion: Completion::CheckedOut {
                 label: name.to_string(),
@@ -316,9 +368,40 @@ impl StepRun {
                 overwrite: request.overwrite,
             },
             completion,
-            failure_title: format!("Could not create new branch {}", request.name),
+            failure_title: if request.checks_out_remote_branch() {
+                format!("Could not checkout {}", request.start)
+            } else {
+                format!("Could not create new branch {}", request.name)
+            },
             operation: SmartOperation::Checkout,
             ref_name: request.name.clone(),
+        }
+    }
+
+    fn ignoring_other_worktrees(&self) -> Self {
+        let mut run = self.clone();
+        if let CheckoutStep::SwitchBranch {
+            ignore_other_worktrees,
+            ..
+        } = &mut run.step
+        {
+            *ignore_other_worktrees = true;
+        }
+        run
+    }
+
+    /// The name IntelliJ reports to `BranchChangeListener` once the step has
+    /// moved HEAD, or `None` for steps that leave HEAD where it was.
+    fn checked_out_reference(&self) -> Option<&str> {
+        match &self.step {
+            CheckoutStep::SwitchBranch { name, .. } => Some(name),
+            CheckoutStep::Detach { revision } => Some(revision),
+            CheckoutStep::CreateBranch {
+                name,
+                checkout: true,
+                ..
+            } => Some(name),
+            CheckoutStep::CreateBranch { .. } | CheckoutStep::RebaseOnto { .. } => None,
         }
     }
 
@@ -412,11 +495,29 @@ impl LocalCommitsPrompt {
 }
 
 fn spawn_step(context: BranchContext, run: StepRun, window: &mut Window, cx: &mut App) {
+    let saving = context.save_documents(cx);
+    let progress = context.start_progress(progress_title(&run), cx);
     window
         .spawn(cx, async move |cx| {
+            saving.await;
             run_step_async(context, run, cx).await;
+            drop(progress);
         })
         .detach();
+}
+
+async fn rebase_may_start(
+    context: &BranchContext,
+    branch: &str,
+    cx: &mut AsyncWindowContext,
+) -> bool {
+    match integrate::rebase_may_start(context, HEAD_REFERENCE, branch, cx).await {
+        Ok(allowed) => allowed,
+        Err(error) => {
+            integrate::notify_failure(context, CHECKOUT_AND_REBASE_FAILED, &error, cx);
+            false
+        }
+    }
 }
 
 fn checkout_remote(context: BranchContext, target: RefTarget, window: &mut Window, cx: &mut App) {
@@ -505,9 +606,13 @@ fn rebase_remote_into_local(
     window: &mut Window,
     cx: &mut App,
 ) {
+    let saving = context.save_documents(cx);
+    let progress = context.start_progress(rebasing_progress_title(&local), cx);
     window
         .spawn(cx, async move |cx| {
+            saving.await;
             rebase_remote_flow(context, remote, local, reset, cx).await;
+            drop(progress);
         })
         .detach();
 }
@@ -539,7 +644,7 @@ async fn rebase_remote_flow(
                 }
             }
             Err(error) => {
-                notify_failure(&context, "log", error, cx);
+                integrate::notify_failure(&context, CHECKOUT_AND_REBASE_FAILED, &error, cx);
                 return;
             }
         }
@@ -553,7 +658,7 @@ async fn rebase_remote_flow(
         cx,
     )
     .await;
-    if !created {
+    if !created || !rebase_may_start(&context, &local, cx).await {
         return;
     }
     let run = StepRun::rebase(&local, HEAD_REFERENCE, &base, CHECKOUT_AND_REBASE_FAILED);
@@ -567,9 +672,13 @@ fn create_branch_from(
     cx: &mut App,
 ) {
     let local_exists = local_branch(&context, &request.name, cx).is_some();
+    let saving = context.save_documents(cx);
+    let progress = context.start_progress(request.progress_title(), cx);
     window
         .spawn(cx, async move |cx| {
+            saving.await;
             create_branch_flow(context, request, local_exists, cx).await;
+            drop(progress);
         })
         .detach();
 }
@@ -601,7 +710,8 @@ async fn create_branch_flow(
                 }
             }
             Err(error) => {
-                notify_failure(&context, "log", error, cx);
+                let failure_title = StepRun::create_branch(&request).failure_title;
+                integrate::notify_failure(&context, failure_title, &error, cx);
                 return;
             }
         }
@@ -652,6 +762,58 @@ async fn ask_local_commits(
 }
 
 async fn run_step_async(context: BranchContext, run: StepRun, cx: &mut AsyncWindowContext) -> bool {
+    let checked_out = run.checked_out_reference().map(str::to_string);
+    let pending_switch = match checked_out {
+        Some(_) => cx
+            .update(|_, cx| branch_workspace::branch_will_change(&context, cx))
+            .log_err()
+            .flatten(),
+        None => None,
+    };
+    let head_before = match checked_out {
+        Some(_) => cx
+            .update(|_, cx| current_head_name(&context.repository.read(cx)))
+            .log_err()
+            .flatten(),
+        None => None,
+    };
+    let completed = run_step(context.clone(), run, cx).await;
+    if completed && let Some(reference) = checked_out {
+        if let Some(head_before) = head_before {
+            cx.update(|_, cx| remember_previous_branch(&context, head_before, cx))
+                .log_err();
+        }
+        branch_workspace::branch_has_changed(&context, pending_switch, &reference, cx)
+            .await
+            .log_err();
+    }
+    completed
+}
+
+/// HEAD before a checkout, as IntelliJ's `GitBranchOperation` records it: the branch, or the
+/// revision of a detached HEAD.
+fn current_head_name(repository: &Repository) -> Option<String> {
+    repository
+        .branch
+        .as_ref()
+        .map(|branch| branch.name().to_string())
+        .or_else(|| {
+            repository
+                .head_commit
+                .as_ref()
+                .map(|commit| commit.sha.to_string())
+        })
+}
+
+/// `GitBranchOperation.updateRecentBranch`: the branches popup preselects the previous branch.
+fn remember_previous_branch(context: &BranchContext, head_before: String, cx: &mut App) {
+    let key = crate::branches_popup::state::previous_branch_key(
+        &context.repository.read(cx).work_directory_abs_path,
+    );
+    crate::branches_popup::state::record_previous_branch(key, head_before, cx).detach();
+}
+
+async fn run_step(context: BranchContext, run: StepRun, cx: &mut AsyncWindowContext) -> bool {
     if stashes_local_changes_first(&run.step) {
         return stash_and_retry(&context, &run, cx).await;
     }
@@ -678,8 +840,15 @@ async fn execute_step(
     cx: &mut AsyncWindowContext,
 ) -> Result<StepOutcome> {
     match step {
-        CheckoutStep::SwitchBranch { name } => {
-            let receiver = if force {
+        CheckoutStep::SwitchBranch {
+            name,
+            ignore_other_worktrees,
+        } => {
+            let receiver = if *ignore_other_worktrees {
+                repository.update(cx, |repository, _| {
+                    repository.checkout_ignoring_other_worktrees(name.clone(), force)
+                })
+            } else if force {
                 repository.update(cx, |repository, _| repository.checkout_force(name.clone()))
             } else {
                 repository.update(cx, |repository, _| repository.change_branch(name.clone()))
@@ -848,6 +1017,18 @@ async fn recover(
 ) -> bool {
     let overwritten_files = match git_failure(&error).map(|failure| &failure.kind) {
         Some(GitFailureKind::LocalChangesWouldBeOverwritten { files }) => files.clone(),
+        Some(GitFailureKind::BranchCheckedOutInWorktree { path })
+            if matches!(
+                run.step,
+                CheckoutStep::SwitchBranch {
+                    ignore_other_worktrees: false,
+                    ..
+                }
+            ) =>
+        {
+            let path = path.clone();
+            return resolve_worktree_conflict(context, run, path, cx).await;
+        }
         _ => {
             report_failure(&context, &run, &error, cx);
             return false;
@@ -863,6 +1044,63 @@ async fn recover(
         SmartChoice::Cancel => false,
         SmartChoice::Force => force_step(&context, &run, cx).await,
         SmartChoice::Smart => stash_and_retry(&context, &run, cx).await,
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum WorktreeConflictAnswer {
+    CheckoutAnyway,
+    OpenExistingWorktree,
+    Cancel,
+}
+
+fn worktree_conflict_message(branch: &str, path: &str) -> String {
+    format!("Branch '{branch}' is already checked out in a worktree at:\n{path}")
+}
+
+fn worktree_conflict_answer(index: Option<usize>) -> WorktreeConflictAnswer {
+    match index {
+        Some(0) => WorktreeConflictAnswer::CheckoutAnyway,
+        Some(1) => WorktreeConflictAnswer::OpenExistingWorktree,
+        _ => WorktreeConflictAnswer::Cancel,
+    }
+}
+
+/// IntelliJ's `GitCheckoutInOtherWorktreeDialogs` with Checkout Anyway, Open
+/// Existing Worktree and Cancel.
+async fn resolve_worktree_conflict(
+    context: BranchContext,
+    run: StepRun,
+    path: String,
+    cx: &mut AsyncWindowContext,
+) -> bool {
+    let presentable_path = std::path::Path::new(&path)
+        .compact()
+        .to_string_lossy()
+        .into_owned();
+    let message = worktree_conflict_message(&run.ref_name, &presentable_path);
+    let answer = cx.prompt(
+        PromptLevel::Info,
+        WORKTREE_CONFLICT_TITLE,
+        Some(message.as_str()),
+        &[
+            PromptButton::new(CHECKOUT_ANYWAY_LABEL),
+            PromptButton::new(OPEN_EXISTING_WORKTREE_LABEL),
+            PromptButton::cancel(CANCEL_LABEL),
+        ],
+    );
+    match worktree_conflict_answer(answer.await.ok()) {
+        WorktreeConflictAnswer::CheckoutAnyway => {
+            Box::pin(run_step(context, run.ignoring_other_worktrees(), cx)).await
+        }
+        WorktreeConflictAnswer::OpenExistingWorktree => {
+            cx.update(|window, cx| {
+                context.open_worktree(std::path::PathBuf::from(path), window, cx)
+            })
+            .log_err();
+            false
+        }
+        WorktreeConflictAnswer::Cancel => false,
     }
 }
 
@@ -886,13 +1124,14 @@ async fn stash_and_retry(
     run: &StepRun,
     cx: &mut AsyncWindowContext,
 ) -> bool {
-    let Ok(stashing) = cx.update(|_, cx| stash_local_changes(context, cx)) else {
+    let message = run.operation.stash_message();
+    let Ok(stashing) = cx.update(|_, cx| stash_local_changes(context, message, cx)) else {
         return false;
     };
     let stashed = match stashing.await {
         Ok(stashed) => stashed,
         Err(error) => {
-            notify_failure(context, "stash", error, cx);
+            integrate::notify_failure(context, stash_failure_title(run.operation), &error, cx);
             return false;
         }
     };
@@ -915,6 +1154,13 @@ async fn stash_and_retry(
     outcome == Some(StepOutcome::Completed)
 }
 
+fn stash_failure_title(operation: SmartOperation) -> String {
+    format!(
+        "Could not save uncommitted changes on {}",
+        operation.title_case()
+    )
+}
+
 async fn restore_stashed_changes(
     context: &BranchContext,
     stashed: bool,
@@ -927,18 +1173,8 @@ async fn restore_stashed_changes(
         return;
     };
     if let Err(error) = restoring.await {
-        notify_failure(context, "stash pop", error, cx);
+        integrate::notify_failure(context, LOCAL_CHANGES_NOT_RESTORED_TITLE, &error, cx);
     }
-}
-
-fn notify_failure(
-    context: &BranchContext,
-    operation: &'static str,
-    error: anyhow::Error,
-    cx: &mut AsyncWindowContext,
-) {
-    cx.update(|_, cx| context.notify_error(operation, error, cx))
-        .log_err();
 }
 
 fn report_failure(
@@ -1258,7 +1494,81 @@ mod tests {
                 start: "origin/main".to_string(),
             }
         );
-        assert_eq!(run.failure_title, "Could not create new branch feature");
+        assert_eq!(
+            run.failure_title, "Could not checkout origin/main",
+            "IntelliJ titles a failed remote checkout after the remote branch"
+        );
+    }
+
+    #[test]
+    fn a_new_branch_from_head_reports_a_failed_creation_and_its_progress() {
+        let request = CreateBranchRequest {
+            name: "feature".to_string(),
+            start: HEAD_REFERENCE.to_string(),
+            checkout: true,
+            overwrite: false,
+            peel_start: true,
+        };
+        assert_eq!(
+            StepRun::create_branch(&request).failure_title,
+            "Could not create new branch feature"
+        );
+        assert_eq!(
+            request.progress_title(),
+            "Checking out new branch feature\u{2026}"
+        );
+        let from_main = CreateBranchRequest {
+            start: "main".to_string(),
+            ..request.clone()
+        };
+        assert_eq!(
+            from_main.progress_title(),
+            "Checking out feature from main\u{2026}"
+        );
+        let without_checkout = CreateBranchRequest {
+            checkout: false,
+            ..request
+        };
+        assert_eq!(
+            without_checkout.progress_title(),
+            "Creating branch feature\u{2026}"
+        );
+    }
+
+    #[test]
+    fn a_failed_stash_is_titled_like_intellij_save_notification() {
+        assert_eq!(
+            stash_failure_title(SmartOperation::Checkout),
+            "Could not save uncommitted changes on Checkout"
+        );
+        assert_eq!(
+            stash_failure_title(SmartOperation::Rebase),
+            "Could not save uncommitted changes on Rebase"
+        );
+    }
+
+    #[test]
+    fn worktree_conflict_dialog_follows_the_intellij_texts_and_buttons() {
+        assert_eq!(
+            worktree_conflict_message("topic", "~/worktrees/topic"),
+            "Branch 'topic' is already checked out in a worktree at:\n~/worktrees/topic"
+        );
+        assert_eq!(
+            worktree_conflict_answer(Some(0)),
+            WorktreeConflictAnswer::CheckoutAnyway
+        );
+        assert_eq!(
+            worktree_conflict_answer(Some(1)),
+            WorktreeConflictAnswer::OpenExistingWorktree
+        );
+        assert_eq!(
+            worktree_conflict_answer(Some(2)),
+            WorktreeConflictAnswer::Cancel
+        );
+        assert_eq!(
+            worktree_conflict_answer(None),
+            WorktreeConflictAnswer::Cancel
+        );
     }
 
     #[test]
@@ -1371,6 +1681,7 @@ mod tests {
         }));
         assert!(!stashes_local_changes_first(&CheckoutStep::SwitchBranch {
             name: "feature".to_string(),
+            ignore_other_worktrees: false,
         }));
         assert!(!stashes_local_changes_first(&CheckoutStep::Detach {
             revision: "v1".to_string(),

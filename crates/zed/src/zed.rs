@@ -885,14 +885,16 @@ fn register_actions(
             }
         })
         .register_action({
-            move |workspace, _: &CloseProject, window, cx| {
+            move |_, _: &CloseProject, window, cx| {
                 let Some(window_handle) = window.window_handle().downcast::<MultiWorkspace>() else {
                     return;
                 };
-                let old_group_key = workspace.project_group_key(cx);
+                // Only this project closes: a linked worktree shares its project group with
+                // the main checkout, which stays open in its own tab.
+                let workspace = cx.entity();
                 cx.spawn_in(window, async move |_, cx| {
                     let task = window_handle.update(cx, |multi_workspace, window, cx| {
-                        multi_workspace.remove_project_group(&old_group_key, window, cx)
+                        multi_workspace.close_workspace(&workspace, window, cx)
                     })?;
                     task.await?;
                     anyhow::Ok(())
@@ -6513,9 +6515,9 @@ mod tests {
             )
         };
 
-        // Window A (dir1+dir2): 1 workspace restored, but 2 project group keys.
+        // Window A (dir1+dir2): both projects come back, in their tab order, with dir1 active.
         restored_a
-            .read_with(cx, |mw, _| {
+            .read_with(cx, |mw, cx| {
                 assert_eq!(
                     mw.project_group_keys(),
                     vec![
@@ -6523,7 +6525,16 @@ mod tests {
                         ProjectGroupKey::new(PathList::new(&[dir1])),
                     ]
                 );
-                assert_eq!(mw.workspaces().count(), 1);
+                assert_eq!(
+                    mw.workspaces()
+                        .map(|workspace| workspace.read(cx).root_paths(cx))
+                        .collect::<Vec<_>>(),
+                    vec![
+                        vec![Arc::from(Path::new(dir1))],
+                        vec![Arc::from(Path::new(dir2))],
+                    ],
+                    "every project of the window is restored, not only the active one"
+                );
             })
             .unwrap();
 
@@ -7102,6 +7113,70 @@ mod tests {
             !active_paths.is_empty(),
             "active workspace should contain the remaining project, not be empty: {active_paths:?}"
         );
+    }
+
+    #[gpui::test]
+    async fn test_close_project_closes_only_the_active_project_of_its_group(
+        cx: &mut TestAppContext,
+    ) {
+        use workspace::OpenMode;
+
+        let app_state = init_test(cx);
+        app_state
+            .fs
+            .as_fake()
+            .insert_tree(path!("/repo"), json!({}))
+            .await;
+
+        let workspace::OpenResult {
+            window,
+            workspace: main_workspace,
+            ..
+        } = cx
+            .update(|cx| {
+                workspace::Workspace::new_local(
+                    vec![path!("/repo").into()],
+                    app_state.clone(),
+                    None,
+                    None,
+                    None,
+                    OpenMode::Activate,
+                    cx,
+                )
+            })
+            .await
+            .unwrap();
+
+        // A second checkout of the same repository, like a linked worktree, shares the
+        // project group of the main checkout.
+        let second_project =
+            Project::test(app_state.fs.clone(), [Path::new(path!("/repo"))], cx).await;
+        let second_workspace = window
+            .update(cx, |multi_workspace, window, cx| {
+                multi_workspace.test_add_workspace(second_project, window, cx)
+            })
+            .unwrap();
+        cx.background_executor.run_until_parked();
+        window
+            .read_with(cx, |multi_workspace, _| {
+                assert_eq!(multi_workspace.project_group_keys().len(), 1);
+                assert_eq!(multi_workspace.workspace(), &second_workspace);
+            })
+            .unwrap();
+
+        cx.dispatch_action(window.into(), CloseProject);
+        cx.background_executor.run_until_parked();
+
+        window
+            .read_with(cx, |multi_workspace, _| {
+                assert_eq!(
+                    multi_workspace.workspaces().cloned().collect::<Vec<_>>(),
+                    vec![main_workspace.clone()],
+                    "Close Project closes the active project only, not the rest of its group"
+                );
+                assert_eq!(multi_workspace.workspace(), &main_workspace);
+            })
+            .unwrap();
     }
 
     async fn open_test_project_window_with_tabs(

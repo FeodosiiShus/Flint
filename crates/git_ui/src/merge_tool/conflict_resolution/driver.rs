@@ -483,6 +483,7 @@ fn with_resolve_action(
     notice.actions.push(NoticeAction {
         label,
         handler: resolve,
+        expires: true,
     });
     notice
 }

@@ -8,7 +8,9 @@ use gpui::{App, AsyncWindowContext, SharedString, Task, Window};
 use util::ResultExt as _;
 
 use super::context_menu::MenuCommit;
-use crate::branch_operations::integrate::is_protected_remote_reference;
+use crate::branch_operations::integrate::{
+    is_protected_remote_reference, protected_branch_patterns,
+};
 use crate::branch_operations::new_branch_dialog::{self, NewBranchDialogOptions, NewBranchRequest};
 use crate::branch_operations::{BranchContext, BranchNotice};
 use crate::commit_modal::{CommitModal, ForceMode};
@@ -367,9 +369,13 @@ fn cherry_pick_message(commit: &CommitDescription, published: bool) -> String {
     }
 }
 
-fn published_to_protected_branch(remote_branches: &[String], containing: &[SharedString]) -> bool {
+fn published_to_protected_branch(
+    remote_branches: &[String],
+    containing: &[SharedString],
+    patterns: &[String],
+) -> bool {
     remote_branches.iter().any(|branch| {
-        is_protected_remote_reference(branch)
+        is_protected_remote_reference(branch, patterns)
             && containing
                 .iter()
                 .any(|containing| containing.as_ref() == branch.as_str())
@@ -685,7 +691,7 @@ async fn resolve_conflicts_flow(
 }
 
 async fn is_published(context: &BranchContext, sha: Oid, cx: &mut AsyncWindowContext) -> bool {
-    let Some((containing, remote_branches)) = cx
+    let Some((containing, remote_branches, patterns)) = cx
         .update(|_, app| {
             let repository = context.repository.read(app);
             let remote_branches: Vec<String> = repository
@@ -697,6 +703,7 @@ async fn is_published(context: &BranchContext, sha: Oid, cx: &mut AsyncWindowCon
             (
                 repository.branches_containing_commit(sha, app),
                 remote_branches,
+                protected_branch_patterns(app),
             )
         })
         .log_err()
@@ -704,7 +711,7 @@ async fn is_published(context: &BranchContext, sha: Oid, cx: &mut AsyncWindowCon
         return false;
     };
     let containing = containing.await.log_err().unwrap_or_default();
-    published_to_protected_branch(&remote_branches, &containing)
+    published_to_protected_branch(&remote_branches, &containing, &patterns)
 }
 
 fn show_commit_dialog(
@@ -1602,13 +1609,16 @@ mod tests {
     #[test]
     fn commits_are_published_only_when_a_protected_remote_branch_contains_them() {
         let remote_branches = ["origin/main".to_string(), "origin/feature".to_string()];
+        let patterns = vec!["master".to_string(), "main".to_string()];
         assert!(published_to_protected_branch(
             &remote_branches,
-            &["origin/main".into(), "main".into()]
+            &["origin/main".into(), "main".into()],
+            &patterns
         ));
         assert!(!published_to_protected_branch(
             &remote_branches,
-            &["origin/feature".into(), "main".into()]
+            &["origin/feature".into(), "main".into()],
+            &patterns
         ));
     }
 

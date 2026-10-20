@@ -1264,6 +1264,251 @@ async fn test_running_multiple_instances_of_a_single_server_in_one_worktree(
     assert_eq!(server.server_id(), LanguageServerId(1));
 }
 
+/// Opens a second project the way a window holding several projects does: every project
+/// shares the app's language registry but owns its own language server store.
+async fn project_sharing_languages_with(
+    project: &Entity<Project>,
+    fs: Arc<FakeFs>,
+    root: &Path,
+    cx: &mut gpui::TestAppContext,
+) -> Entity<Project> {
+    let languages = project.read_with(cx, |project, _| project.languages().clone());
+    let client = client::Client::new(http_client::FakeHttpClient::with_404_response());
+    let user_store = gpui::AppContext::new(cx, |cx| client::UserStore::new(client.clone(), cx));
+    let other_project = cx.update(|cx| {
+        Project::local(
+            client,
+            node_runtime::NodeRuntime::unavailable(),
+            user_store,
+            languages,
+            fs,
+            None,
+            LocalProjectFlags {
+                init_worktree_trust: false,
+            },
+            cx,
+        )
+    });
+    other_project
+        .update(cx, |project, cx| {
+            project.find_or_create_worktree(root, true, cx)
+        })
+        .await
+        .unwrap();
+    cx.executor().run_until_parked();
+    other_project
+}
+
+fn running_language_server_ids(
+    project: &Entity<Project>,
+    cx: &mut gpui::TestAppContext,
+) -> Vec<LanguageServerId> {
+    project.read_with(cx, |project, cx| {
+        project
+            .lsp_store()
+            .read(cx)
+            .language_server_statuses()
+            .map(|(server_id, _)| server_id)
+            .collect()
+    })
+}
+
+#[gpui::test]
+async fn test_each_project_in_a_window_runs_its_own_language_servers(
+    cx: &mut gpui::TestAppContext,
+) {
+    init_test(cx);
+    let fs = FakeFs::new(cx.executor());
+    fs.insert_tree(path!("/project_a"), json!({ "a.rs": "fn a() {}" }))
+        .await;
+    fs.insert_tree(path!("/project_b"), json!({ "b.rs": "fn b() {}" }))
+        .await;
+
+    let project_a = Project::test(fs.clone(), [path!("/project_a").as_ref()], cx).await;
+    let project_b =
+        project_sharing_languages_with(&project_a, fs.clone(), path!("/project_b").as_ref(), cx)
+            .await;
+    let language_registry = project_a.read_with(cx, |project, _| project.languages().clone());
+    language_registry.add(rust_lang());
+    let mut fake_servers = language_registry.register_fake_lsp(
+        "Rust",
+        FakeLspAdapter {
+            name: "the-rust-language-server",
+            ..Default::default()
+        },
+    );
+
+    let (buffer_a, _handle_a) = project_a
+        .update(cx, |project, cx| {
+            project.open_local_buffer_with_lsp(path!("/project_a/a.rs"), cx)
+        })
+        .await
+        .unwrap();
+    let mut fake_server_a = fake_servers.next().await.unwrap();
+    let (_buffer_b, _handle_b) = project_b
+        .update(cx, |project, cx| {
+            project.open_local_buffer_with_lsp(path!("/project_b/b.rs"), cx)
+        })
+        .await
+        .unwrap();
+    let mut fake_server_b = fake_servers
+        .next()
+        .await
+        .expect("the second project should start its own server");
+    assert_eq!(
+        fake_server_a
+            .receive_notification::<lsp::notification::DidOpenTextDocument>()
+            .await
+            .text_document
+            .uri
+            .as_str(),
+        uri!("file:///project_a/a.rs")
+    );
+    assert_eq!(
+        fake_server_b
+            .receive_notification::<lsp::notification::DidOpenTextDocument>()
+            .await
+            .text_document
+            .uri
+            .as_str(),
+        uri!("file:///project_b/b.rs")
+    );
+    cx.executor().run_until_parked();
+
+    let server_ids_a = running_language_server_ids(&project_a, cx);
+    let server_ids_b = running_language_server_ids(&project_b, cx);
+    assert_eq!(server_ids_a.len(), 1, "project A runs one server");
+    assert_eq!(server_ids_b.len(), 1, "project B runs one server");
+    assert_ne!(
+        server_ids_a, server_ids_b,
+        "projects in one window never share a language server"
+    );
+    for (project, server_id, folder) in [
+        (&project_a, server_ids_a[0], path!("/project_a")),
+        (&project_b, server_ids_b[0], path!("/project_b")),
+    ] {
+        project.read_with(cx, |project, cx| {
+            let server = project
+                .lsp_store()
+                .read(cx)
+                .language_server_for_id(server_id)
+                .expect("the project's server should be running");
+            assert_eq!(
+                server.workspace_folders(),
+                BTreeSet::from_iter([Uri::from_file_path(folder).unwrap()]),
+                "a project's server only serves that project's folders"
+            );
+        });
+    }
+
+    // Project B is the one in use; project A sits in the background of the window.
+    fake_server_a.notify::<lsp::notification::PublishDiagnostics>(lsp::PublishDiagnosticsParams {
+        uri: lsp::Uri::from_file_path(path!("/project_a/a.rs")).unwrap(),
+        version: None,
+        diagnostics: vec![lsp::Diagnostic {
+            range: lsp::Range::new(lsp::Position::new(0, 3), lsp::Position::new(0, 4)),
+            severity: Some(lsp::DiagnosticSeverity::ERROR),
+            message: lsp::DiagnosticMessage::String("background error".to_string()),
+            ..Default::default()
+        }],
+    });
+    cx.executor().run_until_parked();
+    assert_eq!(
+        project_a.read_with(cx, |project, cx| project
+            .diagnostic_summary(false, cx)
+            .error_count),
+        1,
+        "a project in the background keeps receiving its server's diagnostics"
+    );
+    assert_eq!(
+        project_b.read_with(cx, |project, cx| project
+            .diagnostic_summary(false, cx)
+            .error_count),
+        0,
+        "diagnostics never leak into another project"
+    );
+    buffer_a.read_with(cx, |buffer, _| {
+        assert_eq!(
+            buffer
+                .snapshot()
+                .diagnostics_in_range::<_, usize>(0..buffer.len(), false)
+                .count(),
+            1
+        );
+    });
+}
+
+#[gpui::test]
+async fn test_dropping_a_project_shuts_down_only_its_language_servers(
+    cx: &mut gpui::TestAppContext,
+) {
+    init_test(cx);
+    let fs = FakeFs::new(cx.executor());
+    fs.insert_tree(path!("/project_a"), json!({ "a.rs": "fn a() {}" }))
+        .await;
+    fs.insert_tree(path!("/project_b"), json!({ "b.rs": "fn b() {}" }))
+        .await;
+
+    let project_b = Project::test(fs.clone(), [path!("/project_b").as_ref()], cx).await;
+    let project_a =
+        project_sharing_languages_with(&project_b, fs.clone(), path!("/project_a").as_ref(), cx)
+            .await;
+    let language_registry = project_b.read_with(cx, |project, _| project.languages().clone());
+    language_registry.add(rust_lang());
+    let mut fake_servers = language_registry.register_fake_lsp(
+        "Rust",
+        FakeLspAdapter {
+            name: "the-rust-language-server",
+            ..Default::default()
+        },
+    );
+    let (buffer_a, handle_a) = project_a
+        .update(cx, |project, cx| {
+            project.open_local_buffer_with_lsp(path!("/project_a/a.rs"), cx)
+        })
+        .await
+        .unwrap();
+    let mut fake_server_a = fake_servers.next().await.unwrap();
+    let (buffer_b, _handle_b) = project_b
+        .update(cx, |project, cx| {
+            project.open_local_buffer_with_lsp(path!("/project_b/b.rs"), cx)
+        })
+        .await
+        .unwrap();
+    let mut fake_server_b = fake_servers.next().await.unwrap();
+    fake_server_b
+        .receive_notification::<lsp::notification::DidOpenTextDocument>()
+        .await;
+    fake_server_a.set_request_handler::<lsp::request::Shutdown, _, _>(|_, _| future::ready(Ok(())));
+    cx.executor().run_until_parked();
+
+    let lsp_store_a = project_a.read_with(cx, |project, _| project.lsp_store().downgrade());
+    drop(handle_a);
+    drop(buffer_a);
+    drop(project_a);
+    // Dropped entities are released at the end of the next effect cycle.
+    cx.update(|_| {});
+    cx.executor().run_until_parked();
+
+    lsp_store_a.assert_released();
+    fake_server_a
+        .receive_notification::<lsp::notification::Exit>()
+        .await;
+    assert_eq!(running_language_server_ids(&project_b, cx).len(), 1);
+
+    buffer_b.update(cx, |buffer, cx| buffer.edit([(0..0, "// ")], None, cx));
+    assert_eq!(
+        fake_server_b
+            .receive_notification::<lsp::notification::DidChangeTextDocument>()
+            .await
+            .text_document
+            .uri
+            .as_str(),
+        uri!("file:///project_b/b.rs"),
+        "the other project's server keeps running"
+    );
+}
+
 #[gpui::test]
 async fn test_managing_language_servers(cx: &mut gpui::TestAppContext) {
     init_test(cx);
@@ -4978,6 +5223,231 @@ async fn test_diagnostic_summaries_cleared_on_buffer_reload(cx: &mut gpui::TestA
         pulls_after > pulls_before,
         "Expected document diagnostic pull after buffer reload (before={pulls_before}, after={pulls_after})"
     );
+}
+
+#[gpui::test]
+async fn test_server_that_runs_on_save_is_pulled_on_save_and_not_on_edits(
+    cx: &mut gpui::TestAppContext,
+) {
+    init_test(cx);
+    let fs = FakeFs::new(cx.executor());
+    fs.insert_tree(path!("/dir"), json!({ "a.rs": "one two three" }))
+        .await;
+    let project = Project::test(fs, [path!("/dir").as_ref()], cx).await;
+    let language_registry = project.read_with(cx, |project, _| project.languages().clone());
+    language_registry.add(rust_lang());
+    let pull_count = Arc::new(atomic::AtomicUsize::new(0));
+    let mut fake_servers = language_registry.register_fake_lsp(
+        "Rust",
+        FakeLspAdapter {
+            name: "the-linter",
+            capabilities: lsp::ServerCapabilities {
+                diagnostic_provider: Some(lsp::DiagnosticServerCapabilities::Options(
+                    lsp::DiagnosticOptions {
+                        identifier: Some("linter".to_string()),
+                        inter_file_dependencies: false,
+                        workspace_diagnostics: false,
+                        work_done_progress_options: Default::default(),
+                    },
+                )),
+                ..lsp::ServerCapabilities::default()
+            },
+            pulls_diagnostics_only_on_save: Some(|settings| {
+                settings
+                    .and_then(|settings| settings.get("run"))
+                    .and_then(|run| run.as_str())
+                    == Some("onSave")
+            }),
+            initializer: Some(Box::new({
+                let pull_count = pull_count.clone();
+                move |fake_server| {
+                    let pull_count = pull_count.clone();
+                    fake_server
+                        .set_request_handler::<lsp::request::DocumentDiagnosticRequest, _, _>(
+                            move |_, _| {
+                                pull_count.fetch_add(1, atomic::Ordering::SeqCst);
+                                async move {
+                                    Ok(lsp::DocumentDiagnosticReportResult::Report(
+                                        lsp::DocumentDiagnosticReport::Full(
+                                            lsp::RelatedFullDocumentDiagnosticReport::default(),
+                                        ),
+                                    ))
+                                }
+                            },
+                        );
+                }
+            })),
+            ..FakeLspAdapter::default()
+        },
+    );
+    cx.update(|cx| {
+        SettingsStore::update_global(cx, |settings, cx| {
+            settings.update_user_settings(cx, |settings| {
+                settings.project.lsp.0.insert(
+                    "the-linter".into(),
+                    settings::LspSettings {
+                        settings: Some(json!({ "run": "onSave" })),
+                        ..Default::default()
+                    },
+                );
+            });
+        })
+    });
+
+    let (buffer, _handle) = project
+        .update(cx, |project, cx| {
+            project.open_local_buffer_with_lsp(path!("/dir/a.rs"), cx)
+        })
+        .await
+        .unwrap();
+    let _fake_server = fake_servers.next().await.unwrap();
+    cx.executor().run_until_parked();
+    let lsp_store = project.read_with(cx, |project, _| project.lsp_store());
+    let pull = lsp_store.update(cx, |lsp_store, cx| {
+        lsp_store.pull_diagnostics_for_buffer(buffer.clone(), cx)
+    });
+    pull.await.unwrap();
+    assert_eq!(
+        pull_count.load(atomic::Ordering::SeqCst),
+        1,
+        "saved content is still linted, for example when the file opens"
+    );
+
+    buffer.update(cx, |buffer, cx| buffer.edit([(0..0, "zero ")], None, cx));
+    let pull = lsp_store.update(cx, |lsp_store, cx| {
+        lsp_store.pull_diagnostics_for_buffer(buffer.clone(), cx)
+    });
+    pull.await.unwrap();
+    cx.executor().run_until_parked();
+    assert_eq!(
+        pull_count.load(atomic::Ordering::SeqCst),
+        1,
+        "with run set to onSave, edits do not lint the unsaved text"
+    );
+
+    project
+        .update(cx, |project, cx| project.save_buffer(buffer.clone(), cx))
+        .await
+        .unwrap();
+    cx.executor().run_until_parked();
+    assert_eq!(
+        pull_count.load(atomic::Ordering::SeqCst),
+        2,
+        "saving lints the file again"
+    );
+
+    cx.update(|cx| {
+        SettingsStore::update_global(cx, |settings, cx| {
+            settings.update_user_settings(cx, |settings| {
+                settings.project.lsp.0.insert(
+                    "the-linter".into(),
+                    settings::LspSettings {
+                        settings: Some(json!({ "run": "onType" })),
+                        ..Default::default()
+                    },
+                );
+            });
+        })
+    });
+    cx.executor().run_until_parked();
+    let pulls_before_edit = pull_count.load(atomic::Ordering::SeqCst);
+    buffer.update(cx, |buffer, cx| buffer.edit([(0..0, "minus ")], None, cx));
+    let pull = lsp_store.update(cx, |lsp_store, cx| {
+        lsp_store.pull_diagnostics_for_buffer(buffer.clone(), cx)
+    });
+    pull.await.unwrap();
+    assert_eq!(
+        pull_count.load(atomic::Ordering::SeqCst),
+        pulls_before_edit + 1,
+        "with run set to onType, edits lint the text as before"
+    );
+}
+
+#[gpui::test]
+async fn test_registering_a_buffer_with_some_servers_still_opens_it_in_all_later(
+    cx: &mut gpui::TestAppContext,
+) {
+    init_test(cx);
+    let fs = FakeFs::new(cx.executor());
+    fs.insert_tree(path!("/dir"), json!({ "a.rs": "fn a() {}" }))
+        .await;
+    let project = Project::test(fs, [path!("/dir").as_ref()], cx).await;
+    let language_registry = project.read_with(cx, |project, _| project.languages().clone());
+    language_registry.add(rust_lang());
+    let mut checker_servers = language_registry.register_fake_lsp(
+        "Rust",
+        FakeLspAdapter {
+            name: "the-checker",
+            ..FakeLspAdapter::default()
+        },
+    );
+    let mut linter_servers = language_registry.register_fake_lsp(
+        "Rust",
+        FakeLspAdapter {
+            name: "the-linter",
+            ..FakeLspAdapter::default()
+        },
+    );
+
+    let buffer = project
+        .update(cx, |project, cx| {
+            project.open_local_buffer(path!("/dir/a.rs"), cx)
+        })
+        .await
+        .unwrap();
+    cx.executor().run_until_parked();
+    let partial_handle = project.update(cx, |project, cx| {
+        project.register_buffer_with_language_servers_for(
+            &buffer,
+            HashSet::from_iter([lsp::LanguageServerSelector::Name(
+                LanguageServerName::new_static("the-checker"),
+            )]),
+            cx,
+        )
+    });
+    let mut checker = checker_servers.next().await.unwrap();
+    assert_eq!(
+        checker
+            .receive_notification::<lsp::notification::DidOpenTextDocument>()
+            .await
+            .text_document
+            .uri
+            .as_str(),
+        uri!("file:///dir/a.rs")
+    );
+    cx.executor().run_until_parked();
+    assert!(
+        linter_servers.try_recv().is_err(),
+        "a server left out of the registration is not started for the buffer"
+    );
+
+    let _editor_handle = project.update(cx, |project, cx| {
+        project.register_buffer_with_language_servers(&buffer, cx)
+    });
+    let mut linter = linter_servers
+        .next()
+        .await
+        .expect("opening the buffer in full opens it in the remaining servers");
+    assert_eq!(
+        linter
+            .receive_notification::<lsp::notification::DidOpenTextDocument>()
+            .await
+            .text_document
+            .uri
+            .as_str(),
+        uri!("file:///dir/a.rs")
+    );
+    drop(partial_handle);
+    cx.executor().run_until_parked();
+    project.read_with(cx, |project, cx| {
+        let servers = project
+            .lsp_store()
+            .read(cx)
+            .language_server_ids_for_opened_buffer(buffer.read(cx).remote_id())
+            .cloned()
+            .unwrap_or_default();
+        assert_eq!(servers.len(), 2, "both servers keep the buffer open");
+    });
 }
 
 #[gpui::test]

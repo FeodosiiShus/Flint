@@ -3,6 +3,7 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use anyhow::Result;
+use db::kvp::KeyValueStore;
 use futures::channel::oneshot;
 use futures::future::{self, Either};
 use git::stash::StashEntry;
@@ -10,9 +11,10 @@ use gpui::{
     Action as _, App, AsyncApp, AsyncWindowContext, Context, DismissEvent, Entity, EventEmitter,
     FocusHandle, Focusable, SharedString, Task, Window,
 };
-use menu::Cancel;
+use menu::{Cancel, Confirm};
 use project::git_store::{Repository, RepositoryEvent};
 use release_channel::ReleaseChannel;
+use time::OffsetDateTime;
 use ui::{DialogButton, prelude::*};
 use util::ResultExt as _;
 use workspace::ModalView;
@@ -26,7 +28,11 @@ pub(super) const UPDATE_OPERATION_TITLE: &str = "Update";
 const UPDATE_DESTINATION_NAME: &str = "Remote";
 
 const FALLBACK_PRODUCT_NAME: &str = "Flint";
-pub(crate) const STASH_MESSAGE: &str = "Local changes stashed for a smart operation";
+/// Every stash a branch operation makes starts with IntelliJ's
+/// `stash.changes.message`, which is how the operation finds it again.
+pub(crate) const STASH_MESSAGE: &str = "Uncommitted changes before ";
+const REBASE_OPERATION_NAME: &str = "rebase";
+const OPERATION_STASH_KEY_PREFIX: &str = "branch-operation-stash";
 const STASH_KEPT_MARKER: &str = "kept in case you need it again";
 const CONFLICT_MARKER: &str = "conflict";
 const OVERWRITTEN_MARKER: &str = "would be overwritten";
@@ -114,7 +120,45 @@ pub fn confirm_smart_operation(
     cx.background_spawn(async move { receiver.await.unwrap_or(SmartChoice::Cancel) })
 }
 
-pub fn stash_local_changes(context: &BranchContext, cx: &mut App) -> Task<Result<bool>> {
+/// IntelliJ's `GitPreservingProcess` message: "Uncommitted changes before
+/// Checkout at 10/20/26, 3:45 PM".
+pub fn stash_message_with_date(operation_title: &str, now: OffsetDateTime) -> String {
+    let date = now
+        .format(STASH_DATE_FORMAT)
+        .unwrap_or_else(|_| now.date().to_string());
+    format!("{STASH_MESSAGE}{operation_title} at {date}")
+}
+
+/// IntelliJ's rebase saves local changes without a date.
+pub fn rebase_stash_message() -> String {
+    format!("{STASH_MESSAGE}{REBASE_OPERATION_NAME}")
+}
+
+pub fn stash_message_now(operation_title: &str) -> String {
+    let now = OffsetDateTime::now_local().unwrap_or_else(|_| OffsetDateTime::now_utc());
+    stash_message_with_date(operation_title, now)
+}
+
+const STASH_DATE_FORMAT: &[time::format_description::BorrowedFormatItem<'static>] = time::macros::format_description!(
+    "[month padding:none]/[day padding:none]/[year repr:last_two], [hour repr:12 padding:none]:[minute] [period]"
+);
+
+impl SmartOperation {
+    pub fn stash_message(self) -> String {
+        match self {
+            SmartOperation::Rebase => rebase_stash_message(),
+            SmartOperation::Checkout | SmartOperation::Merge => {
+                stash_message_now(self.title_case())
+            }
+        }
+    }
+}
+
+pub fn stash_local_changes(
+    context: &BranchContext,
+    message: String,
+    cx: &mut App,
+) -> Task<Result<bool>> {
     let repository = context.repository.clone();
     let paths: Vec<_> = repository
         .read(cx)
@@ -127,13 +171,49 @@ pub fn stash_local_changes(context: &BranchContext, cx: &mut App) -> Task<Result
     }
     let existing = our_stash_count(&repository.read(cx).cached_stash().entries);
     let stash = repository.update(cx, |repository, cx| {
-        repository.stash_entries(paths, Some(STASH_MESSAGE.to_string()), cx)
+        repository.stash_entries(paths, Some(message), cx)
     });
     cx.spawn(async move |cx| {
         stash.await?;
         wait_for_our_stashes(&repository, existing + 1, cx).await;
+        cx.update(|cx| remember_operation_stash(&repository, cx));
         anyhow::Ok(true)
     })
+}
+
+fn operation_stash_key(repository: &Repository) -> String {
+    format!(
+        "{OPERATION_STASH_KEY_PREFIX}:{}",
+        repository.work_directory_abs_path.display()
+    )
+}
+
+/// The message is IntelliJ's, so IntelliJ's own leftover stashes look the same; the stash's
+/// commit is what tells the one this operation made apart when a later Abort or Continue
+/// restores it.
+fn remember_operation_stash(repository: &Entity<Repository>, cx: &App) {
+    let repository = repository.read(cx);
+    let stash = repository.cached_stash();
+    let Some(entry) = stash
+        .entries
+        .iter()
+        .find(|entry| entry.index == 0 && entry.message.contains(STASH_MESSAGE))
+    else {
+        return;
+    };
+    let key = operation_stash_key(repository);
+    let oid = entry.oid.to_string();
+    let store = KeyValueStore::global(cx);
+    db::write_and_log(cx, move || async move { store.write_kvp(key, oid).await });
+}
+
+pub(crate) fn is_operation_stash(repository: &Repository, entry: &StashEntry, cx: &App) -> bool {
+    entry.message.contains(STASH_MESSAGE)
+        && KeyValueStore::global(cx)
+            .read_kvp(&operation_stash_key(repository))
+            .log_err()
+            .flatten()
+            .is_some_and(|oid| oid == entry.oid.to_string())
 }
 
 #[derive(Clone, Debug)]
@@ -194,6 +274,7 @@ fn view_saved_changes_action() -> NoticeAction {
         handler: Rc::new(|window: &mut Window, cx: &mut App| {
             window.dispatch_action(zed_actions::git::ViewStash.boxed_clone(), cx)
         }),
+        expires: true,
     }
 }
 
@@ -291,7 +372,7 @@ async fn wait_for_our_stashes(
     settled
 }
 
-struct SmartOperationDialog {
+pub(crate) struct SmartOperationDialog {
     operation: SmartOperation,
     files: Vec<SharedString>,
     explanation: SharedString,
@@ -316,7 +397,7 @@ impl SmartOperationDialog {
         }
     }
 
-    fn choose(&mut self, choice: SmartChoice, cx: &mut Context<Self>) {
+    pub(super) fn choose(&mut self, choice: SmartChoice, cx: &mut Context<Self>) {
         if let Some(sender) = self.sender.take() {
             sender.send(choice).ok();
         }
@@ -325,6 +406,10 @@ impl SmartOperationDialog {
 
     fn cancel(&mut self, _: &Cancel, _window: &mut Window, cx: &mut Context<Self>) {
         self.choose(SmartChoice::Cancel, cx);
+    }
+
+    fn confirm(&mut self, _: &Confirm, _window: &mut Window, cx: &mut Context<Self>) {
+        self.choose(SmartChoice::Smart, cx);
     }
 }
 
@@ -351,6 +436,7 @@ impl Render for SmartOperationDialog {
             .key_context("SmartOperationDialog")
             .track_focus(&self.focus_handle)
             .on_action(cx.listener(Self::cancel))
+            .on_action(cx.listener(Self::confirm))
             .elevation_3(cx)
             .w(rems(36.))
             .child(
@@ -419,6 +505,45 @@ impl Render for SmartOperationDialog {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stash_messages_follow_the_intellij_preserving_process() {
+        let now = time::macros::datetime!(2026-10-20 15:04 UTC);
+        assert_eq!(
+            stash_message_with_date("Checkout", now),
+            "Uncommitted changes before Checkout at 10/20/26, 3:04 PM"
+        );
+        assert_eq!(rebase_stash_message(), "Uncommitted changes before rebase");
+        assert!(
+            our_stash_count(&[stash_entry(
+                0,
+                &format!("On main: {}", rebase_stash_message())
+            )]) == 1
+        );
+    }
+
+    #[gpui::test]
+    fn enter_in_the_smart_dialog_chooses_the_smart_operation(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| {
+            let settings_store = settings::SettingsStore::test(cx);
+            cx.set_global(settings_store);
+            theme_settings::init(theme::LoadThemes::JustBase, cx);
+        });
+        let (sender, mut receiver) = oneshot::channel();
+        let (dialog, cx) = cx.add_window_view(|_, cx| {
+            SmartOperationDialog::new(
+                SmartOperation::Checkout,
+                vec!["a.rs".to_string()],
+                "Flint",
+                sender,
+                cx,
+            )
+        });
+        dialog.update_in(cx, |dialog, window, cx| {
+            dialog.confirm(&Confirm, window, cx)
+        });
+        assert_eq!(receiver.try_recv().ok().flatten(), Some(SmartChoice::Smart));
+    }
 
     #[test]
     fn local_changes_not_restored_notice_follows_the_bundle_texts() {

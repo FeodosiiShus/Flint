@@ -11,6 +11,7 @@ pub struct HighlightedLabel {
     base: LabelLike,
     label: SharedString,
     highlight_indices: Vec<usize>,
+    highlight_style: Option<HighlightStyle>,
 }
 
 impl HighlightedLabel {
@@ -35,6 +36,7 @@ impl HighlightedLabel {
             base: LabelLike::new(),
             label,
             highlight_indices,
+            highlight_style: None,
         }
     }
 
@@ -62,6 +64,7 @@ impl HighlightedLabel {
             base: LabelLike::new(),
             label,
             highlight_indices,
+            highlight_style: None,
         }
     }
 
@@ -71,6 +74,25 @@ impl HighlightedLabel {
 
     pub fn highlight_indices(&self) -> &[usize] {
         &self.highlight_indices
+    }
+
+    /// Draws the highlighted characters with `style` instead of the accent text color, e.g. with
+    /// a filled background like a speed-search match.
+    pub fn highlight_style(mut self, style: HighlightStyle) -> Self {
+        self.highlight_style = Some(style);
+        self
+    }
+
+    pub fn custom_highlight_style(&self) -> Option<&HighlightStyle> {
+        self.highlight_style.as_ref()
+    }
+
+    /// The style the matched characters are drawn with: the custom one, else the accent text.
+    pub fn effective_highlight_style(&self, cx: &App) -> HighlightStyle {
+        self.highlight_style.unwrap_or_else(|| HighlightStyle {
+            color: Some(cx.theme().colors().text_accent),
+            ..Default::default()
+        })
     }
 
     /// Truncates the label from the start, keeping the end visible.
@@ -218,16 +240,8 @@ pub fn highlight_ranges(
 
 impl RenderOnce for HighlightedLabel {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
-        let highlight_color = cx.theme().colors().text_accent;
-
-        let highlights = highlight_ranges(
-            &self.label,
-            &self.highlight_indices,
-            HighlightStyle {
-                color: Some(highlight_color),
-                ..Default::default()
-            },
-        );
+        let style = self.effective_highlight_style(cx);
+        let highlights = highlight_ranges(&self.label, &self.highlight_indices, style);
 
         let mut text_style = window.text_style();
         text_style.color = self.base.color.color(cx);
@@ -379,6 +393,34 @@ mod tests {
         let label = HighlightedLabel::new("main.rs", vec![0, 5]).single_line();
         assert_eq!(label.text(), "main.rs");
         assert_eq!(label.highlight_indices(), &[0, 5]);
+    }
+
+    #[gpui::test]
+    fn test_a_custom_highlight_style_replaces_the_accent_color(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| {
+            let settings_store = settings::SettingsStore::test(cx);
+            cx.set_global(settings_store);
+            theme_settings::init(theme::LoadThemes::JustBase, cx);
+        });
+        let style = HighlightStyle {
+            background_color: Some(gpui::rgb(0xBA9752).into()),
+            ..Default::default()
+        };
+        let label = HighlightedLabel::new("main", vec![0, 1]).highlight_style(style);
+        assert_eq!(label.custom_highlight_style(), Some(&style));
+        assert_eq!(cx.update(|cx| label.effective_highlight_style(cx)), style);
+        assert_eq!(
+            highlight_ranges(label.text(), label.highlight_indices(), style),
+            vec![(0..2, style)]
+        );
+
+        let plain = HighlightedLabel::new("main", vec![0]);
+        assert_eq!(plain.custom_highlight_style(), None);
+        let accent = cx.update(|cx| cx.theme().colors().text_accent);
+        assert_eq!(
+            cx.update(|cx| plain.effective_highlight_style(cx)).color,
+            Some(accent)
+        );
     }
 
     #[test]

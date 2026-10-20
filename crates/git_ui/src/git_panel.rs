@@ -6,7 +6,7 @@ use crate::branch_operations::push_result::{
     upstream_ahead_count,
 };
 use crate::branch_operations::smart_operation::stash_pop_left_conflicts;
-use crate::branch_operations::{BranchContext, PushProgress};
+use crate::branch_operations::{BranchContext, OperationProgress, PUSH_PROGRESS_TITLE};
 use crate::commit_modal::CommitModal;
 use crate::git_panel_settings::GitPanelSettings;
 use crate::git_tool_window::GitToolWindow;
@@ -199,6 +199,27 @@ pub(crate) enum RemoteOperationKind {
     Fetch,
     Pull,
     Push,
+}
+
+/// Shows the Git tool window with a new log tab limited to `revisions`, the way
+/// IntelliJ's "View Commits" opens the updated commits in the log.
+pub(crate) fn show_log_for_revisions(
+    workspace: &WeakEntity<Workspace>,
+    revisions: Vec<SharedString>,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    workspace
+        .update(cx, |workspace, cx| {
+            let Some(panel) = workspace.focus_panel::<GitPanel>(window, cx) else {
+                return;
+            };
+            let tool_window = panel.read(cx).tool_window.clone();
+            tool_window.update(cx, |tool_window, cx| {
+                tool_window.open_log_tab_with_revisions(revisions, window, cx)
+            });
+        })
+        .log_err();
 }
 
 pub fn register(workspace: &mut Workspace) {
@@ -1597,8 +1618,9 @@ impl GitPanel {
                     .into(),
             };
             let pushed_commits = upstream_ahead_count(&branch, &target);
-            let (progress, progress_sender) =
-                cx.update(|_, cx| PushProgress::start(&context.workspace, cx))?;
+            let (progress, progress_sender) = cx.update(|_, cx| {
+                OperationProgress::start_reporting(&context.workspace, PUSH_PROGRESS_TITLE, cx)
+            })?;
 
             let push = repo.update(cx, |repo, cx| {
                 repo.push(
