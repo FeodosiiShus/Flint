@@ -8160,12 +8160,15 @@ impl Repository {
                     let Some(project_path) = self.repo_path_to_project_path(path, cx) else {
                         continue;
                     };
+                    // A file that changed on disk after it was loaded is never saved over, as
+                    // in IntelliJ; staging takes what is on disk then.
                     if let Some(buffer) = buffer_store.get_by_path(&project_path)
                         && buffer
                             .read(cx)
                             .file()
                             .is_some_and(|file| file.disk_state().exists())
                         && buffer.read(cx).has_unsaved_edits()
+                        && !buffer.read(cx).has_conflict()
                     {
                         save_futures.push(buffer_store.save_buffer(buffer, cx));
                     }
@@ -8360,7 +8363,7 @@ impl Repository {
     }
 
     pub fn rebase_onto(&mut self, cx: &mut Context<Self>) -> Task<Result<Option<String>>> {
-        let receiver = self.send_git_operation("rebase_onto", None, move |state, _| async move {
+        let receiver = self.send_job("rebase_onto", None, move |state, _| async move {
             match state {
                 RepositoryState::Local(LocalRepositoryState { backend, .. }) => {
                     Ok(backend.rebase_onto().await)
@@ -8377,17 +8380,16 @@ impl Repository {
         &mut self,
         cx: &mut Context<Self>,
     ) -> Task<Result<Option<String>>> {
-        let receiver =
-            self.send_git_operation("rebase_current_commit", None, move |state, _| async move {
-                match state {
-                    RepositoryState::Local(LocalRepositoryState { backend, .. }) => {
-                        Ok(backend.rebase_current_commit().await)
-                    }
-                    RepositoryState::Remote(_) => Err(anyhow!(
-                        "reading rebase state is not supported for remote repositories"
-                    )),
+        let receiver = self.send_job("rebase_current_commit", None, move |state, _| async move {
+            match state {
+                RepositoryState::Local(LocalRepositoryState { backend, .. }) => {
+                    Ok(backend.rebase_current_commit().await)
                 }
-            });
+                RepositoryState::Remote(_) => Err(anyhow!(
+                    "reading rebase state is not supported for remote repositories"
+                )),
+            }
+        });
         cx.background_spawn(async move { receiver.await? })
     }
 

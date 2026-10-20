@@ -833,19 +833,6 @@ impl WatchPaths {
         self.0.remove(key);
     }
 
-    /// True if a recursive registration on a strict ancestor already covers
-    /// `path`. Only poll watches and native macOS/Windows watches are recursive.
-    fn covered_by_recursive_ancestor(&self, path: &SanitizedPath, recursive: bool) -> bool {
-        if !recursive {
-            return false;
-        }
-        path.as_path().ancestors().skip(1).any(|ancestor| {
-            let ancestor = SanitizedPath::unchecked_new(ancestor);
-            self.0.contains_key(&WatchKey::exact(ancestor))
-                || self.0.contains_key(&WatchKey::folded(ancestor))
-        })
-    }
-
     /// True if a strict ancestor of `path` holds a native recursive watch, which reports the
     /// events under `path` too.
     fn has_watched_ancestor(&self, path: &SanitizedPath) -> bool {
@@ -1018,9 +1005,8 @@ impl OsWatcher {
         let path = SanitizedPath::from_arc(path);
         let key = WatchKey::for_registration(&path, case_insensitive);
         let mut state = self.state.lock();
-        let path_already_covered = state
-            .paths
-            .covered_by_recursive_ancestor(&path, self.recursive);
+        // A registered ancestor whose own watch failed covers nothing.
+        let path_already_covered = self.recursive && state.paths.has_watched_ancestor(&path);
         let path_already_registered = state.paths.contains(&key);
 
         if path_already_registered {
@@ -1121,37 +1107,21 @@ impl OsWatcher {
         let Some(path) = state.remove_registration(id) else {
             return;
         };
+        // Watched before the covering watch goes away, so no event in between is lost.
+        self.watch_uncovered_registrations(&mut state);
         self.unwatch(path.as_path()).log_err();
-        let uncovered = self.watch_registrations_below(&mut state, path.as_path());
-        drop(state);
-        for (path, callback) in uncovered {
-            callback(
-                &notify::Event::new(EventKind::Other)
-                    .set_flag(notify::event::Flag::Rescan)
-                    .add_path(path.as_path().to_path_buf()),
-            );
-        }
     }
 
-    /// Registrations below a recursive watch get no native watch of their own, so once that
-    /// watch is removed the top-most of them are watched themselves, like IntelliJ's
-    /// `WatchRootsUtil.removeRecursivePath`. Returns their callbacks, which need a rescan for
-    /// the events nobody reported while they were being switched over.
-    fn watch_registrations_below(
-        &self,
-        state: &mut WatcherState,
-        removed_path: &Path,
-    ) -> Vec<(
-        Arc<SanitizedPath>,
-        Arc<dyn Fn(&notify::Event) + Send + Sync>,
-    )> {
+    /// A registration below a recursive watch gets no native watch of its own. Once nothing
+    /// watched covers it anymore, the top-most of those registrations are watched themselves,
+    /// like IntelliJ's `WatchRootsUtil.removeRecursivePath`.
+    fn watch_uncovered_registrations(&self, state: &mut WatcherState) {
         if !self.recursive {
-            return Vec::new();
+            return;
         }
-        let mut uncovered = state
+        let mut unwatched = state
             .watchers
             .values()
-            .filter(|registration| registration.path.as_path().starts_with(removed_path))
             .filter(|registration| {
                 state
                     .paths
@@ -1161,36 +1131,37 @@ impl OsWatcher {
             })
             .map(|registration| (registration.key.clone(), registration.path.clone()))
             .collect::<Vec<_>>();
-        uncovered.sort_by_key(|(_, path)| path.as_path().components().count());
+        unwatched.sort_by_key(|(_, path)| path.as_path().components().count());
 
-        let mut callbacks = Vec::new();
-        for (key, path) in uncovered {
-            let already_watched = state
+        for (key, path) in unwatched {
+            let still_unwatched = state
                 .paths
                 .0
                 .get(&key)
-                .is_none_or(|path_state| path_state.has_os_watcher);
-            if already_watched || state.paths.has_watched_ancestor(&path) {
+                .is_some_and(|path_state| !path_state.has_os_watcher);
+            if !still_unwatched || state.paths.has_watched_ancestor(&path) {
                 continue;
             }
-            if let Err(error) = self.watch(path.as_path()) {
-                log::warn!(
-                    "failed to watch {path:?} after its covering watch was removed: {error}"
-                );
+            if self.kind == OsWatcherKind::Native && state.is_native_watch_limit_cooldown_active() {
                 continue;
             }
-            if let Some(path_state) = state.paths.get_mut(&key) {
-                path_state.has_os_watcher = true;
+            match self.watch(path.as_path()) {
+                Ok(()) => {
+                    if let Some(path_state) = state.paths.get_mut(&key) {
+                        path_state.has_os_watcher = true;
+                    }
+                }
+                Err(error) => {
+                    if self.kind == OsWatcherKind::Native && is_max_files_watch_error(&error) {
+                        state.start_native_watch_limit_cooldown(path.as_path());
+                    } else {
+                        log::warn!(
+                            "failed to watch {path:?} after its covering watch was removed: {error}"
+                        );
+                    }
+                }
             }
-            callbacks.extend(
-                state
-                    .watchers
-                    .values()
-                    .filter(|registration| registration.key == key)
-                    .map(|registration| (path.clone(), registration.callback.clone())),
-            );
         }
-        callbacks
     }
 
     fn watch(&self, path: &Path) -> anyhow::Result<()> {
@@ -1499,6 +1470,7 @@ mod tests {
         watched_paths: HashSet<PathBuf>,
         watch_calls: Vec<PathBuf>,
         unwatch_calls: Vec<PathBuf>,
+        operations: Vec<String>,
         fail_with_watch_limit: bool,
     }
 
@@ -1509,6 +1481,7 @@ mod tests {
             let path = path.to_path_buf();
             let mut backend = self.0.lock();
             backend.watch_calls.push(path.clone());
+            backend.operations.push(format!("watch {}", path.display()));
             if backend.fail_with_watch_limit {
                 return Err(notify::Error::new(notify::ErrorKind::MaxFilesWatch));
             }
@@ -1520,6 +1493,9 @@ mod tests {
             let path = path.to_path_buf();
             let mut backend = self.0.lock();
             backend.unwatch_calls.push(path.clone());
+            backend
+                .operations
+                .push(format!("unwatch {}", path.display()));
             if backend.watched_paths.remove(&path) {
                 Ok(())
             } else {
@@ -1596,61 +1572,98 @@ mod tests {
     }
 
     #[test]
-    fn removing_a_covering_watch_watches_only_the_top_most_registrations_below_it_and_rescans_them()
-    {
+    fn removing_a_covering_watch_first_watches_the_top_most_registrations_below_it() {
         let backend = Arc::new(Mutex::new(FakeWatchBackend::default()));
         let watcher = test_os_watcher(OsWatcherKind::Poll, Some(backend.clone()));
         let main_checkout = Path::new("/main");
         let common_git_dir = Path::new("/main/.git");
         let worktree_git_dir = Path::new("/main/.git/worktrees/feature");
-        let rescans = Arc::new(Mutex::new(Vec::new()));
-        let record_rescans = |name: &'static str| {
-            let rescans = rescans.clone();
-            move |event: &notify::Event| {
-                if event.need_rescan() {
-                    rescans.lock().push((name, event.paths.clone()));
-                }
-            }
-        };
 
         let main_registration = watcher
             .add(main_checkout.into(), false, |_| {})
             .expect("add main checkout watch")
             .expect("main checkout watch registered");
         let common_git_dir_registration = watcher
-            .add(common_git_dir.into(), false, record_rescans("common"))
+            .add(common_git_dir.into(), false, |_| {})
             .expect("add common git dir watch")
             .expect("common git dir watch registered");
         watcher
-            .add(worktree_git_dir.into(), false, record_rescans("worktree"))
+            .add(worktree_git_dir.into(), false, |_| {})
             .expect("add worktree git dir watch")
             .expect("worktree git dir watch registered");
-        assert_eq!(backend.lock().watch_calls, &[main_checkout.to_path_buf()]);
 
         watcher.remove(main_registration);
         assert_eq!(
-            backend.lock().watch_calls,
-            &[main_checkout.to_path_buf(), common_git_dir.to_path_buf()],
-            "the common git dir covers the worktree's git dir again"
-        );
-        assert_eq!(
-            *rescans.lock(),
-            &[("common", vec![common_git_dir.to_path_buf()])],
-            "events between the two watches were never reported"
+            backend.lock().operations,
+            &["watch /main", "watch /main/.git", "unwatch /main"],
+            "the common git dir is watched before the main checkout stops being watched, and it covers the worktree's git dir"
         );
 
         watcher.remove(common_git_dir_registration);
         assert_eq!(
-            backend.lock().watch_calls,
-            &[
-                main_checkout.to_path_buf(),
-                common_git_dir.to_path_buf(),
-                worktree_git_dir.to_path_buf(),
-            ]
+            backend.lock().operations[3..],
+            ["watch /main/.git/worktrees/feature", "unwatch /main/.git"]
         );
+    }
+
+    #[test]
+    fn a_registration_under_a_folder_spelled_with_other_case_is_watched_once_the_folder_is_removed()
+    {
+        let backend = Arc::new(Mutex::new(FakeWatchBackend::default()));
+        let watcher = test_os_watcher(OsWatcherKind::Poll, Some(backend.clone()));
+        let project = watcher
+            .add(Path::new("/Users/me/Main").into(), true, |_| {})
+            .expect("add project watch")
+            .expect("project watch registered");
+        watcher
+            .add(Path::new("/users/me/main/.git").into(), true, |_| {})
+            .expect("add git dir watch")
+            .expect("git dir watch registered");
         assert_eq!(
-            rescans.lock().last(),
-            Some(&("worktree", vec![worktree_git_dir.to_path_buf()]))
+            backend.lock().watch_calls.len(),
+            1,
+            "the git dir is covered"
+        );
+
+        watcher.remove(project);
+        assert!(
+            backend
+                .lock()
+                .watched_paths
+                .contains(Path::new("/users/me/main/.git"))
+        );
+    }
+
+    #[test]
+    fn a_registration_whose_watch_failed_covers_nothing() {
+        let backend = Arc::new(Mutex::new(FakeWatchBackend::default()));
+        let watcher = test_os_watcher(OsWatcherKind::Poll, Some(backend.clone()));
+        let parent = watcher
+            .add(Path::new("/main").into(), false, |_| {})
+            .expect("add parent watch")
+            .expect("parent watch registered");
+        watcher
+            .add(Path::new("/main/.git").into(), false, |_| {})
+            .expect("add child watch")
+            .expect("child watch registered");
+        backend.lock().fail_with_watch_limit = true;
+        watcher.remove(parent);
+        backend.lock().fail_with_watch_limit = false;
+
+        watcher
+            .add(
+                Path::new("/main/.git/worktrees/feature").into(),
+                false,
+                |_| {},
+            )
+            .expect("add grandchild watch")
+            .expect("grandchild watch registered");
+        assert!(
+            backend
+                .lock()
+                .watched_paths
+                .contains(Path::new("/main/.git/worktrees/feature")),
+            "nothing watched covers the new registration"
         );
     }
 

@@ -198,13 +198,7 @@ pub fn init(cx: &mut App) {
                     panel.push(false, true, window, cx);
                 });
             });
-            workspace.register_action(|workspace, _: &git::ForcePush, window, cx| {
-                if let Some(context) = active_branch_context(workspace, cx) {
-                    window.defer(cx, move |window, cx| {
-                        branch_operations::manage::force_push_current(context, window, cx);
-                    });
-                }
-            });
+            workspace.register_action(force_push);
             workspace.register_action(|workspace, _: &git::Pull, window, cx| {
                 let Some(panel) = workspace.panel::<git_panel::GitPanel>(cx) else {
                     return;
@@ -385,6 +379,21 @@ fn register_branch_operation_actions(workspace: &mut Workspace) {
             });
         }
     });
+}
+
+/// `git: force push` goes through the same protected-branch check and confirmation as the
+/// Push dialog's Force Push.
+pub(crate) fn force_push(
+    workspace: &mut Workspace,
+    _: &git::ForcePush,
+    window: &mut Window,
+    cx: &mut Context<Workspace>,
+) {
+    if let Some(context) = active_branch_context(workspace, cx) {
+        window.defer(cx, move |window, cx| {
+            branch_operations::manage::force_push_current(context, window, cx);
+        });
+    }
 }
 
 fn active_branch_context(

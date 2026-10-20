@@ -175,8 +175,11 @@ pub fn stash_local_changes(
     });
     cx.spawn(async move |cx| {
         stash.await?;
-        wait_for_our_stashes(&repository, existing + 1, cx).await;
-        cx.update(|cx| remember_operation_stash(&repository, cx));
+        // Before the new stash shows up, the newest entry may be someone else's stash, which a
+        // later Abort or Continue must never pop.
+        if wait_for_our_stashes(&repository, existing + 1, cx).await {
+            cx.update(|cx| remember_operation_stash(&repository, cx));
+        }
         anyhow::Ok(true)
     })
 }

@@ -54,7 +54,7 @@ struct Fixture {
     workspace: Entity<Workspace>,
     repository: Entity<Repository>,
     context: BranchContext,
-    _window: WindowHandle<MultiWorkspace>,
+    window: WindowHandle<MultiWorkspace>,
     cx: VisualTestContext,
 }
 
@@ -109,7 +109,7 @@ impl Fixture {
             workspace,
             repository,
             context,
-            _window: window,
+            window,
             cx: visual_cx,
         };
         fixture.cx.run_until_parked();
@@ -598,7 +598,15 @@ async fn the_force_push_action_refuses_protected_targets_and_asks_for_others(
             .expect("the repository exists")
     };
 
-    fixture.run(manage::force_push_current);
+    // `git: force push`, as the command palette and key bindings run it.
+    let run_force_push_action = |fixture: &mut Fixture| {
+        let workspace = fixture.workspace.clone();
+        workspace.update_in(&mut fixture.cx, |workspace, window, cx| {
+            crate::force_push(workspace, &git::ForcePush, window, cx)
+        });
+        fixture.cx.run_until_parked();
+    };
+    run_force_push_action(&mut fixture);
     assert!(pushes(&mut fixture).is_empty(), "main is protected");
     assert!(fixture.modal::<PushDialog>().is_none());
     let messages: Vec<String> = fixture
@@ -612,7 +620,7 @@ async fn the_force_push_action_refuses_protected_targets_and_asks_for_others(
         .fs
         .set_branch_name(&fixture.dot_git, Some("feature"));
     fixture.cx.run_until_parked();
-    fixture.run(manage::force_push_current);
+    run_force_push_action(&mut fixture);
     let dialog = fixture
         .modal::<PushDialog>()
         .expect("the push dialog opens at the force push confirmation");
@@ -711,6 +719,56 @@ async fn a_branch_used_by_another_worktree_can_be_checked_out_anyway(cx: &mut Te
             .notice_texts()
             .contains(&(None, "Checked out topic".to_string()))
     );
+}
+
+#[gpui::test]
+async fn open_existing_worktree_adds_a_project_tab_instead_of_opening_a_window(
+    cx: &mut TestAppContext,
+) {
+    let mut fixture = Fixture::open(cx, |fs, dot_git| {
+        fs.set_simulated_git_failure_for_repo(
+            dot_git,
+            FakeGitOperation::Checkout,
+            Some((
+                GitFailureKind::BranchCheckedOutInWorktree {
+                    path: "/worktrees/topic".to_string(),
+                },
+                "fatal: 'topic' is already used by worktree at '/worktrees/topic'",
+            )),
+        );
+    })
+    .await;
+    let worktree_path = PathBuf::from(path!("/worktrees/topic"));
+    fixture
+        .fs
+        .insert_tree(&worktree_path, json!({ "file.txt": "content" }))
+        .await;
+    let fs = fixture.fs.clone();
+    fixture.cx.update(|_, cx| <dyn fs::Fs>::set_global(fs, cx));
+    let windows_before = fixture.cx.update(|_, cx| cx.windows().len());
+
+    fixture.run(|context, window, cx| {
+        checkout::checkout(context, RefTarget::local("topic"), window, cx)
+    });
+    fixture.cx.simulate_prompt_answer("Open Existing Worktree");
+    fixture.cx.run_until_parked();
+
+    assert_eq!(
+        fixture.cx.update(|_, cx| cx.windows().len()),
+        windows_before,
+        "Open Existing Worktree never opens a window"
+    );
+    fixture
+        .window
+        .read_with(&fixture.cx, |multi_workspace, cx| {
+            assert_eq!(multi_workspace.workspaces().count(), 2);
+            assert_eq!(
+                multi_workspace.workspace().read(cx).root_paths(cx),
+                vec![Arc::from(worktree_path.as_path())]
+            );
+        })
+        .expect("window is alive");
+    assert_eq!(fixture.current_branch().as_deref(), Some("main"));
 }
 
 #[gpui::test]

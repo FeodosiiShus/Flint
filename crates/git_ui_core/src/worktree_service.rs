@@ -138,6 +138,16 @@ impl RemoteBranchFetchMode {
     }
 }
 
+/// What sets IntelliJ's New Worktree from 'X'… apart from the worktree picker's creations.
+#[derive(Clone, Default)]
+struct WorktreeCreationScope {
+    /// Creates the worktree only in this repository instead of in every repository.
+    only_repository: Option<Entity<Repository>>,
+    /// Checks the branch out in the new worktree (IntelliJ's `WorktreeBranchSpec.CheckoutExisting`)
+    /// instead of starting a detached HEAD at its tip.
+    check_out_branch: bool,
+}
+
 #[derive(Debug)]
 struct WorktreeFetchError {
     remote_name: String,
@@ -177,6 +187,7 @@ struct WorktreeFetchFailedToast {
     workspace: WeakEntity<Workspace>,
     worktree_name: Option<String>,
     branch_target: NewWorktreeBranchTarget,
+    scope: WorktreeCreationScope,
     focused_dock: Option<DockPosition>,
     remote_branch_name: String,
     operation: SharedString,
@@ -189,6 +200,7 @@ impl WorktreeFetchFailedToast {
         workspace: WeakEntity<Workspace>,
         worktree_name: Option<String>,
         branch_target: NewWorktreeBranchTarget,
+        scope: WorktreeCreationScope,
         focused_dock: Option<DockPosition>,
         fetch_error: &WorktreeFetchError,
         cx: &mut gpui::Context<Self>,
@@ -197,6 +209,7 @@ impl WorktreeFetchFailedToast {
             workspace,
             worktree_name,
             branch_target,
+            scope,
             focused_dock,
             remote_branch_name: fetch_error.remote_branch_name(),
             operation: format!("fetch {}", fetch_error.remote_name).into(),
@@ -229,6 +242,7 @@ impl Render for WorktreeFetchFailedToast {
         let workspace_for_retry = self.workspace.clone();
         let worktree_name = self.worktree_name.clone();
         let branch_target = self.branch_target.clone();
+        let scope = self.scope.clone();
         let focused_dock = self.focused_dock;
 
         let workspace_for_log = self.workspace.clone();
@@ -273,7 +287,7 @@ impl Render for WorktreeFetchFailedToast {
                                 window,
                                 focused_dock,
                                 RemoteBranchFetchMode::UseLocal,
-                                None,
+                                scope.clone(),
                                 cx,
                             );
                             task.detach_and_log_err(cx);
@@ -361,6 +375,33 @@ pub fn resolve_worktree_branch_target(branch_target: &NewWorktreeBranchTarget) -
             remote_name,
             branch_name,
         } => Some(format!("refs/remotes/{remote_name}/{branch_name}")),
+    }
+}
+
+/// Like IntelliJ's `WorktreeBranchSpec.CheckoutExisting` when `check_out_branch` is set: a local
+/// branch is checked out, a remote branch gets a local branch of the same name that tracks it,
+/// and anything else (the worktree picker's creations, tags) starts a detached HEAD.
+fn worktree_creation_target(
+    branch_target: &NewWorktreeBranchTarget,
+    check_out_branch: bool,
+) -> git::repository::CreateWorktreeTarget {
+    match branch_target {
+        NewWorktreeBranchTarget::ExistingBranch { name }
+            if check_out_branch && !name.starts_with("refs/") =>
+        {
+            git::repository::CreateWorktreeTarget::ExistingBranch {
+                branch_name: name.clone(),
+            }
+        }
+        NewWorktreeBranchTarget::RemoteBranch { branch_name, .. } if check_out_branch => {
+            git::repository::CreateWorktreeTarget::NewBranch {
+                branch_name: branch_name.clone(),
+                base_sha: resolve_worktree_branch_target(branch_target),
+            }
+        }
+        _ => git::repository::CreateWorktreeTarget::Detached {
+            base_sha: resolve_worktree_branch_target(branch_target),
+        },
     }
 }
 
@@ -462,7 +503,7 @@ fn start_worktree_creations(
     worktree_name: Option<String>,
     existing_worktree_names: &[String],
     existing_worktree_paths: &HashSet<PathBuf>,
-    base_ref: Option<String>,
+    target: git::repository::CreateWorktreeTarget,
     worktree_directory_setting: &str,
     rng: &mut impl rand::Rng,
     cx: &mut gpui::App,
@@ -498,10 +539,7 @@ fn start_worktree_creations(
             let receiver = if scheduled_paths.contains(&new_path) {
                 None
             } else {
-                let target = git::repository::CreateWorktreeTarget::Detached {
-                    base_sha: base_ref.clone(),
-                };
-                Some(repo.create_worktree(target, new_path.clone()))
+                Some(repo.create_worktree(target.clone(), new_path.clone()))
             };
             anyhow::Ok((work_dir, new_path, receiver))
         })?;
@@ -694,14 +732,14 @@ pub fn handle_create_worktree(
         window,
         fallback_focused_dock,
         RemoteBranchFetchMode::Fetch,
-        None,
+        WorktreeCreationScope::default(),
         cx,
     );
     task.detach_and_log_err(cx);
 }
 
-/// Creates the worktree only in `repository`, for a ref that belongs to that repository
-/// (IntelliJ's `GitCreateWorkingTreeAction` offers no other repository then).
+/// IntelliJ's New Worktree from 'X'…: creates the worktree only in `repository`, which the ref
+/// belongs to, and checks a branch out in it (a tag or a commit gets a detached HEAD).
 pub fn handle_create_worktree_in_repository(
     workspace: &mut Workspace,
     repository: Entity<Repository>,
@@ -716,7 +754,10 @@ pub fn handle_create_worktree_in_repository(
         window,
         fallback_focused_dock,
         RemoteBranchFetchMode::Fetch,
-        Some(repository),
+        WorktreeCreationScope {
+            only_repository: Some(repository),
+            check_out_branch: true,
+        },
         cx,
     );
     task.detach_and_log_err(cx);
@@ -728,7 +769,7 @@ fn create_worktree_workspace_inner(
     window: &mut gpui::Window,
     fallback_focused_dock: Option<DockPosition>,
     remote_branch_fetch_mode: RemoteBranchFetchMode,
-    only_repository: Option<Entity<Repository>>,
+    scope: WorktreeCreationScope,
     cx: &mut gpui::Context<Workspace>,
 ) -> Task<anyhow::Result<Entity<Workspace>>> {
     let project = workspace.project().clone();
@@ -758,7 +799,7 @@ fn create_worktree_workspace_inner(
     let window_handle = window.window_handle().downcast::<MultiWorkspace>();
 
     let (mut git_repos, non_git_paths) = classify_worktrees(project.read(cx), cx);
-    if let Some(only_repository) = &only_repository {
+    if let Some(only_repository) = &scope.only_repository {
         git_repos.retain(|repository| repository == only_repository);
     }
 
@@ -808,6 +849,7 @@ fn create_worktree_workspace_inner(
             non_git_paths,
             worktree_name.clone(),
             branch_target.clone(),
+            scope.check_out_branch,
             fetch_askpass_delegates,
             remote_branch_fetch_mode,
             previous_state,
@@ -828,6 +870,7 @@ fn create_worktree_workspace_inner(
                                 workspace.weak_handle(),
                                 worktree_name,
                                 branch_target,
+                                scope,
                                 fallback_focused_dock,
                                 fetch_error,
                                 cx,
@@ -918,6 +961,7 @@ async fn do_create_worktree(
     non_git_paths: Vec<PathBuf>,
     worktree_name: Option<String>,
     branch_target: NewWorktreeBranchTarget,
+    check_out_branch: bool,
     fetch_askpass_delegates: Vec<AskPassDelegate>,
     remote_branch_fetch_mode: RemoteBranchFetchMode,
     previous_state: PreviousWorkspaceState,
@@ -987,7 +1031,7 @@ async fn do_create_worktree(
 
     let mut rng = rand::rng();
 
-    let base_ref = resolve_worktree_branch_target(&branch_target);
+    let target = worktree_creation_target(&branch_target, check_out_branch);
 
     let (creation_infos, path_remapping) = cx.update(|_, cx| {
         start_worktree_creations(
@@ -995,7 +1039,7 @@ async fn do_create_worktree(
             worktree_name,
             &existing_worktree_names,
             &existing_worktree_paths,
-            base_ref,
+            target,
             &worktree_directory_setting,
             &mut rng,
             cx,
@@ -1599,7 +1643,7 @@ mod tests {
         main_workspace.update_in(cx, |workspace, window, cx| {
             handle_create_worktree_in_repository(
                 workspace,
-                frontend,
+                frontend.clone(),
                 &zed_actions::CreateWorktree {
                     worktree_name: Some("feature-tree".to_string()),
                     branch_target: NewWorktreeBranchTarget::ExistingBranch {
@@ -1628,6 +1672,66 @@ mod tests {
                 .all(|root| root.ends_with("feature-tree/frontend")
                     || root.ends_with("feature-tree")),
             "{roots:?}"
+        );
+        let worktrees = frontend
+            .update(cx, |repository, _| repository.worktrees())
+            .await
+            .unwrap()
+            .unwrap();
+        let created = worktrees
+            .iter()
+            .find(|worktree| {
+                worktree.path.ends_with("feature-tree")
+                    || worktree.path.ends_with("feature-tree/frontend")
+            })
+            .unwrap_or_else(|| panic!("the worktree was created: {worktrees:?}"));
+        assert_eq!(
+            created.ref_name.as_deref(),
+            Some("refs/heads/feature"),
+            "like IntelliJ's New Worktree from 'feature'…, the branch is checked out instead of a detached HEAD"
+        );
+    }
+
+    #[test]
+    fn test_new_worktree_from_a_ref_checks_out_branches_like_intellij() {
+        use git::repository::CreateWorktreeTarget;
+
+        let local_branch = NewWorktreeBranchTarget::ExistingBranch {
+            name: "feature".to_string(),
+        };
+        let remote_branch = NewWorktreeBranchTarget::RemoteBranch {
+            remote_name: "origin".to_string(),
+            branch_name: "feature/login".to_string(),
+        };
+        let tag = NewWorktreeBranchTarget::ExistingBranch {
+            name: "refs/tags/v1".to_string(),
+        };
+        assert_eq!(
+            worktree_creation_target(&local_branch, true),
+            CreateWorktreeTarget::ExistingBranch {
+                branch_name: "feature".to_string()
+            }
+        );
+        assert_eq!(
+            worktree_creation_target(&remote_branch, true),
+            CreateWorktreeTarget::NewBranch {
+                branch_name: "feature/login".to_string(),
+                base_sha: Some("refs/remotes/origin/feature/login".to_string()),
+            },
+            "a remote branch gets a local branch of the same name that tracks it"
+        );
+        assert_eq!(
+            worktree_creation_target(&tag, true),
+            CreateWorktreeTarget::Detached {
+                base_sha: Some("refs/tags/v1".to_string())
+            }
+        );
+        assert_eq!(
+            worktree_creation_target(&local_branch, false),
+            CreateWorktreeTarget::Detached {
+                base_sha: Some("feature".to_string())
+            },
+            "the worktree picker keeps starting detached worktrees"
         );
     }
 

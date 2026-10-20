@@ -643,6 +643,28 @@ pub fn worktree_branch_target(target: &RefTarget) -> NewWorktreeBranchTarget {
     }
 }
 
+/// IntelliJ names the worktree's directory after the ref, with the characters a file name can't
+/// hold (and whitespace) replaced by `_` (`sanitizeFileName`).
+fn worktree_directory_name(target: &RefTarget) -> String {
+    let sanitized = target
+        .name_without_remote()
+        .chars()
+        .map(|character| {
+            if character.is_whitespace() || matches!(character, '/' | '\\' | ':') {
+                '_'
+            } else {
+                character
+            }
+        })
+        .collect::<String>();
+    let trimmed = sanitized.trim_end_matches(['-', '_', '.']);
+    if trimmed.is_empty() {
+        "worktree".to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
 fn create_worktree_from(
     context: &BranchContext,
     target: &RefTarget,
@@ -653,7 +675,7 @@ fn create_worktree_from(
         return;
     };
     let action = CreateWorktree {
-        worktree_name: None,
+        worktree_name: Some(worktree_directory_name(target)),
         branch_target: worktree_branch_target(target),
     };
     let repository = context.repository.clone();
@@ -667,6 +689,20 @@ fn create_worktree_from(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn new_worktree_directories_are_named_after_the_ref_like_intellij() {
+        assert_eq!(
+            worktree_directory_name(&RefTarget::local("feature/login")),
+            "feature_login"
+        );
+        assert_eq!(
+            worktree_directory_name(&RefTarget::remote("origin/fix it")),
+            "fix_it"
+        );
+        assert_eq!(worktree_directory_name(&RefTarget::tag("v1.0.")), "v1.0");
+        assert_eq!(worktree_directory_name(&RefTarget::local("__")), "worktree");
+    }
 
     struct Scenario {
         target: RefTarget,
