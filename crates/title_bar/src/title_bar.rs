@@ -35,8 +35,7 @@ use std::path::Path;
 use title_bar_settings::TitleBarSettings;
 pub use toolbar_widgets::SEARCH_FIELD_DEBUG_SELECTOR;
 use toolbar_widgets::{
-    TOOLBAR_WIDGET_ICON_SIDE, ToolbarSearchField, ToolbarWidget, toolbar_widget_icon_color,
-    upstream_tracking,
+    ToolbarSearchField, ToolbarWidget, toolbar_widget_icon_color, upstream_tracking,
 };
 use ui::{
     ChromeRegion, ContextMenu, ContextMenuEntry, IconButtonShape, PopoverMenu, TintColor, Tooltip,
@@ -52,13 +51,17 @@ use workspace::{
 const MAX_BRANCH_NAME_LENGTH: usize = 80;
 const MAX_SHORT_SHA_LENGTH: usize = 8;
 const PROJECT_TABS_DEBUG_SELECTOR: &str = "title_bar_project_tabs";
-// `WindowTabsComponent`: the tab content insets under Islands are (0, 4, 0, 15), the close
-// button sits on the left with a 6 px border, and a tab never gets narrower than
-// `TabbedPane.tabContentMinWidth`.
-const PROJECT_TAB_PADDING_LEFT: Pixels = px(4.);
-const PROJECT_TAB_PADDING_RIGHT: Pixels = px(15.);
-const PROJECT_TAB_CLOSE_BORDER: Pixels = px(6.);
-const PROJECT_TAB_CONTENT_MIN_WIDTH: Pixels = px(24.);
+// Like IntelliJ's `WindowTabsComponent`, the tabs share the free width equally, but here only
+// the row after Search Everywhere, so a tab is never wider than a comfortable title. The close
+// button sits on the left in its own slot, mirrored on the right so the title stays centered
+// and never touches it.
+const PROJECT_TABS_GAP: Pixels = px(10.);
+const PROJECT_TAB_MIN_WIDTH: Pixels = px(72.);
+const PROJECT_TAB_MAX_WIDTH: Pixels = px(220.);
+const PROJECT_TAB_PADDING_X: Pixels = px(6.);
+const PROJECT_TAB_CLOSE_SLOT: Pixels = px(20.);
+const PROJECT_TAB_CLOSE_GAP: Pixels = px(6.);
+const PROJECT_TAB_CLOSE_ICON_SIDE: Pixels = px(14.);
 // `IslandsUICustomization.paintProjectTab`: the fill is inset 1 px from the tab's sides, and
 // the separator between two plain tabs is inset 5 px from the top and bottom.
 const PROJECT_TAB_FILL_INSET: Pixels = px(1.);
@@ -279,11 +282,13 @@ impl Render for DraggedProjectTab {
         let corner_radius = WorkspaceSettings::get_global(cx).islands.corner_radius;
         h_flex()
             .h(ui::utils::title_bar_widget_height(cx))
-            .px(PROJECT_TAB_PADDING_RIGHT)
+            .min_w(PROJECT_TAB_MIN_WIDTH)
+            .px(PROJECT_TAB_PADDING_X + PROJECT_TAB_CLOSE_SLOT + PROJECT_TAB_CLOSE_GAP)
+            .justify_center()
             .rounded(corner_radius)
             .bg(cx.theme().colors().panel_background)
             .font_ui(cx)
-            .child(Label::new(self.title.clone()).size(LabelSize::Small))
+            .child(Label::new(self.title.clone()))
     }
 }
 
@@ -356,6 +361,7 @@ impl Render for TitleBar {
         let project_tabs = self.render_project_tabs(window, cx);
         let project_items = h_flex()
             .h_full()
+            .flex_1()
             // Lets the project tabs give way before the branch widget and the search field.
             .min_w_0()
             .gap_0p5()
@@ -378,7 +384,6 @@ impl Render for TitleBar {
                     .children(self.render_restricted_mode(cx))
                     .when(render_project_items, |title_bar| {
                         title_bar
-                            .children(project_tabs)
                             .when_some(
                                 repository.filter(|_| is_git_enabled),
                                 |title_bar, repository| {
@@ -395,6 +400,7 @@ impl Render for TitleBar {
                             .when(title_bar_settings.show_search_button, |title_bar| {
                                 title_bar.child(Self::render_search_everywhere_field())
                             })
+                            .children(project_tabs)
                     })
             })
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
@@ -775,8 +781,9 @@ impl TitleBar {
         let corner_radius = WorkspaceSettings::get_global(cx).islands.corner_radius;
         let height = ui::utils::title_bar_widget_height(cx);
         let icon_scale = ui::chrome_icon_scale(ChromeRegion::TitleBar, cx).unwrap_or(1.);
-        let close_icon_side = TOOLBAR_WIDGET_ICON_SIDE * icon_scale;
-        let close_icon_size = ui::exact_icon_size(close_icon_side, window.rem_size());
+        let close_slot = PROJECT_TAB_CLOSE_SLOT * icon_scale;
+        let close_icon_size =
+            ui::exact_icon_size(PROJECT_TAB_CLOSE_ICON_SIDE * icon_scale, window.rem_size());
         let menu_workspace_id = self.project_tab_menu.as_ref().map(|menu| menu.workspace_id);
         let highlighted = |tab: &ProjectTab| {
             let id = tab.workspace.entity_id();
@@ -811,6 +818,7 @@ impl TitleBar {
                 let tooltip = project_widget_tooltip(&tab.title, Some(tab.path.as_ref()));
                 let debug_title = tab.title.clone();
                 let close_debug_title = tab.title.clone();
+                let label_debug_title = tab.title.clone();
                 let dragged = DraggedProjectTab {
                     workspace: tab.workspace.clone(),
                     title: tab.title.clone(),
@@ -821,13 +829,17 @@ impl TitleBar {
                     let workspace = tab.workspace.clone();
                     div()
                         .debug_selector(move || format!("PROJECT_TAB_CLOSE-{close_debug_title}"))
-                        .flex_none()
+                        .size_full()
+                        .flex()
+                        .items_center()
+                        .justify_center()
                         .child(
                             IconButton::new(
                                 ("project_tab_close", workspace_id.as_u64()),
                                 IconName::Close,
                             )
                             .shape(IconButtonShape::Square)
+                            .size(ButtonSize::Compact)
                             .icon_size(close_icon_size)
                             .icon_color(Color::Muted)
                             .tooltip(Tooltip::text(PROJECT_TAB_CLOSE_TOOLTIP))
@@ -864,8 +876,8 @@ impl TitleBar {
                     .debug_selector(move || format!("PROJECT_TAB-{debug_title}"))
                     .size_full()
                     .min_w_0()
-                    .pl(PROJECT_TAB_PADDING_LEFT)
-                    .pr(PROJECT_TAB_PADDING_RIGHT)
+                    .px(PROJECT_TAB_PADDING_X)
+                    .gap(PROJECT_TAB_CLOSE_GAP)
                     .rounded(corner_radius)
                     .when(is_active, |pill| pill.bg(selected_background))
                     .when(!is_active && is_hovered, |pill| pill.bg(hover_background))
@@ -943,21 +955,18 @@ impl TitleBar {
                                 .log_err();
                         }
                     })
+                    .child(div().flex_none().size(close_slot).children(close_button))
                     .child(
-                        div()
-                            .flex_none()
-                            .pl(PROJECT_TAB_CLOSE_BORDER)
-                            .w(PROJECT_TAB_CLOSE_BORDER + close_icon_side)
-                            .children(close_button),
-                    )
-                    .child(
-                        div()
+                        h_flex()
+                            .debug_selector(move || {
+                                format!("PROJECT_TAB_LABEL-{label_debug_title}")
+                            })
                             .flex_1()
-                            .min_w(PROJECT_TAB_CONTENT_MIN_WIDTH)
+                            .min_w_0()
+                            .justify_center()
                             .overflow_hidden()
                             .child(
                                 Label::new(tab.title)
-                                    .size(LabelSize::Small)
                                     .color(if is_active {
                                         Color::Default
                                     } else {
@@ -965,12 +974,16 @@ impl TitleBar {
                                     })
                                     .truncate(),
                             ),
-                    );
+                    )
+                    // Mirrors the close slot, so the title is centered in the tab.
+                    .child(div().flex_none().size(close_slot));
 
                 div()
                     .relative()
                     .flex()
-                    .min_w_0()
+                    .flex_1()
+                    .min_w(PROJECT_TAB_MIN_WIDTH)
+                    .max_w(PROJECT_TAB_MAX_WIDTH)
                     .h(height)
                     .px(PROJECT_TAB_FILL_INSET)
                     .child(pill)
@@ -1001,8 +1014,9 @@ impl TitleBar {
             h_flex()
                 .debug_selector(|| PROJECT_TABS_DEBUG_SELECTOR.into())
                 .h(height)
+                .flex_1()
                 .min_w_0()
-                .flex_shrink_1()
+                .ml(PROJECT_TABS_GAP)
                 .overflow_x_hidden()
                 .children(tab_elements)
                 .children(menu)
@@ -1649,10 +1663,10 @@ mod tests {
         let (_workspace, _title_bar, cx) = open_project_title_bar(cx, None).await;
 
         let flint_tab = project_tab_bounds(cx, "PROJECT_TAB-flint");
-        let version_control = project_tab_bounds(cx, VERSION_CONTROL_SETUP_DEBUG_SELECTOR);
+        let search_field = project_tab_bounds(cx, SEARCH_FIELD_DEBUG_SELECTOR);
         assert!(
-            flint_tab.right() <= version_control.left(),
-            "the project name comes first in the row: {flint_tab:?}, {version_control:?}"
+            search_field.right() <= flint_tab.left(),
+            "the project tab follows Search Everywhere: {search_field:?}, {flint_tab:?}"
         );
     }
 
@@ -1676,10 +1690,37 @@ mod tests {
     }
 
     #[gpui::test]
-    async fn project_tabs_give_way_before_the_branch_widget_and_the_search_field(
+    async fn project_tabs_follow_the_search_field_and_share_the_free_width(
         cx: &mut TestAppContext,
     ) {
         let (workspace, _title_bar, cx) = open_project_title_bar(cx, Some("main")).await;
+        add_project_to_window(&workspace, "/zed", cx).await;
+        let multi_workspace = multi_workspace_of(&workspace, cx);
+        multi_workspace.update_in(cx, |multi_workspace, window, cx| {
+            multi_workspace.activate(workspace.clone(), None, window, cx);
+        });
+        cx.run_until_parked();
+
+        let search_field = project_tab_bounds(cx, SEARCH_FIELD_DEBUG_SELECTOR);
+        let flint_tab = project_tab_bounds(cx, "PROJECT_TAB-flint");
+        let zed_tab = project_tab_bounds(cx, "PROJECT_TAB-zed");
+        assert!(
+            search_field.right() + PROJECT_TABS_GAP <= flint_tab.left()
+                && flint_tab.right() <= zed_tab.left(),
+            "the tabs come right after Search Everywhere: {search_field:?}, {flint_tab:?}, {zed_tab:?}"
+        );
+        for tab in [flint_tab, zed_tab] {
+            assert_eq!(
+                tab.size.width,
+                PROJECT_TAB_MAX_WIDTH - PROJECT_TAB_FILL_INSET * 2.,
+                "with room to spare every tab gets its full width, not just its title: {tab:?}"
+            );
+            assert_eq!(
+                tab.size.height,
+                cx.update(|_, cx| ui::utils::title_bar_widget_height(cx))
+            );
+        }
+
         for root in [
             "/a-project-with-a-really-long-folder-name-number-one",
             "/a-project-with-a-really-long-folder-name-number-two",
@@ -1692,7 +1733,6 @@ mod tests {
         ] {
             add_project_to_window(&workspace, root, cx).await;
         }
-        let multi_workspace = multi_workspace_of(&workspace, cx);
         multi_workspace.update_in(cx, |multi_workspace, window, cx| {
             multi_workspace.activate(workspace.clone(), None, window, cx);
         });
@@ -1700,14 +1740,13 @@ mod tests {
 
         let title_bar_height = cx.update(|window, cx| platform_title_bar_height(window, cx));
         let viewport_width = cx.update(|window, _| window.viewport_size().width);
-        let project_tabs = project_tab_bounds(cx, PROJECT_TABS_DEBUG_SELECTOR);
         let branch_widget = project_tab_bounds(cx, WORKTREE_AND_BRANCH_DEBUG_SELECTOR);
         let search_field = project_tab_bounds(cx, SEARCH_FIELD_DEBUG_SELECTOR);
-
+        let flint_tab = project_tab_bounds(cx, "PROJECT_TAB-flint");
         assert!(
-            project_tabs.right() <= branch_widget.left()
-                && branch_widget.right() <= search_field.left(),
-            "the tabs stay left of the branch widget: {project_tabs:?}, {branch_widget:?}, {search_field:?}"
+            branch_widget.right() <= search_field.left()
+                && search_field.right() <= flint_tab.left(),
+            "many projects keep the order: {branch_widget:?}, {search_field:?}, {flint_tab:?}"
         );
         assert_visible_inside_title_bar(search_field, title_bar_height, "Search Everywhere field");
         assert!(
@@ -1717,6 +1756,11 @@ mod tests {
         assert!(
             search_field.size.width >= px(200.),
             "the search field keeps its width while the tabs shrink: {search_field:?}"
+        );
+        assert!(
+            flint_tab.size.width < PROJECT_TAB_MAX_WIDTH - PROJECT_TAB_FILL_INSET * 2.
+                && flint_tab.size.width >= PROJECT_TAB_MIN_WIDTH - PROJECT_TAB_FILL_INSET * 2.,
+            "many tabs share the row equally down to a readable width: {flint_tab:?}"
         );
     }
 
@@ -1735,12 +1779,24 @@ mod tests {
         cx.simulate_mouse_move(zed_tab.center(), None, Modifiers::none());
         cx.run_until_parked();
         let close_button = project_tab_bounds(cx, "PROJECT_TAB_CLOSE-zed");
+        let zed_tab = project_tab_bounds(cx, "PROJECT_TAB-zed");
+        let zed_label = project_tab_bounds(cx, "PROJECT_TAB_LABEL-zed");
         assert!(
-            close_button.right()
-                <= cx
-                    .debug_bounds("PROJECT_TAB-zed")
-                    .map_or(px(0.), |tab| tab.center().x),
+            close_button.right() <= zed_tab.center().x,
             "the close button sits on the left of the tab, like IntelliJ's window tabs"
+        );
+        assert!(
+            zed_label.left() - close_button.right() >= PROJECT_TAB_CLOSE_GAP,
+            "the title keeps clear of the close button: {close_button:?}, {zed_label:?}"
+        );
+        assert!(
+            close_button.size.width >= PROJECT_TAB_CLOSE_SLOT
+                && close_button.size.height >= PROJECT_TAB_CLOSE_SLOT,
+            "the close button is an easy target: {close_button:?}"
+        );
+        assert!(
+            (zed_label.center().x - zed_tab.center().x).abs() <= px(1.),
+            "the title is centered in the tab: {zed_tab:?}, {zed_label:?}"
         );
 
         cx.simulate_click(close_button.center(), Modifiers::none());
@@ -2149,9 +2205,9 @@ mod tests {
 
         assert_visible_inside_title_bar(search_field, title_bar_height, "Search Everywhere field");
         assert!(
-            project_tabs.right() <= branch_widget.left()
-                && branch_widget.right() <= search_field.left(),
-            "the title bar reads project tabs, branch, then the search field: {project_tabs:?}, {branch_widget:?}, {search_field:?}"
+            branch_widget.right() <= search_field.left()
+                && search_field.right() <= project_tabs.left(),
+            "the title bar reads branch, the search field, then the project tabs: {branch_widget:?}, {search_field:?}, {project_tabs:?}"
         );
         assert!(
             search_field.left() - branch_widget.right() <= px(4.),
@@ -2226,9 +2282,9 @@ mod tests {
         let traffic_light_padding = px(ui::utils::TRAFFIC_LIGHT_PADDING);
         let widgets = |cx: &mut VisualTestContext, phase: &str| {
             [
-                PROJECT_TABS_DEBUG_SELECTOR,
                 WORKTREE_AND_BRANCH_DEBUG_SELECTOR,
                 SEARCH_FIELD_DEBUG_SELECTOR,
+                PROJECT_TABS_DEBUG_SELECTOR,
             ]
             .map(|selector| {
                 let bounds = cx
@@ -2247,12 +2303,12 @@ mod tests {
             !cx.update(|window, _| window.is_fullscreen()),
             "a new project window opens outside full screen"
         );
-        let [project_tabs, ..] = widgets(cx, "outside full screen");
+        let [branch_widget, ..] = widgets(cx, "outside full screen");
         assert!(
-            project_tabs.left() >= traffic_light_padding,
-            "outside full screen the project tabs start after the macOS window buttons, got {project_tabs:?}"
+            branch_widget.left() >= traffic_light_padding,
+            "outside full screen the branch widget starts after the macOS window buttons, got {branch_widget:?}"
         );
-        let windowed_project_tabs_left = project_tabs.left();
+        let windowed_branch_widget_left = branch_widget.left();
 
         cx.update(|window, _| {
             window.toggle_fullscreen();
@@ -2264,19 +2320,19 @@ mod tests {
             cx.update(|window, _| window.is_fullscreen()),
             "toggling full screen puts the window in full screen"
         );
-        let [project_tabs, branch_widget, search_field] = widgets(cx, "in full screen");
+        let [branch_widget, search_field, project_tabs] = widgets(cx, "in full screen");
         assert!(
-            project_tabs.left() < traffic_light_padding,
-            "in full screen the project tabs move into the space of the hidden macOS window buttons, got {project_tabs:?}"
+            branch_widget.left() < traffic_light_padding,
+            "in full screen the branch widget moves into the space of the hidden macOS window buttons, got {branch_widget:?}"
         );
         assert!(
-            project_tabs.left() < windowed_project_tabs_left,
-            "in full screen the project tabs shift left compared to windowed mode, got {project_tabs:?} (windowed {windowed_project_tabs_left:?})"
+            branch_widget.left() < windowed_branch_widget_left,
+            "in full screen the branch widget shifts left compared to windowed mode, got {branch_widget:?} (windowed {windowed_branch_widget_left:?})"
         );
         assert!(
-            project_tabs.right() <= branch_widget.left()
-                && branch_widget.right() <= search_field.left(),
-            "in full screen the widgets keep their order: {project_tabs:?}, {branch_widget:?}, {search_field:?}"
+            branch_widget.right() <= search_field.left()
+                && search_field.right() <= project_tabs.left(),
+            "in full screen the widgets keep their order: {branch_widget:?}, {search_field:?}, {project_tabs:?}"
         );
 
         cx.update(|window, _| {
@@ -2289,10 +2345,10 @@ mod tests {
             !cx.update(|window, _| window.is_fullscreen()),
             "toggling full screen again returns the window to windowed mode"
         );
-        let [project_tabs, ..] = widgets(cx, "after leaving full screen");
+        let [branch_widget, ..] = widgets(cx, "after leaving full screen");
         assert!(
-            project_tabs.left() >= traffic_light_padding,
-            "after leaving full screen the project tabs start after the macOS window buttons again, got {project_tabs:?}"
+            branch_widget.left() >= traffic_light_padding,
+            "after leaving full screen the branch widget starts after the macOS window buttons again, got {branch_widget:?}"
         );
     }
 
@@ -2625,8 +2681,8 @@ mod tests {
             "the widget reads Version Control"
         );
         assert!(
-            project_tabs.right() <= version_control.left(),
-            "the VCS widget follows the project tabs, like MainToolbarLeft"
+            version_control.right() <= project_tabs.left(),
+            "the VCS widget leads the row and the project tabs come after Search Everywhere"
         );
 
         cx.simulate_click(version_control.center(), Modifiers::none());
