@@ -1,3 +1,6 @@
+use std::sync::Arc;
+
+use collections::HashMap;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use settings_macros::{MergeFrom, with_fallible_options};
@@ -5,6 +8,13 @@ use settings_macros::{MergeFrom, with_fallible_options};
 #[with_fallible_options]
 #[derive(Debug, PartialEq, Clone, Default, Serialize, Deserialize, JsonSchema, MergeFrom)]
 pub struct ExtensionSettingsContent {
+    /// The extensions Flint installs from the extension registry the first time it opens a
+    /// project that needs them: `java` for Maven and Gradle projects, `csharp` for .NET
+    /// solutions and projects. Set one to `false` to never install it automatically.
+    ///
+    /// Default: { "java": true, "csharp": true }
+    #[serde(default)]
+    pub auto_install_extensions: HashMap<Arc<str>, bool>,
     /// The capabilities granted to extensions.
     pub granted_extension_capabilities: Option<Vec<ExtensionCapabilityContent>>,
 }

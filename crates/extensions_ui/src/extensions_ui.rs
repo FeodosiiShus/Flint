@@ -1,4 +1,5 @@
 mod components;
+mod project_extensions;
 
 use std::{any::TypeId, ops::Range, sync::Arc};
 
@@ -92,6 +93,7 @@ fn update_rebuild_dev_extension_visibility(store: &Entity<ExtensionStore>, cx: &
 }
 
 pub fn init(cx: &mut App) {
+    project_extensions::init(cx);
     let store = ExtensionStore::global(cx);
     update_rebuild_dev_extension_visibility(&store, cx);
     cx.observe(&store, |store, cx| {

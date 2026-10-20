@@ -1844,6 +1844,13 @@
     "path": null,
     "npm_path": null,
   },
+  // The extensions Flint installs from the extension registry the first time it opens a
+  // project that needs them: "java" for Maven and Gradle projects, "csharp" for .NET
+  // solutions and projects. Set one to false to never install it automatically.
+  "auto_install_extensions": {
+    "java": true,
+    "csharp": true,
+  },
   // The capabilities granted to extensions.
   //
   // This list can be customized to restrict what extensions are able to do.
@@ -2197,6 +2204,30 @@
     //         }
     //     }
     // }
+    // jdtls starts with a small heap that grows up to 2 GB, and the parallel collector gives
+    // freed memory back to the system, like VS Code's Java extension: about 40% less memory
+    // than the Java extension's own -Xms1G and no limit, at the same speed.
+    "jdtls": {
+      "settings": {
+        "min_memory": "100m",
+        "max_memory": "2G",
+      },
+      "binary": {
+        "env": {
+          "JDK_JAVA_OPTIONS": "-XX:+UseParallelGC -XX:GCTimeRatio=4 -XX:AdaptiveSizePolicyWeight=90 -Dsun.zip.disableMemoryMapping=true",
+        },
+      },
+    },
+    // Roslyn ships with the server garbage collector, which keeps a heap per core. The
+    // workstation collector, compacting harder, keeps about 11% less memory at the same speed.
+    "roslyn": {
+      "binary": {
+        "env": {
+          "DOTNET_gcServer": "0",
+          "DOTNET_GCConserveMemory": "7",
+        },
+      },
+    },
     "tsgo": {
       "settings": {
         "typescript": {

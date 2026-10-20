@@ -686,3 +686,109 @@ async fn insert_language_extension(fs: &Arc<FakeFs>, id: &str, language: &str, s
     )
     .await;
 }
+
+#[gpui::test]
+async fn test_install_latest_extension_downloads_it_from_the_registry_and_loads_it(
+    cx: &mut TestAppContext,
+) {
+    use async_compression::futures::bufread::GzipEncoder;
+    use futures::{AsyncReadExt as _, io::BufReader};
+    use http_client::Response;
+    use std::sync::Mutex;
+
+    init_test(cx);
+    let fs = FakeFs::new(cx.executor());
+    let language_registry = Arc::new(LanguageRegistry::test(cx.executor()));
+    let proxy = Arc::new(ExtensionHostProxy::new());
+    language_extension::init(LspAccess::Noop, proxy.clone(), language_registry.clone());
+
+    let requested_urls = Arc::new(Mutex::new(Vec::new()));
+    let http_client = FakeHttpClient::create({
+        let requested_urls = requested_urls.clone();
+        move |request| {
+            let requested_urls = requested_urls.clone();
+            async move {
+                let uri = request.uri().to_string();
+                requested_urls
+                    .lock()
+                    .expect("the request log is never poisoned")
+                    .push(uri.clone());
+                if !uri.starts_with("https://api.zed.dev/extensions/java/download?") {
+                    return Ok(Response::builder().status(404).body("not found".into())?);
+                }
+                let files = [
+                    (
+                        "extension.toml",
+                        "id = \"java\"\nname = \"Java\"\nversion = \"6.8.29\"\nschema_version = 1\nlanguages = [\"languages/java\"]\n",
+                    ),
+                    (
+                        "languages/java/config.toml",
+                        "name = \"Java\"\npath_suffixes = [\"java\"]\n",
+                    ),
+                ];
+                let mut tar_bytes = Vec::<u8>::new();
+                let mut archive = async_tar::Builder::new(&mut tar_bytes);
+                for (path, contents) in files {
+                    let mut header = async_tar::Header::new_gnu();
+                    header.set_size(contents.len() as u64);
+                    header.set_mode(0o644);
+                    header.set_cksum();
+                    archive
+                        .append_data(&mut header, path, contents.as_bytes())
+                        .await?;
+                }
+                archive.into_inner().await?;
+                let mut gzipped_bytes = Vec::new();
+                GzipEncoder::new(BufReader::new(tar_bytes.as_slice()))
+                    .read_to_end(&mut gzipped_bytes)
+                    .await?;
+                Ok(Response::new(gzipped_bytes.into()))
+            }
+        }
+    });
+    let store = cx.new(|cx| {
+        ExtensionStore::new(
+            PathBuf::from("/extensions"),
+            None,
+            proxy,
+            fs.clone(),
+            http_client.clone(),
+            http_client,
+            NodeRuntime::unavailable(),
+            cx,
+        )
+    });
+    cx.executor().advance_clock(RELOAD_DEBOUNCE_DURATION);
+    cx.run_until_parked();
+
+    store.update(cx, |store, cx| {
+        store.install_latest_extension(Arc::from("java"), cx)
+    });
+    cx.executor().advance_clock(RELOAD_DEBOUNCE_DURATION);
+    cx.run_until_parked();
+
+    let requested_urls = requested_urls
+        .lock()
+        .expect("the request log is never poisoned")
+        .clone();
+    assert_eq!(requested_urls.len(), 1, "{requested_urls:?}");
+    assert!(
+        requested_urls[0].contains("min_schema_version=0")
+            && requested_urls[0].contains("max_schema_version=1")
+            && requested_urls[0].contains("max_wasm_api_version="),
+        "the registry picks the newest version this build can load: {}",
+        requested_urls[0]
+    );
+    store.read_with(cx, |store, _| {
+        assert!(store.installed_extensions().contains_key("java"));
+        assert!(store.outstanding_operations().is_empty());
+    });
+    assert_eq!(
+        language_registry.language_name_for_extension("java"),
+        Some(LanguageName::new("Java"))
+    );
+    assert!(
+        !fs.is_dir(Path::new("/extensions/staging/java")).await,
+        "the staged copy is moved into place"
+    );
+}

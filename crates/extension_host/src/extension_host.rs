@@ -6,6 +6,8 @@ pub mod wasm_host;
 mod extension_store_test;
 
 use anyhow::{Context as _, Result, bail};
+use async_compression::futures::bufread::GzipDecoder;
+use async_tar::Archive;
 use client::Client;
 use collections::{BTreeMap, FxHashSet, HashSet, btree_map};
 pub use extension::ExtensionManifest;
@@ -15,14 +17,15 @@ use extension::{
     ExtensionLanguageProxy, ExtensionLanguageServerProxy, ExtensionSnippetProxy,
     ExtensionThemeProxy,
 };
-use fs::{Fs, RemoveOptions};
+use fs::{Fs, RemoveOptions, RenameOptions};
 use futures::future::join_all;
 use futures::{
-    Future, FutureExt as _, StreamExt as _,
+    AsyncReadExt as _, Future, FutureExt as _, StreamExt as _,
     channel::{
         mpsc::{UnboundedSender, unbounded},
         oneshot,
     },
+    io::BufReader,
     select_biased,
 };
 use gpui::{
@@ -35,6 +38,7 @@ use language::{
     QueryFileContents, QueryFiles,
 };
 use node_runtime::NodeRuntime;
+use release_channel::ReleaseChannel;
 use serde::{Deserialize, Serialize};
 use settings::{SemanticTokenRules, SettingsStore};
 use std::sync::LazyLock;
@@ -54,6 +58,8 @@ pub use extension::{
 pub use extension_settings::ExtensionSettings;
 
 pub const RELOAD_DEBOUNCE_DURATION: Duration = Duration::from_millis(200);
+/// Where Flint downloads the extensions it installs for a project, such as Java and C#.
+const EXTENSION_REGISTRY_URL: &str = "https://api.zed.dev";
 const FS_WATCH_LATENCY: Duration = Duration::from_millis(100);
 
 /// Extensions that should no longer be loaded or downloaded.
@@ -86,6 +92,7 @@ pub struct ExtensionStore {
     pub reload_tx: UnboundedSender<Option<Arc<str>>>,
     pub reload_complete_senders: Vec<oneshot::Sender<()>>,
     pub installed_dir: PathBuf,
+    pub staging_dir: PathBuf,
     pub outstanding_operations: BTreeMap<Arc<str>, ExtensionOperation>,
     pub index_path: PathBuf,
     pub modified_extensions: HashSet<Arc<str>>,
@@ -222,6 +229,7 @@ impl ExtensionStore {
         let work_dir = extensions_dir.join("work");
         let build_dir = build_dir.unwrap_or_else(|| extensions_dir.join("build"));
         let installed_dir = extensions_dir.join("installed");
+        let staging_dir = extensions_dir.join("staging");
         let index_path = extensions_dir.join("index.json");
 
         let (reload_tx, mut reload_rx) = unbounded();
@@ -229,6 +237,7 @@ impl ExtensionStore {
             proxy: extension_host_proxy.clone(),
             extension_index: Default::default(),
             installed_dir,
+            staging_dir,
             index_path,
             builder: Arc::new(ExtensionBuilder::new(builder_client, build_dir)),
             outstanding_operations: Default::default(),
@@ -446,6 +455,122 @@ impl ExtensionStore {
         let icons_root_path = self.extensions_dir().join(entry.extension.as_ref());
 
         Some((icon_theme_path, icons_root_path))
+    }
+
+    /// Downloads the newest version of the extension that this build can load from the
+    /// extension registry and installs it.
+    pub fn install_latest_extension(&mut self, extension_id: Arc<str>, cx: &mut Context<Self>) {
+        log::info!("installing extension {extension_id} latest version");
+        let wasm_api_versions = wasm_host::wit::wasm_api_version_range(ReleaseChannel::global(cx));
+        let url = format!(
+            "{EXTENSION_REGISTRY_URL}/extensions/{extension_id}/download?min_schema_version={}&max_schema_version={}&min_wasm_api_version={}&max_wasm_api_version={}",
+            SchemaVersion::ZERO,
+            SchemaVersion::CURRENT,
+            wasm_api_versions.start(),
+            wasm_api_versions.end(),
+        );
+        self.install_extension_from_url(extension_id, url, cx)
+            .detach_and_log_err(cx);
+    }
+
+    fn install_extension_from_url(
+        &mut self,
+        extension_id: Arc<str>,
+        url: String,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<()>> {
+        let extension_dir = self.installed_dir.join(extension_id.as_ref());
+        let staging_dir = self.staging_dir.clone();
+        let http_client = self.http_client.clone();
+        let fs = self.fs.clone();
+
+        match self.outstanding_operations.entry(extension_id.clone()) {
+            btree_map::Entry::Occupied(_) => return Task::ready(Ok(())),
+            btree_map::Entry::Vacant(entry) => entry.insert(ExtensionOperation::Install),
+        };
+        cx.notify();
+
+        cx.spawn(async move |this, cx| {
+            let _finish = cx.on_drop(&this, {
+                let extension_id = extension_id.clone();
+                move |this, cx| {
+                    this.outstanding_operations.remove(extension_id.as_ref());
+                    cx.notify();
+                }
+            });
+
+            cx.background_spawn({
+                let extension_id = extension_id.clone();
+                async move {
+                let mut response = http_client
+                    .get(&url, Default::default(), true)
+                    .await
+                    .context("downloading extension")?;
+                anyhow::ensure!(
+                    response.status().is_success(),
+                    "downloading extension failed with status {}",
+                    response.status()
+                );
+                let content_length = response
+                    .headers()
+                    .get(http_client::http::header::CONTENT_LENGTH)
+                    .and_then(|value| value.to_str().ok()?.parse::<usize>().ok());
+                let mut tar_gz_bytes = Vec::new();
+                BufReader::new(response.body_mut())
+                    .read_to_end(&mut tar_gz_bytes)
+                    .await?;
+                if let Some(content_length) = content_length
+                    && content_length != tar_gz_bytes.len()
+                {
+                    bail!(
+                        "downloaded extension size {} does not match content length {content_length}",
+                        tar_gz_bytes.len()
+                    );
+                }
+
+                // Unpacked next to the installed extensions first, so a failed download never
+                // leaves a half-written extension behind.
+                let remove_options = RemoveOptions {
+                    recursive: true,
+                    ignore_if_not_exists: true,
+                };
+                let staged_extension_dir = staging_dir.join(extension_id.as_ref());
+                fs.create_dir(&staging_dir).await?;
+                fs.remove_dir(&staged_extension_dir, remove_options).await?;
+                fs.create_dir(&staged_extension_dir).await?;
+                let decompressed_bytes = GzipDecoder::new(BufReader::new(tar_gz_bytes.as_slice()));
+                futures::pin_mut!(decompressed_bytes);
+                fs.extract_tar_file(&staged_extension_dir, Archive::new(decompressed_bytes))
+                    .await?;
+                fs.remove_dir(&extension_dir, remove_options).await?;
+                fs.rename(
+                    &staged_extension_dir,
+                    &extension_dir,
+                    RenameOptions {
+                        overwrite: true,
+                        ignore_if_exists: false,
+                        create_parents: true,
+                    },
+                )
+                .await
+                }
+            })
+            .await?;
+
+            this.update(cx, |this, cx| this.reload(Some(extension_id.clone()), cx))?
+                .await;
+            this.update(cx, |this, cx| {
+                cx.emit(Event::ExtensionInstalled(extension_id.clone()));
+                if let Some(events) = ExtensionEvents::try_global(cx)
+                    && let Some(manifest) = this.extension_manifest_for_id(&extension_id)
+                {
+                    events.update(cx, |this, cx| {
+                        this.emit(extension::Event::ExtensionInstalled(manifest.clone()), cx)
+                    });
+                }
+            })?;
+            anyhow::Ok(())
+        })
     }
 
     pub fn uninstall_extension(
