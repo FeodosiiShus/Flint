@@ -967,6 +967,15 @@ impl<D: PickerDelegate> Picker<D> {
         }
     }
 
+    /// The query editor, for tests that check how it is drawn.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn query_editor(&self) -> Option<Arc<dyn ErasedEditor>> {
+        match &self.head {
+            Head::Editor(editor) => Some(editor.clone()),
+            Head::Empty(_) => None,
+        }
+    }
+
     pub fn editor_move_up(&mut self, _: &MoveUp, window: &mut Window, cx: &mut Context<Self>) {
         self.select_previous(&Default::default(), window, cx);
     }

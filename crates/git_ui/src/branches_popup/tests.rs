@@ -1295,6 +1295,42 @@ async fn the_search_text_turns_red_when_nothing_matches(cx: &mut TestAppContext)
 }
 
 #[gpui::test]
+async fn the_search_field_is_drawn_red_when_nothing_matches(cx: &mut TestAppContext) {
+    let mut fixture =
+        Fixture::open(cx, path!("/branches-popup-red-draw"), standard_repository).await;
+    fixture.open_in_modal_layer();
+    let drawn_text_color = |fixture: &mut Fixture| {
+        fixture.cx.update(|window, _| window.refresh());
+        fixture.cx.run_until_parked();
+        let query_editor = fixture
+            .picker()
+            .read_with(&fixture.cx, |picker, _| picker.query_editor())
+            .expect("the popup has a search field");
+        let editor = query_editor
+            .as_any()
+            .downcast_ref::<Entity<editor::Editor>>()
+            .expect("the search field is an editor")
+            .clone();
+        editor.update(&mut fixture.cx, |editor, cx| editor.style(cx).text.color)
+    };
+    let (error_color, text_color) = fixture.cx.update(|_, cx| {
+        (
+            ui::Color::Error.color(cx),
+            ui::ActiveTheme::theme(cx).colors().text,
+        )
+    });
+
+    fixture.set_query("top");
+    assert_eq!(drawn_text_color(&mut fixture), text_color);
+    fixture.set_query("zzzz");
+    assert_eq!(
+        drawn_text_color(&mut fixture),
+        error_color,
+        "IntelliJ's search field turns red when nothing matches"
+    );
+}
+
+#[gpui::test]
 fn search_matches_use_the_intellij_search_match_colors(cx: &mut TestAppContext) {
     init_test(cx);
     cx.update(|cx| {
