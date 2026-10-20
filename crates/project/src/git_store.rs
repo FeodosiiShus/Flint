@@ -6777,6 +6777,7 @@ impl Repository {
             "reload_buffer_diff_bases",
             Some(GitJobKey::ReloadBufferDiffBases),
             None,
+            false,
             |state, mut cx| async move {
                 let RepositoryState::Local(LocalRepositoryState { backend, .. }) = state else {
                     log::error!("tried to recompute diffs for a non-local repository");
@@ -6970,7 +6971,25 @@ impl Repository {
         Fut: Future<Output = R> + 'static,
         R: Send + 'static,
     {
-        self.send_keyed_job(description, None, status, job)
+        self.send_keyed_job(description, None, status, false, job)
+    }
+
+    /// Like [`Self::send_job`] for a git command that changes the repository: once it exits,
+    /// successfully or not, the repository state is read again, as IntelliJ updates the
+    /// repository after each of its git operations. File events alone can arrive late or not
+    /// at all, which would leave committed files looking changed.
+    fn send_git_operation<F, Fut, R>(
+        &mut self,
+        description: &'static str,
+        status: Option<SharedString>,
+        job: F,
+    ) -> oneshot::Receiver<R>
+    where
+        F: FnOnce(RepositoryState, AsyncApp) -> Fut + 'static,
+        Fut: Future<Output = R> + 'static,
+        R: Send + 'static,
+    {
+        self.send_keyed_job(description, None, status, true, job)
     }
 
     fn send_keyed_job<F, Fut, R>(
@@ -6978,6 +6997,7 @@ impl Repository {
         description: &'static str,
         key: Option<GitJobKey>,
         status: Option<SharedString>,
+        reload_state_after: bool,
         job: F,
     ) -> oneshot::Receiver<R>
     where
@@ -7022,6 +7042,9 @@ impl Repository {
                                 job_debug_queue::CompletedJobStatus::Finished,
                             );
                             this.active_jobs.remove(&job_id);
+                            if reload_state_after {
+                                this.rescan(cx);
+                            }
                             cx.notify();
                         })
                         .ok();
@@ -7192,7 +7215,7 @@ impl Repository {
             cx,
             async move |this, cx| {
                 this.update(cx, |this, _cx| {
-                    this.send_job(
+                    this.send_git_operation(
                         "checkout_files",
                         Some(format!("git checkout {}", commit).into()),
                         move |git_repo, _| async move {
@@ -8215,7 +8238,7 @@ impl Repository {
                 .collect::<Vec<_>>()
                 .join(" ")
         );
-        let receiver = self.send_job(
+        let receiver = self.send_git_operation(
             "unresolve_paths",
             Some(status.into()),
             move |state, _| async move {
@@ -8337,7 +8360,7 @@ impl Repository {
     }
 
     pub fn rebase_onto(&mut self, cx: &mut Context<Self>) -> Task<Result<Option<String>>> {
-        let receiver = self.send_job("rebase_onto", None, move |state, _| async move {
+        let receiver = self.send_git_operation("rebase_onto", None, move |state, _| async move {
             match state {
                 RepositoryState::Local(LocalRepositoryState { backend, .. }) => {
                     Ok(backend.rebase_onto().await)
@@ -8354,16 +8377,17 @@ impl Repository {
         &mut self,
         cx: &mut Context<Self>,
     ) -> Task<Result<Option<String>>> {
-        let receiver = self.send_job("rebase_current_commit", None, move |state, _| async move {
-            match state {
-                RepositoryState::Local(LocalRepositoryState { backend, .. }) => {
-                    Ok(backend.rebase_current_commit().await)
+        let receiver =
+            self.send_git_operation("rebase_current_commit", None, move |state, _| async move {
+                match state {
+                    RepositoryState::Local(LocalRepositoryState { backend, .. }) => {
+                        Ok(backend.rebase_current_commit().await)
+                    }
+                    RepositoryState::Remote(_) => Err(anyhow!(
+                        "reading rebase state is not supported for remote repositories"
+                    )),
                 }
-                RepositoryState::Remote(_) => Err(anyhow!(
-                    "reading rebase state is not supported for remote repositories"
-                )),
-            }
-        });
+            });
         cx.background_spawn(async move { receiver.await? })
     }
 
@@ -8381,7 +8405,7 @@ impl Repository {
             ConflictSide::Theirs => "--theirs",
         };
         let status = format!("git checkout {flag}");
-        let receiver = self.send_job(
+        let receiver = self.send_git_operation(
             "checkout_conflict_side",
             Some(status.into()),
             move |state, _| async move {
@@ -8413,7 +8437,7 @@ impl Repository {
         if to_add.is_empty() && to_remove.is_empty() {
             return Task::ready(Ok(()));
         }
-        let receiver = self.send_job(
+        let receiver = self.send_git_operation(
             "mark_conflicts_resolved",
             Some(SharedString::new_static("git add")),
             move |state, _| async move {
@@ -8452,7 +8476,7 @@ impl Repository {
             ConflictSide::Theirs => "--theirs",
         };
         let status = format!("git checkout {flag}");
-        let receiver = self.send_job(
+        let receiver = self.send_git_operation(
             "accept_conflict_side",
             Some(status.into()),
             move |state, _| async move {
@@ -8485,7 +8509,7 @@ impl Repository {
     }
 
     pub fn commit_merge(&mut self, cx: &mut Context<Self>) -> Task<Result<()>> {
-        let receiver = self.send_job(
+        let receiver = self.send_git_operation(
             "commit_merge",
             Some(SharedString::new_static("git commit")),
             move |state, _| async move {
@@ -8549,6 +8573,7 @@ impl Repository {
                         "stage_or_unstage_entries",
                         Some(job_key),
                         Some(status.into()),
+                        false,
                         move |git_repo, mut cx| async move {
                             let hunk_staging_operation_counts = weak_this
                                 .update(&mut cx, |this, cx| {
@@ -8779,7 +8804,7 @@ impl Repository {
 
         cx.spawn(async move |this, cx| {
             this.update(cx, |this, _| {
-                this.send_job("stash_entries", None, move |git_repo, _cx| async move {
+                this.send_git_operation("stash_entries", None, move |git_repo, _cx| async move {
                     match git_repo {
                         RepositoryState::Local(LocalRepositoryState {
                             backend,
@@ -8818,7 +8843,7 @@ impl Repository {
 
         cx.spawn(async move |this, cx| {
             this.update(cx, |this, _| {
-                this.send_job("stash_staged", None, move |git_repo, _cx| async move {
+                this.send_git_operation("stash_staged", None, move |git_repo, _cx| async move {
                     match git_repo {
                         RepositoryState::Local(LocalRepositoryState {
                             backend,
@@ -8853,7 +8878,7 @@ impl Repository {
         let id = self.id;
         cx.spawn(async move |this, cx| {
             this.update(cx, |this, _| {
-                this.send_job("stash_pop", None, move |git_repo, _cx| async move {
+                this.send_git_operation("stash_pop", None, move |git_repo, _cx| async move {
                     match git_repo {
                         RepositoryState::Local(LocalRepositoryState {
                             backend,
@@ -8887,7 +8912,7 @@ impl Repository {
         let id = self.id;
         cx.spawn(async move |this, cx| {
             this.update(cx, |this, _| {
-                this.send_job("stash_apply", None, move |git_repo, _cx| async move {
+                this.send_git_operation("stash_apply", None, move |git_repo, _cx| async move {
                     match git_repo {
                         RepositoryState::Local(LocalRepositoryState {
                             backend,
@@ -8928,7 +8953,7 @@ impl Repository {
             path_display.to_string()
         };
 
-        self.send_job(
+        self.send_git_operation(
             "add_path_to_gitignore",
             None,
             move |git_repo, _cx| async move {
@@ -8973,7 +8998,7 @@ impl Repository {
             path_display.to_string()
         };
 
-        self.send_job(
+        self.send_git_operation(
             "add_path_to_git_info_exclude",
             None,
             move |git_repo, _cx| async move {
@@ -9018,7 +9043,7 @@ impl Repository {
                 _ => None,
             });
         let this = cx.weak_entity();
-        self.send_job("stash_drop", None, move |git_repo, mut cx| async move {
+        self.send_git_operation("stash_drop", None, move |git_repo, mut cx| async move {
             match git_repo {
                 RepositoryState::Local(LocalRepositoryState {
                     backend,
@@ -9066,7 +9091,7 @@ impl Repository {
     // sending it (see the deprecation note on the message in git.proto).
     pub fn run_hook(&mut self, hook: RunHook, _cx: &mut App) -> oneshot::Receiver<Result<()>> {
         let id = self.id;
-        self.send_job(
+        self.send_git_operation(
             "run_hook",
             Some(format!("git hook {}", hook.as_str()).into()),
             move |git_repo, _cx| async move {
@@ -9104,7 +9129,7 @@ impl Repository {
         let askpass_delegates = self.askpass_delegates.clone();
         let askpass_id = util::post_inc(&mut self.latest_askpass_id);
 
-        self.send_job(
+        self.send_git_operation(
             "commit",
             Some(SharedString::new_static("git commit")),
             move |git_repo, _cx| async move {
@@ -9233,7 +9258,7 @@ impl Repository {
             });
 
         let this = cx.weak_entity();
-        self.send_job(
+        self.send_git_operation(
             "fetch",
             Some(SharedString::new_static("git fetch")),
             move |git_repo, mut cx| async move {
@@ -9306,7 +9331,7 @@ impl Repository {
             });
 
         let this = cx.weak_entity();
-        self.send_job(
+        self.send_git_operation(
             "push",
             Some(format!("git push {} {} {}:{}", args, remote, branch, remote_branch).into()),
             move |git_repo, mut cx| async move {
@@ -9386,7 +9411,7 @@ impl Repository {
             status.push_str(&format!(" {}", b));
         }
 
-        self.send_job(
+        self.send_git_operation(
             "pull",
             Some(status.into()),
             move |git_repo, cx| async move {
@@ -9448,6 +9473,7 @@ impl Repository {
             "spawn_set_index_text_job",
             Some(GitJobKey::WriteIndex(vec![path.clone()])),
             None,
+            false,
             move |git_repo, mut cx| async move {
                 log::debug!(
                     "start updating index text for buffer {}",
@@ -9521,7 +9547,7 @@ impl Repository {
         remote_url: String,
     ) -> oneshot::Receiver<Result<()>> {
         let id = self.id;
-        self.send_job(
+        self.send_git_operation(
             "create_remote",
             Some(format!("git remote add {remote_name} {remote_url}").into()),
             move |repo, _cx| async move {
@@ -9548,7 +9574,7 @@ impl Repository {
 
     pub fn remove_remote(&mut self, remote_name: String) -> oneshot::Receiver<Result<()>> {
         let id = self.id;
-        self.send_job(
+        self.send_git_operation(
             "remove_remote",
             Some(format!("git remove remote {remote_name}").into()),
             move |repo, _cx| async move {
@@ -9750,7 +9776,7 @@ impl Repository {
             Some(branch_name) => format!("git worktree add: {branch_name}"),
             None => "git worktree add (detached)".to_string(),
         };
-        self.send_job(
+        self.send_git_operation(
             "create_worktree",
             Some(job_description.into()),
             move |repo, _cx| async move {
@@ -9840,7 +9866,7 @@ impl Repository {
         } else {
             format!("git checkout {branch_name}")
         };
-        self.send_job(
+        self.send_git_operation(
             "checkout_branch_in_worktree",
             Some(description.into()),
             move |repo, _cx| async move {
@@ -9888,7 +9914,7 @@ impl Repository {
         commit: Option<String>,
     ) -> oneshot::Receiver<Result<()>> {
         let id = self.id;
-        self.send_job("edit_ref", None, move |repo, _cx| async move {
+        self.send_git_operation("edit_ref", None, move |repo, _cx| async move {
             match repo {
                 RepositoryState::Local(LocalRepositoryState { backend, .. }) => match commit {
                     Some(commit) => backend.update_ref(ref_name, commit).await,
@@ -9929,7 +9955,7 @@ impl Repository {
 
     pub fn repair_worktrees(&mut self) -> oneshot::Receiver<Result<()>> {
         let id = self.id;
-        self.send_job("repair_worktrees", None, move |repo, _cx| async move {
+        self.send_git_operation("repair_worktrees", None, move |repo, _cx| async move {
             match repo {
                 RepositoryState::Local(LocalRepositoryState { backend, .. }) => {
                     backend.repair_worktrees().await
@@ -9977,7 +10003,7 @@ impl Repository {
         unstaged_sha: String,
     ) -> oneshot::Receiver<Result<()>> {
         let id = self.id;
-        self.send_job(
+        self.send_git_operation(
             "restore_archive_checkpoint",
             None,
             move |repo, _cx| async move {
@@ -10006,7 +10032,7 @@ impl Repository {
     pub fn remove_worktree(&mut self, path: PathBuf, force: bool) -> oneshot::Receiver<Result<()>> {
         let id = self.id;
         let repository_anchor_path: Arc<Path> = self.linked_worktree_anchor_path().into();
-        self.send_job(
+        self.send_git_operation(
             "remove_worktree",
             Some(format!("git worktree remove: {}", path.display()).into()),
             move |repo, cx| async move {
@@ -10091,7 +10117,7 @@ impl Repository {
         new_path: PathBuf,
     ) -> oneshot::Receiver<Result<()>> {
         let id = self.id;
-        self.send_job(
+        self.send_git_operation(
             "rename_worktree",
             Some(format!("git worktree move: {}", old_path.display()).into()),
             move |repo, _cx| async move {
@@ -10257,7 +10283,7 @@ impl Repository {
         } else {
             format!("git switch -c {branch_name}").into()
         };
-        self.send_job(
+        self.send_git_operation(
             "create_branch",
             Some(status_msg),
             move |repo, _cx| async move {
@@ -10284,7 +10310,7 @@ impl Repository {
 
     pub fn change_branch(&mut self, branch_name: String) -> oneshot::Receiver<Result<()>> {
         let id = self.id;
-        self.send_job(
+        self.send_git_operation(
             "change_branch",
             Some(format!("git switch {branch_name}").into()),
             move |repo, _cx| async move {
@@ -10316,7 +10342,7 @@ impl Repository {
     ) -> oneshot::Receiver<Result<()>> {
         let id = self.id;
         let flag = delete_branch_flag(is_remote, force);
-        self.send_job(
+        self.send_git_operation(
             "delete_branch",
             Some(format!("git branch {flag} {branch_name}").into()),
             move |repo, _cx| async move {
@@ -10351,7 +10377,7 @@ impl Repository {
         new_name: String,
     ) -> oneshot::Receiver<Result<()>> {
         let id = self.id;
-        self.send_job(
+        self.send_git_operation(
             "rename_branch",
             Some(format!("git branch -m {branch} {new_name}").into()),
             move |repo, _cx| async move {
@@ -10462,7 +10488,7 @@ impl Repository {
     }
 
     pub fn checkout_detached(&mut self, revision: String) -> oneshot::Receiver<Result<()>> {
-        self.send_job(
+        self.send_git_operation(
             "checkout_detached",
             Some(format!("git checkout --detach {revision}").into()),
             move |repo, _cx| async move {
@@ -10479,7 +10505,7 @@ impl Repository {
     }
 
     pub fn checkout_force(&mut self, name: String) -> oneshot::Receiver<Result<()>> {
-        self.send_job(
+        self.send_git_operation(
             "checkout_force",
             Some(format!("git checkout --force {name}").into()),
             move |repo, _cx| async move {
@@ -10502,7 +10528,7 @@ impl Repository {
         checkout: bool,
         overwrite: bool,
     ) -> oneshot::Receiver<Result<()>> {
-        self.send_job(
+        self.send_git_operation(
             "create_branch_at",
             Some(format!("git branch {name} {start_point}").into()),
             move |repo, _cx| async move {
@@ -10529,7 +10555,7 @@ impl Repository {
             Some(upstream) => format!("git branch --set-upstream-to={upstream} {branch}"),
             None => format!("git branch --unset-upstream {branch}"),
         };
-        self.send_job(
+        self.send_git_operation(
             "set_upstream",
             Some(status.into()),
             move |repo, _cx| async move {
@@ -10546,7 +10572,7 @@ impl Repository {
     }
 
     pub fn merge(&mut self, reference: String) -> oneshot::Receiver<Result<MergeOutcome>> {
-        self.send_job(
+        self.send_git_operation(
             "merge",
             Some(format!("git merge {reference}").into()),
             move |repo, _cx| async move {
@@ -10565,7 +10591,7 @@ impl Repository {
     }
 
     pub fn merge_abort(&mut self) -> oneshot::Receiver<Result<()>> {
-        self.send_job(
+        self.send_git_operation(
             "merge_abort",
             Some(SharedString::new_static("git merge --abort")),
             move |repo, _cx| async move {
@@ -10590,7 +10616,7 @@ impl Repository {
             RebaseAction::Skip => "git rebase --skip".to_string(),
             RebaseAction::Abort => "git rebase --abort".to_string(),
         };
-        self.send_job("rebase", Some(status.into()), move |repo, _cx| async move {
+        self.send_git_operation("rebase", Some(status.into()), move |repo, _cx| async move {
             match repo {
                 RepositoryState::Local(LocalRepositoryState {
                     backend,
@@ -10614,7 +10640,7 @@ impl Repository {
             .map(Oid::display_short)
             .collect::<Vec<_>>()
             .join(" ");
-        self.send_job(
+        self.send_git_operation(
             "cherry_pick",
             Some(format!("git cherry-pick {short_shas}").into()),
             move |repo, _cx| async move {
@@ -10641,7 +10667,7 @@ impl Repository {
             .map(Oid::display_short)
             .collect::<Vec<_>>()
             .join(" ");
-        self.send_job(
+        self.send_git_operation(
             "revert_commits",
             Some(format!("git revert --no-edit {short_shas}").into()),
             move |repo, _cx| async move {
@@ -10664,7 +10690,7 @@ impl Repository {
         operation: RepositoryOperation,
         expected_commit: Oid,
     ) -> oneshot::Receiver<Result<()>> {
-        self.send_job("skip_commit", None, move |repo, _cx| async move {
+        self.send_git_operation("skip_commit", None, move |repo, _cx| async move {
             match repo {
                 RepositoryState::Local(LocalRepositoryState {
                     backend,
@@ -10683,7 +10709,7 @@ impl Repository {
     }
 
     pub fn reset_hard(&mut self, commit: String) -> oneshot::Receiver<Result<()>> {
-        self.send_job(
+        self.send_git_operation(
             "reset_hard",
             Some(format!("git reset --hard {commit}").into()),
             move |repo, _cx| async move {
@@ -10710,7 +10736,7 @@ impl Repository {
     ) -> oneshot::Receiver<Result<RemoteCommandOutput>> {
         let updates_tx = self.downstream_updates_tx(cx);
         let this = self.this.clone();
-        self.send_job(
+        self.send_git_operation(
             "delete_remote_branch",
             Some(format!("git push {remote} --delete {branch}").into()),
             move |repo, mut cx| async move {
@@ -10752,7 +10778,7 @@ impl Repository {
     ) -> oneshot::Receiver<Result<RemoteCommandOutput>> {
         let updates_tx = self.downstream_updates_tx(cx);
         let this = self.this.clone();
-        self.send_job(
+        self.send_git_operation(
             "fast_forward_branch",
             Some(format!("git fetch {remote} {remote_branch}:{local_branch}").into()),
             move |repo, mut cx| async move {
@@ -10786,7 +10812,7 @@ impl Repository {
     }
 
     pub fn delete_tag(&mut self, name: String) -> oneshot::Receiver<Result<()>> {
-        self.send_job(
+        self.send_git_operation(
             "delete_tag",
             Some(format!("git tag -d {name}").into()),
             move |repo, _cx| async move {
@@ -10803,7 +10829,7 @@ impl Repository {
     }
 
     pub fn create_tag(&mut self, name: String, target: String) -> oneshot::Receiver<Result<()>> {
-        self.send_job(
+        self.send_git_operation(
             "create_tag",
             Some(format!("git tag {name} {target}").into()),
             move |repo, _cx| async move {
@@ -10828,7 +10854,7 @@ impl Repository {
     ) -> oneshot::Receiver<Result<RemoteCommandOutput>> {
         let updates_tx = self.downstream_updates_tx(cx);
         let this = self.this.clone();
-        self.send_job(
+        self.send_git_operation(
             "push_tag",
             Some(format!("git push {remote} refs/tags/{tag}").into()),
             move |repo, mut cx| async move {
@@ -10889,7 +10915,7 @@ impl Repository {
         expected_object: String,
         askpass: AskPassDelegate,
     ) -> oneshot::Receiver<Result<RemoteCommandOutput>> {
-        self.send_job(
+        self.send_git_operation(
             "delete_remote_tag",
             Some(format!("git push {remote} :refs/tags/{tag}").into()),
             move |repo, cx| async move {
@@ -10924,7 +10950,7 @@ impl Repository {
         force: bool,
     ) -> oneshot::Receiver<Result<()>> {
         let force_flag = if force { "--force " } else { "" };
-        self.send_job(
+        self.send_git_operation(
             "checkout_ignoring_other_worktrees",
             Some(format!("git checkout {force_flag}--ignore-other-worktrees {name}").into()),
             move |repo, _cx| async move {
@@ -10950,7 +10976,7 @@ impl Repository {
             RepositoryOperation::CherryPick => "cherry-pick",
             RepositoryOperation::Revert => "revert",
         };
-        self.send_job(
+        self.send_git_operation(
             "abort_operation",
             Some(format!("git {command} --abort").into()),
             move |repo, _cx| async move {
@@ -10973,7 +10999,7 @@ impl Repository {
     }
 
     pub fn continue_cherry_pick(&mut self) -> oneshot::Receiver<Result<CherryPickOutcome>> {
-        self.send_job(
+        self.send_git_operation(
             "continue_cherry_pick",
             Some(SharedString::new_static("git cherry-pick --continue")),
             move |repo, _cx| async move {
@@ -11046,7 +11072,7 @@ impl Repository {
         checkpoint: GitRepositoryCheckpoint,
     ) -> oneshot::Receiver<Result<()>> {
         let id = self.id;
-        self.send_job("restore_checkpoint", None, move |repo, _cx| async move {
+        self.send_git_operation("restore_checkpoint", None, move |repo, _cx| async move {
             match repo {
                 RepositoryState::Local(LocalRepositoryState { backend, .. }) => {
                     backend.restore_checkpoint(checkpoint).await
@@ -11163,6 +11189,9 @@ impl Repository {
             self.snapshot.scan_id = update.scan_id;
         }
         self.clear_pending_ops(cx);
+        // Editor tabs read the statuses while rendering cached panes, which repaint only when
+        // an entity they read notifies.
+        cx.notify();
         Ok(())
     }
 
@@ -11256,6 +11285,7 @@ impl Repository {
             "schedule_scan",
             Some(GitJobKey::ReloadGitState),
             None,
+            false,
             |state, mut cx| async move {
                 log::debug!("run scheduled git status scan");
 
@@ -11590,6 +11620,7 @@ impl Repository {
             "paths_changed",
             Some(GitJobKey::RefreshStatuses),
             None,
+            false,
             |state, mut cx| async move {
                 let (prev_snapshot, changed_paths) = this.update(&mut cx, |this, _| {
                     (

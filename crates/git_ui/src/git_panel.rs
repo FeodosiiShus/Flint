@@ -15,7 +15,7 @@ use crate::remote_output::{self, RemoteAction, SuccessMessage};
 use crate::{picker_prompt, render_remote_button};
 use anyhow::Context as _;
 use askpass::AskPassDelegate;
-use collections::BTreeMap;
+use collections::{BTreeMap, HashSet};
 use db::kvp::KeyValueStore;
 use editor::{Editor, EditorMode, EditorStyle, MultiBuffer, MultiBufferOffset, RewrapOptions};
 use git::repository::{
@@ -1055,6 +1055,20 @@ impl GitPanel {
         }
     }
 
+    /// Buffers of files on disk with edits that aren't saved yet.
+    fn edited_buffers(&self, cx: &App) -> HashSet<Entity<Buffer>> {
+        self.project
+            .read(cx)
+            .opened_buffers(cx)
+            .into_iter()
+            .filter(|buffer| {
+                let buffer = buffer.read(cx);
+                buffer.has_unsaved_edits()
+                    && buffer.file().is_some_and(|file| file.disk_state().exists())
+            })
+            .collect()
+    }
+
     pub(crate) fn commit_changes(
         &mut self,
         options: CommitOptions,
@@ -1101,28 +1115,49 @@ impl GitPanel {
             return None;
         };
 
+        // Like IntelliJ's `saveAllDocuments` before a commit: the commit must contain what the
+        // editors show, or the committed files would still look changed afterwards.
+        let edited_buffers = self.edited_buffers(cx);
+        let save_task = self.project.update(cx, |project, cx| {
+            project.save_buffers(edited_buffers.clone(), cx)
+        });
         let task = if self.has_staged_changes() || staged_only {
-            // Repository serializes all git operations, so we can just send a commit immediately
-            let commit_task = active_repository.update(cx, |repo, cx| {
-                repo.commit(message.into(), None, options, askpass, cx)
-            });
-            cx.background_spawn(async move { commit_task.await? })
+            cx.spawn(async move |_, cx| {
+                save_task.await?;
+                let commit_task = active_repository.update(cx, |repo, cx| {
+                    repo.commit(message.into(), None, options, askpass, cx)
+                });
+                commit_task.await?
+            })
         } else {
-            let changed_files = self
+            let has_changed_files = self
                 .status_entries
                 .iter()
-                .filter(|status_entry| !status_entry.status.is_created())
-                .map(|status_entry| status_entry.repo_path.clone())
-                .collect::<Vec<_>>();
-
-            if changed_files.is_empty() && !options.amend {
+                .any(|status_entry| !status_entry.status.is_created());
+            if !has_changed_files && edited_buffers.is_empty() && !options.amend {
                 error_spawn("No changes to commit", window, cx);
                 return None;
             }
 
-            let stage_task =
-                active_repository.update(cx, |repo, cx| repo.stage_entries(changed_files, cx));
             cx.spawn(async move |_, cx| {
+                save_task.await?;
+                // The statuses must include the files that were only just saved.
+                let reload = active_repository.update(cx, |repo, cx| {
+                    repo.rescan(cx);
+                    repo.barrier()
+                });
+                reload.await?;
+                let changed_files = active_repository.read_with(cx, |repo, _| {
+                    repo.cached_status()
+                        .filter(|entry| !entry.status.is_created())
+                        .map(|entry| entry.repo_path)
+                        .collect::<Vec<_>>()
+                });
+                if changed_files.is_empty() && !options.amend {
+                    anyhow::bail!("No changes to commit");
+                }
+                let stage_task =
+                    active_repository.update(cx, |repo, cx| repo.stage_entries(changed_files, cx));
                 stage_task.await?;
                 let commit_task = active_repository.update(cx, |repo, cx| {
                     repo.commit(message.into(), None, options, askpass, cx)
@@ -2988,6 +3023,99 @@ mod tests {
         panel.read_with(&cx, |panel, _| {
             assert_eq!(panel.status_entries.len(), 1);
             assert_eq!(panel.changes_count, panel.status_entries.len());
+        });
+    }
+
+    #[gpui::test]
+    async fn test_commit_saves_edited_files_first_and_commits_them_like_intellij(
+        cx: &mut TestAppContext,
+    ) {
+        init_test(cx);
+        let fs = FakeFs::new(cx.background_executor.clone());
+        fs.insert_tree(
+            path!("/project"),
+            json!({
+                ".git": {},
+                "changed.txt": "changed on disk\n",
+                "edited.txt": "committed\n",
+            }),
+        )
+        .await;
+        let dot_git = Path::new(path!("/project/.git"));
+        fs.set_head_and_index_for_repo(
+            dot_git,
+            &[
+                ("changed.txt", "committed\n".into()),
+                ("edited.txt", "committed\n".into()),
+            ],
+        );
+        let project = Project::test(fs.clone(), [Path::new(path!("/project"))], cx).await;
+        let window_handle =
+            cx.add_window(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
+        let workspace = window_handle
+            .read_with(cx, |multi_workspace, _| multi_workspace.workspace().clone())
+            .unwrap();
+        let mut cx = VisualTestContext::from_window(window_handle.into(), cx);
+        project
+            .update(&mut cx, |project, cx| project.git_scans_complete(cx))
+            .await;
+        cx.executor().run_until_parked();
+        let panel = workspace.update_in(&mut cx, GitPanel::new);
+        await_git_panel_entries(&panel, &mut cx).await;
+
+        let edited_buffer = project
+            .update(&mut cx, |project, cx| {
+                project.open_local_buffer(path!("/project/edited.txt"), cx)
+            })
+            .await
+            .unwrap();
+        edited_buffer.update(&mut cx, |buffer, cx| {
+            buffer.edit([(0..0, "edited in the editor\n")], None, cx)
+        });
+
+        panel.update_in(&mut cx, |panel, window, cx| {
+            panel
+                .commit_message_buffer(cx)
+                .update(cx, |buffer, cx| buffer.set_text("Commit everything", cx));
+            let focus_handle = panel.commit_editor.focus_handle(cx);
+            focus_handle.focus(window, cx);
+            assert!(panel.commit(&focus_handle, window, cx));
+        });
+        cx.run_until_parked();
+
+        assert!(
+            !edited_buffer.read_with(&cx, |buffer, _| buffer.is_dirty()),
+            "the edited file is saved before the commit"
+        );
+        let head_contents = fs
+            .with_git_state(dot_git, false, |state| state.head_contents.clone())
+            .expect("fake repository should exist");
+        assert_eq!(
+            head_contents
+                .get(&repo_path("edited.txt"))
+                .map(|contents| String::from_utf8_lossy(contents).into_owned())
+                .as_deref(),
+            Some("edited in the editor\ncommitted\n"),
+            "the commit contains what the editor showed"
+        );
+        assert_eq!(
+            head_contents
+                .get(&repo_path("changed.txt"))
+                .map(|contents| String::from_utf8_lossy(contents).into_owned())
+                .as_deref(),
+            Some("changed on disk\n")
+        );
+        let repository = project.read_with(&cx, |project, cx| {
+            project
+                .active_repository(cx)
+                .expect("the project has a repository")
+        });
+        repository.read_with(&cx, |repository, _| {
+            assert_eq!(
+                repository.cached_status().count(),
+                0,
+                "nothing looks uncommitted after the commit"
+            );
         });
     }
 

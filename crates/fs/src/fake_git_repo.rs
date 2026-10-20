@@ -1801,10 +1801,39 @@ impl GitRepository for FakeGitRepository {
     fn checkout_files(
         &self,
         _commit: String,
-        _paths: Vec<RepoPath>,
+        paths: Vec<RepoPath>,
         _env: Arc<HashMap<String, String>>,
     ) -> BoxFuture<'_, Result<()>> {
-        async { Ok(()) }.boxed()
+        async move {
+            // Like `git checkout HEAD -- <paths>`: the fake keeps no file contents for other
+            // commits, so every commit restores HEAD's.
+            let restored = self
+                .with_state_async(true, move |state| {
+                    let mut restored = Vec::new();
+                    for path in paths {
+                        if let Some(contents) = state.head_contents.get(&path).cloned() {
+                            state.index_contents.insert(path.clone(), contents.clone());
+                            restored.push((path, contents));
+                        }
+                    }
+                    Ok(restored)
+                })
+                .await?;
+            let working_directory = self
+                .dot_git_path
+                .parent()
+                .context("repository has no working directory")?
+                .to_path_buf();
+            for (path, contents) in restored {
+                self.fs.write_file_internal(
+                    working_directory.join(path.as_std_path()),
+                    contents,
+                    false,
+                )?;
+            }
+            Ok(())
+        }
+        .boxed()
     }
 
     fn path(&self) -> PathBuf {

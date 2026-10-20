@@ -753,26 +753,7 @@ impl Item for Editor {
         let plain_label_color = entry_label_color(params.selected);
         let base_label_color = params.label_color.unwrap_or(plain_label_color);
         let label_color = if ItemSettings::get_global(cx).git_status {
-            self.buffer()
-                .read(cx)
-                .as_singleton()
-                .and_then(|buffer| {
-                    let buffer = buffer.read(cx);
-                    let path = buffer.project_path(cx)?;
-                    let buffer_id = buffer.remote_id();
-                    let project = self.project()?.read(cx);
-                    let entry = project.entry_for_path(&path, cx)?;
-                    let status = project
-                        .git_store()
-                        .read(cx)
-                        .display_status_for_buffer_id(buffer_id, cx)?;
-
-                    Some(entry_git_aware_label_color(
-                        status.summary(),
-                        entry.is_ignored,
-                        params.selected,
-                    ))
-                })
+            self.tab_git_status_color(params.selected, cx)
                 .map(|color| {
                     if color == plain_label_color {
                         base_label_color
@@ -1603,6 +1584,25 @@ fn clip_ranges<'a>(
 impl EventEmitter<SearchEvent> for Editor {}
 
 impl Editor {
+    /// The tab shows the file's local changes against HEAD, like IntelliJ's editor tabs, even
+    /// when the gutter diffs against the default branch: committed files must not look changed.
+    pub(crate) fn tab_git_status_color(&self, selected: bool, cx: &App) -> Option<Color> {
+        let buffer = self.buffer().read(cx).as_singleton()?;
+        let buffer = buffer.read(cx);
+        let path = buffer.project_path(cx)?;
+        let project = self.project()?.read(cx);
+        let entry = project.entry_for_path(&path, cx)?;
+        let status = project
+            .git_store()
+            .read(cx)
+            .status_for_buffer_id(buffer.remote_id(), cx)?;
+        Some(entry_git_aware_label_color(
+            status.summary(),
+            entry.is_ignored,
+            selected,
+        ))
+    }
+
     pub fn update_restoration_data(
         &self,
         cx: &mut Context<Self>,

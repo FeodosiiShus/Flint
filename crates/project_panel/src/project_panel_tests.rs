@@ -14444,3 +14444,81 @@ mod background_image_pixels {
         }
     }
 }
+
+#[gpui::test]
+async fn test_project_panel_colors_files_by_local_changes_even_when_diffing_against_the_default_branch(
+    cx: &mut gpui::TestAppContext,
+) {
+    init_test(cx);
+    let fs = FakeFs::new(cx.executor());
+    fs.insert_tree(
+        path!("/root"),
+        json!({
+            ".git": {},
+            "committed.txt": "head\n",
+            "changed.txt": "changed\n",
+        }),
+    )
+    .await;
+    fs.set_head_and_index_for_repo(
+        path!("/root/.git").as_ref(),
+        &[
+            ("committed.txt", "head\n".into()),
+            ("changed.txt", "head\n".into()),
+        ],
+    );
+    fs.set_merge_base_content_for_repo(
+        path!("/root/.git").as_ref(),
+        &[
+            ("committed.txt", "base\n".into()),
+            ("changed.txt", "head\n".into()),
+        ],
+    );
+    let project = Project::test(fs.clone(), [path!("/root").as_ref()], cx).await;
+    project
+        .update(cx, |project, cx| project.git_scans_complete(cx))
+        .await;
+    cx.update(|cx| {
+        cx.update_global::<SettingsStore, _>(|store, cx| {
+            store.update_user_settings(cx, |settings| {
+                settings.git.get_or_insert_default().diff_base =
+                    Some(settings::GitDiffBaseSetting::DefaultBranch);
+            });
+        });
+    });
+    cx.run_until_parked();
+    project.read_with(cx, |project, cx| {
+        let display_snapshots = project.git_store().read(cx).display_repo_snapshots(cx);
+        assert!(
+            display_snapshots.values().any(|snapshot| snapshot
+                .status_for_path(&RepoPath::new("committed.txt").unwrap())
+                .is_some()),
+            "against the default branch the committed file differs"
+        );
+    });
+
+    let window = cx.add_window(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
+    let workspace = window
+        .read_with(cx, |multi_workspace, _| multi_workspace.workspace().clone())
+        .unwrap();
+    let cx = &mut VisualTestContext::from_window(window.into(), cx);
+    let panel = workspace.update_in(cx, ProjectPanel::new);
+    cx.run_until_parked();
+
+    let mut statuses = Vec::new();
+    panel.update_in(cx, |panel, window, cx| {
+        panel.for_each_visible_entry(0..10, window, cx, &mut |_, details, _, _| {
+            statuses.push((details.filename.clone(), details.git_status.count));
+        });
+    });
+    assert_eq!(
+        statuses,
+        [
+            ("root".to_string(), 1),
+            (".git".to_string(), 0),
+            ("changed.txt".to_string(), 1),
+            ("committed.txt".to_string(), 0),
+        ],
+        "the Project panel shows local changes against HEAD, like IntelliJ's Project view"
+    );
+}

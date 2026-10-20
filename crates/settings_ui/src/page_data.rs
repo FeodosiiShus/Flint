@@ -7649,7 +7649,7 @@ fn version_control_page() -> SettingsPage {
             }),
             SettingsPageItem::SettingItem(SettingItem {
                 title: "Diff Base",
-                description: "Whether git features show changes relative to HEAD (uncommitted changes) or to the default branch (all changes on the current branch).",
+                description: "Whether the gutter and the diff views show changes relative to HEAD (uncommitted changes) or to the default branch (all changes on the current branch). File colors always show the uncommitted changes.",
                 field: Box::new(SettingField {
                     json_path: Some("git.diff_base"),
                     pick: |settings_content| settings_content.git.as_ref()?.diff_base.as_ref(),

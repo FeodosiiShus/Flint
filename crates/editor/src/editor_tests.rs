@@ -49073,3 +49073,91 @@ async fn test_soft_wrap_indent_updated_on_file_move_between_directories(
         .unwrap();
     assert_eq!(snapshot.soft_wrap_indent(DisplayRow(0)), Some(0));
 }
+
+#[gpui::test]
+async fn test_tab_color_shows_local_changes_even_when_diffing_against_the_default_branch(
+    cx: &mut TestAppContext,
+) {
+    init_test(cx, |_| {});
+
+    let fs = FakeFs::new(cx.executor());
+    fs.insert_tree(
+        path!("/project"),
+        json!({
+            ".git": {},
+            "committed.rs": "head\n",
+            "changed.rs": "changed\n",
+        }),
+    )
+    .await;
+    let dot_git = std::path::Path::new(path!("/project/.git"));
+    fs.set_head_and_index_for_repo(
+        dot_git,
+        &[
+            ("committed.rs", "head\n".to_string()),
+            ("changed.rs", "head\n".to_string()),
+        ],
+    );
+    fs.set_merge_base_content_for_repo(
+        dot_git,
+        &[
+            ("committed.rs", "base\n".to_string()),
+            ("changed.rs", "head\n".to_string()),
+        ],
+    );
+
+    let project = Project::test(fs.clone(), [path!("/project").as_ref()], cx).await;
+    project
+        .update(cx, |project, cx| project.git_scans_complete(cx))
+        .await;
+    let open_buffer = |path: &'static str, cx: &mut TestAppContext| {
+        project.update(cx, |project, cx| project.open_local_buffer(path, cx))
+    };
+    let committed_buffer = open_buffer(path!("/project/committed.rs"), cx)
+        .await
+        .unwrap();
+    let changed_buffer = open_buffer(path!("/project/changed.rs"), cx).await.unwrap();
+    let committed_buffer_id = committed_buffer.read_with(cx, |buffer, _| buffer.remote_id());
+    let (committed_editor, cx) = cx.add_window_view(|window, cx| {
+        let multi_buffer = cx.new(|cx| MultiBuffer::singleton(committed_buffer, cx));
+        build_editor_with_project(project.clone(), multi_buffer, window, cx)
+    });
+    let changed_editor = cx.update(|window, cx| {
+        let multi_buffer = cx.new(|cx| MultiBuffer::singleton(changed_buffer, cx));
+        cx.new(|cx| build_editor_with_project(project.clone(), multi_buffer, window, cx))
+    });
+
+    cx.update(|_window, cx| {
+        SettingsStore::update_global(cx, |settings, cx| {
+            settings.update_user_settings(cx, |settings| {
+                settings.git.get_or_insert_default().diff_base =
+                    Some(settings::GitDiffBaseSetting::DefaultBranch);
+            });
+        });
+    });
+    cx.run_until_parked();
+
+    project.read_with(cx, |project, cx| {
+        assert!(
+            project
+                .git_store()
+                .read(cx)
+                .display_status_for_buffer_id(committed_buffer_id, cx)
+                .is_some_and(|status| status.has_changes()),
+            "against the default branch the committed file differs"
+        );
+    });
+    committed_editor.read_with(cx, |editor, cx| {
+        assert_eq!(
+            editor.tab_git_status_color(false, cx),
+            None,
+            "a file without local changes keeps the plain tab color"
+        );
+    });
+    changed_editor.read_with(cx, |editor, cx| {
+        assert_eq!(
+            editor.tab_git_status_color(false, cx),
+            Some(Color::Modified)
+        );
+    });
+}

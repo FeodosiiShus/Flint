@@ -629,7 +629,8 @@ pub struct GitSettings {
     ///
     /// Default: staged_hollow
     pub hunk_style: Option<GitHunkStyleSetting>,
-    /// Which base git features (gutter, file colors, git::Diff) diff against.
+    /// Which base the gutter and git::Diff diff against. File colors always show the local
+    /// changes against HEAD.
     ///
     /// Default: head
     pub diff_base: Option<GitDiffBaseSetting>,

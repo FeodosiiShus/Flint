@@ -21851,3 +21851,372 @@ async fn code_action_project(
 
     (project, buffer, handle, fake_servers)
 }
+
+#[gpui::test]
+#[cfg_attr(target_os = "windows", ignore)]
+async fn test_commit_clears_statuses_in_main_checkout_and_linked_worktree(
+    cx: &mut gpui::TestAppContext,
+) {
+    init_test(cx);
+    cx.executor().allow_parking();
+    let root = TempTree::new(json!({
+        "main": { "a.txt": "a\n", "c.txt": "c\n" },
+    }));
+    let main_dir = root.path().join("main");
+    let repo = git_init(&main_dir);
+    git_add("a.txt", &repo);
+    git_add("c.txt", &repo);
+    git_commit("Initial commit", &repo);
+    let linked_dir = root.path().join("linked");
+    git_worktree_add("feature", &linked_dir, &main_dir);
+
+    for dir in [main_dir, linked_dir] {
+        let (project, tree, repository) = open_real_git_project(&dir, cx).await;
+
+        std::fs::write(dir.join("a.txt"), "a changed\n").unwrap();
+        std::fs::write(dir.join("new.txt"), "new\n").unwrap();
+        wait_for_git_statuses(
+            &repository,
+            &project,
+            &tree,
+            &[("a.txt", true), ("new.txt", true)],
+            cx,
+        )
+        .await;
+        repository
+            .update(cx, |repository, cx| repository.stage_all(cx))
+            .await
+            .unwrap();
+        commit_from_flint(&repository, "Commit from Flint", cx).await;
+        wait_for_git_statuses(
+            &repository,
+            &project,
+            &tree,
+            &[("a.txt", false), ("new.txt", false)],
+            cx,
+        )
+        .await;
+
+        std::fs::write(dir.join("c.txt"), "c changed\n").unwrap();
+        wait_for_git_statuses(&repository, &project, &tree, &[("c.txt", true)], cx).await;
+        git_add(".", &dir);
+        git_commit("Commit from a terminal", &dir);
+        wait_for_git_statuses(&repository, &project, &tree, &[("c.txt", false)], cx).await;
+    }
+}
+
+#[gpui::test]
+#[cfg(unix)]
+async fn test_commit_through_a_formatting_pre_commit_hook_clears_statuses(
+    cx: &mut gpui::TestAppContext,
+) {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    init_test(cx);
+    cx.executor().allow_parking();
+    let root = TempTree::new(json!({
+        "main": { "a.txt": "a\n" },
+    }));
+    let main_dir = root.path().join("main");
+    let repo = git_init(&main_dir);
+    git_add("a.txt", &repo);
+    git_commit("Initial commit", &repo);
+    let linked_dir = root.path().join("linked");
+    git_worktree_add("feature", &linked_dir, &main_dir);
+    // Like lint-staged with prettier: rewrites the staged files and stages them again.
+    let hook = main_dir.join(".git/hooks/pre-commit");
+    std::fs::write(
+        &hook,
+        "#!/bin/sh\nsleep 1\nfor f in $(git diff --cached --name-only --diff-filter=ACM); do printf 'formatted\\n' >> \"$f\"; git add \"$f\"; done\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+    // Flint runs no hooks in a repository the user hasn't trusted.
+    cx.update(|cx| {
+        SettingsStore::update_global(cx, |store, cx| {
+            store.update_user_settings(cx, |settings| {
+                settings.session.get_or_insert_default().trust_all_worktrees = Some(true);
+            });
+        });
+        project::trusted_worktrees::init(project::trusted_worktrees::DbTrustedPaths::default(), cx);
+    });
+
+    let (_main_project, _main_tree, _main_repository) = open_real_git_project(&main_dir, cx).await;
+    let (project, tree, repository) = open_real_git_project(&linked_dir, cx).await;
+    std::fs::write(linked_dir.join("a.txt"), "a changed\n").unwrap();
+    std::fs::write(linked_dir.join("new.txt"), "new\n").unwrap();
+    wait_for_git_statuses(
+        &repository,
+        &project,
+        &tree,
+        &[("a.txt", true), ("new.txt", true)],
+        cx,
+    )
+    .await;
+
+    repository
+        .update(cx, |repository, cx| repository.stage_all(cx))
+        .await
+        .unwrap();
+    commit_from_flint(&repository, "Commit through the hook", cx).await;
+    wait_for_git_statuses(
+        &repository,
+        &project,
+        &tree,
+        &[("a.txt", false), ("new.txt", false)],
+        cx,
+    )
+    .await;
+    assert_eq!(
+        std::fs::read_to_string(linked_dir.join("a.txt")).unwrap(),
+        "a changed\nformatted\n"
+    );
+    repository.read_with(cx, |repository, _| {
+        assert_eq!(repository.cached_status().count(), 0);
+    });
+}
+
+#[gpui::test]
+#[cfg_attr(target_os = "windows", ignore)]
+async fn test_commit_clears_statuses_of_a_project_below_the_repository_root(
+    cx: &mut gpui::TestAppContext,
+) {
+    init_test(cx);
+    cx.executor().allow_parking();
+    let root = TempTree::new(json!({
+        "repo": {
+            "packages": { "app": { "a.txt": "a\n", "c.txt": "c\n" } },
+            "root.txt": "r\n",
+        },
+    }));
+    let repo_dir = root.path().join("repo");
+    let repo = git_init(&repo_dir);
+    git_add(".", &repo);
+    git_commit("Initial commit", &repo);
+    let app_dir = repo_dir.join("packages/app");
+    let (project, tree, repository) = open_real_git_project(&app_dir, cx).await;
+
+    std::fs::write(app_dir.join("a.txt"), "a changed\n").unwrap();
+    std::fs::write(app_dir.join("new.txt"), "new\n").unwrap();
+    wait_for_git_statuses(
+        &repository,
+        &project,
+        &tree,
+        &[("packages/app/a.txt", true), ("packages/app/new.txt", true)],
+        cx,
+    )
+    .await;
+    repository
+        .update(cx, |repository, cx| repository.stage_all(cx))
+        .await
+        .unwrap();
+    commit_from_flint(&repository, "Commit from Flint", cx).await;
+    wait_for_git_statuses(
+        &repository,
+        &project,
+        &tree,
+        &[
+            ("packages/app/a.txt", false),
+            ("packages/app/new.txt", false),
+        ],
+        cx,
+    )
+    .await;
+
+    std::fs::write(app_dir.join("c.txt"), "c changed\n").unwrap();
+    wait_for_git_statuses(
+        &repository,
+        &project,
+        &tree,
+        &[("packages/app/c.txt", true)],
+        cx,
+    )
+    .await;
+    git_add(".", &repo_dir);
+    git_commit("Commit from a terminal", &repo_dir);
+    wait_for_git_statuses(
+        &repository,
+        &project,
+        &tree,
+        &[("packages/app/c.txt", false)],
+        cx,
+    )
+    .await;
+}
+
+// Every project shares the app's file watcher. A linked worktree's git dir inside the main
+// checkout gets no native watch of its own while the main checkout's watch covers it.
+#[gpui::test]
+#[cfg_attr(target_os = "windows", ignore)]
+async fn test_closing_the_main_checkout_keeps_a_linked_worktree_seeing_its_commits(
+    cx: &mut gpui::TestAppContext,
+) {
+    init_test(cx);
+    cx.executor().allow_parking();
+    let root = TempTree::new(json!({
+        "main": { "a.txt": "a\n" },
+    }));
+    let main_dir = root.path().join("main");
+    let repo = git_init(&main_dir);
+    git_add("a.txt", &repo);
+    git_commit("Initial commit", &repo);
+    let linked_dir = root.path().join("linked");
+    git_worktree_add("feature", &linked_dir, &main_dir);
+
+    let fs = RealFs::new(None, cx.executor());
+    let main_project = Project::test(fs.clone(), [main_dir.as_path()], cx).await;
+    let main_tree = main_project.read_with(cx, |project, cx| project.worktrees(cx).next().unwrap());
+    main_tree.flush_fs_events(cx).await;
+    main_project
+        .update(cx, |project, cx| project.git_scans_complete(cx))
+        .await;
+    let project = Project::test(fs, [linked_dir.as_path()], cx).await;
+    let tree = project.read_with(cx, |project, cx| project.worktrees(cx).next().unwrap());
+    tree.flush_fs_events(cx).await;
+    project
+        .update(cx, |project, cx| project.git_scans_complete(cx))
+        .await;
+    cx.executor().run_until_parked();
+    let repository = project.read_with(cx, |project, cx| project.active_repository(cx).unwrap());
+    std::fs::write(linked_dir.join("a.txt"), "a changed\n").unwrap();
+    wait_for_git_statuses(&repository, &project, &tree, &[("a.txt", true)], cx).await;
+
+    drop((main_tree, main_project));
+    cx.update(|_| {});
+    cx.executor().run_until_parked();
+
+    git_add("a.txt", &linked_dir);
+    git_commit("Commit in the worktree", &linked_dir);
+    wait_for_git_statuses(&repository, &project, &tree, &[("a.txt", false)], cx).await;
+}
+
+#[gpui::test]
+#[cfg_attr(target_os = "windows", ignore)]
+async fn test_commit_reloads_the_repository_without_waiting_for_file_events(
+    cx: &mut gpui::TestAppContext,
+) {
+    init_test(cx);
+    cx.executor().allow_parking();
+    let root = TempTree::new(json!({
+        "main": { "a.txt": "a\n" },
+    }));
+    let main_dir = root.path().join("main");
+    let repo = git_init(&main_dir);
+    git_add("a.txt", &repo);
+    git_commit("Initial commit", &repo);
+    let (project, tree, repository) = open_real_git_project(&main_dir, cx).await;
+    std::fs::write(main_dir.join("a.txt"), "a changed\n").unwrap();
+    std::fs::write(main_dir.join("new.txt"), "new\n").unwrap();
+    wait_for_git_statuses(
+        &repository,
+        &project,
+        &tree,
+        &[("a.txt", true), ("new.txt", true)],
+        cx,
+    )
+    .await;
+    let head_before = repository.read_with(cx, |repository, _| repository.head_commit.clone());
+
+    repository
+        .update(cx, |repository, cx| repository.stage_all(cx))
+        .await
+        .unwrap();
+    commit_from_flint(&repository, "Commit from Flint", cx).await;
+    // Only jobs queued so far run before the barrier; file events take longer to arrive.
+    repository
+        .update(cx, |repository, _| repository.barrier())
+        .await
+        .unwrap();
+    repository.read_with(cx, |repository, _| {
+        assert_eq!(repository.cached_status().count(), 0);
+        assert_ne!(repository.head_commit, head_before);
+    });
+}
+
+async fn open_real_git_project(
+    dir: &Path,
+    cx: &mut gpui::TestAppContext,
+) -> (Entity<Project>, Entity<Worktree>, Entity<Repository>) {
+    let project = Project::test(RealFs::new(None, cx.executor()), [dir], cx).await;
+    let tree = project.read_with(cx, |project, cx| project.worktrees(cx).next().unwrap());
+    tree.flush_fs_events(cx).await;
+    project
+        .update(cx, |project, cx| project.git_scans_complete(cx))
+        .await;
+    cx.executor().run_until_parked();
+    let repository = project.read_with(cx, |project, cx| project.active_repository(cx).unwrap());
+    (project, tree, repository)
+}
+
+async fn commit_from_flint(
+    repository: &Entity<Repository>,
+    message: &'static str,
+    cx: &mut gpui::TestAppContext,
+) {
+    let commit = repository.update(cx, |repository, cx| {
+        repository.commit(
+            message.into(),
+            None,
+            git::repository::CommitOptions::default(),
+            askpass::AskPassDelegate::new(&mut cx.to_async(), |_, _, _| {}),
+            cx,
+        )
+    });
+    commit.await.unwrap().unwrap();
+}
+
+/// Waits until each path has (`true`) or lacks (`false`) a git status.
+async fn wait_for_git_statuses(
+    repository: &Entity<Repository>,
+    project: &Entity<Project>,
+    tree: &Entity<Worktree>,
+    expected: &[(&str, bool)],
+    cx: &mut gpui::TestAppContext,
+) {
+    let current = |cx: &mut gpui::TestAppContext| {
+        repository.read_with(cx, |repository, _| {
+            expected
+                .iter()
+                .map(|(path, _)| {
+                    (
+                        *path,
+                        repository.status_for_path(&repo_path(path)).is_some(),
+                    )
+                })
+                .collect::<Vec<_>>()
+        })
+    };
+    for _ in 0..100 {
+        tree.flush_fs_events(cx).await;
+        project
+            .update(cx, |project, cx| project.git_scans_complete(cx))
+            .await;
+        cx.executor().run_until_parked();
+        if current(cx) == expected {
+            return;
+        }
+        cx.executor().timer(Duration::from_millis(100)).await;
+    }
+    let statuses = repository.read_with(cx, |repository, _| {
+        repository
+            .cached_status()
+            .map(|entry| format!("{:?} {:?}", entry.repo_path, entry.status))
+            .collect::<Vec<_>>()
+    });
+    panic!("statuses never became {expected:?}; the repository has {statuses:?}");
+}
+
+#[allow(clippy::disallowed_methods)]
+#[track_caller]
+fn git_worktree_add(branch: &str, worktree_dir: &Path, work_dir: &Path) {
+    let output = git_cmd(work_dir)
+        .args(["worktree", "add", "-b", branch])
+        .arg(worktree_dir)
+        .output()
+        .expect("Failed to run git worktree add");
+    assert!(
+        output.status.success(),
+        "git worktree add failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
