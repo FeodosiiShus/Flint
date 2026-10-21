@@ -569,6 +569,9 @@ mod tests {
     async fn test_basic_bracket_colorization(cx: &mut gpui::TestAppContext) {
         init_test(cx, |language_settings| {
             language_settings.defaults.colorize_brackets = Some(true);
+            // The expected colors include the `use` line's braces, which would fold away
+            // when the file opens.
+            language_settings.defaults.fold_imports_by_default = Some(false);
         });
         let mut cx = EditorLspTestContext::new(
             Arc::into_inner(rust_lang()).unwrap(),
