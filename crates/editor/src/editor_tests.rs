@@ -1842,6 +1842,80 @@ async fn test_first_open_folds_only_imports_whatever_the_grammar_marks_foldable(
 }
 
 #[gpui::test]
+async fn test_opening_a_java_file_folds_the_imports_and_not_the_code(cx: &mut TestAppContext) {
+    init_test(cx, |_| {});
+    let fs = FakeFs::new(cx.executor());
+    let source = "package com.example;\n\nimport java.util.List;\nimport java.util.Map;\n\npublic class Greeter {\n    public List<String> greet(Map<String, String> names) {\n        return List.of(\"hello\");\n    }\n}\n";
+    fs.insert_tree(path!("/a"), json!({ "Greeter.java": source }))
+        .await;
+
+    let project = Project::test(fs, [path!("/a").as_ref()], cx).await;
+    // The Java extension's `languages/java/folds.scm`.
+    let java = Language::new(
+        LanguageConfig {
+            name: "Java".into(),
+            matcher: Arc::new(LanguageMatcher {
+                path_suffixes: vec!["java".to_string()],
+                ..Default::default()
+            }),
+            ..Default::default()
+        },
+        Some(tree_sitter_java::LANGUAGE.into()),
+    )
+    .with_folds_query(
+        "[(block) (class_body) (constructor_declaration) (argument_list) (annotation_argument_list)] @fold",
+    )
+    .unwrap();
+    project.read_with(cx, |project, _| {
+        project.languages().add(Arc::new(java));
+    });
+
+    let (multi_workspace, cx) =
+        cx.add_window_view(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
+    let workspace =
+        multi_workspace.read_with(cx, |multi_workspace, _| multi_workspace.workspace().clone());
+    let worktree_id = workspace.update(cx, |workspace, cx| {
+        workspace.project().update(cx, |project, cx| {
+            project.worktrees(cx).next().unwrap().read(cx).id()
+        })
+    });
+    let editor = workspace
+        .update_in(cx, |workspace, window, cx| {
+            workspace.open_path(
+                (worktree_id, rel_path("Greeter.java")),
+                None,
+                true,
+                window,
+                cx,
+            )
+        })
+        .unwrap()
+        .await
+        .downcast::<Editor>()
+        .unwrap();
+
+    cx.run_until_parked();
+    cx.executor()
+        .advance_clock(FOLD_REGIONS_FIRST_OPEN_ATTEMPT_DELAY);
+    cx.run_until_parked();
+
+    editor.update(cx, |editor, cx| {
+        let text = editor.display_text(cx);
+        assert!(
+            text.contains("⋯") && !text.contains("java.util.Map"),
+            "the imports fold when the Java file opens: {text:?}"
+        );
+        for code in [
+            "public class Greeter {",
+            "public List<String> greet(Map<String, String> names) {",
+            "return List.of(\"hello\");",
+        ] {
+            assert!(text.contains(code), "{code} stays visible: {text:?}");
+        }
+    });
+}
+
+#[gpui::test]
 fn test_fold_action_without_language(cx: &mut TestAppContext) {
     init_test(cx, |_| {});
 

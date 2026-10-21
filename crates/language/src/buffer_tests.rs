@@ -5295,6 +5295,60 @@ async fn test_import_fold_regions_ignore_a_grammars_foldable_blocks(cx: &mut Tes
 }
 
 #[gpui::test]
+async fn test_opening_java_folds_the_imports_and_leaves_the_code_open(cx: &mut TestAppContext) {
+    // The Java extension's `languages/java/folds.scm`, verbatim.
+    let java_extension_folds = r#"
+        [
+          (block)
+          (class_body)
+          (constructor_declaration)
+          (argument_list)
+          (annotation_argument_list)
+        ] @fold
+    "#;
+    let java = Arc::new(
+        Language::new(
+            LanguageConfig {
+                name: "Java".into(),
+                ..Default::default()
+            },
+            Some(tree_sitter_java::LANGUAGE.into()),
+        )
+        .with_folds_query(java_extension_folds)
+        .expect("the Java extension's fold query parses"),
+    );
+    let source = indoc! {r#"
+        package com.example;
+
+        import java.util.List;
+        import java.util.Map;
+        // static helpers
+        import static java.util.Objects.requireNonNull;
+
+        public class Greeter {
+            private final Map<String, String> names;
+
+            public Greeter(Map<String, String> names) {
+                this.names = requireNonNull(names);
+            }
+
+            public List<String> greet() {
+                return List.of("hello");
+            }
+        }
+    "#};
+    assert_eq!(
+        import_fold_texts(java, source, cx).await,
+        &[indoc! {r#"
+            import java.util.List;
+            import java.util.Map;
+            // static helpers
+            import static java.util.Objects.requireNonNull;"#}],
+        "the imports fold as one block; the class, constructor and method bodies stay open"
+    );
+}
+
+#[gpui::test]
 async fn test_import_fold_regions_cover_python_and_c(cx: &mut TestAppContext) {
     let python = Arc::new(Language::new(
         LanguageConfig {
