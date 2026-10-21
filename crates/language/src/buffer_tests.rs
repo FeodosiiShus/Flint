@@ -5155,17 +5155,25 @@ fn typescript_lang() -> Arc<Language> {
     )
 }
 
-async fn typescript_fold_regions(source: &str, cx: &mut TestAppContext) -> Vec<String> {
-    let buffer = cx.new(|cx| Buffer::local(source, cx).with_language(typescript_lang(), cx));
+async fn import_fold_texts(
+    language: Arc<Language>,
+    source: &str,
+    cx: &mut TestAppContext,
+) -> Vec<String> {
+    let buffer = cx.new(|cx| Buffer::local(source, cx).with_language(language, cx));
     buffer
         .read_with(cx, |buffer, _| buffer.parsing_idle())
         .await;
     let snapshot = buffer.read_with(cx, |buffer, _| buffer.snapshot());
     snapshot
-        .fold_regions(0..snapshot.len())
+        .import_fold_regions()
         .into_iter()
         .map(|range| snapshot.text_for_range(range).collect::<String>())
         .collect()
+}
+
+async fn typescript_fold_regions(source: &str, cx: &mut TestAppContext) -> Vec<String> {
+    import_fold_texts(typescript_lang(), source, cx).await
 }
 
 #[gpui::test]
@@ -5248,7 +5256,82 @@ async fn test_fold_regions_exclude_nested_and_dynamic_imports(cx: &mut TestAppCo
     assert_eq!(
         typescript_fold_regions(source, cx).await,
         &["import a from 'a';"],
-        "the query anchors imports to the program node, so dynamic imports inside a function body are not folded"
+        "only top-level imports fold, so dynamic imports inside a function body stay open"
+    );
+}
+
+#[gpui::test]
+async fn test_import_fold_regions_ignore_a_grammars_foldable_blocks(cx: &mut TestAppContext) {
+    // Extensions ship `folds.scm` queries that mark every foldable block, like Java's
+    // `(block) (class_body) ... @fold`; only the imports may fold when a file opens.
+    let rust_with_block_folds = Arc::new(
+        Language::new(
+            LanguageConfig {
+                name: "Rust".into(),
+                ..Default::default()
+            },
+            Some(tree_sitter_rust::LANGUAGE.into()),
+        )
+        .with_folds_query("(block) @fold")
+        .expect("the fold query parses"),
+    );
+    let source = indoc! {r#"
+        use std::collections::HashMap;
+        // grouped imports
+        use std::sync::{Arc, Mutex};
+
+        fn main() {
+            let map: HashMap<u8, u8> = HashMap::new();
+        }
+    "#};
+    assert_eq!(
+        import_fold_texts(rust_with_block_folds, source, cx).await,
+        &[indoc! {r#"
+            use std::collections::HashMap;
+            // grouped imports
+            use std::sync::{Arc, Mutex};"#}],
+        "the use declarations fold as one run, comments included, and the function body stays open"
+    );
+}
+
+#[gpui::test]
+async fn test_import_fold_regions_cover_python_and_c(cx: &mut TestAppContext) {
+    let python = Arc::new(Language::new(
+        LanguageConfig {
+            name: "Python".into(),
+            ..Default::default()
+        },
+        Some(tree_sitter_python::LANGUAGE.into()),
+    ));
+    let source = indoc! {r#"
+        """Module docstring."""
+        from __future__ import annotations
+        import os
+        from typing import Any
+
+        def f() -> Any:
+            import json
+            return os.name
+    "#};
+    assert_eq!(
+        import_fold_texts(python, source, cx).await,
+        &[indoc! {r#"
+            from __future__ import annotations
+            import os
+            from typing import Any"#}],
+        "every Python import form folds, the import inside the function does not"
+    );
+
+    let source = indoc! {r#"
+        #include <stdio.h>
+        #include "local.h"
+
+        int main(void) { return 0; }
+    "#};
+    assert_eq!(
+        import_fold_texts(c_lang(), source, cx).await,
+        &["#include <stdio.h>\n#include \"local.h\""],
+        "C includes fold together"
     );
 }
 

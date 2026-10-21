@@ -3674,6 +3674,26 @@ impl Deref for Buffer {
     }
 }
 
+/// The top-level syntax nodes that import another module, in the grammars of the languages
+/// Flint opens: JavaScript, TypeScript and Python (`import_statement`), Python
+/// (`import_from_statement`, `future_import_statement`), Java, Go, Scala and Swift
+/// (`import_declaration`), Kotlin (`import_list`), C# (`using_directive`), Rust
+/// (`use_declaration`, `extern_crate_declaration`), C and C++ (`preproc_include`), PHP
+/// (`namespace_use_declaration`) and Dart (`import_or_export`).
+const IMPORT_NODE_KINDS: &[&str] = &[
+    "import_statement",
+    "import_from_statement",
+    "future_import_statement",
+    "import_declaration",
+    "import_list",
+    "using_directive",
+    "use_declaration",
+    "extern_crate_declaration",
+    "preproc_include",
+    "namespace_use_declaration",
+    "import_or_export",
+];
+
 impl BufferSnapshot {
     /// Returns [`IndentSize`] for a given line that respects user settings and
     /// language preferences.
@@ -5091,56 +5111,46 @@ impl BufferSnapshot {
             .filter_map(|(range, obj)| (obj == TextObject::InsideFunction).then_some(range))
     }
 
-    pub fn fold_regions<T: ToOffset>(&self, within: Range<T>) -> Vec<Range<usize>> {
-        fn previous_statement(node: tree_sitter::Node<'_>) -> Option<tree_sitter::Node<'_>> {
-            let mut previous = node.prev_named_sibling();
-            while let Some(sibling) = previous {
-                if !sibling.is_extra() && !sibling.is_missing() {
-                    return Some(sibling);
-                }
-                previous = sibling.prev_named_sibling();
-            }
-            None
-        }
-
-        let within = within.to_offset(self);
-        let mut matches = self.syntax.matches(within, &self.text, |grammar| {
-            grammar.folds_config.as_ref().map(|config| &config.query)
-        });
-        let configs = matches
-            .grammars()
-            .iter()
-            .map(|grammar| grammar.folds_config.as_ref())
-            .collect::<Vec<_>>();
-
+    /// The imports to fold when a file is first opened, as IntelliJ folds them: each run of
+    /// top-level imports (comments between them included) and each JavaScript re-export.
+    ///
+    /// Only the syntax tree decides. A grammar's `folds.scm` names every foldable block (Java's
+    /// marks class and method bodies), so following it would hide the code instead.
+    pub fn import_fold_regions(&self) -> Vec<Range<usize>> {
+        let Some(layer) = self.syntax_layers().find(|layer| layer.depth == 0) else {
+            return Vec::new();
+        };
+        let root = layer.node();
+        let mut cursor = root.walk();
         let mut regions = Vec::<Range<usize>>::new();
-        let mut preceding_import_start = None;
-        while let Some(mat) = matches.peek() {
-            if let Some(config) = configs[mat.grammar_index] {
-                for capture in mat.captures {
-                    if capture.index == config.fold_capture_ix {
-                        let byte_range = capture.node.byte_range();
-                        if byte_range.end <= byte_range.start {
-                            continue;
-                        }
-                        let is_import = capture.node.kind() == "import_statement";
-                        let extends_preceding_imports = is_import
-                            && preceding_import_start.is_some_and(|start| {
-                                previous_statement(capture.node)
-                                    .is_some_and(|sibling| sibling.start_byte() == start)
-                            });
-                        if extends_preceding_imports {
-                            if let Some(previous) = regions.last_mut() {
-                                previous.end = byte_range.end;
-                            }
-                        } else {
-                            regions.push(byte_range);
-                        }
-                        preceding_import_start = is_import.then_some(capture.node.start_byte());
-                    }
-                }
+        let mut previous_was_import = false;
+        for node in root.named_children(&mut cursor) {
+            if node.is_extra() || node.is_missing() {
+                continue;
             }
-            matches.advance();
+            let range = node.byte_range();
+            let is_import = IMPORT_NODE_KINDS.contains(&node.kind());
+            let is_re_export =
+                node.kind() == "export_statement" && node.child_by_field_name("source").is_some();
+            if is_import
+                && previous_was_import
+                && let Some(previous) = regions.last_mut()
+            {
+                previous.end = range.end;
+            } else if (is_import || is_re_export) && range.start < range.end {
+                regions.push(range);
+            }
+            previous_was_import = is_import;
+        }
+        // Some grammars end an import node after its line break (C's `#include`); the fold
+        // stops at the end of the text so the line below stays its own line.
+        for region in &mut regions {
+            let line_breaks: usize = self
+                .reversed_chars_at(region.end)
+                .take_while(|character| matches!(character, '\n' | '\r'))
+                .map(char::len_utf8)
+                .sum();
+            region.end = (region.end - line_breaks).max(region.start);
         }
         regions
     }

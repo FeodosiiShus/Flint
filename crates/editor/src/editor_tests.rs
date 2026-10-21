@@ -1777,6 +1777,71 @@ const ready = true;"#;
 }
 
 #[gpui::test]
+async fn test_first_open_folds_only_imports_whatever_the_grammar_marks_foldable(
+    cx: &mut TestAppContext,
+) {
+    init_test(cx, |_| {});
+    let fs = FakeFs::new(cx.executor());
+    let source = "use std::collections::HashMap;\nuse std::sync::Arc;\n\nfn main() {\n    let ready = true;\n}\n";
+    fs.insert_tree(path!("/a"), json!({ "main.rs": source }))
+        .await;
+
+    let project = Project::test(fs, [path!("/a").as_ref()], cx).await;
+    // Like the Java extension's `folds.scm`, this grammar marks every block as foldable.
+    let rust_with_block_folds = Language::new(
+        LanguageConfig {
+            name: "Rust".into(),
+            matcher: Arc::new(LanguageMatcher {
+                path_suffixes: vec!["rs".to_string()],
+                ..Default::default()
+            }),
+            ..Default::default()
+        },
+        Some(tree_sitter_rust::LANGUAGE.into()),
+    )
+    .with_folds_query("(block) @fold")
+    .unwrap();
+    project.read_with(cx, |project, _| {
+        project.languages().add(Arc::new(rust_with_block_folds));
+    });
+
+    let (multi_workspace, cx) =
+        cx.add_window_view(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
+    let workspace =
+        multi_workspace.read_with(cx, |multi_workspace, _| multi_workspace.workspace().clone());
+    let worktree_id = workspace.update(cx, |workspace, cx| {
+        workspace.project().update(cx, |project, cx| {
+            project.worktrees(cx).next().unwrap().read(cx).id()
+        })
+    });
+    let editor = workspace
+        .update_in(cx, |workspace, window, cx| {
+            workspace.open_path((worktree_id, rel_path("main.rs")), None, true, window, cx)
+        })
+        .unwrap()
+        .await
+        .downcast::<Editor>()
+        .unwrap();
+
+    cx.run_until_parked();
+    cx.executor()
+        .advance_clock(FOLD_REGIONS_FIRST_OPEN_ATTEMPT_DELAY);
+    cx.run_until_parked();
+
+    editor.update(cx, |editor, cx| {
+        let text = editor.display_text(cx);
+        assert!(
+            text.contains("⋯") && !text.contains("std::sync::Arc"),
+            "the imports fold when the file opens: {text:?}"
+        );
+        assert!(
+            text.contains("let ready = true;"),
+            "the code stays open even though the grammar marks the block as foldable: {text:?}"
+        );
+    });
+}
+
+#[gpui::test]
 fn test_fold_action_without_language(cx: &mut TestAppContext) {
     init_test(cx, |_| {});
 

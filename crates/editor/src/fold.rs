@@ -905,7 +905,7 @@ impl Editor {
         }
 
         let buffer_snapshot = buffer.read(cx).snapshot();
-        let regions = buffer_snapshot.fold_regions(0..buffer_snapshot.len());
+        let regions = buffer_snapshot.import_fold_regions();
         if regions.is_empty() {
             return fold_regions_authoritative;
         }
