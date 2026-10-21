@@ -134,8 +134,11 @@ Other entities can then register a callback to handle these events by doing `cx.
 
 ## Build guidelines
 
-- Never compile locally: no `cargo build`, `cargo check`, `cargo test`, `cargo clippy`, `./script/clippy`, `script/bundle-mac`. Builds and tests run only in CI (`.github/workflows/checks.yml`, `.github/workflows/build-macos.yml`).
-- Locally only write code and tests, and verify APIs, imports and signatures by reading the source. Allowed cargo commands: `cargo fmt`, and `cargo update --workspace --offline` after `Cargo.toml` changes to sync `Cargo.lock` (dependency resolution only, nothing is compiled; CI uses `--locked`).
+- Locally, build and test only the crates a change touches; CI (`.github/workflows/checks.yml`, `.github/workflows/build-macos.yml`) runs everything else. Don't mirror the whole CI locally (clippy, dylint, every feature variant).
+- Run cargo with workspace feature unification. Stable cargo resolves features per command, so `-p ui`, `-p git_ui`, CI's `--workspace --features …` and `-p zed` each compile their own copy of gpui, project, editor and everything above them, and `target/` fills the disk. The option is unstable, so the nightly that `tooling/lints/rust-toolchain.toml` pins drives the stable rustc that `rust-toolchain.toml` pins:
+  `CARGO_UNSTABLE_FEATURE_UNIFICATION=true CARGO_RESOLVER_FEATURE_UNIFICATION=workspace RUSTC="$(rustup which rustc)" cargo +nightly-2026-03-21 nextest run -p <crate>`
+  Use the same prefix for `check -p <crate> --tests` (type errors in seconds) and `test -p zed --bin flint <filter>`. `cargo fmt` and `cargo update --workspace --offline` (after `Cargo.toml` changes; CI uses `--locked`) need no prefix.
+- `cargo sweep --maxsize 100GB .` ([cargo-sweep](https://github.com/holmgr/cargo-sweep)) removes the oldest artifacts once `target/` grows past the cap.
 - Every new test must be reachable from `.github/workflows/checks.yml`, otherwise CI never runs it.
 
 # Rules Hygiene
