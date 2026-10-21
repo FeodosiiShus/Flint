@@ -3020,7 +3020,7 @@ impl Render for KeybindingEditorModal {
         let key_context = self.key_context_internal(window, cx);
         let showing_completions = key_context.contains("showing_completions");
         let title: SharedString = if self.creating {
-            "Create Keybinding".into()
+            SharedString::new_static("Create Keybinding")
         } else {
             self.editing_keybind.action().humanized_name.clone()
         };

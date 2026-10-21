@@ -180,7 +180,7 @@ pub fn init(languages: Arc<LanguageRegistry>, fs: Arc<dyn Fs>, node: NodeRuntime
         eslint_adapter.clone(),
     );
     languages.register_available_lsp_adapter(
-        LanguageServerName("oxlint".into()),
+        LanguageServerName::new_static("oxlint"),
         oxlint_adapter.clone(),
     );
     languages.register_available_lsp_adapter(LanguageServerName("tsgo".into()), tsgo_adapter);

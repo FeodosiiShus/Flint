@@ -33,7 +33,7 @@ impl CloseButton {
             disabled: false,
             cursor_style: CursorStyle::PointingHand,
             visible_on_hover: None,
-            aria_label: "Close".into(),
+            aria_label: SharedString::new_static("Close"),
             on_click: None,
             tooltip: None,
         }
