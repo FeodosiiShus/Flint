@@ -20,6 +20,14 @@ const SERVER_ACTIVATIONS: &[ServerActivation] = &[
         package_dependencies: &["eslint"],
     },
     ServerActivation {
+        server: "oxlint",
+        workspace_files: &[
+            "**/.oxlintrc.json",
+            "**/oxlint.config.{ts,mts,cts,js,mjs,cjs}",
+        ],
+        package_dependencies: &["oxlint"],
+    },
+    ServerActivation {
         server: "roslyn",
         workspace_files: &["**/*.{sln,slnx,csproj}"],
         package_dependencies: &[],
@@ -90,6 +98,7 @@ mod server_activation_tests {
                 "gradle-language-server",
                 "jdtls",
                 "marksman",
+                "oxlint",
                 "roslyn"
             ]
         );
@@ -145,6 +154,35 @@ mod server_activation_tests {
         );
         assert_eq!(
             rule.manifest_declares_dependency(r#"{"dependencies": {"react": "^19"}}"#),
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn server_activation_oxlint_follows_config_files_and_dependency() {
+        for path in [
+            ".oxlintrc.json",
+            "oxlint.config.ts",
+            "oxlint.config.mjs",
+            "packages/web/.oxlintrc.json",
+        ] {
+            assert!(matches("oxlint", path), "{path} should activate oxlint");
+        }
+        for path in ["eslint.config.js", "src/oxlint.ts", ".oxlintrc.json.bak"] {
+            assert!(
+                !matches("oxlint", path),
+                "{path} should not activate oxlint"
+            );
+        }
+        let rule = rule_for("oxlint");
+        assert!(rule.is_dependency("oxlint"));
+        assert!(!rule.is_dependency("oxlint-tsgolint"));
+        assert_eq!(
+            rule.manifest_declares_dependency(r#"{"devDependencies": {"oxlint": "^1.89"}}"#),
+            Some(true)
+        );
+        assert_eq!(
+            rule.manifest_declares_dependency(r#"{"devDependencies": {"eslint": "^9"}}"#),
             Some(false)
         );
     }

@@ -2011,6 +2011,7 @@
       "language_servers": ["tsgo", "..."],
       "code_actions_on_format": {
         "source.fixAll.eslint": true,
+        "source.fixAll.oxc": true,
       },
       "prettier": {
         "allowed": true,
@@ -2110,6 +2111,7 @@
       "language_servers": ["tsgo", "..."],
       "code_actions_on_format": {
         "source.fixAll.eslint": true,
+        "source.fixAll.oxc": true,
       },
       "prettier": {
         "allowed": true,
@@ -2124,6 +2126,7 @@
       "language_servers": ["tsgo", "..."],
       "code_actions_on_format": {
         "source.fixAll.eslint": true,
+        "source.fixAll.oxc": true,
       },
       "prettier": {
         "allowed": true,

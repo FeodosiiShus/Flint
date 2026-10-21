@@ -17,6 +17,7 @@ mod css;
 mod eslint;
 mod go;
 mod json;
+mod oxlint;
 mod python;
 mod rust;
 mod server_activation;
@@ -51,6 +52,7 @@ pub fn init(languages: Arc<LanguageRegistry>, fs: Arc<dyn Fs>, node: NodeRuntime
 
     let eslint_adapter = Arc::new(eslint::EsLintLspAdapter::new(node.clone(), fs.clone()));
     let json_lsp_adapter = Arc::new(json::JsonLspAdapter::new(languages.clone(), node.clone()));
+    let oxlint_adapter = Arc::new(oxlint::OxlintLspAdapter::new(node.clone(), fs.clone()));
     let python_toolchain_provider = Arc::new(python::PythonToolchainProvider::new(fs.clone()));
     let rust_lsp_adapter = Arc::new(rust::RustLspAdapter);
     let tsgo_adapter = Arc::new(tsgo::TsgoLspAdapter::new(node.clone()));
@@ -177,11 +179,16 @@ pub fn init(languages: Arc<LanguageRegistry>, fs: Arc<dyn Fs>, node: NodeRuntime
         LanguageServerName("eslint".into()),
         eslint_adapter.clone(),
     );
+    languages.register_available_lsp_adapter(
+        LanguageServerName("oxlint".into()),
+        oxlint_adapter.clone(),
+    );
     languages.register_available_lsp_adapter(LanguageServerName("tsgo".into()), tsgo_adapter);
 
-    let eslint_languages = ["TSX", "TypeScript", "JavaScript", "Svelte"];
-    for language in eslint_languages {
+    let linted_languages = ["TSX", "TypeScript", "JavaScript", "Svelte"];
+    for language in linted_languages {
         languages.register_lsp_adapter(language.into(), eslint_adapter.clone());
+        languages.register_lsp_adapter(language.into(), oxlint_adapter.clone());
     }
 
     server_activation::register(&languages);
