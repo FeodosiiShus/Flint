@@ -11,7 +11,7 @@ use image::RgbaImage;
 use settings::SettingsStore;
 use std::sync::Arc;
 use theme::LoadThemes;
-use ui::{ActiveTheme, GLASS_MATERIAL, StyledSurface};
+use ui::{ActiveTheme, DialogWidth, GLASS_MATERIAL, StyledSurface};
 
 const WINDOW_SIZE: f32 = 300.;
 const SURFACE_ORIGIN: f32 = 60.;
@@ -20,15 +20,18 @@ const STRIPE_WIDTH: f32 = 4.;
 const RED: u32 = 0xff0000;
 const BLUE: u32 = 0x0000ff;
 
+#[derive(Clone, Copy, Debug)]
 enum Surface {
     Popup,
+    Dialog,
+    Balloon,
     Tooltip,
 }
 
 struct SurfaceOverStripes(Surface);
 
 impl Render for SurfaceOverStripes {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let stripes = (0..(WINDOW_SIZE / STRIPE_WIDTH) as usize).map(|index| {
             div()
                 .w(px(STRIPE_WIDTH))
@@ -42,6 +45,10 @@ impl Render for SurfaceOverStripes {
             .size(px(SURFACE_SIZE));
         let surface = match self.0 {
             Surface::Popup => surface.popup_surface(cx),
+            Surface::Dialog => surface
+                .dialog_surface(DialogWidth::Small, window, cx)
+                .w(px(SURFACE_SIZE)),
+            Surface::Balloon => surface.balloon_surface(cx),
             Surface::Tooltip => surface.tooltip_surface(cx),
         };
         div()
@@ -85,8 +92,22 @@ fn render(surface: Surface) -> (RgbaImage, f32, [f32; 3]) {
     let image = cx
         .capture_screenshot(window.into())
         .expect("headless renderer should capture the window");
+    save_for_inspection(&image, surface);
     let scale = image.height() as f32 / WINDOW_SIZE;
     (image, scale, surface_color)
+}
+
+/// Writes the rendered surface as a PNG when `FLINT_UI_SCREENSHOTS` names a directory, so the
+/// glass can be inspected on a Mac without opening the app.
+fn save_for_inspection(image: &RgbaImage, surface: Surface) {
+    let Ok(directory) = std::env::var("FLINT_UI_SCREENSHOTS") else {
+        return;
+    };
+    std::fs::create_dir_all(&directory).expect("the screenshot directory should be writable");
+    let path = std::path::Path::new(&directory).join(format!("glass-{surface:?}.png"));
+    image
+        .save(&path)
+        .expect("the rendered surface should be saved as a PNG");
 }
 
 fn pixel(image: &RgbaImage, x: f32, y: f32, scale: f32) -> [f32; 3] {
@@ -102,33 +123,36 @@ fn distance(a: [f32; 3], b: [f32; 3]) -> f32 {
 }
 
 #[test]
-fn pixels_glass_popups_blur_the_content_behind_them() {
-    let (image, scale, surface_color) = render(Surface::Popup);
-    let center = SURFACE_ORIGIN + SURFACE_SIZE / 2.;
+fn pixels_glass_surfaces_blur_the_content_behind_them() {
+    for surface in [Surface::Popup, Surface::Dialog, Surface::Balloon] {
+        let (image, scale, surface_color) = render(surface);
+        let center = SURFACE_ORIGIN + SURFACE_SIZE / 2.;
 
-    let outside_red = pixel(&image, 1., center, scale);
-    let outside_blue = pixel(&image, 1. + STRIPE_WIDTH, center, scale);
-    assert!(
-        distance(outside_red, [1., 0., 0.]) < 0.02 && distance(outside_blue, [0., 0., 1.]) < 0.02,
-        "the stripes outside the popup stay sharp: {outside_red:?} {outside_blue:?}"
-    );
+        let outside_red = pixel(&image, 1., center, scale);
+        let outside_blue = pixel(&image, 1. + STRIPE_WIDTH, center, scale);
+        assert!(
+            distance(outside_red, [1., 0., 0.]) < 0.02
+                && distance(outside_blue, [0., 0., 1.]) < 0.02,
+            "the stripes outside the {surface:?} stay sharp: {outside_red:?} {outside_blue:?}"
+        );
 
-    let first = pixel(&image, center, center, scale);
-    let next = pixel(&image, center + STRIPE_WIDTH, center, scale);
-    assert!(
-        distance(first, next) < 0.03,
-        "neighbouring stripes blur into one color under the glass: {first:?} {next:?}"
-    );
+        let first = pixel(&image, center, center, scale);
+        let next = pixel(&image, center + STRIPE_WIDTH, center, scale);
+        assert!(
+            distance(first, next) < 0.03,
+            "neighbouring stripes blur into one color under the {surface:?}: {first:?} {next:?}"
+        );
 
-    let opacity = GLASS_MATERIAL.surface_opacity;
-    let behind = [0.5, 0., 0.5];
-    let expected: [f32; 3] = std::array::from_fn(|index| {
-        surface_color[index] * opacity + behind[index] * (1. - opacity)
-    });
-    assert!(
-        distance(first, expected) < 0.02,
-        "the glass lays the surface color over the blurred content: got {first:?}, expected {expected:?}"
-    );
+        let opacity = GLASS_MATERIAL.surface_opacity;
+        let behind = [0.5, 0., 0.5];
+        let expected: [f32; 3] = std::array::from_fn(|index| {
+            surface_color[index] * opacity + behind[index] * (1. - opacity)
+        });
+        assert!(
+            distance(first, expected) < 0.02,
+            "the {surface:?} glass lays the surface color over the blurred content: got {first:?}, expected {expected:?}"
+        );
+    }
 }
 
 #[test]

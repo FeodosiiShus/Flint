@@ -12,6 +12,7 @@ use util::ResultExt;
 pub use language::*;
 
 mod bash;
+mod biome;
 mod c;
 mod css;
 mod eslint;
@@ -50,6 +51,7 @@ pub fn init(languages: Arc<LanguageRegistry>, fs: Arc<dyn Fs>, node: NodeRuntime
     #[cfg(feature = "load-grammars")]
     languages.register_native_grammars(grammars::native_grammars());
 
+    let biome_adapter = Arc::new(biome::BiomeLspAdapter::new(node.clone(), fs.clone()));
     let eslint_adapter = Arc::new(eslint::EsLintLspAdapter::new(node.clone(), fs.clone()));
     let json_lsp_adapter = Arc::new(json::JsonLspAdapter::new(languages.clone(), node.clone()));
     let oxlint_adapter = Arc::new(oxlint::OxlintLspAdapter::new(node.clone(), fs.clone()));
@@ -176,6 +178,10 @@ pub fn init(languages: Arc<LanguageRegistry>, fs: Arc<dyn Fs>, node: NodeRuntime
     }
 
     languages.register_available_lsp_adapter(
+        LanguageServerName::new_static("biome"),
+        biome_adapter.clone(),
+    );
+    languages.register_available_lsp_adapter(
         LanguageServerName("eslint".into()),
         eslint_adapter.clone(),
     );
@@ -187,8 +193,13 @@ pub fn init(languages: Arc<LanguageRegistry>, fs: Arc<dyn Fs>, node: NodeRuntime
 
     let linted_languages = ["TSX", "TypeScript", "JavaScript", "Svelte"];
     for language in linted_languages {
+        languages.register_lsp_adapter(language.into(), biome_adapter.clone());
         languages.register_lsp_adapter(language.into(), eslint_adapter.clone());
         languages.register_lsp_adapter(language.into(), oxlint_adapter.clone());
+    }
+
+    for language in ["JSON", "JSONC", "CSS", "GraphQL"] {
+        languages.register_lsp_adapter(language.into(), biome_adapter.clone());
     }
 
     server_activation::register(&languages);

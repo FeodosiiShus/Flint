@@ -112,13 +112,19 @@ fn test_excluded_directories_keep_the_directory_and_exclude_its_contents() {
 }
 
 #[test]
-fn test_excluded_directories_default_to_none() {
+fn test_node_modules_is_excluded_by_default() {
     let content = SettingsContent::parse_json_with_comments(&settings::default_settings())
         .expect("default settings");
     let settings = WorktreeSettings::from_settings(&content);
 
-    assert!(!settings.is_directory_excluded(rel_path("node_modules")));
-    assert!(!settings.is_path_excluded(rel_path("node_modules/react/index.js")));
+    assert!(settings.is_directory_excluded(rel_path("node_modules")));
+    assert!(
+        settings.is_directory_excluded(rel_path("packages/web/node_modules")),
+        "a workspace package's dependencies are excluded too"
+    );
+    assert!(settings.is_path_excluded(rel_path("node_modules/react/index.js")));
+    assert!(!settings.is_directory_excluded(rel_path("src")));
+    assert!(!settings.is_path_excluded(rel_path("src/index.ts")));
 }
 
 #[test]

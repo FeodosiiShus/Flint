@@ -121,7 +121,8 @@ impl SurfaceKind {
 }
 
 /// The Liquid Glass material of [`SurfaceMaterial::Glass`] surfaces, emulated by the renderer
-/// because AppKit's glass only samples what lies behind a separate window.
+/// because AppKit's `NSGlassEffectView` samples the window backdrop, not the sibling views a
+/// popup floats above; native glass would blur the desktop behind Flint instead of the editor.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct GlassMaterial {
     pub blur_radius: Pixels,

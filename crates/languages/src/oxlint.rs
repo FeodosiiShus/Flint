@@ -61,7 +61,18 @@ fn server_binary(node: PathBuf, launcher: &Path) -> LanguageServerBinary {
 /// The user's `lsp.oxlint.settings` are oxlint's per-workspace options (`run`, `configPath`,
 /// `fixKind`, `typeAware`, …); without them oxlint uses its defaults and the project's config.
 fn workspace_configuration_for(user_settings: Option<Value>) -> Value {
-    json!({ CONFIGURATION_SECTION: user_settings.unwrap_or_else(|| json!({})) })
+    match user_settings {
+        // `workspace/configuration` reads the `oxc_language_server` section, while the server's
+        // `workspace/didChangeConfiguration` handler parses `settings` as flat options; sending
+        // both shapes keeps the user's options from reverting to defaults on a settings refresh.
+        Some(Value::Object(options)) => {
+            let mut configuration = options.clone();
+            configuration.insert(CONFIGURATION_SECTION.to_string(), Value::Object(options));
+            Value::Object(configuration)
+        }
+        Some(settings) => json!({ CONFIGURATION_SECTION: settings }),
+        None => json!({ CONFIGURATION_SECTION: {} }),
+    }
 }
 
 impl LspInstaller for OxlintLspAdapter {
@@ -233,7 +244,12 @@ mod tests {
         );
         assert_eq!(
             workspace_configuration_for(Some(json!({ "run": "onSave", "typeAware": true }))),
-            json!({ "oxc_language_server": { "run": "onSave", "typeAware": true } })
+            json!({
+                "run": "onSave",
+                "typeAware": true,
+                "oxc_language_server": { "run": "onSave", "typeAware": true }
+            }),
+            "the server reads flat options from didChangeConfiguration and the section from workspace/configuration"
         );
     }
 

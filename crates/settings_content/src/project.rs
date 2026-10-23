@@ -290,14 +290,14 @@ pub struct WorktreeSettingsContent {
     /// keeping that exclusion in Flint's own data rather than in this setting or
     /// any file of the project.
     ///
-    /// Default: []
+    /// Default: ["**/node_modules"]
     ///
     /// Use `"..."` to add patterns without repeating the inherited list. In
     /// project settings, it extends the user or parent configuration value.
     ///
     /// ```json
     /// {
-    ///   "excluded_directories": ["...", "node_modules"]
+    ///   "excluded_directories": ["...", "vendor"]
     /// }
     /// ```
     pub excluded_directories: Option<SplicingVec>,

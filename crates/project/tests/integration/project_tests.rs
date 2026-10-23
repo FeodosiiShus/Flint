@@ -12964,6 +12964,7 @@ async fn test_search_multiple_worktrees_with_inclusions(cx: &mut gpui::TestAppCo
 #[gpui::test]
 async fn test_search_in_gitignored_dirs(cx: &mut gpui::TestAppContext) {
     init_test(cx);
+    stop_excluding_node_modules(cx);
 
     let fs = FakeFs::new(cx.background_executor.clone());
     fs.insert_tree(
@@ -20462,6 +20463,19 @@ pub fn init_test(cx: &mut gpui::TestAppContext) {
         let settings_store = SettingsStore::test(cx);
         cx.set_global(settings_store);
         release_channel::init(semver::Version::new(0, 0, 0), cx);
+    });
+}
+
+/// The default settings exclude `node_modules`, which would hide the directory from the search
+/// tests that deliberately put their fixtures there.
+fn stop_excluding_node_modules(cx: &mut gpui::TestAppContext) {
+    cx.update(|cx| {
+        cx.update_global::<SettingsStore, _>(|store, cx| {
+            store.update_user_settings(cx, |settings| {
+                settings.project.worktree.excluded_directories =
+                    Some(SplicingVec::from(Vec::new()));
+            });
+        });
     });
 }
 

@@ -1831,6 +1831,7 @@ async fn test_subtree_rescan_reports_unchanged_descendants_as_updated(cx: &mut T
 #[gpui::test]
 async fn test_open_gitignored_files(cx: &mut TestAppContext) {
     init_test(cx);
+    stop_excluding_node_modules(cx);
     let fs = FakeFs::new(cx.background_executor.clone());
     fs.insert_tree(
         "/root",
@@ -1995,6 +1996,7 @@ async fn test_open_gitignored_files(cx: &mut TestAppContext) {
 #[gpui::test]
 async fn test_dirs_no_longer_ignored(cx: &mut TestAppContext) {
     init_test(cx);
+    stop_excluding_node_modules(cx);
     let fs = FakeFs::new(cx.background_executor.clone());
     fs.insert_tree(
         "/root",
@@ -2185,6 +2187,7 @@ async fn test_write_file(cx: &mut TestAppContext) {
 #[gpui::test]
 async fn test_file_scan_inclusions(cx: &mut TestAppContext) {
     init_test(cx);
+    stop_excluding_node_modules(cx);
     cx.executor().allow_parking();
     let dir = TempTree::new(json!({
         ".gitignore": "**/target\n/node_modules\ntop_level.txt\n",
@@ -2260,6 +2263,7 @@ async fn test_file_scan_inclusions(cx: &mut TestAppContext) {
 #[gpui::test]
 async fn test_file_scan_inclusions_from_project_settings(cx: &mut TestAppContext) {
     init_test(cx);
+    stop_excluding_node_modules(cx);
     let worktree_id = WorktreeId::from_proto(0);
     cx.update(|cx| {
         cx.update_global::<SettingsStore, _>(|store, cx| {
@@ -2438,6 +2442,7 @@ async fn test_file_scan_inclusions_from_project_settings(cx: &mut TestAppContext
 #[gpui::test]
 async fn test_file_scan_exclusions_overrules_inclusions(cx: &mut TestAppContext) {
     init_test(cx);
+    stop_excluding_node_modules(cx);
     cx.executor().allow_parking();
     let dir = TempTree::new(json!({
         ".gitignore": "**/target\n/node_modules\n",
@@ -2502,6 +2507,7 @@ async fn test_file_scan_exclusions_overrules_inclusions(cx: &mut TestAppContext)
 #[gpui::test]
 async fn test_file_scan_inclusions_reindexes_on_setting_change(cx: &mut TestAppContext) {
     init_test(cx);
+    stop_excluding_node_modules(cx);
     cx.executor().allow_parking();
     let dir = TempTree::new(json!({
         ".gitignore": "**/target\n/node_modules/\n",
@@ -2586,6 +2592,7 @@ async fn test_file_scan_inclusions_reindexes_on_setting_change(cx: &mut TestAppC
 #[gpui::test]
 async fn test_file_scan_exclusions(cx: &mut TestAppContext) {
     init_test(cx);
+    stop_excluding_node_modules(cx);
     cx.executor().allow_parking();
     let dir = TempTree::new(json!({
         ".gitignore": "**/target\n/node_modules\n",
@@ -2696,7 +2703,7 @@ async fn test_excluded_directories_stay_in_the_tree_without_their_contents(
     init_test(cx);
     cx.executor().allow_parking();
     let dir = TempTree::new(json!({
-        "node_modules": {
+        "vendor": {
             "react": {
                 "index.js": "",
             },
@@ -2733,28 +2740,28 @@ async fn test_excluded_directories_stay_in_the_tree_without_their_contents(
     tree.flush_fs_events(cx).await;
     tree.read_with(cx, |tree, _| {
         assert!(
-            tree.entry_for_path(rel_path("node_modules/react/index.js"))
+            tree.entry_for_path(rel_path("vendor/react/index.js"))
                 .is_some(),
             "a directory that is neither ignored nor excluded is scanned"
         );
     });
 
-    set_excluded_directories(vec!["node_modules".to_string()], cx);
+    set_excluded_directories(vec!["vendor".to_string()], cx);
     tree.flush_fs_events(cx).await;
     cx.executor().run_until_parked();
     tree.read_with(cx, |tree, _| {
-        let node_modules = tree
-            .entry_for_path(rel_path("node_modules"))
+        let vendor = tree
+            .entry_for_path(rel_path("vendor"))
             .expect("an excluded directory stays in the tree");
         assert_eq!(
-            node_modules.kind,
+            vendor.kind,
             EntryKind::UnloadedDir,
             "an excluded directory is never read"
         );
         for path in [
-            "node_modules/react",
-            "node_modules/react/index.js",
-            "node_modules/package.json",
+            "vendor/react",
+            "vendor/react/index.js",
+            "vendor/package.json",
         ] {
             assert!(
                 tree.entry_for_path(rel_path(path)).is_none(),
@@ -2767,24 +2774,24 @@ async fn test_excluded_directories_stay_in_the_tree_without_their_contents(
     tree.read_with(cx, |tree, _| {
         tree.as_local()
             .unwrap()
-            .refresh_entries_for_paths(vec![rel_path("node_modules").into()])
+            .refresh_entries_for_paths(vec![rel_path("vendor").into()])
     })
     .recv()
     .await;
-    std::fs::write(dir.path().join("node_modules/react/new.js"), "")
+    std::fs::write(dir.path().join("vendor/react/new.js"), "")
         .expect("writing into the excluded directory");
     std::fs::write(dir.path().join("src/new.ts"), "").expect("writing into src");
     tree.flush_fs_events(cx).await;
     cx.executor().run_until_parked();
     tree.read_with(cx, |tree, _| {
         assert_eq!(
-            tree.entry_for_path(rel_path("node_modules"))
+            tree.entry_for_path(rel_path("vendor"))
                 .map(|entry| entry.kind),
             Some(EntryKind::UnloadedDir),
             "expanding an excluded directory does not load it"
         );
         assert!(
-            tree.entry_for_path(rel_path("node_modules/react/new.js"))
+            tree.entry_for_path(rel_path("vendor/react/new.js"))
                 .is_none(),
             "changes inside an excluded directory are not picked up"
         );
@@ -2799,7 +2806,7 @@ async fn test_excluded_directories_stay_in_the_tree_without_their_contents(
     cx.executor().run_until_parked();
     tree.read_with(cx, |tree, _| {
         assert!(
-            tree.entry_for_path(rel_path("node_modules/react/new.js"))
+            tree.entry_for_path(rel_path("vendor/react/new.js"))
                 .is_some(),
             "cancelling the exclusion scans the directory again"
         );
@@ -6147,6 +6154,19 @@ fn init_test(cx: &mut gpui::TestAppContext) {
     cx.update(|cx| {
         let settings_store = SettingsStore::test(cx);
         cx.set_global(settings_store);
+    });
+}
+
+/// The default settings exclude `node_modules`, which would hide the directory from the
+/// gitignore and scan tests that deliberately put their fixtures inside it.
+fn stop_excluding_node_modules(cx: &mut TestAppContext) {
+    cx.update(|cx| {
+        cx.update_global::<SettingsStore, _>(|store, cx| {
+            store.update_user_settings(cx, |settings| {
+                settings.project.worktree.excluded_directories =
+                    Some(SplicingVec::from(Vec::new()));
+            });
+        });
     });
 }
 

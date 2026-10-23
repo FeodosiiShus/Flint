@@ -1418,7 +1418,9 @@
   // searched or opened in a language server, like IntelliJ's excluded folders, so no linter or type
   // checker reports problems in them. "Mark Directory As > Excluded" in the project panel excludes a
   // directory too, keeping that in Flint's own data rather than in any project file.
-  "excluded_directories": [],
+  // Installed packages are the largest tree in a JavaScript or TypeScript repository and are never
+  // edited, so they are excluded by default even when the repository does not ignore them in Git.
+  "excluded_directories": ["**/node_modules"],
   // Maximum directory depth to eagerly index outside of git repositories;
   // contents of directories at this depth or deeper are indexed on demand.
   // Repositories rooted shallower than this depth are always indexed fully.
@@ -2231,12 +2233,19 @@
         },
       },
     },
+    // Biome's language server runs the project's `@biomejs/biome` (or a `biome` on `PATH`), so it
+    // needs no binary settings. `lsp.biome.settings` answers its `workspace/configuration`
+    // request with Biome's `requireConfiguration`, `configurationPath`, `inlineConfig` and
+    // `goToDefinition` keys; the `require_config_file`, `config_path`, `inline_config` and
+    // `goto_definition` names used by Biome's Zed extension are accepted too.
     "tsgo": {
       "settings": {
         "typescript": {
           "inlayHints": {
+            // Literals only, as in VS Code and WebStorm: asking for a hint on every call makes
+            // the server resolve parameter types for arguments whose names already say enough.
             "parameterNames": {
-              "enabled": "all",
+              "enabled": "literals",
               "suppressWhenArgumentMatchesName": false,
             },
             "parameterTypes": {
@@ -2259,8 +2268,10 @@
         },
         "javascript": {
           "inlayHints": {
+            // Literals only, as in VS Code and WebStorm: asking for a hint on every call makes
+            // the server resolve parameter types for arguments whose names already say enough.
             "parameterNames": {
-              "enabled": "all",
+              "enabled": "literals",
               "suppressWhenArgumentMatchesName": false,
             },
             "parameterTypes": {

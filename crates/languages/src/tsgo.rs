@@ -113,14 +113,19 @@ fn workspace_configuration_with_overrides(override_options: Option<Value>) -> Va
                 "enabled": true
             }
         },
+        // A code lens resolves references or implementations for every declaration it appears
+        // above. Asking for them on every function and class method makes the server walk the
+        // whole project each time a lens request arrives, which is the slowest editor feature in
+        // a large TypeScript monorepo. Exported functions and interface methods keep the lens;
+        // class methods and implementation details resolve their usages on demand instead.
         "implementationsCodeLens": {
             "enabled": true,
-            "showOnAllClassMethods": true,
+            "showOnAllClassMethods": false,
             "showOnInterfaceMethods": true
         },
         "referencesCodeLens": {
             "enabled": true,
-            "showOnAllFunctions": true
+            "showOnAllFunctions": false
         },
     });
 
@@ -375,6 +380,14 @@ mod tests {
         assert_eq!(
             defaults["typescript"]["referencesCodeLens"]["enabled"],
             true
+        );
+        assert_eq!(
+            defaults["typescript"]["referencesCodeLens"]["showOnAllFunctions"], false,
+            "a large monorepo should not resolve references for every function"
+        );
+        assert_eq!(
+            defaults["typescript"]["implementationsCodeLens"]["showOnAllClassMethods"], false,
+            "a large monorepo should not resolve implementations for every class method"
         );
 
         let configuration = workspace_configuration_with_overrides(Some(json!({

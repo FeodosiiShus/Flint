@@ -12402,6 +12402,8 @@ pub(crate) fn init_test(cx: &mut TestAppContext) {
                     .auto_fold_dirs = Some(false);
                 settings.project.worktree.file_scan_exclusions =
                     Some(SplicingVec::from(Vec::new()));
+                settings.project.worktree.excluded_directories =
+                    Some(SplicingVec::from(Vec::new()));
                 settings.project.worktree.file_scan_depth = Some(0);
                 settings.workspace.autosave = Some(AutosaveSetting::Off);
             });
@@ -12424,6 +12426,8 @@ fn init_test_with_editor(cx: &mut TestAppContext) {
                     .get_or_insert_default()
                     .auto_fold_dirs = Some(false);
                 settings.project.worktree.file_scan_exclusions =
+                    Some(SplicingVec::from(Vec::new()));
+                settings.project.worktree.excluded_directories =
                     Some(SplicingVec::from(Vec::new()));
                 settings.project.worktree.file_scan_depth = Some(0);
                 settings.workspace.autosave = Some(AutosaveSetting::Off);
@@ -12448,6 +12452,8 @@ fn init_test_with_git_ui(cx: &mut TestAppContext) {
                     .get_or_insert_default()
                     .auto_fold_dirs = Some(false);
                 settings.project.worktree.file_scan_exclusions =
+                    Some(SplicingVec::from(Vec::new()));
+                settings.project.worktree.excluded_directories =
                     Some(SplicingVec::from(Vec::new()));
                 settings.project.worktree.file_scan_depth = Some(0);
                 settings.workspace.autosave = Some(AutosaveSetting::Off);

@@ -15,6 +15,16 @@ const GRADLE_PROJECT_MARKERS: &[&str] =
 
 const SERVER_ACTIVATIONS: &[ServerActivation] = &[
     ServerActivation {
+        server: "biome",
+        workspace_files: &[
+            "**/biome.json",
+            "**/biome.jsonc",
+            "**/.biome.json",
+            "**/.biome.jsonc",
+        ],
+        package_dependencies: &["@biomejs/biome"],
+    },
+    ServerActivation {
         server: "eslint",
         workspace_files: &["**/eslint.config.{js,cjs,mjs,ts,cts,mts}", "**/.eslintrc*"],
         package_dependencies: &["eslint"],
@@ -23,6 +33,7 @@ const SERVER_ACTIVATIONS: &[ServerActivation] = &[
         server: "oxlint",
         workspace_files: &[
             "**/.oxlintrc.json",
+            "**/.oxlintrc.jsonc",
             "**/oxlint.config.{ts,mts,cts,js,mjs,cjs}",
         ],
         package_dependencies: &["oxlint"],
@@ -94,6 +105,7 @@ mod server_activation_tests {
         assert_eq!(
             gated,
             [
+                "biome",
                 "eslint",
                 "gradle-language-server",
                 "jdtls",
@@ -119,6 +131,41 @@ mod server_activation_tests {
                 "{server} must always be eligible to start"
             );
         }
+    }
+
+    #[test]
+    fn server_activation_biome_follows_config_files_and_dependency() {
+        for path in [
+            "biome.json",
+            "biome.jsonc",
+            ".biome.json",
+            ".biome.jsonc",
+            "packages/web/biome.json",
+            "packages/ui/.biome.jsonc",
+        ] {
+            assert!(matches("biome", path), "{path} should activate biome");
+        }
+        for path in [
+            "src/biome.ts",
+            "biome.json.bak",
+            "package.json",
+            "tsconfig.json",
+        ] {
+            assert!(!matches("biome", path), "{path} should not activate biome");
+        }
+        let rule = rule_for("biome");
+        assert!(rule.is_dependency("@biomejs/biome"));
+        assert!(!rule.is_dependency("@biomejs/cli-darwin-arm64"));
+        assert_eq!(
+            rule.manifest_declares_dependency(
+                r#"{"devDependencies": {"@biomejs/biome": "^2.6.2"}}"#
+            ),
+            Some(true)
+        );
+        assert_eq!(
+            rule.manifest_declares_dependency(r#"{"devDependencies": {"oxlint": "^1.89"}}"#),
+            Some(false)
+        );
     }
 
     #[test]
@@ -162,6 +209,7 @@ mod server_activation_tests {
     fn server_activation_oxlint_follows_config_files_and_dependency() {
         for path in [
             ".oxlintrc.json",
+            ".oxlintrc.jsonc",
             "oxlint.config.ts",
             "oxlint.config.mjs",
             "packages/web/.oxlintrc.json",
