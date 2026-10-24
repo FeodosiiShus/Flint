@@ -388,7 +388,7 @@ inventory = "0.3.19"
 itertools = "0.14.0"
 js-sys = "0.3"
 libc = "0.2"
-libsqlite3-sys = { version = "0.30.1", features = ["bundled"] }
+libsqlite3-sys = { version = "0.39.0", features = ["bundled"] }
 linkify = "0.10.0"
 log = { version = "0.4.16", features = ["kv_unstable_serde", "serde"] }
 lru = "0.19"
@@ -499,7 +499,7 @@ reqwest = { git = "https://github.com/zed-industries/reqwest.git", rev = "33bc76
     "http2",
     "macos-system-configuration",
     "multipart",
-    "rustls-tls-native-roots",
+    "rustls-tls-no-provider",
     "socks",
     "stream",
 ], package = "zed-reqwest", version = "0.12.15-zed" }
@@ -549,7 +549,7 @@ time = { version = "0.3", features = [
 ] }
 tokio = { version = "1" }
 toml = "0.8"
-tree-sitter = { git = "https://github.com/tree-sitter/tree-sitter", rev = "43623ec9bf0eaaf7113285c46e8a09018f181b18" }
+tree-sitter = "0.27.1"
 tracing = "0.1.40"
 tree-sitter-bash = "0.25.1"
 tree-sitter-c = "0.24.1"
@@ -602,10 +602,6 @@ zeroize = "1.8"
 zstd = "0.11"
 
 [patch.crates-io]
-# Unify `tree_sitter_language::LanguageFn` between crates.io grammar crates and
-# the git tree-sitter above; two instances of the crate would make grammar
-# constants type-incompatible with `tree_sitter::Language`.
-tree-sitter-language = { git = "https://github.com/tree-sitter/tree-sitter", rev = "43623ec9bf0eaaf7113285c46e8a09018f181b18" }
 async-process = { git = "https://github.com/zed-industries/async-process.git", rev = "0b6d6713570af61806e1e5cb40e0f757cb93fd9d" }
 async-task = { git = "https://github.com/smol-rs/async-task.git", rev = "b4486cd71e4e94fbda54ce6302444de14f4d190e" }
 notify = { git = "https://github.com/zed-industries/notify", rev = "d842f16b2716bd60f09caf3ae3a894237ab38f54" }

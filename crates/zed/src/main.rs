@@ -68,6 +68,8 @@ use zed::{
 
 use crate::zed::{OpenRequestKind, eager_load_active_theme_and_icon_theme};
 
+// Off by default: on intellij-community mimalloc drew frames about 4% faster but kept 50–100 MB
+// more resident, and `leaks` and Instruments only see allocations made through the system zones.
 #[cfg(feature = "mimalloc")]
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;

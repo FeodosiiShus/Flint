@@ -32,7 +32,9 @@ impl ReqwestClient {
     /// reads without a timeout.
     fn builder(read_timeout: Option<Duration>) -> reqwest::ClientBuilder {
         let builder = reqwest::Client::builder()
-            .use_rustls_tls()
+            // Every client verifies certificates with the platform verifier and the crypto
+            // provider `http_client_tls` installs, so reqwest is built without one of its own.
+            .use_preconfigured_tls(http_client_tls::tls_config())
             .connect_timeout(Duration::from_secs(10))
             // Detect and drop connections that have silently gone bad on a
             // flaky path (NAT timeouts, resets) instead of reusing them. A
@@ -110,9 +112,7 @@ impl ReqwestClient {
             client_has_proxy = false;
         };
 
-        let client = client
-            .use_preconfigured_tls(http_client_tls::tls_config())
-            .build()?;
+        let client = client.build()?;
         let mut client: ReqwestClient = client.into();
         client.proxy = client_has_proxy.then_some(proxy).flatten();
         client.user_agent = Some(user_agent);
