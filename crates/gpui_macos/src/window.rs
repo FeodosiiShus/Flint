@@ -802,19 +802,96 @@ struct MacWindowState {
 
 /// One level of native glass: the glass views of the backdrops that share a draw order, and the
 /// view above them hosting the renderer's transparent layer for what the frame draws over them.
+///
+/// Levels and their glass views are kept once built and hidden while unused. A new
+/// `NSGlassEffectView` reaches the screen before the window server has sampled what lies behind
+/// it, so rebuilding them whenever a submenu closed or another opened made the glass flash.
 struct GlassLevel {
     glass_views: Vec<id>,
     overlay_view: id,
+    overlay_layer: id,
+}
+
+impl GlassLevel {
+    /// Shows a glass view at each of `frames` and hides the rest; with no frames the level is
+    /// hidden. Returns whether anything on screen changed.
+    fn show(&mut self, frames: &[(NSRect, f64)], content_view: id) -> bool {
+        let mut changed = false;
+        // SAFETY: the views are live subviews of `content_view`, retained by this level, and
+        // frames are drawn on the main thread.
+        unsafe {
+            changed |= set_view_hidden(self.overlay_view, frames.is_empty());
+            if frames.is_empty() {
+                // A hidden overlay layer would keep its window-sized drawables; the renderer
+                // sizes it back up the next time the level draws.
+                let drawable_size: NSSize = msg_send![self.overlay_layer, drawableSize];
+                if drawable_size.width > 1. || drawable_size.height > 1. {
+                    let () = msg_send![self.overlay_layer, setDrawableSize: NSSize::new(1., 1.)];
+                }
+            }
+            while self.glass_views.len() < frames.len() {
+                let (frame, _) = frames[self.glass_views.len()];
+                let view: id = msg_send![window_classes().glass_view, alloc];
+                let view: id = msg_send![view, initWithFrame: frame];
+                let () = msg_send![
+                    content_view,
+                    addSubview: view
+                    positioned: NSWindowOrderingMode::NSWindowBelow
+                    relativeTo: self.overlay_view
+                ];
+                self.glass_views.push(view);
+                changed = true;
+            }
+            for (index, view) in self.glass_views.iter().enumerate() {
+                let Some((frame, corner_radius)) = frames.get(index) else {
+                    changed |= set_view_hidden(*view, true);
+                    continue;
+                };
+                changed |= set_view_hidden(*view, false);
+                let current: NSRect = msg_send![*view, frame];
+                if !rects_equal(current, *frame) {
+                    let () = msg_send![*view, setFrame: *frame];
+                    changed = true;
+                }
+                let current_radius: f64 = msg_send![*view, cornerRadius];
+                if current_radius != *corner_radius {
+                    let () = msg_send![*view, setCornerRadius: *corner_radius];
+                    changed = true;
+                }
+            }
+        }
+        changed
+    }
+}
+
+/// Returns whether the view's visibility changed.
+///
+/// # Safety
+///
+/// `view` must be a live `NSView`, used on the main thread.
+unsafe fn set_view_hidden(view: id, hidden: bool) -> bool {
+    // SAFETY: the caller passes a live view on the main thread.
+    unsafe {
+        let is_hidden: BOOL = msg_send![view, isHidden];
+        if (is_hidden == YES) == hidden {
+            return false;
+        }
+        let () = msg_send![view, setHidden: if hidden { YES } else { NO }];
+        true
+    }
 }
 
 impl MacWindowState {
     /// Lays out a glass view per backdrop between the window's layer and the renderer's overlay
-    /// layers, one level per draw order. Returns whether any glass view was added or moved, so
-    /// the frame is presented together with the new geometry.
+    /// layers, one level per draw order. Returns whether any glass view appeared, moved or was
+    /// hidden.
     fn update_glass_levels(&mut self, scene: &gpui::Scene, glass_orders: &[DrawOrder]) -> bool {
         let scale_factor = f64::from(self.scale_factor());
         // SAFETY: the content view belongs to this window, and frames are drawn on the main thread.
-        let content_bounds = unsafe { NSView::bounds(self.native_window.contentView()) };
+        let (content_view, content_bounds) = unsafe {
+            let content_view = self.native_window.contentView();
+            (content_view, NSView::bounds(content_view))
+        };
         let frames = glass_orders
             .iter()
             .map(|order| {
@@ -829,61 +906,49 @@ impl MacWindowState {
             })
             .collect::<Vec<_>>();
 
-        let same_structure = self.glass_levels.len() == frames.len()
-            && self
-                .glass_levels
-                .iter()
-                .zip(&frames)
-                .all(|(level, frames)| level.glass_views.len() == frames.len());
-        if !same_structure {
-            self.remove_glass_levels();
-            self.build_glass_levels(&frames, content_bounds);
+        let mut changed = false;
+        if self.glass_levels.len() < frames.len() {
+            self.add_glass_levels(frames.len(), content_view, content_bounds);
+            changed = true;
         }
-
-        let mut moved = !same_structure;
-        for (level, frames) in self.glass_levels.iter().zip(&frames) {
-            for (view, (frame, corner_radius)) in level.glass_views.iter().zip(frames) {
-                // SAFETY: the glass views are live subviews of the content view, retained by
-                // `glass_levels`.
-                unsafe {
-                    let current: NSRect = msg_send![*view, frame];
-                    if !rects_equal(current, *frame) {
-                        let () = msg_send![*view, setFrame: *frame];
-                        moved = true;
-                    }
-                    let current_radius: f64 = msg_send![*view, cornerRadius];
-                    if current_radius != *corner_radius {
-                        let () = msg_send![*view, setCornerRadius: *corner_radius];
-                    }
-                }
-            }
+        // No explicit transaction here: committing one while the window state is locked runs
+        // AppKit's display cycle, which calls back into the window and deadlocks. The changes
+        // go out in the run loop's transaction together with the frame.
+        for (index, level) in self.glass_levels.iter_mut().enumerate() {
+            let level_frames = frames.get(index).map_or(&[][..], Vec::as_slice);
+            changed |= level.show(level_frames, content_view);
         }
-        moved
+        changed
     }
 
-    fn build_glass_levels(&mut self, frames: &[Vec<(NSRect, f64)>], content_bounds: NSRect) {
-        let overlay_layers = self.renderer.overlay_layer_ptrs(frames.len());
+    /// Hides every level of glass, keeping it for the next frame that has glass. Returns whether
+    /// any was visible.
+    fn hide_glass_levels(&mut self) -> bool {
+        if self.glass_levels.is_empty() {
+            return false;
+        }
+        // SAFETY: the content view belongs to this window, and frames are drawn on the main thread.
+        let content_view = unsafe { self.native_window.contentView() };
+        let mut changed = false;
+        for level in &mut self.glass_levels {
+            changed |= level.show(&[], content_view);
+        }
+        changed
+    }
+
+    /// Adds levels above the existing ones until there are `count`, each with the overlay view
+    /// hosting the renderer's overlay layer of the same index.
+    fn add_glass_levels(&mut self, count: usize, content_view: id, content_bounds: NSRect) {
+        let overlay_layers = self.renderer.overlay_layer_ptrs(count);
         let contents_scale = f64::from(self.scale_factor());
         // SAFETY: views are created and inserted on the main thread into this window's content
         // view; each stays retained by `glass_levels` until `remove_glass_levels`.
         unsafe {
-            let content_view = self.native_window.contentView();
-            let mut below: id = self.native_view.as_ptr();
-            for (frames, overlay_layer) in frames.iter().zip(overlay_layers) {
-                let mut glass_views = Vec::with_capacity(frames.len());
-                for (frame, corner_radius) in frames {
-                    let view: id = msg_send![window_classes().glass_view, alloc];
-                    let view: id = msg_send![view, initWithFrame: *frame];
-                    let () = msg_send![view, setCornerRadius: *corner_radius];
-                    let () = msg_send![
-                        content_view,
-                        addSubview: view
-                        positioned: NSWindowOrderingMode::NSWindowAbove
-                        relativeTo: below
-                    ];
-                    below = view;
-                    glass_views.push(view);
-                }
+            for overlay_layer in overlay_layers.into_iter().skip(self.glass_levels.len()) {
+                let below = self
+                    .glass_levels
+                    .last()
+                    .map_or(self.native_view.as_ptr(), |level| level.overlay_view);
                 let overlay_view: id = msg_send![window_classes().pass_through_view, alloc];
                 let overlay_view = NSView::initWithFrame_(overlay_view, content_bounds);
                 overlay_view.setAutoresizingMask_(NSViewWidthSizable | NSViewHeightSizable);
@@ -900,10 +965,10 @@ impl MacWindowState {
                     positioned: NSWindowOrderingMode::NSWindowAbove
                     relativeTo: below
                 ];
-                below = overlay_view;
                 self.glass_levels.push(GlassLevel {
-                    glass_views,
+                    glass_views: Vec::new(),
                     overlay_view,
+                    overlay_layer,
                 });
             }
         }
@@ -2377,12 +2442,18 @@ impl PlatformWindow for MacWindow {
         let mut this = self.0.lock();
         let glass_orders = native_glass_orders(scene);
         if glass_orders.is_empty() {
-            this.remove_glass_levels();
-            this.renderer.draw(scene);
+            let glass_hidden = this.hide_glass_levels();
+            // The frame that hides the glass goes out in the same transaction as the hiding,
+            // unless its backdrops need the renderer's emulation instead.
+            if glass_hidden && scene.backdrops.is_empty() {
+                this.renderer.draw_with_overlays(scene, &[]);
+            } else {
+                this.renderer.end_glass_transactions();
+                this.renderer.draw(scene);
+            }
         } else {
-            let moved = this.update_glass_levels(scene, &glass_orders);
-            this.renderer
-                .draw_with_overlays(scene, &glass_orders, moved);
+            this.update_glass_levels(scene, &glass_orders);
+            this.renderer.draw_with_overlays(scene, &glass_orders);
         }
     }
 

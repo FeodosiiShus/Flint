@@ -54,10 +54,16 @@ enum Step {
         name: String,
         #[serde(default)]
         arguments: Option<serde_json::Value>,
+        /// Frames drawn afterwards; 3 by default. With 0, a following `capture` with `frames: 1`
+        /// sees the very first frame the input produced.
+        #[serde(default)]
+        frames: Option<u32>,
     },
     /// Types keystrokes such as `cmd-shift-p`, separated by spaces.
     Keystrokes {
         keys: String,
+        #[serde(default)]
+        frames: Option<u32>,
     },
     /// Opens a file in the workspace; a relative path starts at the first project folder.
     Open {
@@ -69,15 +75,23 @@ enum Step {
         y: f32,
         #[serde(default)]
         right: bool,
+        #[serde(default)]
+        frames: Option<u32>,
     },
     /// Moves the mouse to a position, so hovers and tooltips appear.
     Hover {
         x: f32,
         y: f32,
+        #[serde(default)]
+        frames: Option<u32>,
     },
-    /// Saves every window of the app as `<name>.png`, or `<name>-<n>.png` when there are several.
+    /// Saves every window of the app as `<name>.png`, or `<name>-<n>.png` when there are several,
+    /// after drawing `frames` frames (3 by default). Consecutive captures with `frames: 1` record
+    /// a transition frame by frame, which shows flicker.
     Capture {
         name: String,
+        #[serde(default)]
+        frames: Option<u32>,
     },
     /// Runs steps repeatedly, for leak and performance checks.
     Repeat {
@@ -184,15 +198,19 @@ async fn run_step(step: &Step, run: &mut Run, cx: &mut AsyncApp) -> Result<()> {
         Step::Wait { milliseconds } => {
             draw_frames_for(Duration::from_millis(*milliseconds), cx).await?;
         }
-        Step::Action { name, arguments } => {
+        Step::Action {
+            name,
+            arguments,
+            frames,
+        } => {
             active_window(cx)?.update(cx, |_, window, cx| -> Result<()> {
                 let action = cx.build_action(name, arguments.clone())?;
                 window.dispatch_action(action, cx);
                 Ok(())
             })??;
-            draw_frames_after_input(cx).await?;
+            draw_frames_after_input(frames.unwrap_or(FRAMES_AFTER_INPUT), cx).await?;
         }
-        Step::Keystrokes { keys } => {
+        Step::Keystrokes { keys, frames } => {
             let keystrokes = keys
                 .split_whitespace()
                 .map(Keystroke::parse)
@@ -200,7 +218,7 @@ async fn run_step(step: &Step, run: &mut Run, cx: &mut AsyncApp) -> Result<()> {
             for keystroke in keystrokes {
                 active_window(cx)?
                     .update(cx, |_, window, cx| window.dispatch_keystroke(keystroke, cx))?;
-                draw_frames_after_input(cx).await?;
+                draw_frames_after_input(frames.unwrap_or(FRAMES_AFTER_INPUT), cx).await?;
             }
         }
         Step::Open { path } => {
@@ -225,9 +243,14 @@ async fn run_step(step: &Step, run: &mut Run, cx: &mut AsyncApp) -> Result<()> {
                 })
             })??;
             open.await?;
-            draw_frames_after_input(cx).await?;
+            draw_frames_after_input(FRAMES_AFTER_INPUT, cx).await?;
         }
-        Step::Click { x, y, right } => {
+        Step::Click {
+            x,
+            y,
+            right,
+            frames,
+        } => {
             let position = point(px(*x), px(*y));
             let button = if *right {
                 MouseButton::Right
@@ -263,9 +286,9 @@ async fn run_step(step: &Step, run: &mut Run, cx: &mut AsyncApp) -> Result<()> {
                     cx,
                 );
             })?;
-            draw_frames_after_input(cx).await?;
+            draw_frames_after_input(frames.unwrap_or(FRAMES_AFTER_INPUT), cx).await?;
         }
-        Step::Hover { x, y } => {
+        Step::Hover { x, y, frames } => {
             active_window(cx)?.update(cx, |_, window, cx| {
                 window.dispatch_event(
                     PlatformInput::MouseMove(MouseMoveEvent {
@@ -276,9 +299,11 @@ async fn run_step(step: &Step, run: &mut Run, cx: &mut AsyncApp) -> Result<()> {
                     cx,
                 );
             })?;
-            draw_frames_after_input(cx).await?;
+            draw_frames_after_input(frames.unwrap_or(FRAMES_AFTER_INPUT), cx).await?;
         }
-        Step::Capture { name } => capture_windows(name, &run.output, cx).await?,
+        Step::Capture { name, frames } => {
+            capture_windows(name, frames.unwrap_or(FRAMES_AFTER_INPUT), &run.output, cx).await?
+        }
         Step::Repeat { times, steps } => {
             for _ in 0..*times {
                 Box::pin(run_steps(steps, run, cx)).await?;
@@ -335,8 +360,8 @@ async fn draw_frames_for(duration: Duration, cx: &mut AsyncApp) -> Result<()> {
     }
 }
 
-async fn draw_frames_after_input(cx: &mut AsyncApp) -> Result<()> {
-    for _ in 0..FRAMES_AFTER_INPUT {
+async fn draw_frames_after_input(frames: u32, cx: &mut AsyncApp) -> Result<()> {
+    for _ in 0..frames {
         cx.background_executor().timer(FRAME_INTERVAL).await;
         draw_frame(cx)?;
     }
@@ -350,8 +375,11 @@ fn draw_frame(cx: &mut AsyncApp) -> Result<()> {
     Ok(())
 }
 
-async fn capture_windows(name: &str, output: &Path, cx: &mut AsyncApp) -> Result<()> {
-    draw_frames_after_input(cx).await?;
+async fn capture_windows(name: &str, frames: u32, output: &Path, cx: &mut AsyncApp) -> Result<()> {
+    draw_frames_after_input(frames, cx).await?;
+    // The last frame reaches the window server when Core Animation commits it at the end of this
+    // run loop pass, so the capture waits for the next one.
+    cx.background_executor().timer(FRAME_INTERVAL).await;
     let windows = cx.update(|cx| cx.windows());
     for (index, window) in windows.iter().enumerate() {
         let image = window.update(cx, |_, window, _| window.capture_composited_image())??;

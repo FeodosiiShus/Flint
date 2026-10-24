@@ -612,14 +612,11 @@ impl MetalRenderer {
     /// the next glass order, so the window can put each level of glass views between the layers.
     /// Backdrops draw nothing, since the glass views blur what lies behind them.
     ///
-    /// With `in_transaction`, the frame is presented in the current Core Animation transaction,
-    /// so glass views moved for this frame appear together with the content drawn over them.
-    pub fn draw_with_overlays(
-        &mut self,
-        scene: &Scene,
-        glass_orders: &[DrawOrder],
-        in_transaction: bool,
-    ) {
+    /// The frame is presented in the current Core Animation transaction, which also carries the
+    /// glass views' changes, so both reach the screen together. Every such frame is: one
+    /// presented as soon as the GPU finishes could reach the screen after a later one presented
+    /// in a transaction, showing the older frame again for a moment.
+    pub fn draw_with_overlays(&mut self, scene: &Scene, glass_orders: &[DrawOrder]) {
         if self.overlay_layers.len() < glass_orders.len() {
             log::error!("draw_with_overlays() called without an overlay layer per glass level");
             return;
@@ -680,25 +677,31 @@ impl MetalRenderer {
                 }
             };
 
-        let presents_with_transaction = self.presents_with_transaction || in_transaction;
-        layer.set_presents_with_transaction(presents_with_transaction);
+        let entering_transactions = !layer.presents_with_transaction();
+        layer.set_presents_with_transaction(true);
         for overlay in &overlays {
-            overlay.set_presents_with_transaction(presents_with_transaction);
+            overlay.set_presents_with_transaction(true);
         }
-        if presents_with_transaction {
-            command_buffer.commit();
-            command_buffer.wait_until_scheduled();
-            drawable.present();
-            for overlay_drawable in &overlay_drawables {
-                overlay_drawable.present();
-            }
-            layer.set_presents_with_transaction(self.presents_with_transaction);
+        command_buffer.commit();
+        if entering_transactions {
+            // The previous frame was presented when its GPU work finished; the queue runs in
+            // order, so once this one has completed that present has happened and cannot land
+            // after this frame's.
+            command_buffer.wait_until_completed();
         } else {
-            command_buffer.present_drawable(drawable);
-            for overlay_drawable in &overlay_drawables {
-                command_buffer.present_drawable(overlay_drawable);
-            }
-            command_buffer.commit();
+            command_buffer.wait_until_scheduled();
+        }
+        drawable.present();
+        for overlay_drawable in &overlay_drawables {
+            overlay_drawable.present();
+        }
+    }
+
+    /// Ends presenting in Core Animation transactions after frames drawn around native glass, so
+    /// later frames reach the screen as soon as they are drawn again.
+    pub fn end_glass_transactions(&mut self) {
+        if let Some(layer) = &self.layer {
+            layer.set_presents_with_transaction(self.presents_with_transaction);
         }
     }
 
