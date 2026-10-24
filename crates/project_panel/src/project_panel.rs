@@ -8209,6 +8209,10 @@ impl EventEmitter<Event> for ProjectPanel {}
 impl EventEmitter<PanelEvent> for ProjectPanel {}
 
 impl Panel for ProjectPanel {
+    fn glass_background(&self, _: &App) -> bool {
+        false
+    }
+
     fn position(&self, _: &Window, cx: &App) -> DockPosition {
         match ProjectPanelSettings::get_global(cx).dock {
             DockSide::Left => DockPosition::Left,

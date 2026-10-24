@@ -18,7 +18,8 @@ use settings::{
 };
 use std::sync::Arc;
 use ui::{
-    BackgroundImageArea, BackgroundImageTarget, ContextMenu, background_image_layer, prelude::*,
+    BackgroundImageArea, BackgroundImageTarget, ContextMenu, GLASS_MATERIAL,
+    background_image_layer, prelude::*,
 };
 use util::ResultExt as _;
 
@@ -144,6 +145,12 @@ pub trait Panel: Focusable + EventEmitter<PanelEvent> + Render + Sized {
     fn header_options(&self, _cx: &App) -> bool {
         true
     }
+    /// Whether the tool window's island is Liquid Glass that blurs the window background behind
+    /// it, where macOS draws glass natively. A panel that reads like the editor, such as the
+    /// Project panel, stays opaque instead.
+    fn glass_background(&self, _cx: &App) -> bool {
+        true
+    }
 }
 
 pub trait PanelHandle: Send + Sync {
@@ -179,6 +186,7 @@ pub trait PanelHandle: Send + Sync {
     fn header_actions(&self, window: &Window, cx: &App) -> Vec<PanelHeaderAction>;
     fn header_content(&self, window: &Window, cx: &App) -> Option<AnyView>;
     fn header_options(&self, cx: &App) -> bool;
+    fn glass_background(&self, cx: &App) -> bool;
     fn move_to_next_position(&self, window: &mut Window, cx: &mut App) {
         let current_position = self.position(window, cx);
         let next_position = [
@@ -322,6 +330,10 @@ where
 
     fn header_options(&self, cx: &App) -> bool {
         self.read(cx).header_options(cx)
+    }
+
+    fn glass_background(&self, cx: &App) -> bool {
+        self.read(cx).glass_background(cx)
     }
 }
 
@@ -1451,6 +1463,11 @@ impl Render for Dock {
             if islands.enabled {
                 let content_inset =
                     (ISLAND_TOOL_WINDOW_INSET - islands.half_gap()).max(Pixels::ZERO);
+                // Emulating the blur of a whole tool window would cost every frame, so only
+                // native glass makes the island transparent.
+                let glass = entry.panel.glass_background(cx)
+                    && cx.supports_native_glass()
+                    && !cx.should_reduce_transparency();
                 return dock_panel
                     .p(islands.half_gap())
                     .child(
@@ -1462,14 +1479,23 @@ impl Render for Dock {
                             .size_full()
                             .rounded(islands.corner_radius)
                             .overflow_hidden()
-                            .bg(panel_background)
-                            .child(background_image_layer(
-                                BackgroundImageTarget::EditorAndTools,
-                                BackgroundImageArea::Window,
-                                panel_background,
-                                true,
-                                gpui::Corners::all(islands.corner_radius),
-                            ))
+                            .map(|this| {
+                                if glass {
+                                    // The window frame paints the Editor and Tools image behind
+                                    // the layout, so the glass blurs it.
+                                    this.bg(panel_background
+                                        .opacity(GLASS_MATERIAL.native_surface_opacity))
+                                        .backdrop_blur(GLASS_MATERIAL.blur_radius)
+                                } else {
+                                    this.bg(panel_background).child(background_image_layer(
+                                        BackgroundImageTarget::EditorAndTools,
+                                        BackgroundImageArea::Window,
+                                        panel_background,
+                                        true,
+                                        gpui::Corners::all(islands.corner_radius),
+                                    ))
+                                }
+                            })
                             .child(
                                 div()
                                     .flex()
