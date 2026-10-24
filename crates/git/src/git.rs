@@ -16,6 +16,7 @@ pub use repository::RemoteCommandOutput;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::fmt::{self, Write as _};
+use std::hash::BuildHasher as _;
 use std::str::FromStr;
 
 pub const DOT_GIT: &str = ".git";
@@ -354,6 +355,58 @@ impl From<Oid> for usize {
     }
 }
 
+/// Positions of commits in a list, found by sha. The table keeps only the positions and reads
+/// each sha back from the list: a map keyed by [`Oid`], which is 33 bytes, would hold a second
+/// copy of every sha, tens of megabytes on a history of hundreds of thousands of commits.
+#[derive(Clone, Default)]
+pub struct OidIndex {
+    positions: hashbrown::HashTable<usize>,
+}
+
+impl OidIndex {
+    pub fn with_capacity(capacity: usize) -> Self {
+        Self {
+            positions: hashbrown::HashTable::with_capacity(capacity),
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        self.positions.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.positions.is_empty()
+    }
+
+    /// Finds the position of `sha`; `sha_at` returns the sha the list holds at a position.
+    pub fn get(&self, sha: &Oid, sha_at: impl Fn(usize) -> Option<Oid>) -> Option<usize> {
+        self.positions
+            .find(hash_oid(sha), |&position| {
+                sha_at(position).as_ref() == Some(sha)
+            })
+            .copied()
+    }
+
+    /// Records `position` for `sha` unless the sha already has one, so the first position
+    /// stays. `sha_at` must return the sha of every position recorded before.
+    pub fn insert(&mut self, sha: Oid, position: usize, sha_at: impl Fn(usize) -> Option<Oid>) {
+        let hash = hash_oid(&sha);
+        if self
+            .positions
+            .find(hash, |&recorded| sha_at(recorded) == Some(sha))
+            .is_none()
+        {
+            self.positions.insert_unique(hash, position, |&recorded| {
+                sha_at(recorded).map_or(0, |sha| hash_oid(&sha))
+            });
+        }
+    }
+}
+
+fn hash_oid(sha: &Oid) -> u64 {
+    collections::FxBuildHasher.hash_one(sha)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -374,6 +427,29 @@ mod tests {
 
         assert_eq!(oid.as_bytes().len(), SHA256_BYTE_LENGTH);
         assert_eq!(oid.to_string(), sha);
+    }
+
+    #[test]
+    fn oid_index_finds_the_first_position_of_each_sha() {
+        let shas = (0..10_000u32)
+            .map(|number| Oid::from_bytes(&[&number.to_be_bytes()[..], &[0; 16]].concat()))
+            .collect::<Result<Vec<_>>>()
+            .expect("failed to build oids");
+        let mut listed = shas.clone();
+        listed.push(shas[7]);
+        let sha_at = |position: usize| listed.get(position).copied();
+
+        let mut index = OidIndex::default();
+        for (position, sha) in listed.iter().enumerate() {
+            index.insert(*sha, position, sha_at);
+        }
+
+        assert_eq!(index.len(), shas.len());
+        for (position, sha) in shas.iter().enumerate() {
+            assert_eq!(index.get(sha, sha_at), Some(position));
+        }
+        let missing = Oid::from_bytes(&[0xff; SHA1_BYTE_LENGTH]).expect("failed to build oid");
+        assert_eq!(index.get(&missing, sha_at), None);
     }
 
     #[test]

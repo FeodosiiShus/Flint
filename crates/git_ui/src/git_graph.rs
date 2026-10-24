@@ -1598,7 +1598,7 @@ impl GitGraph {
                                 repository
                                     .read(cx)
                                     .get_graph_data(source.clone(), *order)
-                                    .and_then(|data| data.commit_oid_to_index.get(&oid).copied())
+                                    .and_then(|data| data.index_of(&oid))
                             })
                         {
                             self.select_entry(pending_sha_index, ScrollStrategy::Nearest, cx);
@@ -1633,9 +1633,9 @@ impl GitGraph {
                                 self.graph_data.add_commits(commits);
 
                                 let pending_sha_index = self.pending_select_sha.and_then(|oid| {
-                                    repository.get_graph_data(source.clone(), *order).and_then(
-                                        |data| data.commit_oid_to_index.get(&oid).copied(),
-                                    )
+                                    repository
+                                        .get_graph_data(source.clone(), *order)
+                                        .and_then(|data| data.index_of(&oid))
                                 });
 
                                 if !is_loading && pending_sha_index.is_none() {
@@ -2303,8 +2303,7 @@ impl GitGraph {
             let Some(index) = selected_repository
                 .read(cx)
                 .get_graph_data(this.log_source.clone(), this.log_order)
-                .and_then(|data| data.commit_oid_to_index.get(&oid))
-                .copied()
+                .and_then(|data| data.index_of(&oid))
             else {
                 this.pending_select_sha = Some(oid);
                 return;

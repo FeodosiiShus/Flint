@@ -119,7 +119,8 @@ pub(crate) enum CommitTableEvent {
 struct DisplayedLog {
     graph: CommitGraph,
     commits: Arc<Vec<Arc<InitialGraphCommitData>>>,
-    contained_in_head: Option<HashSet<Oid>>,
+    /// Whether each commit, by its position in `commits`, is reachable from HEAD.
+    contained_in_head: Option<Vec<bool>>,
 }
 
 #[derive(Clone, Copy)]
@@ -210,6 +211,8 @@ pub(crate) struct CommitTable {
     load_error: Option<SharedString>,
     build_task: Option<Task<()>>,
     rebuild_requested: bool,
+    /// How many commits the last graph build started with.
+    built_commit_count: usize,
     metadata: HashMap<Oid, Arc<CommitData>>,
     selection: HashSet<Oid>,
     lead: Option<Oid>,
@@ -275,6 +278,7 @@ impl CommitTable {
             load_error: None,
             build_task: None,
             rebuild_requested: false,
+            built_commit_count: 0,
             metadata: HashMap::default(),
             selection: HashSet::default(),
             lead: None,
@@ -578,6 +582,7 @@ impl CommitTable {
         self.commits.clear();
         self.build_task = None;
         self.rebuild_requested = false;
+        self.built_commit_count = 0;
         self.fully_loaded = false;
         self.load_error = None;
         if !self.shown {
@@ -625,7 +630,12 @@ impl CommitTable {
         });
         self.commits.extend(new_commits);
         self.set_loading(is_loading, cx);
-        self.schedule_graph_build(cx);
+        // Every build lays out the whole history, so while it streams in, the graph is rebuilt
+        // only once the history has doubled: the work stays proportional to its length rather
+        // than its square, and fewer graphs are alive at once. Loading ends with a full build.
+        if self.commits.len() >= 2 * self.built_commit_count {
+            self.schedule_graph_build(cx);
+        }
     }
 
     fn schedule_graph_build(&mut self, cx: &mut Context<Self>) {
@@ -634,6 +644,7 @@ impl CommitTable {
             return;
         }
         let commits = Arc::new(self.commits.clone());
+        self.built_commit_count = commits.len();
         let options = self.tab_properties.graph_options;
         let show_long_edges = self.tab_properties.show_long_edges;
         let remote_names = self.ref_context.remote_names.clone();
@@ -643,8 +654,11 @@ impl CommitTable {
             async move {
                 let graph =
                     CommitGraph::new(commits.as_slice(), options, show_long_edges, &remote_names);
-                let contained_in_head = compute_head_containment
-                    .then(|| presentation::commits_reachable_from_head(commits.as_slice()));
+                let contained_in_head = compute_head_containment.then(|| {
+                    presentation::commits_reachable_from_head(commits.as_slice(), |sha| {
+                        graph.commit_index(sha)
+                    })
+                });
                 (graph, contained_in_head)
             }
         });
@@ -661,7 +675,7 @@ impl CommitTable {
         &mut self,
         commits: Arc<Vec<Arc<InitialGraphCommitData>>>,
         graph: CommitGraph,
-        contained_in_head: Option<HashSet<Oid>>,
+        contained_in_head: Option<Vec<bool>>,
         cx: &mut Context<Self>,
     ) {
         self.build_task = None;
@@ -1789,10 +1803,10 @@ impl CommitTable {
         };
         let mut elements = Vec::with_capacity(range.len());
         for (offset, row) in range.enumerate() {
-            let Some(commit) = displayed
+            let Some((index, commit)) = displayed
                 .graph
                 .commit_index_at_row(row)
-                .and_then(|index| displayed.commits.get(index))
+                .and_then(|index| Some((index, displayed.commits.get(index)?)))
             else {
                 continue;
             };
@@ -1804,7 +1818,8 @@ impl CommitTable {
             let mut bold = false;
             if let Some(data) = &data {
                 if !selected
-                    && contained_in_head.is_some_and(|contained| contained.contains(&commit.sha))
+                    && contained_in_head
+                        .is_some_and(|contained| contained.get(index) == Some(&true))
                 {
                     background = frame.colors.current_branch;
                 }

@@ -44,6 +44,7 @@ urlencoding.workspace = true
 util.workspace = true
 uuid.workspace = true
 futures.workspace = true
+hashbrown.workspace = true
 ztracing.workspace = true
 
 [dev-dependencies]

@@ -126,6 +126,58 @@ fn draw_table(table: &Entity<CommitTable>, cx: &mut VisualTestContext) {
 }
 
 #[gpui::test]
+async fn a_history_streamed_in_chunks_is_shown_whole_once_loaded(cx: &mut TestAppContext) {
+    const COMMIT_COUNT: u32 = 5 * git::repository::GRAPH_CHUNK_SIZE as u32 + 7;
+    init_test(cx);
+    let numbered_sha =
+        |number: u32| Oid::from_bytes(&[&number.to_be_bytes()[..], &[1; 16]].concat()).unwrap();
+    let fs = FakeFs::new(cx.executor());
+    fs.insert_tree(
+        Path::new("/project"),
+        json!({ ".git": {}, "file.txt": "content" }),
+    )
+    .await;
+    fs.set_graph_commits(
+        Path::new("/project/.git"),
+        (0..COMMIT_COUNT)
+            .map(|number| {
+                Arc::new(InitialGraphCommitData {
+                    sha: numbered_sha(number),
+                    parents: (number + 1 < COMMIT_COUNT)
+                        .then(|| numbered_sha(number + 1))
+                        .into_iter()
+                        .collect(),
+                    ref_names: if number == 0 {
+                        vec!["HEAD -> main".into()]
+                    } else {
+                        Vec::new()
+                    },
+                    committer_timestamp: i64::from(COMMIT_COUNT - number),
+                    dotted_parents: smallvec![],
+                })
+            })
+            .collect(),
+    );
+    let project = Project::test(fs.clone(), [Path::new("/project")], cx).await;
+    cx.run_until_parked();
+    let cx = cx.add_empty_window();
+    let table = open_table(&project, cx);
+
+    table.read_with(&*cx, |table, _| {
+        assert_eq!(table.row_count(), COMMIT_COUNT as usize);
+        assert_eq!(
+            table
+                .displayed
+                .as_ref()
+                .and_then(|displayed| displayed.contained_in_head.as_ref())
+                .map(|contained| contained.iter().filter(|reachable| **reachable).count()),
+            Some(COMMIT_COUNT as usize),
+            "every commit of a linear history is reachable from HEAD"
+        );
+    });
+}
+
+#[gpui::test]
 async fn history_loads_once_the_table_is_first_drawn(cx: &mut TestAppContext) {
     init_test(cx);
     let project = project_with_commits(cx).await;

@@ -3190,6 +3190,7 @@ dependencies = [
  "file_content",
  "futures",
  "gpui",
+ "hashbrown 0.17.1",
  "http_client",
  "itertools 0.14.0",
  "log",

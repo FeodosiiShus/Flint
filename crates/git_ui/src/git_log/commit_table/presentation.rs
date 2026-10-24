@@ -316,9 +316,14 @@ fn is_head_decoration(decoration: &str) -> bool {
     decoration == HEAD_REVISION || decoration.starts_with(SYMBOLIC_HEAD_PREFIX)
 }
 
-pub(super) fn commits_reachable_from_head(commits: &[Arc<InitialGraphCommitData>]) -> HashSet<Oid> {
-    let mut reachable = HashSet::default();
-    let Some(head) = commits.iter().find(|commit| {
+/// Marks the commits reachable from HEAD by their position in `commits`; `index_of` finds the
+/// position of a sha.
+pub(super) fn commits_reachable_from_head(
+    commits: &[Arc<InitialGraphCommitData>],
+    index_of: impl Fn(&Oid) -> Option<usize>,
+) -> Vec<bool> {
+    let mut reachable = vec![false; commits.len()];
+    let Some(head) = commits.iter().position(|commit| {
         commit
             .ref_names
             .iter()
@@ -326,17 +331,16 @@ pub(super) fn commits_reachable_from_head(commits: &[Arc<InitialGraphCommitData>
     }) else {
         return reachable;
     };
-    let parents_by_sha: HashMap<Oid, &[Oid]> = commits
-        .iter()
-        .map(|commit| (commit.sha, commit.parents.as_slice()))
-        .collect();
-    let mut queue = VecDeque::from([head.sha]);
-    while let Some(sha) = queue.pop_front() {
-        if !reachable.insert(sha) {
+    let mut queue = VecDeque::from([head]);
+    while let Some(index) = queue.pop_front() {
+        let Some(seen) = reachable.get_mut(index) else {
+            continue;
+        };
+        if std::mem::replace(seen, true) {
             continue;
         }
-        if let Some(parents) = parents_by_sha.get(&sha) {
-            queue.extend(parents.iter().copied());
+        if let Some(commit) = commits.get(index) {
+            queue.extend(commit.parents.iter().filter_map(|parent| index_of(parent)));
         }
     }
     reachable
@@ -606,13 +610,10 @@ mod tests {
             commit(3, &[4], vec![]),
             commit(4, &[], vec![]),
         ];
-        let reachable = commits_reachable_from_head(&commits);
-        assert!(
-            reachable.contains(&sha(2))
-                && reachable.contains(&sha(3))
-                && reachable.contains(&sha(4))
-        );
-        assert!(!reachable.contains(&sha(1)));
+        let reachable = commits_reachable_from_head(&commits, |parent| {
+            commits.iter().position(|commit| commit.sha == *parent)
+        });
+        assert_eq!(reachable, [false, true, true, true]);
     }
 
     #[test]

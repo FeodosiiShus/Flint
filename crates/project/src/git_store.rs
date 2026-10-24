@@ -34,7 +34,7 @@ use futures::{
     stream::{FuturesOrdered, FuturesUnordered},
 };
 use git::{
-    BuildPermalinkParams, GitHostingProviderRegistry, Oid, RunHook,
+    BuildPermalinkParams, GitHostingProviderRegistry, Oid, OidIndex, RunHook,
     blame::Blame,
     console::{
         GitConsoleChunk, GitConsoleContentType, GitConsoleLine, GitConsoleSink, MAX_CONSOLE_LINES,
@@ -685,8 +685,16 @@ pub struct InitialGitGraphData {
     fetch_task: Task<()>,
     pub error: Option<SharedString>,
     pub commit_data: Vec<Arc<InitialGraphCommitData>>,
-    pub commit_oid_to_index: HashMap<Oid, usize>,
+    commit_index: OidIndex,
     subscribers: Vec<async_channel::Sender<Result<Vec<Arc<InitialGraphCommitData>>, SharedString>>>,
+}
+
+impl InitialGitGraphData {
+    pub fn index_of(&self, sha: &Oid) -> Option<usize> {
+        self.commit_index.get(sha, |position| {
+            self.commit_data.get(position).map(|commit| commit.sha)
+        })
+    }
 }
 
 pub struct GraphDataResponse<'a> {
@@ -7636,7 +7644,7 @@ impl Repository {
                     fetch_task,
                     error: None,
                     commit_data: Vec::new(),
-                    commit_oid_to_index: HashMap::default(),
+                    commit_index: OidIndex::default(),
                     subscribers: Vec::new(),
                 }
             });
@@ -7672,9 +7680,16 @@ impl Repository {
                     }
 
                     for commit_data in initial_graph_commit_data {
-                        graph_data
-                            .commit_oid_to_index
-                            .insert(commit_data.sha, graph_data.commit_data.len());
+                        graph_data.commit_index.insert(
+                            commit_data.sha,
+                            graph_data.commit_data.len(),
+                            |position| {
+                                graph_data
+                                    .commit_data
+                                    .get(position)
+                                    .map(|commit| commit.sha)
+                            },
+                        );
                         graph_data.commit_data.push(commit_data);
                     }
                     cx.emit(RepositoryEvent::GraphEvent(

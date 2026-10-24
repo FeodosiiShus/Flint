@@ -7,7 +7,7 @@ mod print;
 use std::{cmp::Ordering, ops::Range, sync::Arc};
 
 use collections::{HashMap, HashSet};
-use git::{Oid, repository::InitialGraphCommitData};
+use git::{Oid, OidIndex, repository::InitialGraphCommitData};
 use gpui::SharedString;
 
 use crate::git_log::properties::{GraphOptions, GraphSortType};
@@ -126,7 +126,7 @@ impl PrintElement {
 
 pub(crate) struct CommitGraph {
     shas: Vec<Oid>,
-    node_by_sha: HashMap<Oid, u32>,
+    node_by_sha: OidIndex,
     not_loaded_commits: Vec<Oid>,
     permanent: LinearGraph,
     visible: Option<LinearGraph>,
@@ -147,13 +147,16 @@ impl CommitGraph {
         remote_names: &[SharedString],
     ) -> Self {
         let permanent = build_permanent_graph(commits);
-        let mut node_by_sha = HashMap::default();
+        let shas: Vec<Oid> = commits.iter().map(|commit| commit.sha()).collect();
+        let mut node_by_sha = OidIndex::with_capacity(shas.len());
         let mut best_refs = HashMap::default();
         let mut head_nodes = HashSet::default();
         let mut branch_nodes = Vec::new();
+        for (node, sha) in shas.iter().enumerate() {
+            node_by_sha.insert(*sha, node, |position| shas.get(position).copied());
+        }
         for (node, commit) in commits.iter().enumerate() {
             let node = node as u32;
-            node_by_sha.entry(commit.sha()).or_insert(node);
             if commit.ref_names().is_empty() {
                 continue;
             }
@@ -215,7 +218,7 @@ impl CommitGraph {
             recommended_width(visible_graph, LongEdgeSizes::new(show_long_edges));
 
         Self {
-            shas: commits.iter().map(|commit| commit.sha()).collect(),
+            shas,
             node_by_sha,
             not_loaded_commits: permanent.not_loaded_commits,
             permanent: permanent.graph,
@@ -263,9 +266,14 @@ impl CommitGraph {
     }
 
     pub(crate) fn row_for_sha(&self, sha: &Oid) -> Option<usize> {
+        self.commit_index(sha)
+            .and_then(|node| self.row_for_commit_index(node))
+    }
+
+    /// The position in the commit list the graph was built from.
+    pub(crate) fn commit_index(&self, sha: &Oid) -> Option<usize> {
         self.node_by_sha
-            .get(sha)
-            .and_then(|node| self.row_for_commit_index(*node as usize))
+            .get(sha, |position| self.shas.get(position).copied())
     }
 
     pub(crate) fn recommended_width(&self) -> usize {
