@@ -5,8 +5,12 @@ set -euo pipefail
 readonly target_triple="aarch64-apple-darwin"
 readonly arch_suffix="aarch64"
 readonly cargo_bundle_version_expected="cargo-bundle v0.6.1-zed"
-readonly git_version="v2.43.3"
-readonly git_version_sha="fa29823"
+readonly cargo_bundle_revision="2be2669972dff3ddd4daf89a2cb29d2d06cad7c7"
+# dugite-native tags a rebuild of one git version with a suffix the archive name leaves out.
+readonly git_release="v2.56.0-1"
+readonly git_version="v2.56.0"
+readonly git_version_sha="7ce66f8"
+readonly git_archive_sha256="ab756ab9a15241f14b6c0a0386c704a998bb710a837ab35dc55d4747a90f2ca0"
 readonly entitlements_path="crates/zed/resources/zed.entitlements"
 
 profile_args=(--release)
@@ -63,7 +67,7 @@ export CARGO_BUNDLE_SKIP_BUILD=true
 
 cargo_bundle_version="$(cargo -q bundle --help 2>&1 | head -n 1 || echo "")"
 if [[ "${cargo_bundle_version}" != "${cargo_bundle_version_expected}" ]]; then
-  cargo install cargo-bundle --git https://github.com/zed-industries/cargo-bundle.git --branch zed-deploy
+  cargo install --locked cargo-bundle --git https://github.com/zed-industries/cargo-bundle.git --rev "${cargo_bundle_revision}"
 fi
 
 export CXXFLAGS="-stdlib=libc++"
@@ -75,7 +79,7 @@ rustup target add "${target_triple}"
 build_dir="target/${target_triple}/${target_dir}"
 
 echo "Compiling Flint binaries"
-cargo build ${profile_args[@]+"${profile_args[@]}"} ${zed_feature_args[@]+"${zed_feature_args[@]}"} --package zed --package cli --target "${target_triple}"
+cargo build --locked ${profile_args[@]+"${profile_args[@]}"} ${zed_feature_args[@]+"${zed_feature_args[@]}"} --package zed --package cli --target "${target_triple}"
 
 echo "Creating application bundle"
 cp crates/zed/Cargo.toml crates/zed/Cargo.toml.backup
@@ -93,9 +97,10 @@ download_git() {
   local target_binary="$1"
   local temp_dir
   temp_dir="$(mktemp -d)"
-  curl --silent --show-error --fail --location \
-    "https://github.com/desktop/dugite-native/releases/download/${git_version}/dugite-native-${git_version}-${git_version_sha}-macOS-arm64.tar.gz" \
-    | tar -xz -C "${temp_dir}" -f - bin/git
+  curl --silent --show-error --fail --location --output "${temp_dir}/git.tar.gz" \
+    "https://github.com/desktop/dugite-native/releases/download/${git_release}/dugite-native-${git_version}-${git_version_sha}-macOS-arm64.tar.gz"
+  echo "${git_archive_sha256}  ${temp_dir}/git.tar.gz" | shasum -a 256 --check --status
+  tar -xz -C "${temp_dir}" -f "${temp_dir}/git.tar.gz" ./bin/git
   mv "${temp_dir}/bin/git" "${target_binary}"
   rm -rf "${temp_dir}"
 }

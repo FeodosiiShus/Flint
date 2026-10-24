@@ -50,6 +50,9 @@ jobs:
 
       - name: Install Rust toolchain from rust-toolchain.toml
         run: |
+          # rust-cache keys on every installed toolchain, so the runner image's own stable
+          # would turn each image update into a cache miss.
+          rustup toolchain uninstall stable || true
           rustup toolchain install
           rustup show active-toolchain
           rustc --version
@@ -206,6 +209,9 @@ jobs:
 
       - name: Install Rust toolchain from rust-toolchain.toml
         run: |
+          # rust-cache keys on every installed toolchain, so the runner image's own stable
+          # would turn each image update into a cache miss.
+          rustup toolchain uninstall stable || true
           rustup toolchain install
           rustup show active-toolchain
           rustc --version
@@ -361,22 +367,26 @@ jobs:
 
       - name: Install Rust toolchain from rust-toolchain.toml
         run: |
+          # rust-cache keys on every installed toolchain, so the runner image's own stable
+          # would turn each image update into a cache miss.
+          rustup toolchain uninstall stable || true
           rustup toolchain install
           rustup show active-toolchain
           rustc --version
           cargo --version
 
-      - name: Install dylint tools and pinned nightly
-        run: |
-          cargo install cargo-dylint dylint-link
-          toolchain="$(awk -F'"' '/^channel/ {print $2}' tooling/lints/rust-toolchain.toml)"
-          rustup toolchain install "$toolchain" --component rustc-dev,rust-src,llvm-tools-preview --profile minimal
-
+      # Restored before the install, so `cargo install` finds the cached dylint binaries.
       - name: Cache Rust build
         uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: "true"
           save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Install dylint tools and pinned nightly
+        run: |
+          cargo install --locked cargo-dylint dylint-link
+          toolchain="$(awk -F'"' '/^channel/ {print $2}' tooling/lints/rust-toolchain.toml)"
+          rustup toolchain install "$toolchain" --component rustc-dev,rust-src,llvm-tools-preview --profile minimal
 
       # Deny the custom lints proven green on title_bar. entity_update_in_render
       # is excluded: TitleBar::render intentionally syncs the platform
@@ -491,3 +501,21 @@ jobs:
           except Exception:
               traceback.print_exc()
           '
+
+  audit:
+    name: Security advisories
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Install cargo-audit
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
+
+      # RustSec's database of vulnerable, unsound and unmaintained crates, checked against the
+      # locked versions; unmaintained crates only warn.
+      - name: Check Cargo.lock against the RustSec advisory database
+        run: cargo audit

@@ -51,6 +51,9 @@ jobs:
 
       - name: Install Rust toolchain from rust-toolchain.toml
         run: |
+          # rust-cache keys on every installed toolchain, so the runner image's own stable
+          # would turn each image update into a cache miss.
+          rustup toolchain uninstall stable || true
           rustup toolchain install
           rustup show active-toolchain
           rustc --version
