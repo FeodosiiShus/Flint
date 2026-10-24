@@ -3508,7 +3508,6 @@ dependencies = [
  "core-graphics",
  "core-text",
  "core-video",
- "ctor",
  "dispatch2",
  "foreign-types",
  "futures",

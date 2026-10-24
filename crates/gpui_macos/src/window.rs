@@ -39,7 +39,6 @@ use core_foundation::base::{CFRelease, CFTypeRef};
 use core_foundation_sys::base::CFEqual;
 use core_foundation_sys::number::{CFBooleanGetValue, CFBooleanRef};
 use core_graphics::display::{CGDirectDisplayID, CGRect};
-use ctor::ctor;
 use futures::channel::oneshot;
 use gpui_util::ResultExt;
 use objc::{
@@ -74,7 +73,7 @@ use std::{
     ptr::{self, NonNull},
     rc::Rc,
     sync::{
-        Arc, Once, Weak,
+        Arc, Once, OnceLock, Weak,
         atomic::{AtomicBool, Ordering},
     },
     time::Duration,
@@ -84,15 +83,30 @@ const WINDOW_STATE_IVAR: &str = "windowState";
 
 static RESTORES_WORKSPACE_AT_LAUNCH_DEFAULT: Once = Once::new();
 
-static mut WINDOW_CLASS: *const Class = ptr::null();
-static mut PANEL_CLASS: *const Class = ptr::null();
-static mut VIEW_CLASS: *const Class = ptr::null();
-static mut BLURRED_VIEW_CLASS: *const Class = ptr::null();
-static mut PASS_THROUGH_VIEW_CLASS: *const Class = ptr::null();
-/// `NSGlassEffectView` with clicks passed through, or null before macOS 26.
-static mut GLASS_VIEW_CLASS: *const Class = ptr::null();
-static mut WINDOW_STATE_ARCHIVER_DELEGATE_CLASS: *const Class = ptr::null();
-static mut WINDOW_STATE_UNARCHIVER_CLASS: *const Class = ptr::null();
+/// The Objective-C classes of windows and views, registered on first use rather than before
+/// `main`.
+struct WindowClasses {
+    window: *const Class,
+    panel: *const Class,
+    view: *const Class,
+    blurred_view: *const Class,
+    pass_through_view: *const Class,
+    /// `NSGlassEffectView` with clicks passed through, or null before macOS 26.
+    glass_view: *const Class,
+    window_state_archiver_delegate: *const Class,
+    window_state_unarchiver: *const Class,
+}
+
+// SAFETY: a registered Objective-C class is an immutable, process-wide runtime object, so its
+// pointer may be shared between threads.
+unsafe impl Send for WindowClasses {}
+// SAFETY: as above.
+unsafe impl Sync for WindowClasses {}
+
+fn window_classes() -> &'static WindowClasses {
+    static CLASSES: OnceLock<WindowClasses> = OnceLock::new();
+    CLASSES.get_or_init(build_classes)
+}
 
 #[allow(non_upper_case_globals)]
 const NSWindowStyleMaskNonactivatingPanel: NSWindowStyleMask =
@@ -125,12 +139,13 @@ pub enum UserTabbingPreference {
     InFullScreen,
 }
 
-#[ctor(unsafe)]
-unsafe fn build_classes() {
+fn build_classes() -> WindowClasses {
+    // SAFETY: each class is declared once, under a name nothing else registers, and every method
+    // added takes the arguments its selector passes.
     unsafe {
-        WINDOW_CLASS = build_window_class("GPUIWindow", class!(NSWindow));
-        PANEL_CLASS = build_window_class("GPUIPanel", class!(NSPanel));
-        VIEW_CLASS = {
+        let window = build_window_class("GPUIWindow", class!(NSWindow));
+        let panel = build_window_class("GPUIPanel", class!(NSPanel));
+        let view = {
             let mut decl = ClassDecl::new("GPUIView", class!(NSView)).unwrap();
             decl.add_ivar::<*mut c_void>(WINDOW_STATE_IVAR);
             decl.add_method(sel!(dealloc), dealloc_view as extern "C" fn(&Object, Sel));
@@ -299,7 +314,7 @@ unsafe fn build_classes() {
             );
             decl.register()
         };
-        PASS_THROUGH_VIEW_CLASS = {
+        let pass_through_view = {
             let mut decl = ClassDecl::new("GPUIPassThroughView", class!(NSView)).unwrap();
             decl.add_method(
                 sel!(hitTest:),
@@ -307,7 +322,7 @@ unsafe fn build_classes() {
             );
             decl.register()
         };
-        GLASS_VIEW_CLASS = match Class::get("NSGlassEffectView") {
+        let glass_view = match Class::get("NSGlassEffectView") {
             Some(glass_effect_view) => {
                 let mut decl = ClassDecl::new("GPUIGlassView", glass_effect_view).unwrap();
                 decl.add_method(
@@ -318,7 +333,7 @@ unsafe fn build_classes() {
             }
             None => ptr::null(),
         };
-        BLURRED_VIEW_CLASS = {
+        let blurred_view = {
             let mut decl = ClassDecl::new("BlurredView", class!(NSVisualEffectView)).unwrap();
             decl.add_method(
                 sel!(initWithFrame:),
@@ -330,7 +345,7 @@ unsafe fn build_classes() {
             );
             decl.register()
         };
-        WINDOW_STATE_ARCHIVER_DELEGATE_CLASS = {
+        let window_state_archiver_delegate = {
             let mut decl =
                 ClassDecl::new("GPUIWindowStateArchiverDelegate", class!(NSObject)).unwrap();
             decl.add_method(
@@ -340,7 +355,7 @@ unsafe fn build_classes() {
             );
             decl.register()
         };
-        WINDOW_STATE_UNARCHIVER_CLASS = {
+        let window_state_unarchiver = {
             let mut decl =
                 ClassDecl::new("GPUIWindowStateKeyedUnarchiver", class!(NSKeyedUnarchiver))
                     .unwrap();
@@ -350,6 +365,16 @@ unsafe fn build_classes() {
             );
             decl.register()
         };
+        WindowClasses {
+            window,
+            panel,
+            view,
+            blurred_view,
+            pass_through_view,
+            glass_view,
+            window_state_archiver_delegate,
+            window_state_unarchiver,
+        }
     }
 }
 
@@ -847,7 +872,7 @@ impl MacWindowState {
             for (frames, overlay_layer) in frames.iter().zip(overlay_layers) {
                 let mut glass_views = Vec::with_capacity(frames.len());
                 for (frame, corner_radius) in frames {
-                    let view: id = msg_send![GLASS_VIEW_CLASS, alloc];
+                    let view: id = msg_send![window_classes().glass_view, alloc];
                     let view: id = msg_send![view, initWithFrame: *frame];
                     let () = msg_send![view, setCornerRadius: *corner_radius];
                     let () = msg_send![
@@ -859,7 +884,7 @@ impl MacWindowState {
                     below = view;
                     glass_views.push(view);
                 }
-                let overlay_view: id = msg_send![PASS_THROUGH_VIEW_CLASS, alloc];
+                let overlay_view: id = msg_send![window_classes().pass_through_view, alloc];
                 let overlay_view = NSView::initWithFrame_(overlay_view, content_bounds);
                 overlay_view.setAutoresizingMask_(NSViewWidthSizable | NSViewHeightSizable);
                 let overlay_layer = overlay_layer as id;
@@ -1248,16 +1273,16 @@ impl MacWindow {
 
             let native_window: id = match kind {
                 WindowKind::Normal => {
-                    msg_send![WINDOW_CLASS, alloc]
+                    msg_send![window_classes().window, alloc]
                 }
                 // `AnchoredPopup` is rejected in `MacPlatform::open_window`, grouped here only
                 // for exhaustiveness.
                 WindowKind::PopUp | WindowKind::AnchoredPopup(_) => {
                     style_mask |= NSWindowStyleMaskNonactivatingPanel;
-                    msg_send![PANEL_CLASS, alloc]
+                    msg_send![window_classes().panel, alloc]
                 }
                 WindowKind::Floating | WindowKind::Dialog => {
-                    msg_send![PANEL_CLASS, alloc]
+                    msg_send![window_classes().panel, alloc]
                 }
             };
 
@@ -1319,7 +1344,7 @@ impl MacWindow {
             ];
 
             let content_view = native_window.contentView();
-            let native_view: id = msg_send![VIEW_CLASS, alloc];
+            let native_view: id = msg_send![window_classes().view, alloc];
             let native_view = NSView::initWithFrame_(native_view, NSView::bounds(content_view));
             assert!(!native_view.is_null());
 
@@ -1553,7 +1578,7 @@ impl MacWindow {
                 return None;
             }
 
-            if msg_send![main_window, isKindOfClass: WINDOW_CLASS] {
+            if msg_send![main_window, isKindOfClass: window_classes().window] {
                 let handle = get_window_state(&*main_window).lock().handle;
                 Some(handle)
             } else {
@@ -1571,7 +1596,7 @@ impl MacWindow {
             let mut window_handles = Vec::new();
             for i in 0..count {
                 let window: id = msg_send![windows, objectAtIndex:i];
-                if msg_send![window, isKindOfClass: WINDOW_CLASS] {
+                if msg_send![window, isKindOfClass: window_classes().window] {
                     let handle = get_window_state(&*window).lock().handle;
                     window_handles.push(handle);
                 }
@@ -1767,7 +1792,7 @@ impl PlatformWindow for MacWindow {
                 log::warn!("failed to create an archiver for the native window state");
                 return None;
             }
-            let delegate: id = msg_send![WINDOW_STATE_ARCHIVER_DELEGATE_CLASS, new];
+            let delegate: id = msg_send![window_classes().window_state_archiver_delegate, new];
             let _: () = msg_send![archiver, setDelegate: delegate];
             let _: () = msg_send![native_window, encodeRestorableStateWithCoder: archiver];
             let _: () = msg_send![archiver, finishEncoding];
@@ -1835,7 +1860,7 @@ impl PlatformWindow for MacWindow {
                 });
             }
 
-            let unarchiver: id = msg_send![WINDOW_STATE_UNARCHIVER_CLASS, alloc];
+            let unarchiver: id = msg_send![window_classes().window_state_unarchiver, alloc];
             let mut error: id = nil;
             let unarchiver: id =
                 msg_send![unarchiver, initForReadingFromData: data error: &mut error];
@@ -2117,7 +2142,7 @@ impl PlatformWindow for MacWindow {
             } else if this.blurred_view.is_none() {
                 let content_view = this.native_window.contentView();
                 let frame = NSView::bounds(content_view);
-                let mut blur_view: id = msg_send![BLURRED_VIEW_CLASS, alloc];
+                let mut blur_view: id = msg_send![window_classes().blurred_view, alloc];
                 blur_view = NSView::initWithFrame_(blur_view, frame);
                 blur_view.setAutoresizingMask_(NSViewWidthSizable | NSViewHeightSizable);
 
@@ -2303,7 +2328,7 @@ impl PlatformWindow for MacWindow {
             let mut result = Vec::new();
             for i in 0..count {
                 let window: id = msg_send![windows, objectAtIndex:i];
-                if msg_send![window, isKindOfClass: WINDOW_CLASS] {
+                if msg_send![window, isKindOfClass: window_classes().window] {
                     let handle = get_window_state(&*window).lock().handle;
                     let title: id = msg_send![window, title];
                     let title = SharedString::from(title.to_str().to_string());
@@ -2697,8 +2722,8 @@ fn get_scale_factor(native_window: id) -> f32 {
 /// Returns whether `window` is one of GPUI's managed windows.
 unsafe fn is_gpui_window(window: id) -> bool {
     unsafe {
-        msg_send![window, isKindOfClass: WINDOW_CLASS]
-            || msg_send![window, isKindOfClass: PANEL_CLASS]
+        msg_send![window, isKindOfClass: window_classes().window]
+            || msg_send![window, isKindOfClass: window_classes().panel]
     }
 }
 
@@ -3992,10 +4017,8 @@ const MAX_GLASS_LEVELS: usize = 4;
 /// renderer's emulation. `FLINT_EMULATED_GLASS` keeps the emulation, to compare the two.
 pub(crate) fn native_glass_available() -> bool {
     static AVAILABLE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    // SAFETY: `GLASS_VIEW_CLASS` is written once by `build_classes` at load time.
     *AVAILABLE.get_or_init(|| {
-        let glass_view_class = unsafe { GLASS_VIEW_CLASS };
-        !glass_view_class.is_null() && std::env::var_os("FLINT_EMULATED_GLASS").is_none()
+        !window_classes().glass_view.is_null() && std::env::var_os("FLINT_EMULATED_GLASS").is_none()
     })
 }
 
@@ -4241,8 +4264,8 @@ mod tests {
         let fullscreen_handler =
             window_fullscreen_transition as extern "C" fn(&Object, Sel, id) as usize;
         for (class_name, class_pointer) in [
-            ("GPUIWindow", unsafe { WINDOW_CLASS }),
-            ("GPUIPanel", unsafe { PANEL_CLASS }),
+            ("GPUIWindow", window_classes().window),
+            ("GPUIPanel", window_classes().panel),
         ] {
             assert!(
                 !class_pointer.is_null(),

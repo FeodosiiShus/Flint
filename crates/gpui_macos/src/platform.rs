@@ -28,7 +28,6 @@ use core_foundation::{
     runloop::CFRunLoopRun,
     string::{CFString, CFStringRef},
 };
-use ctor::ctor;
 use dispatch2::DispatchQueue;
 use futures::channel::oneshot;
 use gpui::{
@@ -75,20 +74,34 @@ use std::{
 const NSUTF8StringEncoding: NSUInteger = 4;
 
 const MAC_PLATFORM_IVAR: &str = "platform";
-static mut APP_CLASS: *const Class = ptr::null();
-static mut APP_DELEGATE_CLASS: *const Class = ptr::null();
+/// The Objective-C classes of the application and its delegate, registered on first use rather
+/// than before `main`.
+struct AppClasses {
+    app: *const Class,
+    app_delegate: *const Class,
+}
 
-#[ctor(unsafe)]
-unsafe fn build_classes() {
+// SAFETY: a registered Objective-C class is an immutable, process-wide runtime object, so its
+// pointer may be shared between threads.
+unsafe impl Send for AppClasses {}
+// SAFETY: as above.
+unsafe impl Sync for AppClasses {}
+
+fn app_classes() -> &'static AppClasses {
+    static CLASSES: OnceLock<AppClasses> = OnceLock::new();
+    CLASSES.get_or_init(build_classes)
+}
+
+fn build_classes() -> AppClasses {
+    // SAFETY: each class is declared once, under a name nothing else registers, and every method
+    // added takes the arguments its selector passes.
     unsafe {
-        APP_CLASS = {
+        let app = {
             let mut decl = ClassDecl::new("GPUIApplication", class!(NSApplication)).unwrap();
             decl.add_ivar::<*mut c_void>(MAC_PLATFORM_IVAR);
             decl.register()
-        }
-    };
-    unsafe {
-        APP_DELEGATE_CLASS = {
+        };
+        let app_delegate = {
             let mut decl = ClassDecl::new("GPUIApplicationDelegate", class!(NSResponder)).unwrap();
             decl.add_ivar::<*mut c_void>(MAC_PLATFORM_IVAR);
             decl.add_method(
@@ -174,7 +187,8 @@ unsafe fn build_classes() {
             );
 
             decl.register()
-        }
+        };
+        AppClasses { app, app_delegate }
     }
 }
 
@@ -312,7 +326,7 @@ impl MacPlatform {
                 application_menu.addItem_(menu_item);
 
                 if menu_config.name == "Window" {
-                    let app: id = msg_send![APP_CLASS, sharedApplication];
+                    let app: id = msg_send![app_classes().app, sharedApplication];
                     app.setWindowsMenu_(menu);
                 }
             }
@@ -490,7 +504,7 @@ impl MacPlatform {
 
                     match menu_type {
                         SystemMenuType::Services => {
-                            let app: id = msg_send![APP_CLASS, sharedApplication];
+                            let app: id = msg_send![app_classes().app, sharedApplication];
                             app.setServicesMenu_(item);
                         }
                     }
@@ -520,13 +534,13 @@ impl MacPlatform {
             return;
         }
 
-        // The shared application must be created through `APP_CLASS`, or `run`
+        // The shared application must be created through the `GPUIApplication` class, or `run`
         // finds a plain `NSApplication` without the `platform` ivar; only the
         // delegate lookup goes through the typed binding.
-        // SAFETY: APP_CLASS is registered during startup and `sharedApplication`
+        // SAFETY: `app_classes()` registers the class on first use and `sharedApplication`
         // returns a live NSApplication instance.
         let delegate = unsafe {
-            let app: id = msg_send![APP_CLASS, sharedApplication];
+            let app: id = msg_send![app_classes().app, sharedApplication];
             (*(app as *const objc2_app_kit::NSApplication)).delegate()
         };
         if let Some(delegate) = delegate {
@@ -561,7 +575,7 @@ impl Platform for MacPlatform {
         }
 
         unsafe {
-            let app: id = msg_send![APP_CLASS, sharedApplication];
+            let app: id = msg_send![app_classes().app, sharedApplication];
             // An accessory app must not register in the Dock during launch, so its
             // policy has to precede the run loop. `Regular` is applied in
             // `did_finish_launching` instead: setting it this early leaves the menu
@@ -574,7 +588,7 @@ impl Platform for MacPlatform {
             if policy == ActivationPolicy::Accessory {
                 app.setActivationPolicy_(native_activation_policy(policy));
             }
-            let app_delegate: id = msg_send![APP_DELEGATE_CLASS, new];
+            let app_delegate: id = msg_send![app_classes().app_delegate, new];
             app.setDelegate_(app_delegate);
 
             let self_ptr = self as *const Self as *const c_void;
@@ -673,7 +687,7 @@ impl Platform for MacPlatform {
         drop(state);
         if should_apply {
             unsafe {
-                let app: id = msg_send![APP_CLASS, sharedApplication];
+                let app: id = msg_send![app_classes().app, sharedApplication];
                 app.setActivationPolicy_(native_activation_policy(policy));
             }
         }
@@ -804,7 +818,7 @@ impl Platform for MacPlatform {
 
     fn set_window_appearance(&self, appearance: Option<WindowAppearance>) {
         unsafe {
-            let app: id = msg_send![APP_CLASS, sharedApplication];
+            let app: id = msg_send![app_classes().app, sharedApplication];
             // `None` clears the override by setting a nil appearance, so the app
             // falls back to tracking the system-wide light/dark setting.
             let ns_appearance: id = match appearance {
@@ -1155,7 +1169,7 @@ impl Platform for MacPlatform {
 
     fn set_menus(&self, menus: Vec<Menu>, keymap: &Keymap) {
         unsafe {
-            let app: id = msg_send![APP_CLASS, sharedApplication];
+            let app: id = msg_send![app_classes().app, sharedApplication];
             let mut state = self.0.lock();
             let actions = &mut state.menu_actions;
             let menu = self.create_menu_bar(&menus, NSWindow::delegate(app), actions, keymap);
@@ -1171,7 +1185,7 @@ impl Platform for MacPlatform {
 
     fn set_dock_menu(&self, menu: Vec<MenuItem>, keymap: &Keymap) {
         unsafe {
-            let app: id = msg_send![APP_CLASS, sharedApplication];
+            let app: id = msg_send![app_classes().app, sharedApplication];
             let mut state = self.0.lock();
             let actions = &mut state.menu_actions;
             let new = self.create_dock_menu(menu, NSWindow::delegate(app), actions, keymap);
@@ -1407,7 +1421,7 @@ extern "C" fn will_finish_launching(_this: &mut Object, _: Sel, _: id) {
 
 extern "C" fn did_finish_launching(this: &mut Object, _: Sel, _: id) {
     unsafe {
-        let app: id = msg_send![APP_CLASS, sharedApplication];
+        let app: id = msg_send![app_classes().app, sharedApplication];
         let policy = get_mac_platform(this).0.lock().activation_policy;
         app.setActivationPolicy_(native_activation_policy(policy));
 
