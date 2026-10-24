@@ -806,6 +806,16 @@ Cmd+click (and `Cmd-B` with the JetBrains keymap) goes to a definition through t
 - `jdtls` starts with `-Xms100m` and may grow to 2 GB (`lsp.jdtls.settings.min_memory` and `max_memory`), and `JDK_JAVA_OPTIONS` in `lsp.jdtls.binary.env` switches it to the parallel collector, which gives freed memory back to the system. These are the VS Code Java extension's defaults. On a small Maven project this took jdtls from about 1.3 GB to about 0.8 GB, with the first errors still arriving in about 10 seconds. Raise `max_memory` for very large projects; replace `JDK_JAVA_OPTIONS` to use other JVM flags.
 - Roslyn ships configured for the server garbage collector, which keeps a heap per CPU core. Flint starts it with `DOTNET_gcServer=0` and `DOTNET_GCConserveMemory=7` (in `lsp.roslyn.binary.env`), the workstation collector compacting harder. On a small console project Roslyn kept about 375 MB instead of 422 MB, with the first errors arriving as fast. Most of that wait is MSBuild loading the project.
 
+- `tsrs` ([oxc-project/tsrs](https://github.com/oxc-project/tsrs)), a Rust port of `tsgo` that its authors measure at about 70% less memory, can run instead of `tsgo`. It speaks the same protocol and takes the same settings (under `lsp.tsrs` instead of `lsp.tsgo`), and Flint installs it from npm like `tsgo`; it has a build for Apple silicon only. It is experimental (0.18 as of October 2026, about 90% of the TypeScript language service tests pass, and some diagnostics still depend on checking order), so `tsgo` stays the default. To switch, per language:
+
+```json
+"languages": {
+  "TypeScript": { "language_servers": ["tsrs", "!tsgo", "..."] },
+  "TSX": { "language_servers": ["tsrs", "!tsgo", "..."] },
+  "JavaScript": { "language_servers": ["tsrs", "!tsgo", "..."] }
+}
+```
+
 - `tsgo` is a Go program, and Go keeps freed memory until a soft limit asks it to give it back. Flint starts `tsgo` with `GOMEMLIMIT` set to a quarter of the Mac's memory, at least 2 GiB and at most 8 GiB (4096 MiB on a 16 GB Mac). Near the limit the server collects garbage more often and can get slower, but it is never stopped, so a limit below what the project needs only costs CPU. The default is not set for your own build in `lsp.tsgo.binary.path`, nor when your shell environment already exports `GOMEMLIMIT` (for example in `~/.zshrc` or a direnv `.envrc`). Your own value in `lsp.tsgo.binary.env` wins over both:
 
   ```json

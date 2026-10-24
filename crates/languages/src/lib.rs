@@ -58,6 +58,7 @@ pub fn init(languages: Arc<LanguageRegistry>, fs: Arc<dyn Fs>, node: NodeRuntime
     let python_toolchain_provider = Arc::new(python::PythonToolchainProvider::new(fs.clone()));
     let rust_lsp_adapter = Arc::new(rust::RustLspAdapter);
     let tsgo_adapter = Arc::new(tsgo::TsgoLspAdapter::new(node.clone()));
+    let tsrs_adapter = Arc::new(tsgo::TsgoLspAdapter::tsrs(node.clone()));
     let yaml_lsp_adapter = Arc::new(yaml::YamlLspAdapter::new(node));
 
     let built_in_languages = [
@@ -190,6 +191,9 @@ pub fn init(languages: Arc<LanguageRegistry>, fs: Arc<dyn Fs>, node: NodeRuntime
         oxlint_adapter.clone(),
     );
     languages.register_available_lsp_adapter(LanguageServerName("tsgo".into()), tsgo_adapter);
+    // Available but in no language's adapters, so `"..."` in `language_servers` doesn't start it
+    // next to tsgo; `["tsrs", "!tsgo", "..."]` switches to it.
+    languages.register_available_lsp_adapter(LanguageServerName("tsrs".into()), tsrs_adapter);
 
     let linted_languages = ["TSX", "TypeScript", "JavaScript", "Svelte"];
     for language in linted_languages {

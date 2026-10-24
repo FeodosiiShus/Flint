@@ -17,44 +17,98 @@ use std::{
 use sysinfo::{MemoryRefreshKind, RefreshKind, System};
 use util::{ResultExt, merge_json_value_into};
 
-const SERVER_NAME: LanguageServerName = LanguageServerName::new_static("tsgo");
 const CODE_LENS_SHOW_LOCATIONS_COMMAND: &str = "editor.action.showReferences";
-const EXECUTABLE_NAME: &str = if cfg!(windows) { "tsc.exe" } else { "tsc" };
+const TSGO_EXECUTABLE_NAME: &str = if cfg!(windows) { "tsc.exe" } else { "tsc" };
+const TSRS_EXECUTABLE_NAME: &str = if cfg!(windows) { "tsrs.exe" } else { "tsrs" };
 const GO_MEMORY_LIMIT_VARIABLE: &str = "GOMEMLIMIT";
 const MEBIBYTE: u64 = 1024 * 1024;
 const GIBIBYTE: u64 = 1024 * MEBIBYTE;
 
+/// The native TypeScript language servers: Microsoft's Go port (`tsgo`), and `tsrs`, an
+/// experimental Rust port of it that speaks the same protocol, takes the same settings and uses
+/// less memory. Only `tsgo` runs by default.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum NativeServer {
+    Tsgo,
+    Tsrs,
+}
+
+impl NativeServer {
+    fn name(self) -> LanguageServerName {
+        match self {
+            Self::Tsgo => LanguageServerName::new_static("tsgo"),
+            Self::Tsrs => LanguageServerName::new_static("tsrs"),
+        }
+    }
+
+    fn npm_platform_package_name(
+        self,
+        operating_system: &str,
+        architecture: &str,
+    ) -> Result<String> {
+        let name = self.name();
+        let (platform, processor) = match (self, operating_system, architecture) {
+            (Self::Tsgo, "macos", "aarch64") => ("darwin", "arm64"),
+            (Self::Tsgo, "macos", "x86_64") => ("darwin", "x64"),
+            (Self::Tsgo, "linux", "aarch64") => ("linux", "arm64"),
+            (Self::Tsgo, "linux", "x86_64") => ("linux", "x64"),
+            (Self::Tsgo, "windows", "aarch64") => ("win32", "arm64"),
+            (Self::Tsgo, "windows", "x86_64") => ("win32", "x64"),
+            (Self::Tsrs, "macos", "aarch64") => ("darwin", "arm64"),
+            (Self::Tsrs, "linux", "aarch64") => ("linux", "arm64-gnu"),
+            (Self::Tsrs, "linux", "x86_64") => ("linux", "x64-gnu"),
+            _ => bail!("{name} has no build for {operating_system} on {architecture}"),
+        };
+        Ok(match self {
+            Self::Tsgo => format!("@typescript/typescript-{platform}-{processor}"),
+            Self::Tsrs => format!("@tsrs/{platform}-{processor}"),
+        })
+    }
+
+    fn current_platform_package_name(self) -> Result<String> {
+        self.npm_platform_package_name(std::env::consts::OS, std::env::consts::ARCH)
+    }
+
+    fn binary(self, container_dir: &Path, package_name: &str) -> LanguageServerBinary {
+        let package_dir = container_dir.join("node_modules").join(package_name);
+        LanguageServerBinary {
+            path: match self {
+                Self::Tsgo => package_dir.join("lib").join(TSGO_EXECUTABLE_NAME),
+                Self::Tsrs => package_dir.join(TSRS_EXECUTABLE_NAME),
+            },
+            arguments: vec!["--lsp".into(), "--stdio".into()],
+            env: None,
+        }
+    }
+
+    fn default_env(self) -> HashMap<String, String> {
+        match self {
+            Self::Tsgo => default_server_env(),
+            // A Rust server frees memory as soon as it drops it.
+            Self::Tsrs => HashMap::default(),
+        }
+    }
+}
+
 pub struct TsgoLspAdapter {
     node: NodeRuntime,
+    server: NativeServer,
 }
 
 impl TsgoLspAdapter {
     pub fn new(node: NodeRuntime) -> Self {
-        TsgoLspAdapter { node }
+        TsgoLspAdapter {
+            node,
+            server: NativeServer::Tsgo,
+        }
     }
-}
 
-fn npm_platform_package_name(operating_system: &str, architecture: &str) -> Result<String> {
-    let platform = match operating_system {
-        "macos" => "darwin",
-        "linux" => "linux",
-        "windows" => "win32",
-        unsupported => {
-            bail!("TypeScript native server has no build for operating system {unsupported}")
+    pub fn tsrs(node: NodeRuntime) -> Self {
+        TsgoLspAdapter {
+            node,
+            server: NativeServer::Tsrs,
         }
-    };
-    let processor = match architecture {
-        "aarch64" => "arm64",
-        "x86_64" => "x64",
-        unsupported => {
-            bail!("TypeScript native server has no build for architecture {unsupported}")
-        }
-    };
-    Ok(format!("@typescript/typescript-{platform}-{processor}"))
-}
-
-fn current_platform_package_name() -> Result<String> {
-    npm_platform_package_name(std::env::consts::OS, std::env::consts::ARCH)
+    }
 }
 
 /// Go keeps freed heap resident unless a soft memory limit asks it to return pages to the OS.
@@ -68,18 +122,6 @@ fn default_go_memory_limit() -> String {
         RefreshKind::nothing().with_memory(MemoryRefreshKind::nothing().with_ram()),
     );
     go_memory_limit(system.total_memory())
-}
-
-fn server_binary(container_dir: &Path, package_name: &str) -> LanguageServerBinary {
-    LanguageServerBinary {
-        path: container_dir
-            .join("node_modules")
-            .join(package_name)
-            .join("lib")
-            .join(EXECUTABLE_NAME),
-        arguments: vec!["--lsp".into(), "--stdio".into()],
-        env: None,
-    }
 }
 
 fn default_server_env() -> HashMap<String, String> {
@@ -153,7 +195,7 @@ impl LspInstaller for TsgoLspAdapter {
         _: bool,
         _: &mut AsyncApp,
     ) -> Result<Self::BinaryVersion> {
-        let package_name = current_platform_package_name()?;
+        let package_name = self.server.current_platform_package_name()?;
         self.node.npm_package_latest_version(&package_name).await
     }
 
@@ -164,18 +206,20 @@ impl LspInstaller for TsgoLspAdapter {
         _: &Arc<dyn LspAdapterDelegate>,
     ) -> impl Send + Future<Output = Result<LanguageServerBinary>> + use<> {
         let node = self.node.clone();
+        let server = self.server;
 
         async move {
-            let package_name = current_platform_package_name()?;
+            let package_name = server.current_platform_package_name()?;
             let version = latest_version.to_string();
 
             node.npm_install_packages(&container_dir, &[(package_name.as_str(), version.as_str())])
                 .await?;
 
-            let binary = server_binary(&container_dir, &package_name);
+            let binary = server.binary(&container_dir, &package_name);
             anyhow::ensure!(
                 binary.path.exists(),
-                "TypeScript native server executable is missing at {:?}",
+                "{} executable is missing at {:?}",
+                server.name(),
                 binary.path
             );
             Ok(binary)
@@ -189,12 +233,13 @@ impl LspInstaller for TsgoLspAdapter {
         _: &Arc<dyn LspAdapterDelegate>,
     ) -> impl Send + Future<Output = Option<LanguageServerBinary>> + use<> {
         let node = self.node.clone();
+        let server = self.server;
         let server_version = version.clone();
         let container_dir = container_dir.clone();
 
         async move {
-            let package_name = current_platform_package_name().log_err()?;
-            let binary = server_binary(&container_dir, &package_name);
+            let package_name = server.current_platform_package_name().log_err()?;
+            let binary = server.binary(&container_dir, &package_name);
 
             if node
                 .should_install_npm_package(
@@ -217,8 +262,8 @@ impl LspInstaller for TsgoLspAdapter {
         container_dir: PathBuf,
         _: &dyn LspAdapterDelegate,
     ) -> Option<LanguageServerBinary> {
-        let package_name = current_platform_package_name().log_err()?;
-        let binary = server_binary(&container_dir, &package_name);
+        let package_name = self.server.current_platform_package_name().log_err()?;
+        let binary = self.server.binary(&container_dir, &package_name);
         binary.path.exists().then_some(binary)
     }
 }
@@ -226,7 +271,7 @@ impl LspInstaller for TsgoLspAdapter {
 #[async_trait(?Send)]
 impl LspAdapter for TsgoLspAdapter {
     fn name(&self) -> LanguageServerName {
-        SERVER_NAME
+        self.server.name()
     }
 
     /// The server learns about installed, upgraded and removed packages only from the changes
@@ -237,7 +282,7 @@ impl LspAdapter for TsgoLspAdapter {
     }
 
     fn default_server_env(&self) -> HashMap<String, String> {
-        default_server_env()
+        self.server.default_env()
     }
 
     fn code_action_kinds(&self) -> Option<Vec<CodeActionKind>> {
@@ -275,7 +320,7 @@ impl LspAdapter for TsgoLspAdapter {
         cx: &mut AsyncApp,
     ) -> Result<Value> {
         let override_options = cx.update(|cx| {
-            language_server_settings(delegate.as_ref(), &SERVER_NAME, cx)
+            language_server_settings(delegate.as_ref(), &self.server.name(), cx)
                 .and_then(|s| s.settings.clone())
         });
 
@@ -348,10 +393,11 @@ fn completion_label(
 #[cfg(test)]
 mod tests {
     use super::{
-        GIBIBYTE, GO_MEMORY_LIMIT_VARIABLE, default_server_env, enhance_diagnostic_message,
-        go_memory_limit, npm_platform_package_name, workspace_configuration_with_overrides,
+        GIBIBYTE, GO_MEMORY_LIMIT_VARIABLE, NativeServer, default_server_env,
+        enhance_diagnostic_message, go_memory_limit, workspace_configuration_with_overrides,
     };
     use serde_json::json;
+    use std::path::Path;
 
     #[test]
     fn go_memory_limit_is_a_quarter_of_ram_clamped_to_two_to_eight_gibibytes() {
@@ -455,7 +501,8 @@ mod tests {
         ];
 
         for (operating_system, architecture, expected) in cases {
-            let package_name = npm_platform_package_name(operating_system, architecture)
+            let package_name = NativeServer::Tsgo
+                .npm_platform_package_name(operating_system, architecture)
                 .expect("supported platform should map to a package");
             assert_eq!(package_name, expected);
         }
@@ -463,7 +510,39 @@ mod tests {
 
     #[test]
     fn rejects_platforms_without_a_native_build() {
-        assert!(npm_platform_package_name("freebsd", "x86_64").is_err());
-        assert!(npm_platform_package_name("macos", "riscv64").is_err());
+        for server in [NativeServer::Tsgo, NativeServer::Tsrs] {
+            assert!(
+                server
+                    .npm_platform_package_name("freebsd", "x86_64")
+                    .is_err()
+            );
+            assert!(
+                server
+                    .npm_platform_package_name("macos", "riscv64")
+                    .is_err()
+            );
+        }
+        assert!(
+            NativeServer::Tsrs
+                .npm_platform_package_name("macos", "x86_64")
+                .is_err(),
+            "tsrs publishes no Intel macOS build"
+        );
+    }
+
+    #[test]
+    fn tsrs_runs_the_native_binary_of_its_platform_package_without_a_go_memory_limit() {
+        let package_name = NativeServer::Tsrs
+            .npm_platform_package_name("macos", "aarch64")
+            .expect("tsrs has an Apple silicon build");
+        assert_eq!(package_name, "@tsrs/darwin-arm64");
+        let binary = NativeServer::Tsrs.binary(Path::new("/servers/tsrs"), &package_name);
+        assert_eq!(
+            binary.path,
+            Path::new("/servers/tsrs/node_modules/@tsrs/darwin-arm64/tsrs")
+        );
+        assert_eq!(binary.arguments, ["--lsp", "--stdio"]);
+        assert!(NativeServer::Tsrs.default_env().is_empty());
+        assert_eq!(NativeServer::Tsrs.name().0.as_ref(), "tsrs");
     }
 }
