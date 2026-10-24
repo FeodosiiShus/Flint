@@ -941,9 +941,10 @@ impl ResourceCounter {
                 ));
             }
         };
-        // SAFETY: `rusage` is plain old data that `getrusage` fully initializes
-        // on success, and `who` is one of the constants the call accepts.
+        // SAFETY: `rusage` is plain old data, for which all-zero bytes are a valid value.
         let mut usage: libc::rusage = unsafe { std::mem::zeroed() };
+        // SAFETY: `usage` is a valid, writable `rusage` that `getrusage` fully initializes
+        // on success, and `who` is one of the constants the call accepts.
         let status = unsafe { libc::getrusage(who, &mut usage) };
         if status != 0 {
             return Err(anyhow!(

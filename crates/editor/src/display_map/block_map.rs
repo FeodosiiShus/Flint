@@ -2684,6 +2684,7 @@ impl<'a> Iterator for BlockChunks<'a> {
             self.line_count_overflow.0 -= lines;
             self.output_row += RowDelta(lines);
             return Some(Chunk {
+                // SAFETY: `NEWLINES` holds only ASCII bytes, so any prefix of it is valid UTF-8.
                 text: unsafe { std::str::from_utf8_unchecked(&NEWLINES[..lines as usize]) },
                 chars: 1u128.unbounded_shl(lines).wrapping_sub(1),
                 ..Default::default()
@@ -2707,6 +2708,7 @@ impl<'a> Iterator for BlockChunks<'a> {
             self.output_row += lines;
 
             return Some(Chunk {
+                // SAFETY: `NEWLINES` holds only ASCII bytes, so any prefix of it is valid UTF-8.
                 text: unsafe { std::str::from_utf8_unchecked(&NEWLINES[..lines.0 as usize]) },
                 chars: 1u128.unbounded_shl(lines.0).wrapping_sub(1),
                 ..Default::default()
@@ -2752,6 +2754,7 @@ impl<'a> Iterator for BlockChunks<'a> {
             // need to have the same number of chars in the input as output.
             let chars_count = prefix.chars().count();
             let bullet_len = chars_count;
+            // SAFETY: `BULLETS` holds only ASCII `*` bytes, so any prefix of it is valid UTF-8.
             prefix = unsafe { std::str::from_utf8_unchecked(&BULLETS[..bullet_len]) };
             chars = 1u128.unbounded_shl(bullet_len as u32).wrapping_sub(1);
             tabs = 0;

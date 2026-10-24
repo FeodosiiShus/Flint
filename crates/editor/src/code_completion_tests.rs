@@ -395,7 +395,7 @@ async fn test_semver_label_sort_by_latest_version(cx: &mut TestAppContext) {
 
 async fn test_for_each_prefix<F>(
     target: &str,
-    completions: &Vec<Completion>,
+    completions: &[Completion],
     cx: &mut TestAppContext,
     mut test_fn: F,
 ) where
@@ -494,7 +494,7 @@ impl CompletionBuilder {
 
 async fn filter_and_sort_matches(
     query: &str,
-    completions: &Vec<Completion>,
+    completions: &[Completion],
     snippet_sort_order: SnippetSortOrder,
     cx: &mut TestAppContext,
 ) -> Vec<StringMatch> {

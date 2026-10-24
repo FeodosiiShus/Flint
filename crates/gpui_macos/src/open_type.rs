@@ -91,7 +91,9 @@ fn generate_feature_array(features: &FontFeatures) -> CFMutableArrayRef {
                 &kCFTypeDictionaryKeyCallBacks,
                 &kCFTypeDictionaryValueCallBacks,
             );
-            values.into_iter().for_each(|value| CFRelease(value));
+            for value in values {
+                CFRelease(value);
+            }
             CFArrayAppendValue(feature_array, dict as _);
             CFRelease(dict as _);
         }

@@ -56,7 +56,7 @@ pub(crate) struct TestPlatform {
     menus: RefCell<Vec<OwnedMenu>>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 /// A fake screen capture source, used for testing.
 pub struct TestScreenCaptureSource {}
 

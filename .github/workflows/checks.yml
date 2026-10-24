@@ -341,9 +341,9 @@ jobs:
           '
 
   lint:
-    name: Dylint on title_bar
+    name: Clippy and Dylint
     runs-on: macos-26
-    timeout-minutes: 60
+    timeout-minutes: 120
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
@@ -387,6 +387,10 @@ jobs:
           cargo install --locked cargo-dylint dylint-link
           toolchain="$(awk -F'"' '/^channel/ {print $2}' tooling/lints/rust-toolchain.toml)"
           rustup toolchain install "$toolchain" --component rustc-dev,rust-src,llvm-tools-preview --profile minimal
+
+      # The workspace lints in Cargo.toml only hold if something checks them.
+      - name: Run clippy
+        run: cargo clippy --locked --workspace --all-targets -- --deny warnings
 
       # Deny the custom lints proven green on title_bar. entity_update_in_render
       # is excluded: TitleBar::render intentionally syncs the platform

@@ -56,6 +56,10 @@ impl RowChunks {
         self.buffer_snapshot.version()
     }
 
+    #[expect(
+        clippy::len_without_is_empty,
+        reason = "a buffer always has at least one row chunk"
+    )]
     pub fn len(&self) -> usize {
         (self.last_row / self.max_rows_per_chunk) as usize + 1
     }

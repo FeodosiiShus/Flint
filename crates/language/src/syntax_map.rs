@@ -1229,6 +1229,10 @@ impl<'a> SyntaxMapCaptures<'a> {
             let mut query_cursor = QueryCursorHandle::new();
 
             // TODO - add a Tree-sitter API to remove the need for this.
+            // SAFETY: `captures` keeps only the heap-allocated `TSQueryCursor` pointer, not
+            // this reference, which is last used before `query_cursor` moves. The handle is
+            // declared after `captures` in the layer, so it drops later, and nothing else
+            // touches the cursor meanwhile.
             let cursor = unsafe {
                 std::mem::transmute::<&mut tree_sitter::QueryCursor, &'static mut QueryCursor>(
                     query_cursor.deref_mut(),
@@ -1364,6 +1368,10 @@ impl<'a> SyntaxMapMatches<'a> {
             let mut query_cursor = QueryCursorHandle::new();
 
             // TODO - add a Tree-sitter API to remove the need for this.
+            // SAFETY: `matches` keeps only the heap-allocated `TSQueryCursor` pointer, not
+            // this reference, which is last used before `query_cursor` moves. The handle is
+            // declared after `matches` in the layer, so it drops later, and nothing else
+            // touches the cursor meanwhile.
             let cursor = unsafe {
                 std::mem::transmute::<&mut tree_sitter::QueryCursor, &'static mut QueryCursor>(
                     query_cursor.deref_mut(),

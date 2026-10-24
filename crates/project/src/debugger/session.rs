@@ -221,7 +221,7 @@ impl RunningMode {
         &self.worktree
     }
 
-    fn unset_breakpoints_from_paths(&self, paths: &Vec<Arc<Path>>, cx: &mut App) -> Task<()> {
+    fn unset_breakpoints_from_paths(&self, paths: &[Arc<Path>], cx: &mut App) -> Task<()> {
         let tasks: Vec<_> = paths
             .iter()
             .map(|path| {

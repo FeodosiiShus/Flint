@@ -3982,7 +3982,7 @@ async fn test_random_set_ranges(cx: &mut TestAppContext, mut rng: StdRng) {
         .map(|i| i.parse().expect("invalid `OPERATIONS` variable"))
         .unwrap_or(10);
 
-    fn row_ranges(ranges: &Vec<Range<Point>>) -> Vec<Range<u32>> {
+    fn row_ranges(ranges: &[Range<Point>]) -> Vec<Range<u32>> {
         ranges
             .iter()
             .map(|range| range.start.row..range.end.row)

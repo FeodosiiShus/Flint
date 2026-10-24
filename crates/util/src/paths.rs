@@ -190,6 +190,9 @@ pub fn strip_path_suffix<'a>(base: &'a Path, suffix: &Path) -> Option<&'a Path> 
             .last()
             .is_none_or(|last_byte| std::path::is_separator(*last_byte as char))
         {
+            // SAFETY: `remainder` is a prefix of `base`'s encoded bytes that is empty or
+            // ends in an ASCII separator, so dropping that separator cuts right before an
+            // ASCII character, which is a valid `OsStr` boundary.
             let os_str = unsafe {
                 OsStr::from_encoded_bytes_unchecked(
                     &remainder[0..remainder.len().saturating_sub(1)],
@@ -217,13 +220,15 @@ impl SanitizedPath {
     }
 
     pub fn unchecked_new<T: AsRef<Path> + ?Sized>(path: &T) -> &Self {
-        // safe because `Path` and `SanitizedPath` have the same repr and Drop impl
+        // SAFETY: `SanitizedPath` is `repr(transparent)` over `Path`, so both have the
+        // same layout and drop glue.
         unsafe { mem::transmute::<&Path, &Self>(path.as_ref()) }
     }
 
     pub fn from_arc(path: Arc<Path>) -> Arc<Self> {
-        // safe because `Path` and `SanitizedPath` have the same repr and Drop impl
         #[cfg(not(target_os = "windows"))]
+        // SAFETY: `SanitizedPath` is `repr(transparent)` over `Path`, so both have the
+        // same layout and drop glue.
         return unsafe { mem::transmute::<Arc<Path>, Arc<Self>>(path) };
 
         #[cfg(target_os = "windows")]
@@ -234,7 +239,8 @@ impl SanitizedPath {
             };
             let simplified = dunce::simplified(path.as_ref());
             if simplified == path.as_ref() {
-                // safe because `Path` and `SanitizedPath` have the same repr and Drop impl
+                // SAFETY: `SanitizedPath` is `repr(transparent)` over `Path`, so both have
+                // the same layout and drop glue.
                 unsafe { mem::transmute::<Arc<Path>, Arc<Self>>(path) }
             } else {
                 Self::unchecked_new(simplified).into()
@@ -247,12 +253,14 @@ impl SanitizedPath {
     }
 
     pub fn cast_arc(path: Arc<Self>) -> Arc<Path> {
-        // safe because `Path` and `SanitizedPath` have the same repr and Drop impl
+        // SAFETY: `SanitizedPath` is `repr(transparent)` over `Path`, so both have the
+        // same layout and drop glue.
         unsafe { mem::transmute::<Arc<Self>, Arc<Path>>(path) }
     }
 
     pub fn cast_arc_ref(path: &Arc<Self>) -> &Arc<Path> {
-        // safe because `Path` and `SanitizedPath` have the same repr and Drop impl
+        // SAFETY: `SanitizedPath` is `repr(transparent)` over `Path`, so both have the
+        // same layout and drop glue.
         unsafe { mem::transmute::<&Arc<Self>, &Arc<Path>>(path) }
     }
 
@@ -308,7 +316,8 @@ impl Display for SanitizedPath {
 impl From<&SanitizedPath> for Arc<SanitizedPath> {
     fn from(sanitized_path: &SanitizedPath) -> Self {
         let path: Arc<Path> = sanitized_path.0.into();
-        // safe because `Path` and `SanitizedPath` have the same repr and Drop impl
+        // SAFETY: `SanitizedPath` is `repr(transparent)` over `Path`, so both have the
+        // same layout and drop glue.
         unsafe { mem::transmute(path) }
     }
 }

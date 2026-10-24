@@ -108,6 +108,8 @@ impl TestScheduler {
             thread: self.thread.clone(),
             state: self.state.clone(),
         });
+        // SAFETY: the data pointer is a leaked `Box<TracingWaker>`, which is `Send + Sync`,
+        // and every `WAKER_VTABLE` function treats it as exactly that.
         let waker = unsafe { Waker::new(Box::into_raw(waker) as *const (), &WAKER_VTABLE) };
         let max_ticks = if timeout.is_some() {
             self.rng
@@ -872,6 +874,8 @@ impl TracingWaker {
 
     fn clone_raw(waker: *const ()) -> RawWaker {
         let waker = waker as *const TracingWaker;
+        // SAFETY: `waker` comes from `Box::into_raw` of a `TracingWaker` that the calling
+        // `Waker` still owns, so it is live for this borrow.
         let waker = unsafe { &*waker };
         RawWaker::new(
             Box::into_raw(Box::new(waker.clone())) as *const (),
@@ -880,17 +884,23 @@ impl TracingWaker {
     }
 
     fn wake_raw(waker: *const ()) {
+        // SAFETY: `wake` consumes the `Waker`, so this reclaims, exactly once, the `Box`
+        // that `Box::into_raw` leaked for it.
         let waker = unsafe { Box::from_raw(waker as *mut TracingWaker) };
         waker.wake();
     }
 
     fn wake_by_ref_raw(waker: *const ()) {
         let waker = waker as *const TracingWaker;
+        // SAFETY: `waker` comes from `Box::into_raw` of a `TracingWaker` that the calling
+        // `Waker` still owns, so it is live for this borrow.
         let waker = unsafe { &*waker };
         waker.wake_by_ref();
     }
 
     fn drop_raw(waker: *const ()) {
+        // SAFETY: `drop` is the `Waker`'s last use of its data, so this reclaims, exactly
+        // once, the `Box` that `Box::into_raw` leaked for it.
         let waker = unsafe { Box::from_raw(waker as *mut TracingWaker) };
         drop(waker);
     }

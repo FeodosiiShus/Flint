@@ -559,7 +559,7 @@ impl ExtensionBuilder {
 
     // This was adapted from:
     // https://github.com/bytecodealliance/wasm-tools/blob/e8809bb17fcf69aa8c85cd5e6db7cff5cf36b1de/src/bin/wasm-tools/strip.rs
-    fn strip_custom_sections(&self, input: &Vec<u8>) -> Result<Vec<u8>> {
+    fn strip_custom_sections(&self, input: &[u8]) -> Result<Vec<u8>> {
         use wasmparser::Payload::*;
 
         let strip_custom_section = |name: &str| {

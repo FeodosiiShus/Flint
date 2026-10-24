@@ -408,6 +408,13 @@ impl FakeAdapter {
 }
 
 #[cfg(any(test, feature = "test-support"))]
+impl Default for FakeAdapter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(any(test, feature = "test-support"))]
 #[async_trait(?Send)]
 impl DebugAdapter for FakeAdapter {
     fn name(&self) -> DebugAdapterName {

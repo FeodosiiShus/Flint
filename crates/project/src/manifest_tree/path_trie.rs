@@ -118,6 +118,12 @@ impl<Label: Ord + Clone> RootPathTrie<Label> {
     }
 }
 
+impl<Label: Ord + Clone> Default for RootPathTrie<Label> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// [TriePath] is a [Path] preprocessed for amortizing the cost of doing multiple lookups in distinct [RootPathTrie]s.
 #[derive(Clone)]
 pub struct TriePath(Arc<[Arc<str>]>);

@@ -7335,6 +7335,8 @@ mod tests {
     }
 
     fn disable_git_global_config() {
+        // SAFETY: nextest runs each test in its own process, and every caller does this first,
+        // before the test starts anything that could read the environment on another thread.
         unsafe {
             std::env::set_var("GIT_CONFIG_GLOBAL", "");
             std::env::set_var("GIT_CONFIG_SYSTEM", "");

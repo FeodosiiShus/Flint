@@ -8331,15 +8331,13 @@ fn open_items(
                 opened_items.push(restored_item.map(Ok));
             }
 
-            project_paths_to_open
-                .iter_mut()
-                .for_each(|(_, project_path)| {
-                    if let Some(project_path_to_open) = project_path
-                        && restored_project_paths.contains(project_path_to_open)
-                    {
-                        *project_path = None;
-                    }
-                });
+            for (_, project_path) in &mut project_paths_to_open {
+                if let Some(project_path_to_open) = project_path
+                    && restored_project_paths.contains(project_path_to_open)
+                {
+                    *project_path = None;
+                }
+            }
         } else {
             for _ in 0..project_paths_to_open.len() {
                 opened_items.push(None);

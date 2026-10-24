@@ -365,7 +365,7 @@ impl MultiBuffer {
         path_key: PathKey,
         buffer: Entity<Buffer>,
         buffer_snapshot: &BufferSnapshot,
-        to_insert: &Vec<ExcerptRange<text::Anchor>>,
+        to_insert: &[ExcerptRange<text::Anchor>],
         cx: &mut Context<Self>,
     ) -> bool {
         let path_key_index = self.get_or_create_path_key_index(&path_key);
@@ -393,7 +393,7 @@ impl MultiBuffer {
             .cursor::<Dimensions<PathKey, ExcerptOffset>>(());
         let mut new_excerpts = SumTree::new(());
 
-        let new_ranges = to_insert.clone();
+        let new_ranges = to_insert.to_vec();
         let mut to_insert = to_insert.iter().peekable();
         let mut patch = Patch::empty();
         let mut added_new_excerpt = false;

@@ -532,6 +532,8 @@ mod macos {
         // Convert timestamp to macOS absolute time
         let timestamp_macos = timestamp.unix_timestamp() - UNIX_TO_CF_ABSOLUTE_TIME_OFFSET;
         let cf_absolute_time = timestamp_macos as CFAbsoluteTime;
+        // SAFETY: `fmt` is one of this thread's live, never-released date formatters, and the
+        // returned string follows the create rule; `wrap_under_create_rule` panics on null.
         unsafe {
             let s = CFDateFormatterCreateStringWithAbsoluteTime(
                 kCFAllocatorDefault,
@@ -543,7 +545,11 @@ mod macos {
     }
 
     thread_local! {
+        // SAFETY: `CFLocaleCopyCurrent` takes no arguments and returns a retained locale,
+        // which this thread keeps for its whole lifetime.
         static CURRENT_LOCALE: CFLocaleRef = unsafe { CFLocaleCopyCurrent() };
+        // SAFETY: `CURRENT_LOCALE` is a valid, retained locale and both styles are
+        // CoreFoundation's own constants; the formatter never leaves this thread.
         static TIME_FORMATTER: CFDateFormatterRef = unsafe {
             CFDateFormatterCreate(
                 kCFAllocatorDefault,
@@ -552,6 +558,8 @@ mod macos {
                 kCFDateFormatterShortStyle,
             )
         };
+        // SAFETY: `CURRENT_LOCALE` is a valid, retained locale and both styles are
+        // CoreFoundation's own constants; the formatter never leaves this thread.
         static DATE_FORMATTER: CFDateFormatterRef = unsafe {
             CFDateFormatterCreate(
                 kCFAllocatorDefault,
@@ -561,6 +569,8 @@ mod macos {
             )
         };
 
+        // SAFETY: `CURRENT_LOCALE` is a valid, retained locale and both styles are
+        // CoreFoundation's own constants; the formatter never leaves this thread.
         static MEDIUM_DATE_FORMATTER: CFDateFormatterRef = unsafe {
             CFDateFormatterCreate(
                 kCFAllocatorDefault,

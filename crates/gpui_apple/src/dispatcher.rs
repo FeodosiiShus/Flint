@@ -25,6 +25,12 @@ impl AppleDispatcher {
     }
 }
 
+impl Default for AppleDispatcher {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl PlatformDispatcher for AppleDispatcher {
     fn is_main_thread(&self) -> bool {
         NSThread::isMainThread_class()
@@ -42,6 +48,8 @@ impl PlatformDispatcher for AppleDispatcher {
             Priority::Low => DispatchQueueGlobalPriority::Low,
         };
 
+        // SAFETY: `context` is the `Runnable` leaked by `into_raw` above, and
+        // `trampoline` reclaims it exactly once with `from_raw`.
         unsafe {
             DispatchQueue::global_queue(GlobalQueueIdentifier::Priority(queue_priority))
                 .exec_async_f(context, trampoline);
@@ -50,6 +58,8 @@ impl PlatformDispatcher for AppleDispatcher {
 
     fn dispatch_on_main_thread(&self, runnable: RunnableVariant, _priority: Priority) {
         let context = runnable.into_raw().as_ptr() as *mut c_void;
+        // SAFETY: `context` is the `Runnable` leaked by `into_raw` above, and
+        // `trampoline` reclaims it exactly once with `from_raw`.
         unsafe {
             DispatchQueue::main().exec_async_f(context, trampoline);
         }
@@ -61,6 +71,8 @@ impl PlatformDispatcher for AppleDispatcher {
             DispatchQueueGlobalPriority::High,
         ));
         let when = DispatchTime::NOW.time(duration.as_nanos() as i64);
+        // SAFETY: `context` is the `Runnable` leaked by `into_raw` above, and
+        // `trampoline` reclaims it exactly once with `from_raw`.
         unsafe {
             DispatchQueue::exec_after_f(when, &queue, context, trampoline);
         }
@@ -85,7 +97,8 @@ pub struct AppleActivity {
     activity: Retained<ProtocolObject<dyn NSObjectProtocol>>,
 }
 
-// The activity token returned by NSProcessInfo is thread-safe
+// SAFETY: The activity token returned by NSProcessInfo is thread-safe: it is only
+// released or passed back to `endActivity` on the `Send + Sync` `NSProcessInfo`.
 unsafe impl Send for AppleActivity {}
 
 impl AppleActivity {
@@ -100,6 +113,8 @@ impl AppleActivity {
 
 impl Drop for AppleActivity {
     fn drop(&mut self) {
+        // SAFETY: `activity` is the token `beginActivityWithOptions_reason` returned,
+        // which is the object `endActivity` expects.
         unsafe { NSProcessInfo::processInfo().endActivity(&self.activity) };
     }
 }
@@ -190,6 +205,8 @@ fn set_audio_thread_priority() -> anyhow::Result<()> {
 }
 
 extern "C" fn trampoline(context: *mut c_void) {
+    // SAFETY: GCD only calls this with the non-null `context` that a dispatch method
+    // got from `Runnable::<RunnableMeta>::into_raw`, once per dispatch.
     let runnable =
         unsafe { Runnable::<RunnableMeta>::from_raw(NonNull::new_unchecked(context as *mut ())) };
 

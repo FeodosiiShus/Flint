@@ -1166,6 +1166,8 @@ fn init_paths() -> HashMap<io::ErrorKind, Vec<&'static Path>> {
 
 pub(crate) static FORCE_CLI_MODE: LazyLock<bool> = LazyLock::new(|| {
     let env_var = std::env::var(FORCE_CLI_MODE_ENV_VAR_NAME).ok().is_some();
+    // SAFETY: `stdout_is_a_pty` first forces this early in `main`, before the process spawns
+    // any other thread that could read the environment.
     unsafe { std::env::remove_var(FORCE_CLI_MODE_ENV_VAR_NAME) };
     env_var
 });

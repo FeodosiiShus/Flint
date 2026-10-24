@@ -1,4 +1,8 @@
 #![cfg(target_os = "macos")]
+#![expect(
+    clippy::undocumented_unsafe_blocks,
+    reason = "hundreds of Objective-C message sends to AppKit objects this crate owns, not yet justified one by one"
+)]
 //! macOS platform implementation for GPUI.
 //!
 //! macOS screens have a y axis that goes up from the bottom of the screen and

@@ -278,6 +278,7 @@ pub fn increase_open_file_limit() -> Result<()> {
 
 #[cfg(unix)]
 fn load_shell_from_passwd() -> Result<()> {
+    // SAFETY: `sysconf` has no preconditions.
     let buflen = match unsafe { libc::sysconf(libc::_SC_GETPW_R_SIZE_MAX) } {
         n if n < 0 => 1024,
         n => n as usize,
@@ -287,7 +288,10 @@ fn load_shell_from_passwd() -> Result<()> {
     let mut pwd: std::mem::MaybeUninit<libc::passwd> = std::mem::MaybeUninit::uninit();
     let mut result: *mut libc::passwd = std::ptr::null_mut();
 
+    // SAFETY: `getuid` has no preconditions and always succeeds.
     let uid = unsafe { libc::getuid() };
+    // SAFETY: `pwd` and `result` are valid for writes, and `buffer` has `buflen` bytes
+    // of capacity for the strings `getpwuid_r` stores.
     let status = unsafe {
         libc::getpwuid_r(
             uid,
@@ -315,6 +319,8 @@ fn load_shell_from_passwd() -> Result<()> {
         uid,
     );
 
+    // SAFETY: `getpwuid_r` succeeded, so `pw_shell` points to a NUL-terminated string
+    // it stored in `buffer`, which outlives `shell`.
     let shell = unsafe { std::ffi::CStr::from_ptr(entry.pw_shell).to_str().unwrap() };
     let should_set_shell = std::env::var("SHELL").map_or(true, |shell_env| {
         shell_env != shell && !std::path::Path::new(&shell_env).exists()
@@ -325,7 +331,13 @@ fn load_shell_from_passwd() -> Result<()> {
             "updating SHELL environment variable to value from passwd entry: {:?}",
             shell,
         );
-        unsafe { std::env::set_var("SHELL", shell) };
+        #[expect(
+            clippy::undocumented_unsafe_blocks,
+            reason = "not established: this runs on a background thread while other threads may read the environment, which `set_var` requires never to happen"
+        )]
+        unsafe {
+            std::env::set_var("SHELL", shell)
+        };
     }
 
     Ok(())
@@ -418,7 +430,13 @@ pub async fn load_login_shell_environment() -> Result<()> {
         if name == "SHLVL" {
             continue;
         }
-        unsafe { std::env::set_var(&name, &value) };
+        #[expect(
+            clippy::undocumented_unsafe_blocks,
+            reason = "not established: this runs on a background thread while other threads may read the environment, which `set_var` requires never to happen"
+        )]
+        unsafe {
+            std::env::set_var(&name, &value)
+        };
     }
 
     log::info!(

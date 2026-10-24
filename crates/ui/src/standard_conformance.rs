@@ -40,7 +40,7 @@ fn chrome_quad(quads: &[Quad], bounds: &Bounds<ScaledPixels>) -> Option<Quad> {
         .iter()
         .find(|quad| quad.border_widths.top.0 > 0.)
         .or_else(|| at_bounds.first())
-        .map(|quad| (*quad).clone())
+        .map(|quad| **quad)
 }
 
 /// Returns every way the last frame breaks the UI standard, or nothing.

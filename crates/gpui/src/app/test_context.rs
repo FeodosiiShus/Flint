@@ -1091,6 +1091,10 @@ impl VisualTestContext {
         // todo: This is unsound under stacked borrows (also tree borrows probably?)
         // the mutable reference invalidates `ptr` which is later used in the closure
         let cx = unsafe { &mut *ptr };
+        #[expect(
+            clippy::undocumented_unsafe_blocks,
+            reason = "unsound: safe code can call `quit` while the returned reference is live, freeing it"
+        )]
         cx.on_quit(move || unsafe {
             drop(Box::from_raw(ptr));
         });

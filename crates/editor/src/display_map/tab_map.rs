@@ -319,6 +319,7 @@ impl TabSnapshot {
             max_output_position: range.end.0,
             tab_size: self.tab_size,
             chunk: Chunk {
+                // SAFETY: `SPACES` holds only ASCII bytes, so any prefix of it is valid UTF-8.
                 text: unsafe { std::str::from_utf8_unchecked(&SPACES[..to_next_stop as usize]) },
                 is_tab: true,
                 chars: u128::MAX.unbounded_shr(u128::BITS - to_next_stop),
@@ -641,6 +642,7 @@ impl TabChunks<'_> {
         self.output_position = range.start.0;
         self.max_output_position = range.end.0;
         self.chunk = Chunk {
+            // SAFETY: `SPACES` holds only ASCII bytes, so any prefix of it is valid UTF-8.
             text: unsafe { std::str::from_utf8_unchecked(&SPACES[..to_next_stop as usize]) },
             is_tab: true,
             chars: u128::MAX.unbounded_shr(u128::BITS - to_next_stop),
@@ -690,6 +692,7 @@ impl<'a> Iterator for TabChunks<'a> {
             self.output_position = next_output_position;
 
             return Some(Chunk {
+                // SAFETY: `SPACES` holds only ASCII bytes, so any prefix of it is valid UTF-8.
                 text: unsafe { std::str::from_utf8_unchecked(&SPACES[..len as usize]) },
                 is_tab: true,
                 chars: u128::MAX.unbounded_shr(u128::BITS - len),

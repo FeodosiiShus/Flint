@@ -133,12 +133,12 @@ impl CodeLabel {
             text.get(filter_range.clone()).is_some(),
             "invalid filter range"
         );
-        runs.iter().for_each(|(range, _)| {
+        for (range, _) in &runs {
             assert!(
                 text.get(range.clone()).is_some(),
                 "invalid run range with inputs. Requested range {range:?} in text '{text}'",
             );
-        });
+        }
         Self {
             runs,
             filter_range,

@@ -10,6 +10,12 @@ impl DeltaIllustration {
     }
 }
 
+impl Default for DeltaIllustration {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl RenderOnce for DeltaIllustration {
     fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
         let (background_color, bottom_opacity, top_opacity) = if cx.theme().appearance.is_light() {

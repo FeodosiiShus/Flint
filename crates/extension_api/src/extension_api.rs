@@ -335,11 +335,21 @@ macro_rules! register_extension {
 
 #[doc(hidden)]
 pub fn register_extension(build_extension: fn() -> Box<dyn Extension>) {
-    unsafe { EXTENSION = Some((build_extension)()) }
+    #[expect(
+        clippy::undocumented_unsafe_blocks,
+        reason = "only sound when called once, before any export runs; nothing enforces that yet"
+    )]
+    unsafe {
+        EXTENSION = Some((build_extension)())
+    }
 }
 
 fn extension() -> &'static mut dyn Extension {
     #[expect(static_mut_refs)]
+    #[expect(
+        clippy::undocumented_unsafe_blocks,
+        reason = "only sound while `register_extension` is never called again; nothing enforces that yet"
+    )]
     unsafe {
         EXTENSION.as_deref_mut().unwrap()
     }

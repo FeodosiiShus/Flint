@@ -1815,7 +1815,7 @@ impl BufferSearchBar {
         EditorSettings::get_global(cx).use_smartcase_search
     }
 
-    pub fn is_contains_uppercase(&mut self, str: &String) -> bool {
+    pub fn is_contains_uppercase(&mut self, str: &str) -> bool {
         str.chars().any(|c| c.is_uppercase())
     }
 

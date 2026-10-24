@@ -146,7 +146,7 @@ impl EditorElement {
         right_margin: Pixels,
         snapshot: &EditorSnapshot,
         hitbox: &Hitbox,
-        selected_buffer_ids: &Vec<BufferId>,
+        selected_buffer_ids: &[BufferId],
         blocks: &[BlockLayout],
         latest_selection_anchors: &HashMap<BufferId, Anchor>,
         window: &mut Window,

@@ -26,6 +26,12 @@ pub struct Banner {
     wrap_content: bool,
 }
 
+impl Default for Banner {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Banner {
     /// Creates a new `Banner` component with default styling.
     pub fn new() -> Self {

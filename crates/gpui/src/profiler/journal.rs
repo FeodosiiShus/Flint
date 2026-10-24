@@ -1085,7 +1085,7 @@ struct JournalSlot {
     entry: UnsafeCell<MaybeUninit<ForegroundJournalEntry>>,
 }
 
-// `users` ensures the entry is only read while no writer owns the slot and is
+// SAFETY: `users` ensures the entry is only read while no writer owns the slot and is
 // only written while no readers own it.
 unsafe impl Sync for JournalSlot {}
 

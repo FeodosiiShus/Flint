@@ -496,6 +496,8 @@ impl FileHandle for std::fs::File {
         let fd = self.as_fd();
         let mut path_buf = MaybeUninit::<[u8; libc::PATH_MAX as usize]>::uninit();
 
+        // SAFETY: `fd` is borrowed from `self`, so it stays open for the call, and
+        // `path_buf` holds `PATH_MAX` (= `MAXPATHLEN`) bytes, the size `F_GETPATH` requires.
         let result = unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_GETPATH, path_buf.as_mut_ptr()) };
         anyhow::ensure!(result != -1, "fcntl returned -1");
 
@@ -648,6 +650,8 @@ fn rename_without_replace(source: &Path, target: &Path) -> io::Result<()> {
     let target = path_to_c_string(target)?;
 
     #[cfg(target_os = "macos")]
+    // SAFETY: `source` and `target` are `CString`s, so both pointers are valid and
+    // NUL-terminated for the duration of the call.
     let result = unsafe { libc::renamex_np(source.as_ptr(), target.as_ptr(), libc::RENAME_EXCL) };
 
     #[cfg(target_os = "linux")]

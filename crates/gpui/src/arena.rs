@@ -15,6 +15,8 @@ struct ArenaElement {
 impl Drop for ArenaElement {
     #[inline(always)]
     fn drop(&mut self) {
+        // SAFETY: `Arena::alloc` paired `value` with `drop::<T>` for the `T` it wrote
+        // there, and each element is dropped once, before its chunk is reset or freed.
         unsafe { (self.drop)(self.value) };
     }
 }
@@ -27,6 +29,8 @@ struct Chunk {
 
 impl Drop for Chunk {
     fn drop(&mut self) {
+        // SAFETY: `start..end` is the single allocation `Chunk::new` made with a
+        // `chunk_size`-byte, align-1 layout, which is rebuilt here to free it.
         unsafe {
             let chunk_size = self.end.offset_from_unsigned(self.start);
             // SAFETY: This succeeded during allocation.
@@ -40,10 +44,13 @@ impl Chunk {
     fn new(chunk_size: NonZeroUsize) -> Self {
         // this only fails if chunk_size is unreasonably huge
         let layout = alloc::Layout::from_size_align(chunk_size.get(), 1).unwrap();
+        // SAFETY: `layout` has a non-zero size because `chunk_size` is a `NonZeroUsize`.
         let start = unsafe { alloc::alloc(layout) };
         if start.is_null() {
             handle_alloc_error(layout);
         }
+        // SAFETY: `start` points to an allocation of exactly `chunk_size` bytes, so this
+        // is its one-past-the-end pointer.
         let end = unsafe { start.add(chunk_size.get()) };
         Self {
             start,
@@ -164,10 +171,14 @@ impl Arena {
         where
             F: FnOnce() -> T,
         {
+            // SAFETY: the caller passes memory that is aligned for `T`, valid for writes
+            // of its size, and holds no live value.
             unsafe { ptr::write(ptr, f()) };
         }
 
         unsafe fn drop<T>(ptr: *mut u8) {
+            // SAFETY: the caller passes a pointer to a live `T` that `alloc` wrote and
+            // that hasn't been dropped yet.
             unsafe { std::ptr::drop_in_place(ptr.cast::<T>()) };
         }
 
@@ -179,6 +190,8 @@ impl Arena {
             self.allocate_next_chunk(layout)
         };
 
+        // SAFETY: `ptr` was just carved out of a live chunk for `Layout::new::<T>()`,
+        // so it is aligned for `T`, in bounds, and not shared with another allocation.
         unsafe { inner_writer(ptr.cast(), f) };
         self.elements.push(ArenaElement {
             value: ptr,
@@ -244,6 +257,8 @@ impl<T: ?Sized> Deref for ArenaBox<T> {
     #[inline(always)]
     fn deref(&self) -> &Self::Target {
         self.validate();
+        // SAFETY: `validate` confirmed the arena hasn't been cleared since this box was
+        // allocated, so `ptr` still points into the live value `Arena::alloc` wrote.
         unsafe { &*self.ptr }
     }
 }
@@ -252,6 +267,8 @@ impl<T: ?Sized> DerefMut for ArenaBox<T> {
     #[inline(always)]
     fn deref_mut(&mut self) -> &mut Self::Target {
         self.validate();
+        // SAFETY: `validate` confirmed the value is still live, and `ArenaBox` isn't
+        // `Clone`, so this `&mut self` is the only way to reach it.
         unsafe { &mut *self.ptr }
     }
 }

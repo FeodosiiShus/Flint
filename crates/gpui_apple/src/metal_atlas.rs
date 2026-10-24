@@ -273,6 +273,8 @@ fn point_from_etagere(value: etagere::Point) -> Point<DevicePixels> {
 #[derive(Deref, DerefMut)]
 struct AssertSend<T>(T);
 
+// SAFETY: this module only wraps `metal::Device` and `metal::Texture`, which Metal
+// allows using from any thread (metal-rs already marks both `Send`).
 unsafe impl<T> Send for AssertSend<T> {}
 
 #[cfg(test)]

@@ -1487,6 +1487,7 @@ pub trait PlatformTextSystem: Send + Sync {
 }
 
 #[expect(missing_docs)]
+#[derive(Default)]
 pub struct NoopTextSystem;
 
 #[expect(missing_docs)]

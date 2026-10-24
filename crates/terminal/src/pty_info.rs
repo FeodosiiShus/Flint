@@ -34,6 +34,8 @@ impl ProcessIdGetter {
         // Negative pid means error.
         // Zero pid means no foreground process group is set on the PTY yet.
         // Avoid killing the current process by returning a zero pid.
+        // SAFETY: `tcgetpgrp` takes only an integer descriptor and no pointers; a closed or
+        // invalid `handle` makes it return -1, which is handled below.
         let pid = unsafe { libc::tcgetpgrp(self.handle) };
         if pid > 0 {
             return Some(Pid::from_u32(pid as u32));
@@ -153,6 +155,8 @@ impl PtyProcessInfo {
     #[cfg(unix)]
     pub(crate) fn terminate_child_process(&self) -> bool {
         let pid = self.pid_getter.fallback_pid();
+        // SAFETY: `killpg` takes no pointers, and `pid` is the PTY's shell, which alacritty
+        // spawns as a session leader, so it names the shell's own process group.
         unsafe { libc::killpg(pid.as_u32() as i32, libc::SIGTERM) == 0 }
     }
 

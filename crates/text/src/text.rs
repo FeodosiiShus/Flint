@@ -92,6 +92,10 @@ impl BufferId {
 
     /// Increments this buffer id, returning the old value.
     /// So that's a post-increment operator in disguise.
+    #[expect(
+        clippy::should_implement_trait,
+        reason = "a post-increment of an id that never runs out, not an iterator"
+    )]
     pub fn next(&mut self) -> Self {
         let old = *self;
         self.0 = self.0.saturating_add(1);

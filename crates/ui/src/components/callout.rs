@@ -38,6 +38,12 @@ pub struct Callout {
     scrollable_description: bool,
 }
 
+impl Default for Callout {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Callout {
     /// Creates a new `Callout` component with default styling.
     pub fn new() -> Self {

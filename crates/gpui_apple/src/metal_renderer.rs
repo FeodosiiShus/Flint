@@ -41,7 +41,7 @@ const MAX_INSTANCE_BUFFER_SIZE: usize = 256 * 1024 * 1024;
 pub type Context = Arc<Mutex<InstanceBufferPool>>;
 pub type Renderer = MetalRenderer;
 
-pub unsafe fn new_renderer(
+pub fn new_renderer(
     context: self::Context,
     _native_window: *mut c_void,
     _native_view: *mut c_void,
@@ -207,8 +207,8 @@ impl MetalRenderer {
         transparent: bool,
     ) -> Self {
         let device = Self::create_device();
-        // Both types bind the same Objective-C class, so this only changes which
-        // Rust wrapper views the live layer. `to_owned` retains it.
+        // SAFETY: Both types bind the same Objective-C class, so this only changes
+        // which Rust wrapper views the live layer. `to_owned` retains it.
         let layer = unsafe {
             metal::MetalLayerRef::from_ptr(ptr::from_ref(layer).cast_mut().cast::<CAMetalLayer>())
         }
@@ -228,6 +228,8 @@ impl MetalRenderer {
         layer.set_framebuffer_only(false);
         // metal-rs doesn't bind these setters, so view the same object through
         // objc2's typed CAMetalLayer binding.
+        // SAFETY: `layer` is a live CAMetalLayer, both crates bind that same class, and
+        // the reference doesn't outlive the `layer` borrow.
         let objc2_layer: &objc2_quartz_core::CAMetalLayer = unsafe { &*layer.as_ptr().cast() };
         objc2_layer.setAllowsNextDrawableTimeout(false);
         objc2_layer.setNeedsDisplayOnBoundsChange(true);
@@ -1613,10 +1615,14 @@ impl MetalRenderer {
                 &texture_size as *const Size<DevicePixels> as *const _,
             );
             // let y_texture = y_texture.get_texture().unwrap().
+            // SAFETY: `y_texture` is a live CVMetalTexture created above, so its Metal
+            // texture is valid for the duration of this call.
             command_encoder.set_fragment_texture(SurfaceInputIndex::YTexture as u64, unsafe {
                 let texture = CVMetalTextureGetTexture(y_texture.as_concrete_TypeRef());
                 Some(metal::TextureRef::from_ptr(texture as *mut _))
             });
+            // SAFETY: `cb_cr_texture` is a live CVMetalTexture created above, so its Metal
+            // texture is valid for the duration of this call.
             command_encoder.set_fragment_texture(SurfaceInputIndex::CbCrTexture as u64, unsafe {
                 let texture = CVMetalTextureGetTexture(cb_cr_texture.as_concrete_TypeRef());
                 Some(metal::TextureRef::from_ptr(texture as *mut _))
@@ -1908,6 +1914,8 @@ impl InstanceBufferWriter {
 
     fn write<T>(&mut self, values: &[T]) -> Result<InstanceBinding> {
         let (binding, destination) = self.allocate::<T>(values.len())?;
+        // SAFETY: `destination` has exactly `values.len()` aligned slots in the Metal
+        // buffer, which can't overlap the CPU-side `values`.
         unsafe {
             ptr::copy_nonoverlapping(
                 values.as_ptr(),
@@ -2059,6 +2067,13 @@ impl MetalHeadlessRenderer {
         let instance_buffer_pool = Arc::new(Mutex::new(InstanceBufferPool::default()));
         let renderer = MetalRenderer::new_headless(instance_buffer_pool);
         Self { renderer }
+    }
+}
+
+#[cfg(any(test, feature = "bench-support", feature = "test-support"))]
+impl Default for MetalHeadlessRenderer {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

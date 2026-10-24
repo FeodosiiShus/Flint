@@ -5689,6 +5689,9 @@ impl Deref for BufferSnapshot {
     }
 }
 
+// SAFETY: the only non-`Send` parts are the raw `TSQueryCursor` pointers inside the
+// tree-sitter query iterators. Each cursor is exclusively owned by the `QueryCursorHandle`
+// stored next to it, and tree-sitter's `QueryCursor` is itself `Send`.
 unsafe impl Send for BufferChunks<'_> {}
 
 impl<'a> BufferChunks<'a> {

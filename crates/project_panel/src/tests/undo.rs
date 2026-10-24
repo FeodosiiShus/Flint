@@ -194,13 +194,13 @@ impl TestContext {
     fn drag(&mut self, files: &[&str], directory: &str) {
         self.panel
             .update(&mut self.cx, |panel, _| panel.marked_entries.clear());
-        files.into_iter().for_each(|file| {
+        for file in files {
             project_panel_tests::select_path_with_mark(
                 &self.panel,
                 &format!("workspace/{file}"),
                 &mut self.cx,
-            )
-        });
+            );
+        }
         project_panel_tests::drag_selection_to(
             &self.panel,
             &format!("workspace/{directory}"),
@@ -233,13 +233,13 @@ impl TestContext {
     }
 
     async fn trash(&mut self, paths: &[&str]) {
-        paths.iter().for_each(|p| {
+        for path in paths {
             project_panel_tests::select_path_with_mark(
                 &self.panel,
-                &format!("workspace/{p}"),
+                &format!("workspace/{path}"),
                 &mut self.cx,
-            )
-        });
+            );
+        }
 
         self.panel.update_in(&mut self.cx, |panel, window, cx| {
             panel.trash(&Trash { skip_prompt: true }, window, cx);

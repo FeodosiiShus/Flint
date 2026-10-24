@@ -762,6 +762,12 @@ impl ChangeList {
     }
 }
 
+impl Default for ChangeList {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 enum SelectionDragState {
     /// State when no drag related activity is detected.
     None,
@@ -4678,7 +4684,7 @@ impl Editor {
 
     fn show_snippet_choices(
         &mut self,
-        choices: &Vec<String>,
+        choices: &[String],
         selection: Range<Anchor>,
         cx: &mut Context<Self>,
     ) {

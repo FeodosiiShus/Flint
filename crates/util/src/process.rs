@@ -114,6 +114,8 @@ impl Child {
     #[cfg(not(windows))]
     pub fn kill(&mut self) -> Result<()> {
         let pid = self.process.id();
+        // SAFETY: `killpg` takes no pointers. The child called `setsid` before exec,
+        // so its pid is also its process group id.
         unsafe {
             libc::killpg(pid as i32, libc::SIGKILL);
         }

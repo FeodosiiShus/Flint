@@ -664,6 +664,9 @@ impl<T: 'static> Future for FallibleTask<T> {
     type Output = Option<T>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context) -> Poll<Self::Output> {
+        // SAFETY: `FallibleTask` never pins its contents: the inner handles are `Unpin`
+        // and re-pinned with `Pin::new`, and the `T` in `Ready` is a finished output
+        // that is only moved out, never polled.
         let this = unsafe { self.get_unchecked_mut() };
         loop {
             match &mut this.0 {
@@ -712,6 +715,9 @@ impl<T: 'static> Future for Task<T> {
     type Output = T;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context) -> Poll<Self::Output> {
+        // SAFETY: `Task` never pins its contents: the inner handles are `Unpin` and
+        // re-pinned with `Pin::new`, and the `T` in `Ready` is a finished output that
+        // is only moved out, never polled.
         let this = unsafe { self.get_unchecked_mut() };
         loop {
             match &mut this.0 {

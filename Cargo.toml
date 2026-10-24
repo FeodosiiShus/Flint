@@ -727,6 +727,20 @@ declare_interior_mutable_const = "deny"
 redundant_clone = "deny"
 disallowed_methods = "deny"
 
+# The parts of Google's Rust style guide (https://google.github.io/styleguide/rustguide.html)
+# that clippy can check: take `&[T]`, `&str` and `&T` rather than `&Vec<T>`, `&String` and
+# `&Box<T>`, pair `len` with `is_empty`, give argument-less constructors a `Default`, implement
+# std traits instead of look-alike methods, prefer `for` loops to `for_each`, and justify unsafe
+# code with a `SAFETY:` comment.
+borrowed_box = "warn"
+ptr_arg = "warn"
+len_without_is_empty = "warn"
+new_without_default = "warn"
+should_implement_trait = "warn"
+missing_safety_doc = "warn"
+needless_for_each = "warn"
+undocumented_unsafe_blocks = "warn"
+
 # We currently do not restrict any style rules
 # as it slows down shipping code to Zed.
 #

@@ -40,12 +40,12 @@ fn init(cx: &mut TestAppContext) {
     });
 }
 
-fn open_probe<'a>(
-    cx: &'a mut TestAppContext,
+fn open_probe(
+    cx: &mut TestAppContext,
     rem_size: f32,
     scale: f32,
     build: impl Fn(&mut Window, &mut App) -> AnyElement + 'static,
-) -> &'a mut VisualTestContext {
+) -> &mut VisualTestContext {
     let (_, cx) = cx.add_window_view(move |_, _| Probe {
         rem_size: px(rem_size),
         build: Box::new(build),

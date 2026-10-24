@@ -112,8 +112,14 @@ macro_rules! impl_newtype_numeric_stepper_int {
     };
 }
 
-#[rustfmt::skip]
-impl_newtype_numeric_stepper_float!(FontWeight, 50., 100., 10., FontWeight::THIN, FontWeight::BLACK);
+impl_newtype_numeric_stepper_float!(
+    FontWeight,
+    50.,
+    100.,
+    10.,
+    FontWeight::THIN,
+    FontWeight::BLACK
+);
 impl_newtype_numeric_stepper_float!(
     FontWeightContent,
     50.,

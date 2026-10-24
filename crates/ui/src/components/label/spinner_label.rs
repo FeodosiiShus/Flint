@@ -97,6 +97,12 @@ impl SpinnerLabel {
     }
 }
 
+impl Default for SpinnerLabel {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl LabelCommon for SpinnerLabel {
     fn size(mut self, size: LabelSize) -> Self {
         self.base = self.base.size(size);

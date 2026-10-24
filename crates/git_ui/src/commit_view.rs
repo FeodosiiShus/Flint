@@ -1412,6 +1412,12 @@ impl CommitViewToolbar {
     }
 }
 
+impl Default for CommitViewToolbar {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl EventEmitter<ToolbarItemEvent> for CommitViewToolbar {}
 
 impl Render for CommitViewToolbar {

@@ -220,6 +220,12 @@ impl GitJobDebugQueue {
     }
 }
 
+impl Default for GitJobDebugQueue {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 fn format_duration(duration: std::time::Duration) -> String {
     let secs = duration.as_secs_f64();
     if secs < 0.001 {

@@ -2740,9 +2740,9 @@ impl KeybindingEditorModal {
         let fs = self.fs.clone();
 
         let mut new_keystrokes = self.validate_keystrokes(cx).map_err(InputError::error)?;
-        new_keystrokes
-            .iter_mut()
-            .for_each(|ks| ks.remove_key_char());
+        for keystroke in &mut new_keystrokes {
+            keystroke.remove_key_char();
+        }
 
         let new_context = self.validate_context(cx).map_err(InputError::error)?;
         let new_action_args = self

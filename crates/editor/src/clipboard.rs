@@ -59,7 +59,7 @@ impl ClipboardSelection {
 impl Editor {
     pub fn do_paste(
         &mut self,
-        text: &String,
+        text: &str,
         clipboard_selections: Option<Vec<ClipboardSelection>>,
         handle_entire_lines: bool,
         window: &mut Window,
@@ -71,7 +71,7 @@ impl Editor {
 
         self.finalize_last_transaction(cx);
 
-        let clipboard_text = Cow::Borrowed(text.as_str());
+        let clipboard_text = Cow::Borrowed(text);
 
         self.transact(window, cx, |this, window, cx| {
             let display_map = this.display_snapshot(cx);

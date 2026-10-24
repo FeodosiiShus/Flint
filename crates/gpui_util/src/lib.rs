@@ -315,7 +315,10 @@ fn log_error_with_caller(
         if module.starts_with(krate) {
             module.trim_end_matches(".rs").replace('/', "::")
         } else {
-            krate.to_owned() + "::" + &module.trim_end_matches(".rs").replace('/', "::")
+            format!(
+                "{krate}::{}",
+                module.trim_end_matches(".rs").replace('/', "::")
+            )
         }
     });
     let file = file.map(|(_, file)| format!("crates/{file}"));
@@ -458,6 +461,8 @@ where
     fn poll(self: Pin<&mut Self>, cx: &mut Context) -> Poll<Self::Output> {
         let level = self.1;
         let location = self.2;
+        // SAFETY: the wrapped future is structurally pinned: the field is private, the
+        // type has no `Drop` impl, and nothing moves it out of a pinned `self`.
         let inner = unsafe { Pin::new_unchecked(&mut self.get_unchecked_mut().0) };
         match inner.poll(cx) {
             Poll::Ready(output) => Poll::Ready(match output {
@@ -485,6 +490,8 @@ where
     fn poll(self: Pin<&mut Self>, cx: &mut Context) -> Poll<Self::Output> {
         let level = self.1;
         let location = self.2;
+        // SAFETY: the wrapped future is structurally pinned: the field is private, the
+        // type has no `Drop` impl, and nothing moves it out of a pinned `self`.
         let inner = unsafe { Pin::new_unchecked(&mut self.get_unchecked_mut().0) };
         match inner.poll(cx) {
             Poll::Ready(output) => Poll::Ready(match output {
@@ -513,6 +520,8 @@ where
     type Output = T;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context) -> Poll<Self::Output> {
+        // SAFETY: the wrapped future is structurally pinned: the field is private, the
+        // type has no `Drop` impl, and nothing moves it out of a pinned `self`.
         let inner = unsafe { Pin::new_unchecked(&mut self.get_unchecked_mut().0) };
         match inner.poll(cx) {
             Poll::Ready(result) => Poll::Ready(result.unwrap()),

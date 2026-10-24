@@ -60,6 +60,10 @@ impl Migrator for AppMigrator {
 impl AppDatabase {
     /// Opens the production database and runs all inventory-registered
     /// migrations in dependency order.
+    #[expect(
+        clippy::new_without_default,
+        reason = "opening the database has side effects that a `Default` impl would hide"
+    )]
     pub fn new() -> Self {
         let db_dir = database_dir();
         let connection = gpui::block_on(open_db::<AppMigrator>(db_dir, *RELEASE_CHANNEL));

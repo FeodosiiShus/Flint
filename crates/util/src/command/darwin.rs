@@ -392,6 +392,10 @@ fn spawn_posix_spawn(
     let mut attr: libc::posix_spawnattr_t = ptr::null_mut();
     let mut file_actions: libc::posix_spawn_file_actions_t = ptr::null_mut();
 
+    // SAFETY: `attr` and `file_actions` are initialized before use; every other
+    // pointer is a `CString`, a null-terminated array of them, or `environ`, all
+    // valid for the duration of the calls. `pid` comes from a successful
+    // `posix_spawnp`, so it is an unwaited child that only the adopted `Child` reaps.
     unsafe {
         cvt_nz(libc::posix_spawnattr_init(&mut attr))?;
         cvt_nz(libc::posix_spawn_file_actions_init(&mut file_actions))?;
@@ -507,6 +511,8 @@ fn spawn_posix_spawn(
 
 fn create_pipe() -> io::Result<(std::fs::File, std::fs::File)> {
     let mut fds: [libc::c_int; 2] = [0; 2];
+    // SAFETY: `fds` has room for the two descriptors `pipe` writes, and on success
+    // both are fresh descriptors that each `File` takes sole ownership of.
     unsafe {
         let result = libc::pipe(fds.as_mut_ptr());
         if result == -1 {
@@ -540,6 +546,7 @@ fn create_pipe() -> io::Result<(std::fs::File, std::fs::File)> {
 
 fn open_dev_null(flags: libc::c_int) -> io::Result<std::fs::File> {
     // Set close-on-exec for this pipe, for the same reason as in `create_pipe`.
+    // SAFETY: the path is a NUL-terminated C string literal.
     let fd = unsafe {
         libc::open(
             c"/dev/null".as_ptr() as *const libc::c_char,
@@ -549,6 +556,7 @@ fn open_dev_null(flags: libc::c_int) -> io::Result<std::fs::File> {
     if fd == -1 {
         return Err(io::Error::last_os_error());
     }
+    // SAFETY: `open` succeeded, so `fd` is a fresh descriptor that nothing else owns.
     Ok(unsafe { std::fs::File::from_raw_fd(fd) })
 }
 
@@ -619,6 +627,7 @@ mod tests {
     fn wait_until_gone(pid: u32) {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
         loop {
+            // SAFETY: `kill` takes no pointers, and signal 0 only checks that `pid` exists.
             let result = unsafe { libc::kill(pid as libc::pid_t, 0) };
             if result == -1 && io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH) {
                 return;
@@ -1091,8 +1100,11 @@ mod tests {
     #[test]
     fn test_stdio_fds_closed_on_error() {
         fn count_open_fds() -> usize {
+            // SAFETY: `getdtablesize` has no preconditions.
             let limit = unsafe { libc::getdtablesize() };
             (0..limit)
+                // SAFETY: `F_GETFD` only reads descriptor flags and fails with `EBADF`
+                // for descriptors that aren't open.
                 .filter(|&fd| unsafe { libc::fcntl(fd, libc::F_GETFD) } != -1)
                 .count()
         }

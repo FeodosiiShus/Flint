@@ -231,6 +231,12 @@ impl LinkedEdits {
     }
 }
 
+impl Default for LinkedEdits {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use crate::{editor_tests::init_test, test::editor_test_context::EditorTestContext};

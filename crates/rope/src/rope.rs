@@ -1191,6 +1191,10 @@ pub struct Lines<'a> {
 }
 
 impl<'a> Lines<'a> {
+    #[expect(
+        clippy::should_implement_trait,
+        reason = "each line borrows the iterator's buffer, which `Iterator::next` cannot return"
+    )]
     pub fn next(&mut self) -> Option<&str> {
         if self.done {
             return None;

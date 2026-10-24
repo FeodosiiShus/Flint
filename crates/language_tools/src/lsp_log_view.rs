@@ -1464,6 +1464,12 @@ impl LspLogToolbarItemView {
     }
 }
 
+impl Default for LspLogToolbarItemView {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 struct ServerInfo {
     id: LanguageServerId,
     capabilities: lsp::ServerCapabilities,

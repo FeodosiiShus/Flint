@@ -8374,7 +8374,7 @@ pub fn sort_worktree_entries(
 }
 
 pub fn par_sort_worktree_entries(
-    entries: &mut Vec<GitEntry>,
+    entries: &mut [GitEntry],
     mode: settings::ProjectPanelSortMode,
     order: settings::ProjectPanelSortOrder,
 ) {
