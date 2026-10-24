@@ -255,3 +255,58 @@ fn every_dialog_has_the_standard_header() {
         offenders.join("\n")
     );
 }
+
+/// Hand-built buttons that are themselves reusable components with IntelliJ metrics of their own;
+/// every other button is built from `crates/ui`, so buttons look and behave the same everywhere.
+const BUTTON_COMPONENT_ALLOWLIST: &[(&str, &str)] = &[
+    (
+        "crates/workspace/src/tool_window_bar.rs",
+        "the tool window stripe buttons",
+    ),
+    (
+        "crates/title_bar/src/toolbar_widgets.rs",
+        "the main toolbar widgets and search field",
+    ),
+    (
+        "crates/settings_ui/src/components/number_field.rs",
+        "the number field's stepper arrows",
+    ),
+    (
+        "crates/settings_ui/src/settings_ui.rs",
+        "the focus ring around a standard DialogButton",
+    ),
+    (
+        "crates/gpui/src/_accessibility.rs",
+        "GPUI's accessibility documentation",
+    ),
+    ("crates/gpui/examples/a11y.rs", "a GPUI example"),
+];
+
+#[test]
+fn every_button_is_built_from_the_standard_components() {
+    let mut offenders = Vec::new();
+    for source in workspace_sources() {
+        if source.relative.starts_with("crates/ui/") {
+            continue;
+        }
+        if BUTTON_COMPONENT_ALLOWLIST
+            .iter()
+            .any(|(path, _)| *path == source.relative)
+        {
+            continue;
+        }
+        for (offset, _) in source.text.match_indices("role(Role::Button)") {
+            offenders.push(format!(
+                "{}:{} makes its own button; use ui::Button, IconButton, DialogButton or \
+                 ButtonLike so it looks and behaves like every other button",
+                source.relative,
+                line_of(&source.text, offset)
+            ));
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "buttons outside the standard components:\n{}",
+        offenders.join("\n")
+    );
+}
