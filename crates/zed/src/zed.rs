@@ -7,6 +7,7 @@ pub(crate) mod move_to_applications;
 mod open_listener;
 mod open_url_modal;
 mod quick_action_bar;
+pub mod ui_script;
 #[cfg(test)]
 mod ui_standard_tests;
 

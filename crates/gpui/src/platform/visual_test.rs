@@ -222,6 +222,10 @@ impl Platform for VisualTestPlatform {
         self.platform.should_reduce_transparency()
     }
 
+    fn supports_native_glass(&self) -> bool {
+        self.platform.supports_native_glass()
+    }
+
     fn read_from_clipboard(&self) -> Option<ClipboardItem> {
         self.clipboard.lock().clone()
     }

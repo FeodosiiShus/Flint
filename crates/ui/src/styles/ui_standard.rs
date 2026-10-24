@@ -120,20 +120,24 @@ impl SurfaceKind {
     }
 }
 
-/// The Liquid Glass material of [`SurfaceMaterial::Glass`] surfaces, emulated by the renderer
-/// because GPUI draws the editor and the popups above it into one Metal layer. AppKit's
-/// `NSGlassEffectView` refracts the views beneath it, so above that layer it would blur the
-/// popup's own content, and below it the opaque editor would hide it.
+/// The Liquid Glass material of [`SurfaceMaterial::Glass`] surfaces. On macOS 26 it is AppKit's
+/// own `NSGlassEffectView`: the window draws everything below a surface into its layer, places
+/// the glass view, and draws the surface's content into a transparent layer above it. Elsewhere,
+/// and in headless tests, the renderer emulates it with a blur.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct GlassMaterial {
     pub blur_radius: Pixels,
-    /// How much of the theme's surface colour covers the blurred content.
+    /// How much of the theme's surface colour covers the emulated blur.
     pub surface_opacity: f32,
+    /// How much of the theme's surface colour tints native glass, enough to keep the theme's
+    /// text readable whatever the system's own light or dark appearance.
+    pub native_surface_opacity: f32,
 }
 
 pub const GLASS_MATERIAL: GlassMaterial = GlassMaterial {
     blur_radius: px(20.),
     surface_opacity: 0.82,
+    native_surface_opacity: 0.5,
 };
 
 /// The widest a content-sized popup (a menu, the branches popup) may grow before its rows elide.

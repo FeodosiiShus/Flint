@@ -170,25 +170,60 @@ impl Scene {
     }
 
     pub fn batches(&self) -> impl Iterator<Item = PrimitiveBatch> + '_ {
+        self.batches_in_orders(0..DrawOrder::MAX)
+    }
+
+    /// The batches of the primitives whose draw order lies in `orders`, so a frame can be drawn
+    /// into several layers, such as the ones below and above native glass.
+    pub fn batches_in_orders(
+        &self,
+        orders: Range<DrawOrder>,
+    ) -> impl Iterator<Item = PrimitiveBatch> + '_ {
+        fn in_orders<'a, P>(
+            primitives: &'a [P],
+            orders: &Range<DrawOrder>,
+            order: impl Fn(&P) -> DrawOrder,
+        ) -> (usize, Peekable<slice::Iter<'a, P>>) {
+            let start = primitives.partition_point(|primitive| order(primitive) < orders.start);
+            let end = primitives.partition_point(|primitive| order(primitive) < orders.end);
+            (start, primitives[start..end].iter().peekable())
+        }
+
+        let (backdrops_start, backdrops_iter) =
+            in_orders(&self.backdrops, &orders, |backdrop| backdrop.order);
+        let (shadows_start, shadows_iter) =
+            in_orders(&self.shadows, &orders, |shadow| shadow.order);
+        let (quads_start, quads_iter) = in_orders(&self.quads, &orders, |quad| quad.order);
+        let (paths_start, paths_iter) = in_orders(&self.paths, &orders, |path| path.order);
+        let (underlines_start, underlines_iter) =
+            in_orders(&self.underlines, &orders, |underline| underline.order);
+        let (monochrome_sprites_start, monochrome_sprites_iter) =
+            in_orders(&self.monochrome_sprites, &orders, |sprite| sprite.order);
+        let (subpixel_sprites_start, subpixel_sprites_iter) =
+            in_orders(&self.subpixel_sprites, &orders, |sprite| sprite.order);
+        let (polychrome_sprites_start, polychrome_sprites_iter) =
+            in_orders(&self.polychrome_sprites, &orders, |sprite| sprite.order);
+        let (surfaces_start, surfaces_iter) =
+            in_orders(&self.surfaces, &orders, |surface| surface.order);
         BatchIterator {
-            backdrops_start: 0,
-            backdrops_iter: self.backdrops.iter().peekable(),
-            shadows_start: 0,
-            shadows_iter: self.shadows.iter().peekable(),
-            quads_start: 0,
-            quads_iter: self.quads.iter().peekable(),
-            paths_start: 0,
-            paths_iter: self.paths.iter().peekable(),
-            underlines_start: 0,
-            underlines_iter: self.underlines.iter().peekable(),
-            monochrome_sprites_start: 0,
-            monochrome_sprites_iter: self.monochrome_sprites.iter().peekable(),
-            subpixel_sprites_start: 0,
-            subpixel_sprites_iter: self.subpixel_sprites.iter().peekable(),
-            polychrome_sprites_start: 0,
-            polychrome_sprites_iter: self.polychrome_sprites.iter().peekable(),
-            surfaces_start: 0,
-            surfaces_iter: self.surfaces.iter().peekable(),
+            backdrops_start,
+            backdrops_iter,
+            shadows_start,
+            shadows_iter,
+            quads_start,
+            quads_iter,
+            paths_start,
+            paths_iter,
+            underlines_start,
+            underlines_iter,
+            monochrome_sprites_start,
+            monochrome_sprites_iter,
+            subpixel_sprites_start,
+            subpixel_sprites_iter,
+            polychrome_sprites_start,
+            polychrome_sprites_iter,
+            surfaces_start,
+            surfaces_iter,
         }
     }
 }
@@ -974,5 +1009,48 @@ impl PathVertex<Pixels> {
             st_position: self.st_position,
             content_mask: self.content_mask.scale(factor),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn quad(order: DrawOrder) -> Quad {
+        Quad {
+            order,
+            ..Quad::default()
+        }
+    }
+
+    fn quad_ranges(scene: &Scene, orders: Range<DrawOrder>) -> Vec<Range<usize>> {
+        scene
+            .batches_in_orders(orders)
+            .filter_map(|batch| match batch {
+                PrimitiveBatch::Quads(range) => Some(range),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn batches_in_orders_split_a_frame_without_losing_or_renumbering_primitives() {
+        let mut scene = Scene::default();
+        scene.quads = vec![quad(1), quad(2), quad(5), quad(5), quad(9)];
+        scene.finish();
+
+        assert_eq!(quad_ranges(&scene, 0..DrawOrder::MAX), vec![0..5]);
+        assert_eq!(
+            quad_ranges(&scene, 0..5),
+            vec![0..2],
+            "below the first glass surface"
+        );
+        assert_eq!(
+            quad_ranges(&scene, 5..9),
+            vec![2..4],
+            "the ranges index the whole scene, so instance buffers are shared"
+        );
+        assert_eq!(quad_ranges(&scene, 9..DrawOrder::MAX), vec![4..5]);
+        assert!(quad_ranges(&scene, 3..5).is_empty());
     }
 }

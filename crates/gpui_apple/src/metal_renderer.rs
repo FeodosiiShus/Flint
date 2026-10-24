@@ -3,8 +3,8 @@ use anyhow::{Context as _, Result};
 use block2::RcBlock;
 use core_graphics::geometry::CGSize;
 use gpui::{
-    AtlasTextureId, Backdrop, Background, Bounds, ContentMask, DevicePixels, PaintSurface, Path,
-    Point, PrimitiveBatch, ScaledPixels, Scene, Size, point, size,
+    AtlasTextureId, Backdrop, Background, Bounds, ContentMask, DevicePixels, DrawOrder,
+    PaintSurface, Path, Point, PrimitiveBatch, ScaledPixels, Scene, Size, point, size,
 };
 #[cfg(any(test, feature = "bench-support", feature = "test-support"))]
 use image::RgbaImage;
@@ -109,6 +109,8 @@ impl InstanceBufferPool {
 pub struct MetalRenderer {
     device: metal::Device,
     layer: Option<metal::MetalLayer>,
+    /// Transparent layers for what a window draws above each level of native glass.
+    overlay_layers: Vec<metal::MetalLayer>,
     is_apple_gpu: bool,
     is_unified_memory: bool,
     presents_with_transaction: bool,
@@ -139,6 +141,21 @@ pub struct MetalRenderer {
     /// rendering headlessly without reading pixels back.
     #[cfg(any(test, feature = "bench-support", feature = "test-support"))]
     headless_render_target: Option<metal::Texture>,
+}
+
+/// A texture a frame draws the primitives of some draw orders into.
+struct RenderTarget<'a> {
+    texture: &'a metal::TextureRef,
+    orders: Range<DrawOrder>,
+    clear_alpha: f64,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum BackdropRendering {
+    /// The renderer blurs what lies behind each backdrop itself.
+    Emulated,
+    /// The window draws native glass between the layers, so backdrops draw nothing.
+    Native,
 }
 
 /// Half-resolution scratch textures the backdrop blur ping-pongs between.
@@ -413,6 +430,7 @@ impl MetalRenderer {
         Self {
             device,
             layer,
+            overlay_layers: Vec::new(),
             presents_with_transaction: false,
             is_apple_gpu,
             is_unified_memory,
@@ -563,10 +581,151 @@ impl MetalRenderer {
         }
     }
 
+    /// The transparent layers a window puts above its levels of native glass, created or dropped
+    /// so there are `count`. They share the renderer's atlas, so one scene draws into all of them.
+    pub fn overlay_layer_ptrs(&mut self, count: usize) -> Vec<*mut CAMetalLayer> {
+        while self.overlay_layers.len() < count {
+            let layer = self.new_overlay_layer();
+            self.overlay_layers.push(layer);
+        }
+        self.overlay_layers.truncate(count);
+        self.overlay_layers
+            .iter()
+            .map(|layer| layer.as_ptr())
+            .collect()
+    }
+
+    fn new_overlay_layer(&self) -> metal::MetalLayer {
+        let layer = metal::MetalLayer::new();
+        Self::configure_layer(&layer, &self.device, true);
+        if let Some(main_layer) = &self.layer {
+            layer.set_contents_scale(main_layer.contents_scale());
+            layer.set_drawable_size(main_layer.drawable_size());
+        }
+        layer
+    }
+
+    /// Draws a frame split around native glass: the window's own layer gets the primitives
+    /// ordered below `glass_orders[0]`, and overlay layer `i` those from `glass_orders[i]` up to
+    /// the next glass order, so the window can put each level of glass views between the layers.
+    /// Backdrops draw nothing, since the glass views blur what lies behind them.
+    ///
+    /// With `in_transaction`, the frame is presented in the current Core Animation transaction,
+    /// so glass views moved for this frame appear together with the content drawn over them.
+    pub fn draw_with_overlays(
+        &mut self,
+        scene: &Scene,
+        glass_orders: &[DrawOrder],
+        in_transaction: bool,
+    ) {
+        if self.overlay_layers.len() < glass_orders.len() {
+            log::error!("draw_with_overlays() called without an overlay layer per glass level");
+            return;
+        }
+        let overlays = self.overlay_layers[..glass_orders.len()].to_vec();
+        let Some(layer) = self.layer.clone() else {
+            log::error!("draw_with_overlays() called on headless renderer");
+            return;
+        };
+        let drawable_size = layer.drawable_size();
+        let viewport_size: Size<DevicePixels> = size(
+            (drawable_size.width.ceil() as i32).into(),
+            (drawable_size.height.ceil() as i32).into(),
+        );
+        let Some(drawable) = layer.next_drawable() else {
+            log::error!("failed to retrieve next drawable, drawable size: {viewport_size:?}");
+            return;
+        };
+        let mut overlay_drawables = Vec::with_capacity(overlays.len());
+        for overlay in &overlays {
+            let overlay_size = overlay.drawable_size();
+            if overlay_size.width != drawable_size.width
+                || overlay_size.height != drawable_size.height
+            {
+                overlay.set_drawable_size(drawable_size);
+            }
+            let Some(overlay_drawable) = overlay.next_drawable() else {
+                log::error!("failed to retrieve an overlay drawable, size: {viewport_size:?}");
+                return;
+            };
+            overlay_drawables.push(overlay_drawable.to_owned());
+        }
+
+        let mut targets = Vec::with_capacity(overlays.len() + 1);
+        targets.push(RenderTarget {
+            texture: drawable.texture(),
+            orders: 0..glass_orders.first().copied().unwrap_or(DrawOrder::MAX),
+            clear_alpha: if self.opaque { 1. } else { 0. },
+        });
+        for (index, overlay_drawable) in overlay_drawables.iter().enumerate() {
+            targets.push(RenderTarget {
+                texture: overlay_drawable.texture(),
+                orders: glass_orders[index]
+                    ..glass_orders
+                        .get(index + 1)
+                        .copied()
+                        .unwrap_or(DrawOrder::MAX),
+                clear_alpha: 0.,
+            });
+        }
+
+        let command_buffer =
+            match self.render_targets(scene, &targets, BackdropRendering::Native, viewport_size) {
+                Ok(command_buffer) => command_buffer,
+                Err(error) => {
+                    log::error!("failed to render: {error:#}");
+                    return;
+                }
+            };
+
+        let presents_with_transaction = self.presents_with_transaction || in_transaction;
+        layer.set_presents_with_transaction(presents_with_transaction);
+        for overlay in &overlays {
+            overlay.set_presents_with_transaction(presents_with_transaction);
+        }
+        if presents_with_transaction {
+            command_buffer.commit();
+            command_buffer.wait_until_scheduled();
+            drawable.present();
+            for overlay_drawable in &overlay_drawables {
+                overlay_drawable.present();
+            }
+            layer.set_presents_with_transaction(self.presents_with_transaction);
+        } else {
+            command_buffer.present_drawable(drawable);
+            for overlay_drawable in &overlay_drawables {
+                command_buffer.present_drawable(overlay_drawable);
+            }
+            command_buffer.commit();
+        }
+    }
+
     fn render_frame(
         &mut self,
         scene: &Scene,
         texture: &metal::TextureRef,
+        viewport_size: Size<DevicePixels>,
+    ) -> Result<metal::CommandBuffer> {
+        let clear_alpha = if self.opaque { 1. } else { 0. };
+        self.render_targets(
+            scene,
+            &[RenderTarget {
+                texture,
+                orders: 0..DrawOrder::MAX,
+                clear_alpha,
+            }],
+            BackdropRendering::Emulated,
+            viewport_size,
+        )
+    }
+
+    /// Encodes the primitives of each target's draw orders into its texture, all in one command
+    /// buffer that shares one instance buffer.
+    fn render_targets(
+        &mut self,
+        scene: &Scene,
+        targets: &[RenderTarget<'_>],
+        backdrops: BackdropRendering,
         viewport_size: Size<DevicePixels>,
     ) -> Result<metal::CommandBuffer> {
         let mut writer = InstanceBufferWriter::new(
@@ -586,13 +745,19 @@ impl MetalRenderer {
                 scene.surfaces.len(),
             )
         })?;
-        let command_buffer = self.draw_primitives_to_texture(
-            scene,
-            &instance_bindings,
-            &mut writer,
-            texture,
-            viewport_size,
-        )?;
+        let command_queue = self.command_queue.clone();
+        let command_buffer = command_queue.new_command_buffer();
+        for target in targets {
+            self.encode_primitives(
+                scene,
+                target,
+                backdrops,
+                &instance_bindings,
+                &mut writer,
+                viewport_size,
+                command_buffer,
+            )?;
+        }
 
         let instance_buffer_pool = self.instance_buffer_pool.clone();
         let instance_buffer = Cell::new(Some(writer.finish()));
@@ -606,7 +771,7 @@ impl MetalRenderer {
             command_buffer.add_completed_handler(&*RcBlock::as_ptr(&block).cast());
         }
 
-        Ok(command_buffer)
+        Ok(command_buffer.to_owned())
     }
 
     /// Renders the scene to a texture and returns the pixel data as an RGBA image.
@@ -740,28 +905,31 @@ impl MetalRenderer {
         })
     }
 
-    fn draw_primitives_to_texture(
+    #[allow(clippy::too_many_arguments)]
+    fn encode_primitives(
         &mut self,
         scene: &Scene,
+        target: &RenderTarget<'_>,
+        backdrops: BackdropRendering,
         instance_bindings: &InstanceBindings,
         writer: &mut InstanceBufferWriter,
-        texture: &metal::TextureRef,
         viewport_size: Size<DevicePixels>,
-    ) -> Result<metal::CommandBuffer> {
-        let command_queue = self.command_queue.clone();
-        let command_buffer = command_queue.new_command_buffer();
-        let alpha = if self.opaque { 1. } else { 0. };
-
+        command_buffer: &metal::CommandBufferRef,
+    ) -> Result<()> {
+        let texture = target.texture;
         let mut command_encoder = new_command_encoder_for_texture(
             command_buffer,
             texture,
             viewport_size,
-            Some(metal::MTLClearColor::new(0., 0., 0., alpha)),
+            Some(metal::MTLClearColor::new(0., 0., 0., target.clear_alpha)),
         );
 
-        for batch in scene.batches() {
+        for batch in scene.batches_in_orders(target.orders.clone()) {
             match batch {
                 PrimitiveBatch::Backdrops(range) => {
+                    if backdrops == BackdropRendering::Native {
+                        continue;
+                    }
                     for backdrop in &scene.backdrops[range] {
                         command_encoder.end_encoding();
                         let blurred =
@@ -845,7 +1013,7 @@ impl MetalRenderer {
 
         command_encoder.end_encoding();
 
-        Ok(command_buffer.to_owned())
+        Ok(())
     }
 
     fn draw_paths_to_intermediate(

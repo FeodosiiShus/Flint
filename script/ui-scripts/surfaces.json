@@ -1,0 +1,25 @@
+{
+  "steps": [
+    {"wait": {"milliseconds": 2500}},
+    {"open": {"path": "dense.rs"}},
+    {"wait": {"milliseconds": 1000}},
+    {"capture": {"name": "01-workspace"}},
+    {"action": {"name": "command_palette::Toggle"}},
+    {"wait": {"milliseconds": 400}},
+    {"capture": {"name": "02-command-palette"}},
+    {"keystrokes": {"keys": "escape"}},
+    {"action": {"name": "file_finder::Toggle"}},
+    {"wait": {"milliseconds": 400}},
+    {"capture": {"name": "03-file-finder"}},
+    {"keystrokes": {"keys": "escape"}},
+    {"action": {"name": "editor::OpenContextMenu"}},
+    {"wait": {"milliseconds": 800}},
+    {"capture": {"name": "04-editor-context-menu"}},
+    {"hover": {"x": 415, "y": 240}},
+    {"wait": {"milliseconds": 700}},
+    {"capture": {"name": "05-context-submenu"}},
+    {"frame_times": {"label": "surfaces"}},
+    {"memory": {"label": "surfaces"}},
+    "quit"
+  ]
+}

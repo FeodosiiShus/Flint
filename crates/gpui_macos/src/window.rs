@@ -24,15 +24,15 @@ use cocoa::{
 };
 use dispatch2::DispatchQueue;
 use gpui::{
-    AnyWindowHandle, BackgroundExecutor, Bounds, Capslock, CursorStyle, ExternalDragPayload,
-    ExternalPaths, FileDropEvent, ForegroundExecutor, FrameRequestSource, KeyDownEvent, Keystroke,
-    Modifiers, ModifiersChangedEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
-    Pixels, PlatformAtlas, PlatformDisplay, PlatformFrameSignal, PlatformInput,
-    PlatformInputHandler, PlatformWindow, Point, PromptButton, PromptLevel, RequestFrameOptions,
-    SharedString, Size, SystemWindowTab, WindowAppearance, WindowBackgroundAppearance,
-    WindowBounds, WindowControlArea, WindowKind, WindowParams, WindowVisibility, point, px, size,
+    AnyWindowHandle, BackgroundExecutor, Bounds, Capslock, CursorStyle, DrawOrder,
+    ExternalDragPayload, ExternalPaths, FileDropEvent, ForegroundExecutor, FrameRequestSource,
+    KeyDownEvent, Keystroke, Modifiers, ModifiersChangedEvent, MouseButton, MouseDownEvent,
+    MouseMoveEvent, MouseUpEvent, Pixels, PlatformAtlas, PlatformDisplay, PlatformFrameSignal,
+    PlatformInput, PlatformInputHandler, PlatformWindow, Point, PromptButton, PromptLevel,
+    RequestFrameOptions, SharedString, Size, SystemWindowTab, WindowAppearance,
+    WindowBackgroundAppearance, WindowBounds, WindowControlArea, WindowKind, WindowParams,
+    WindowVisibility, point, px, size,
 };
-#[cfg(any(test, feature = "test-support"))]
 use image::RgbaImage;
 
 use core_foundation::base::{CFRelease, CFTypeRef};
@@ -88,6 +88,9 @@ static mut WINDOW_CLASS: *const Class = ptr::null();
 static mut PANEL_CLASS: *const Class = ptr::null();
 static mut VIEW_CLASS: *const Class = ptr::null();
 static mut BLURRED_VIEW_CLASS: *const Class = ptr::null();
+static mut PASS_THROUGH_VIEW_CLASS: *const Class = ptr::null();
+/// `NSGlassEffectView` with clicks passed through, or null before macOS 26.
+static mut GLASS_VIEW_CLASS: *const Class = ptr::null();
 static mut WINDOW_STATE_ARCHIVER_DELEGATE_CLASS: *const Class = ptr::null();
 static mut WINDOW_STATE_UNARCHIVER_CLASS: *const Class = ptr::null();
 
@@ -295,6 +298,25 @@ unsafe fn build_classes() {
                 character_index_for_point as extern "C" fn(&Object, Sel, NSPoint) -> u64,
             );
             decl.register()
+        };
+        PASS_THROUGH_VIEW_CLASS = {
+            let mut decl = ClassDecl::new("GPUIPassThroughView", class!(NSView)).unwrap();
+            decl.add_method(
+                sel!(hitTest:),
+                pass_through_hit_test as extern "C" fn(&Object, Sel, NSPoint) -> id,
+            );
+            decl.register()
+        };
+        GLASS_VIEW_CLASS = match Class::get("NSGlassEffectView") {
+            Some(glass_effect_view) => {
+                let mut decl = ClassDecl::new("GPUIGlassView", glass_effect_view).unwrap();
+                decl.add_method(
+                    sel!(hitTest:),
+                    pass_through_hit_test as extern "C" fn(&Object, Sel, NSPoint) -> id,
+                );
+                decl.register()
+            }
+            None => ptr::null(),
         };
         BLURRED_VIEW_CLASS = {
             let mut decl = ClassDecl::new("BlurredView", class!(NSVisualEffectView)).unwrap();
@@ -701,6 +723,7 @@ struct MacWindowState {
     native_window: id,
     native_view: NonNull<Object>,
     blurred_view: Option<id>,
+    glass_levels: Vec<GlassLevel>,
     background_appearance: WindowBackgroundAppearance,
     cursor_style: CursorStyle,
     cursor_visible: Arc<AtomicBool>,
@@ -752,7 +775,133 @@ struct MacWindowState {
     sheet_parent: Option<id>,
 }
 
+/// One level of native glass: the glass views of the backdrops that share a draw order, and the
+/// view above them hosting the renderer's transparent layer for what the frame draws over them.
+struct GlassLevel {
+    glass_views: Vec<id>,
+    overlay_view: id,
+}
+
 impl MacWindowState {
+    /// Lays out a glass view per backdrop between the window's layer and the renderer's overlay
+    /// layers, one level per draw order. Returns whether any glass view was added or moved, so
+    /// the frame is presented together with the new geometry.
+    fn update_glass_levels(&mut self, scene: &gpui::Scene, glass_orders: &[DrawOrder]) -> bool {
+        let scale_factor = f64::from(self.scale_factor());
+        // SAFETY: the content view belongs to this window, and frames are drawn on the main thread.
+        let content_bounds = unsafe { NSView::bounds(self.native_window.contentView()) };
+        let frames = glass_orders
+            .iter()
+            .map(|order| {
+                scene
+                    .backdrops
+                    .iter()
+                    .filter(|backdrop| backdrop.order == *order)
+                    .filter_map(|backdrop| {
+                        glass_frame(backdrop, scale_factor, content_bounds.size.height)
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+
+        let same_structure = self.glass_levels.len() == frames.len()
+            && self
+                .glass_levels
+                .iter()
+                .zip(&frames)
+                .all(|(level, frames)| level.glass_views.len() == frames.len());
+        if !same_structure {
+            self.remove_glass_levels();
+            self.build_glass_levels(&frames, content_bounds);
+        }
+
+        let mut moved = !same_structure;
+        for (level, frames) in self.glass_levels.iter().zip(&frames) {
+            for (view, (frame, corner_radius)) in level.glass_views.iter().zip(frames) {
+                // SAFETY: the glass views are live subviews of the content view, retained by
+                // `glass_levels`.
+                unsafe {
+                    let current: NSRect = msg_send![*view, frame];
+                    if !rects_equal(current, *frame) {
+                        let () = msg_send![*view, setFrame: *frame];
+                        moved = true;
+                    }
+                    let current_radius: f64 = msg_send![*view, cornerRadius];
+                    if current_radius != *corner_radius {
+                        let () = msg_send![*view, setCornerRadius: *corner_radius];
+                    }
+                }
+            }
+        }
+        moved
+    }
+
+    fn build_glass_levels(&mut self, frames: &[Vec<(NSRect, f64)>], content_bounds: NSRect) {
+        let overlay_layers = self.renderer.overlay_layer_ptrs(frames.len());
+        let contents_scale = f64::from(self.scale_factor());
+        // SAFETY: views are created and inserted on the main thread into this window's content
+        // view; each stays retained by `glass_levels` until `remove_glass_levels`.
+        unsafe {
+            let content_view = self.native_window.contentView();
+            let mut below: id = self.native_view.as_ptr();
+            for (frames, overlay_layer) in frames.iter().zip(overlay_layers) {
+                let mut glass_views = Vec::with_capacity(frames.len());
+                for (frame, corner_radius) in frames {
+                    let view: id = msg_send![GLASS_VIEW_CLASS, alloc];
+                    let view: id = msg_send![view, initWithFrame: *frame];
+                    let () = msg_send![view, setCornerRadius: *corner_radius];
+                    let () = msg_send![
+                        content_view,
+                        addSubview: view
+                        positioned: NSWindowOrderingMode::NSWindowAbove
+                        relativeTo: below
+                    ];
+                    below = view;
+                    glass_views.push(view);
+                }
+                let overlay_view: id = msg_send![PASS_THROUGH_VIEW_CLASS, alloc];
+                let overlay_view = NSView::initWithFrame_(overlay_view, content_bounds);
+                overlay_view.setAutoresizingMask_(NSViewWidthSizable | NSViewHeightSizable);
+                let overlay_layer = overlay_layer as id;
+                let () = msg_send![overlay_layer, setContentsScale: contents_scale];
+                let () = msg_send![overlay_view, setLayer: overlay_layer];
+                overlay_view.setWantsLayer(YES);
+                // AppKit leaves a hosted layer's geometry to its owner, and the layer's
+                // autoresizing only tracks the window once it starts at the view's bounds.
+                let () = msg_send![overlay_layer, setFrame: content_bounds];
+                let () = msg_send![
+                    content_view,
+                    addSubview: overlay_view
+                    positioned: NSWindowOrderingMode::NSWindowAbove
+                    relativeTo: below
+                ];
+                below = overlay_view;
+                self.glass_levels.push(GlassLevel {
+                    glass_views,
+                    overlay_view,
+                });
+            }
+        }
+    }
+
+    fn remove_glass_levels(&mut self) {
+        if self.glass_levels.is_empty() {
+            return;
+        }
+        for level in self.glass_levels.drain(..) {
+            // SAFETY: `glass_levels` holds the one reference each view got from `alloc`.
+            unsafe {
+                for view in level.glass_views {
+                    NSView::removeFromSuperview(view);
+                    let () = msg_send![view, release];
+                }
+                NSView::removeFromSuperview(level.overlay_view);
+                let () = msg_send![level.overlay_view, release];
+            }
+        }
+        self.renderer.overlay_layer_ptrs(0);
+    }
+
     fn move_traffic_light(&mut self) {
         if let Some(traffic_light_position) = self.traffic_light_position {
             if self.is_fullscreen() && !self.is_exiting_fullscreen {
@@ -1181,6 +1330,7 @@ impl MacWindow {
                 native_window,
                 native_view: NonNull::new_unchecked(native_view),
                 blurred_view: None,
+                glass_levels: Vec::new(),
                 background_appearance: WindowBackgroundAppearance::Opaque,
                 cursor_style: CursorStyle::Arrow,
                 cursor_visible,
@@ -1471,6 +1621,7 @@ impl Drop for MacWindow {
         // the adapter here so the native view, its `CAMetalLayer` and the
         // renderer's command queue are actually released with the window.
         drop(this.accesskit_adapter.take());
+        this.remove_glass_levels();
         this.renderer.destroy();
         let window = this.native_window;
         let sheet_parent = this.sheet_parent.take();
@@ -2199,7 +2350,15 @@ impl PlatformWindow for MacWindow {
 
     fn draw(&self, scene: &gpui::Scene) {
         let mut this = self.0.lock();
-        this.renderer.draw(scene);
+        let glass_orders = native_glass_orders(scene);
+        if glass_orders.is_empty() {
+            this.remove_glass_levels();
+            this.renderer.draw(scene);
+        } else {
+            let moved = this.update_glass_levels(scene, &glass_orders);
+            this.renderer
+                .draw_with_overlays(scene, &glass_orders, moved);
+        }
     }
 
     fn sprite_atlas(&self) -> Arc<dyn PlatformAtlas> {
@@ -2438,6 +2597,12 @@ impl PlatformWindow for MacWindow {
     fn render_to_image(&self, scene: &gpui::Scene) -> Result<RgbaImage> {
         let mut this = self.0.lock();
         this.renderer.render_to_image(scene)
+    }
+
+    fn capture_composited_image(&self) -> anyhow::Result<RgbaImage> {
+        let window_number: NSInteger =
+            unsafe { msg_send![self.0.lock().native_window, windowNumber] };
+        capture_window_image(u32::try_from(window_number)?)
     }
 
     fn a11y_init(&self, callbacks: gpui::A11yCallbacks) {
@@ -3820,6 +3985,78 @@ fn display_id_for_screen(screen: id) -> Option<CGDirectDisplayID> {
     }
 }
 
+/// More glass levels than this in one frame fall back to the emulated glass for that frame.
+const MAX_GLASS_LEVELS: usize = 4;
+
+/// Whether glass surfaces use AppKit's `NSGlassEffectView` (macOS 26) rather than the
+/// renderer's emulation. `FLINT_EMULATED_GLASS` keeps the emulation, to compare the two.
+pub(crate) fn native_glass_available() -> bool {
+    static AVAILABLE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    // SAFETY: `GLASS_VIEW_CLASS` is written once by `build_classes` at load time.
+    *AVAILABLE.get_or_init(|| {
+        let glass_view_class = unsafe { GLASS_VIEW_CLASS };
+        !glass_view_class.is_null() && std::env::var_os("FLINT_EMULATED_GLASS").is_none()
+    })
+}
+
+/// The draw orders of the frame's glass levels, lowest first, or none when the frame draws its
+/// glass in the renderer.
+fn native_glass_orders(scene: &gpui::Scene) -> Vec<DrawOrder> {
+    if scene.backdrops.is_empty() || !native_glass_available() {
+        return Vec::new();
+    }
+    glass_levels(&scene.backdrops)
+}
+
+/// One level per draw order of the backdrops, which the scene keeps sorted by order.
+fn glass_levels(backdrops: &[gpui::Backdrop]) -> Vec<DrawOrder> {
+    let mut orders = backdrops
+        .iter()
+        .map(|backdrop| backdrop.order)
+        .collect::<Vec<_>>();
+    orders.dedup();
+    if orders.len() > MAX_GLASS_LEVELS {
+        return Vec::new();
+    }
+    orders
+}
+
+/// A backdrop's visible rect in the content view's points, whose origin is at the bottom left,
+/// and its corner radius.
+fn glass_frame(
+    backdrop: &gpui::Backdrop,
+    scale_factor: f64,
+    content_height: f64,
+) -> Option<(NSRect, f64)> {
+    let bounds = backdrop.bounds.intersect(&backdrop.content_mask.bounds);
+    if bounds.size.width.0 <= 0. || bounds.size.height.0 <= 0. {
+        return None;
+    }
+    let x = f64::from(bounds.origin.x.0) / scale_factor;
+    let top = f64::from(bounds.origin.y.0) / scale_factor;
+    let width = f64::from(bounds.size.width.0) / scale_factor;
+    let height = f64::from(bounds.size.height.0) / scale_factor;
+    Some((
+        NSRect::new(
+            NSPoint::new(x, content_height - top - height),
+            NSSize::new(width, height),
+        ),
+        f64::from(backdrop.corner_radii.top_left.0) / scale_factor,
+    ))
+}
+
+fn rects_equal(a: NSRect, b: NSRect) -> bool {
+    a.origin.x == b.origin.x
+        && a.origin.y == b.origin.y
+        && a.size.width == b.size.width
+        && a.size.height == b.size.height
+}
+
+/// Glass and overlay views sit above the GPUI view only to be drawn, so mouse events reach it.
+extern "C" fn pass_through_hit_test(_: &Object, _: Sel, _: NSPoint) -> id {
+    nil
+}
+
 extern "C" fn blurred_view_init_with_frame(this: &Object, _: Sel, frame: NSRect) -> id {
     unsafe {
         let view = msg_send![super(this, class!(NSVisualEffectView)), initWithFrame: frame];
@@ -4078,5 +4315,121 @@ mod tests {
                 );
             }
         }
+    }
+}
+
+/// Captures a window of this app from the window server. `CGWindowListCreateImage` is marked
+/// obsolete in the macOS 15 SDK headers, but it still works and, unlike ScreenCaptureKit, needs
+/// no Screen Recording permission for the app's own windows.
+fn capture_window_image(window_number: u32) -> anyhow::Result<RgbaImage> {
+    use core_graphics::{
+        base::{kCGBitmapByteOrder32Big, kCGImageAlphaPremultipliedLast},
+        color_space::CGColorSpace,
+        context::CGContext,
+        geometry::{CGPoint, CGSize},
+        window::{
+            create_image, kCGWindowImageBestResolution, kCGWindowImageBoundsIgnoreFraming,
+            kCGWindowListOptionIncludingWindow,
+        },
+    };
+
+    // `CGRectNull` asks for the window's own bounds.
+    let window_bounds = CGRect::new(
+        &CGPoint::new(f64::INFINITY, f64::INFINITY),
+        &CGSize::new(0.0, 0.0),
+    );
+    let image = create_image(
+        window_bounds,
+        kCGWindowListOptionIncludingWindow,
+        window_number,
+        kCGWindowImageBoundsIgnoreFraming | kCGWindowImageBestResolution,
+    )
+    .ok_or_else(|| anyhow::anyhow!("the window server returned no image for the window"))?;
+    let width = image.width();
+    let height = image.height();
+    let mut pixels = vec![0u8; width * height * 4];
+    let context = CGContext::create_bitmap_context(
+        Some(pixels.as_mut_ptr().cast()),
+        width,
+        height,
+        8,
+        width * 4,
+        &CGColorSpace::create_device_rgb(),
+        kCGImageAlphaPremultipliedLast | kCGBitmapByteOrder32Big,
+    );
+    context.draw_image(
+        CGRect::new(
+            &CGPoint::new(0.0, 0.0),
+            &CGSize::new(width as f64, height as f64),
+        ),
+        &image,
+    );
+    drop(context);
+    RgbaImage::from_raw(u32::try_from(width)?, u32::try_from(height)?, pixels)
+        .ok_or_else(|| anyhow::anyhow!("the captured image has an unexpected size"))
+}
+
+#[cfg(test)]
+mod native_glass_tests {
+    use super::*;
+    use gpui::{Backdrop, ContentMask, Corners, ScaledPixels, point, size};
+
+    fn backdrop(order: DrawOrder, origin: (f32, f32), extent: (f32, f32)) -> Backdrop {
+        let bounds = Bounds::new(
+            point(ScaledPixels(origin.0), ScaledPixels(origin.1)),
+            size(ScaledPixels(extent.0), ScaledPixels(extent.1)),
+        );
+        Backdrop {
+            order,
+            blur_radius: ScaledPixels(40.),
+            bounds,
+            content_mask: ContentMask {
+                bounds,
+                corner_radii: Corners::default(),
+            },
+            corner_radii: Corners::all(ScaledPixels(24.)),
+        }
+    }
+
+    #[test]
+    fn a_glass_view_covers_its_backdrop_in_points_from_the_bottom_left() {
+        let (frame, corner_radius) =
+            glass_frame(&backdrop(3, (200., 100.), (400., 300.)), 2., 1000.)
+                .expect("a visible backdrop gets a glass view");
+        assert_eq!(
+            (
+                frame.origin.x,
+                frame.origin.y,
+                frame.size.width,
+                frame.size.height
+            ),
+            (100., 1000. - 50. - 150., 200., 150.)
+        );
+        assert_eq!(corner_radius, 12.);
+    }
+
+    #[test]
+    fn a_backdrop_clipped_away_gets_no_glass_view() {
+        let mut hidden = backdrop(3, (200., 100.), (400., 300.));
+        hidden.content_mask.bounds.size = size(ScaledPixels(0.), ScaledPixels(0.));
+        assert!(glass_frame(&hidden, 2., 1000.).is_none());
+    }
+
+    #[test]
+    fn backdrops_of_one_draw_order_share_a_level_and_too_many_levels_fall_back() {
+        let side_by_side = [
+            backdrop(5, (0., 0.), (10., 10.)),
+            backdrop(5, (20., 0.), (10., 10.)),
+            backdrop(9, (5., 5.), (10., 10.)),
+        ];
+        assert_eq!(glass_levels(&side_by_side), vec![5, 9]);
+
+        let stacked = (0..=MAX_GLASS_LEVELS as DrawOrder)
+            .map(|order| backdrop(order, (0., 0.), (10., 10.)))
+            .collect::<Vec<_>>();
+        assert!(
+            glass_levels(&stacked).is_empty(),
+            "the renderer emulates glass when more levels than overlay layers are open"
+        );
     }
 }

@@ -1243,6 +1243,10 @@ impl Platform for MacPlatform {
         }
     }
 
+    fn supports_native_glass(&self) -> bool {
+        crate::window::native_glass_available()
+    }
+
     fn read_from_clipboard(&self) -> Option<ClipboardItem> {
         let state = self.0.lock();
         state.general_pasteboard.read()

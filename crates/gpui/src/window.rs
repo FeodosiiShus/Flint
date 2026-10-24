@@ -2764,6 +2764,19 @@ impl Window {
             .render_to_image(&self.rendered_frame.scene)
     }
 
+    /// Captures the window as the system compositor shows it, including what is drawn outside
+    /// the renderer, such as native glass, for screenshots of the running app.
+    pub fn capture_composited_image(&self) -> anyhow::Result<image::RgbaImage> {
+        self.platform_window.capture_composited_image()
+    }
+
+    /// Draws and presents a frame right away. A covered window stops drawing until it is shown
+    /// again, so screenshots of it would otherwise show an old frame.
+    pub fn draw_and_present(&mut self, cx: &mut App) {
+        self.draw(cx).clear(cx);
+        self.present();
+    }
+
     /// Returns the quads in the most recently rendered frame's scene, so tests can assert on
     /// painted output without rasterizing the frame. Quad bounds are in scaled pixels and are
     /// not clipped; each quad carries the content mask it will be clipped to when drawn. Quads

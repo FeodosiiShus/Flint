@@ -46,7 +46,6 @@ use anyhow::{Context as _, Result};
 use async_task::Runnable;
 use collections::FxHashMap;
 use futures::channel::oneshot;
-#[cfg(any(test, feature = "test-support", feature = "bench-support"))]
 use image::RgbaImage;
 use image::codecs::gif::GifDecoder;
 use image::{AnimationDecoder as _, DynamicImage, Frame};
@@ -528,6 +527,12 @@ pub trait Platform: 'static {
     /// Whether the user asked the system for opaque surfaces instead of translucent ones
     /// (macOS: Accessibility > Display > Reduce transparency).
     fn should_reduce_transparency(&self) -> bool {
+        false
+    }
+
+    /// Whether windows draw glass surfaces with the system's own material (macOS 26 Liquid
+    /// Glass) instead of the renderer's emulation, so a surface can leave its material to it.
+    fn supports_native_glass(&self) -> bool {
         false
     }
 
@@ -1349,6 +1354,13 @@ pub trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
     #[cfg(any(test, feature = "test-support"))]
     fn render_to_image(&self, _scene: &Scene) -> Result<RgbaImage> {
         anyhow::bail!("render_to_image not implemented for this platform")
+    }
+
+    /// Captures the window as the system compositor shows it, including what is drawn outside
+    /// the renderer, such as native glass. An app may capture its own windows without the
+    /// Screen Recording permission.
+    fn capture_composited_image(&self) -> Result<RgbaImage> {
+        anyhow::bail!("capturing a composited window is not supported on this platform")
     }
 }
 

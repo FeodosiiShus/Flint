@@ -244,13 +244,13 @@ Flint uses WebStorm's [Islands](https://plugins.jetbrains.com/docs/intellij/supp
 
 ## Popups and menus
 
-Every popup surface is opaque: context menus, drop-downs, pickers (command palette, file finder, Search Everywhere), completion and hover cards, tooltips, modals and the Git dialogs. A translucent `elevated_surface.background`, from a theme file or from `theme_overrides` in your `settings.json`, is drawn with full opacity in the same colour. Without your own `elevated_surface.background` override, popups use IntelliJ's popup colour `#26282c`.
+Popups, dialogs and notification balloons are Liquid Glass: context menus, drop-downs, pickers (command palette, file finder, Search Everywhere), completion and hover cards, modals, the Git dialogs and balloons. On macOS 26 the glass is AppKit's own `NSGlassEffectView`, so it refracts and tints like the system's menus and follows Reduce Transparency: Flint draws everything below a surface into the window's layer, places the glass view over it, and draws the surface's content into a transparent layer above the glass; a menu opened from another surface gets its own level of glass. The theme's `elevated_surface.background` tints the glass at 50%, so the theme's text stays readable whatever the system's own light or dark appearance. Before macOS 26, Flint draws the glass itself: a 20 px blur under the surface colour at 82%. `FLINT_EMULATED_GLASS=1` keeps that emulation on macOS 26 too, to compare the two. Tooltips stay opaque, like macOS tooltips, and with Reduce Transparency every surface is opaque. Without your own `elevated_surface.background` override, popups use IntelliJ's popup colour `#26282c`.
 
 Popups use the metrics of IntelliJ's New UI on macOS:
 
 | Element | Flint | IntelliJ key |
 |---|---|---|
-| Popup corners and border | 8 px radius, 1 px `border.variant` (`#33353b`) | `PopupMenu.borderCornerRadius`, `Popup.borderColor` |
+| Surface corners and border | 12 px radius for popups and balloons, 16 px for dialogs (macOS 26 window corners), 6 px for tooltips; 1 px `border.variant` (`#33353b`) | `PopupMenu.borderCornerRadius`, `Popup.borderColor` |
 | Context menu padding | 6 px above the first row and below the last, so with the 1 px row inset the first pill starts 7 px below the border | `PopupMenu.borderInsets` |
 | Context menu row | 26 px: a 24 px pill with 1 px above and below, so the pills of adjacent rows never touch; hover and keyboard selection are one 4 px-radius pill inset 7 px from the sides, with the text 6 px inside it | `List.rowHeight`, `PopupMenu.Selection.outerInsets`, `innerInsets`, `arc` |
 | Selection colour | `ghost_element.selected` (`#2a4371`) for both hover and keyboard selection | `selection-bg-active` |
@@ -278,7 +278,7 @@ Controls use the corner radii of IntelliJ's New UI everywhere in Flint, in pixel
 
 Checkboxes look like IntelliJ's New UI checkbox: a 16 px box with a 1 px border; unchecked it has the `editor.background` fill and the `border` outline, checked or indeterminate it is filled with `text.accent` (`#3871e1`) and shows a white check or dash. The label starts 8 px after the box (the 4 px margin around the box in IntelliJ's 24 px `CheckBox.iconSize` plus `CheckBox.textIconGap` 4). There is no hover state; keyboard focus draws a 2 px `border.focused` ring.
 
-Unchanged: popups (8 px), editor tabs, switches, avatars and other fully round shapes.
+Not covered here: floating surfaces, whose radii are in [Popups and menus](#popups-and-menus), editor tabs, switches, avatars and other fully round shapes.
 
 ## Editor tabs, project panel and scrollbar
 
@@ -841,6 +841,19 @@ Cmd+click (and `Cmd-B` with the JetBrains keymap) goes to a definition through t
 - The Performance Profiler window is removed, so the profiler's trace buffers are never collected.
 - Extensions are compiled to native code once and cached in the `.compiled-components` folder inside the extensions work folder, so later launches skip the compilation. Delete the folder to rebuild the cache; a changed or incompatible extension is recompiled by itself.
 - Bundled fonts, themes and settings are embedded uncompressed, so they stay in file-backed memory instead of being unpacked into the heap at launch.
+
+## Checking the UI and performance
+
+Flint can run a script of UI steps in the real app and save screenshots of its windows as the window server composites them, native glass included. An app may always capture its own windows, so this needs no Screen Recording permission, and it works while the window is covered: during a script Flint draws frames as a visible window would.
+
+```sh
+FLINT_UI_SCRIPT=script/ui-scripts/surfaces.json FLINT_UI_SCRIPT_OUTPUT=target/ui-script \
+    target/debug/flint --user-data-dir target/ui-script/data script/ui-scripts/fixture
+```
+
+- The script is JSON with a `steps` array. Steps: `{"wait": {"milliseconds": 500}}`; `{"action": {"name": "command_palette::Toggle", "arguments": null}}` dispatches an action as a key binding would; `{"keystrokes": {"keys": "cmd-shift-p escape"}}`; `{"open": {"path": "src/main.rs"}}`, relative to the first project folder; `{"click": {"x": 600, "y": 300, "right": true}}` and `{"hover": {"x": 415, "y": 240}}`, in logical pixels from the window's top left; `{"capture": {"name": "palette"}}` writes `palette.png` (`palette-1.png`, `palette-2.png`… with several windows); `{"repeat": {"times": 100, "steps": [...]}}`; `{"memory": {"label": "x"}}` logs the physical memory footprint; `{"frame_times": {"label": "x"}}` logs how long the window's frames took to draw; `"quit"`. The app quits when the script ends, and a failed step is written to `error.txt` in the output directory.
+- `script/ui-scripts/surfaces.json` opens a menu, its submenu, the command palette and the file finder over `script/ui-scripts/fixture/dense.rs`, whose colourful lines show how the glass refracts. `script/ui-scripts/leak-check.json` opens and closes them 200 times with memory checkpoints, then waits 30 s so `leaks <pid>`, `footprint <pid>` or `vmmap --summary <pid>` can look at the process. Use a release build (`--release` or `--profile release-fast`) for timings.
+- Memory is judged by growth between the checkpoints. `leaks` reports every large Rust `HashMap` as a leak, because hashbrown keeps a pointer into the middle of its table, so its leaked-bytes total overstates real leaks; the stacks under `MallocStackLogging=1` tell the two apart.
 
 ## Licensing
 

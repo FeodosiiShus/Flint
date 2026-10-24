@@ -570,6 +570,7 @@ fn main() {
         cx.set_menus(menus);
 
         initialize_workspace(app_state.clone(), cx);
+        zed::ui_script::run_if_requested(cx);
 
         cx.activate(true);
 

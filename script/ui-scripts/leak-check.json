@@ -1,0 +1,40 @@
+{
+  "steps": [
+    {"wait": {"milliseconds": 2500}},
+    {"open": {"path": "dense.rs"}},
+    {"wait": {"milliseconds": 1000}},
+    {"repeat": {"times": 5, "steps": [
+      {"action": {"name": "command_palette::Toggle"}},
+      {"keystrokes": {"keys": "escape"}},
+      {"action": {"name": "file_finder::Toggle"}},
+      {"keystrokes": {"keys": "escape"}},
+      {"action": {"name": "editor::OpenContextMenu"}},
+      {"wait": {"milliseconds": 100}},
+      {"click": {"x": 1300, "y": 700}}
+    ]}},
+    {"memory": {"label": "after warm-up"}},
+    {"repeat": {"times": 100, "steps": [
+      {"action": {"name": "command_palette::Toggle"}},
+      {"keystrokes": {"keys": "escape"}},
+      {"action": {"name": "file_finder::Toggle"}},
+      {"keystrokes": {"keys": "escape"}},
+      {"action": {"name": "editor::OpenContextMenu"}},
+      {"wait": {"milliseconds": 100}},
+      {"click": {"x": 1300, "y": 700}}
+    ]}},
+    {"memory": {"label": "after 100 rounds"}},
+    {"repeat": {"times": 100, "steps": [
+      {"action": {"name": "command_palette::Toggle"}},
+      {"keystrokes": {"keys": "escape"}},
+      {"action": {"name": "file_finder::Toggle"}},
+      {"keystrokes": {"keys": "escape"}},
+      {"action": {"name": "editor::OpenContextMenu"}},
+      {"wait": {"milliseconds": 100}},
+      {"click": {"x": 1300, "y": 700}}
+    ]}},
+    {"memory": {"label": "after 200 rounds"}},
+    {"frame_times": {"label": "leak check"}},
+    {"wait": {"milliseconds": 30000}},
+    "quit"
+  ]
+}

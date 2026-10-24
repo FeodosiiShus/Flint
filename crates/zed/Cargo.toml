@@ -60,6 +60,7 @@ go_to_line.workspace = true
 gpui = { workspace = true, features = ["profiler", "stacker"] }
 gpui_platform = { workspace = true, features = ["font-kit"] }
 gpui_tokio.workspace = true
+image.workspace = true
 itertools.workspace = true
 rayon.workspace = true
 semver.workspace = true
@@ -73,6 +74,7 @@ language_selector.workspace = true
 language_tools.workspace = true
 languages = { workspace = true, features = ["load-grammars"] }
 line_ending_selector.workspace = true
+libc.workspace = true
 log.workspace = true
 lsp_locations.workspace = true
 markdown.workspace = true

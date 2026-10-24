@@ -25,11 +25,14 @@ fn surface<E: Styled + InteractiveElement>(this: E, kind: SurfaceKind, cx: &App)
         .border_color(colors.border_variant);
     if surface_is_glass(kind, cx) {
         let mut shadows = standard.elevation.shadow(cx);
-        // The specular rim along the top edge of Liquid Glass.
-        shadows.push(BoxShadow::new(px(0.), px(1.), hsla(0., 0., 1., 0.06)).inset());
-        this.bg(colors
-            .elevated_surface_background
-            .opacity(GLASS_MATERIAL.surface_opacity))
+        let surface_opacity = if cx.supports_native_glass() {
+            GLASS_MATERIAL.native_surface_opacity
+        } else {
+            // The specular rim along the top edge of Liquid Glass, which native glass draws.
+            shadows.push(BoxShadow::new(px(0.), px(1.), hsla(0., 0., 1., 0.06)).inset());
+            GLASS_MATERIAL.surface_opacity
+        };
+        this.bg(colors.elevated_surface_background.opacity(surface_opacity))
             .backdrop_blur(GLASS_MATERIAL.blur_radius)
             .shadow(shadows)
     } else {

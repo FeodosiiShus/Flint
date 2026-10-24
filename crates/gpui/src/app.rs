@@ -1809,6 +1809,12 @@ impl App {
         self.platform.should_reduce_transparency()
     }
 
+    /// Whether windows draw glass surfaces with the system's own material instead of the
+    /// renderer's emulation.
+    pub fn supports_native_glass(&self) -> bool {
+        self.platform.supports_native_glass()
+    }
+
     /// Restarts the application.
     pub fn restart(&mut self) {
         self.restart_observers
