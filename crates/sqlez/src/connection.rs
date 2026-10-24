@@ -15,6 +15,9 @@ pub struct Connection {
     pub(crate) write: RefCell<bool>,
     _sqlite: PhantomData<sqlite3>,
 }
+// SAFETY: the bundled SQLite is built with `SQLITE_THREADSAFE=1`, so a connection may move between
+// threads as long as no two use it at once; `Connection` is not `Sync` and every `Statement`
+// borrows it, so moving it never leaves it in use on another thread.
 unsafe impl Send for Connection {}
 
 impl Connection {
@@ -26,6 +29,9 @@ impl Connection {
             _sqlite: PhantomData,
         };
 
+        // SAFETY: the `uri` CString outlives the `sqlite3_open_v2` call, which writes a handle
+        // (null only on allocation failure) into `connection.sqlite3`; the bundled SQLite is built
+        // with `SQLITE_ENABLE_API_ARMOR`, so `sqlite3_extended_result_codes` rejects a null handle.
         unsafe {
             sqlite3_open_v2(
                 CString::new(uri)?.as_ptr(),
@@ -89,6 +95,9 @@ impl Connection {
     }
 
     pub fn backup_main(&self, destination: &Connection) -> Result<()> {
+        // SAFETY: both handles stay open while borrowed and the "main" CStrings outlive
+        // `sqlite3_backup_init`; a null `backup` from a failed init is rejected by
+        // `sqlite3_backup_step` (`SQLITE_ENABLE_API_ARMOR`) and ignored by `sqlite3_backup_finish`.
         unsafe {
             let backup = sqlite3_backup_init(
                 destination.sqlite3,
@@ -139,6 +148,8 @@ impl Connection {
                     .unwrap()()
                 .unwrap();
 
+                // SAFETY: `temp_connection` is open, `remaining_sql` is a NUL-terminated suffix of
+                // `sql`, and both out-pointers are locals.
                 unsafe {
                     sqlite3_prepare_v2(
                         temp_connection.sqlite3,
@@ -150,11 +161,14 @@ impl Connection {
                 };
 
                 #[cfg(not(any(target_os = "linux", target_os = "freebsd")))]
+                // SAFETY: `temp_connection` is open.
                 let offset = unsafe { sqlite3_error_offset(temp_connection.sqlite3) };
 
                 #[cfg(any(target_os = "linux", target_os = "freebsd"))]
                 let offset = 0;
 
+                // SAFETY: `temp_connection` is open, and moving it into `_conn` keeps it open
+                // while the `sqlite3_errmsg` pointer is in use.
                 unsafe {
                     (
                         sqlite3_errcode(temp_connection.sqlite3),
@@ -164,6 +178,8 @@ impl Connection {
                     )
                 }
             } else {
+                // SAFETY: `self.sqlite3` stays open while `self` is borrowed, `remaining_sql` is a
+                // NUL-terminated suffix of `sql`, and both out-pointers are locals.
                 unsafe {
                     sqlite3_prepare_v2(
                         self.sqlite3,
@@ -175,11 +191,13 @@ impl Connection {
                 };
 
                 #[cfg(not(any(target_os = "linux", target_os = "freebsd")))]
+                // SAFETY: `self.sqlite3` stays open while `self` is borrowed.
                 let offset = unsafe { sqlite3_error_offset(self.sqlite3) };
 
                 #[cfg(any(target_os = "linux", target_os = "freebsd"))]
                 let offset = 0;
 
+                // SAFETY: `self.sqlite3` stays open while `self` is borrowed.
                 unsafe {
                     (
                         sqlite3_errcode(self.sqlite3),
@@ -190,10 +208,15 @@ impl Connection {
                 }
             };
 
+            // SAFETY: `raw_statement` is null after a failed prepare (a no-op) or was just prepared
+            // on `self` or on `temp_connection`, which `_conn` keeps open, and is not used again.
             unsafe { sqlite3_finalize(raw_statement) };
 
             if res == 1 && offset >= 0 {
                 let sub_statement_correction = remaining_sql.as_ptr() as usize - sql_start as usize;
+                // SAFETY: `sqlite3_errmsg` returns a NUL-terminated string that stays valid until
+                // the next call on its still-open connection; `res == 1` means the prepare failed,
+                // so the `sqlite3_finalize` since then got a null statement and did nothing.
                 let err_msg = String::from_utf8_lossy(unsafe {
                     CStr::from_ptr(message as *const _).to_bytes()
                 })
@@ -201,6 +224,13 @@ impl Connection {
 
                 return Some((err_msg, offset as usize + sub_statement_correction));
             }
+            // SQLite leaves the tail unset when the prepare fails before parsing (out of memory, a
+            // locked schema), and then there is nothing more to check.
+            if remaining_sql_ptr.is_null() {
+                return None;
+            }
+            // SAFETY: SQLite set `remaining_sql_ptr` to the unparsed tail of `remaining_sql`, a
+            // NUL-terminated suffix of `sql`, which outlives this loop.
             remaining_sql = unsafe { CStr::from_ptr(remaining_sql_ptr) };
             alter_table = None;
         }
@@ -208,6 +238,8 @@ impl Connection {
     }
 
     pub(crate) fn last_error(&self) -> Result<()> {
+        // SAFETY: `self.sqlite3` comes from `sqlite3_open_v2` and is closed only in `Drop` (both
+        // calls accept a null handle), and the message is copied before any other SQLite call.
         unsafe {
             let code = sqlite3_errcode(self.sqlite3);
             const NON_ERROR_CODES: &[i32] = &[SQLITE_OK, SQLITE_ROW];
@@ -277,6 +309,8 @@ fn parse_alter_table(remaining_sql_str: &str) -> Option<(String, String)> {
 
 impl Drop for Connection {
     fn drop(&mut self) {
+        // SAFETY: `self.sqlite3` comes from `sqlite3_open_v2` (null is a no-op) and is closed only
+        // here; every `Statement` borrows the connection, so all of them are already finalized.
         unsafe { sqlite3_close(self.sqlite3) };
     }
 }

@@ -15,6 +15,8 @@ use crate::connection::Connection;
 impl Connection {
     fn eager_exec(&self, sql: &str) -> anyhow::Result<()> {
         let sql_str = CString::new(sql).context("Error creating cstr")?;
+        // SAFETY: `self.sqlite3` stays open while `self` is borrowed, `sql_str` is NUL-terminated
+        // and outlives the call, and no callback or error-message out-pointer is passed.
         unsafe {
             sqlite3_exec(
                 self.sqlite3,

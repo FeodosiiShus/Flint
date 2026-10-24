@@ -684,7 +684,7 @@ fn run() -> Result<()> {
 fn anonymous_fd(path: &str) -> Option<fs::File> {
     #[cfg(target_os = "linux")]
     {
-        use std::os::fd::{self, FromRawFd};
+        use std::os::fd;
 
         let fd_str = path.strip_prefix("/proc/self/fd/")?;
 
@@ -694,15 +694,13 @@ fn anonymous_fd(path: &str) -> Option<fs::File> {
         }
 
         let fd: fd::RawFd = fd_str.parse().ok()?;
-        let file = unsafe { fs::File::from_raw_fd(fd) };
-        Some(file)
+        // SAFETY: the link above resolved, so `fd` is open; it is only borrowed to duplicate it.
+        let borrowed = unsafe { fd::BorrowedFd::borrow_raw(fd) };
+        borrowed.try_clone_to_owned().ok().map(fs::File::from)
     }
     #[cfg(any(target_os = "macos", target_os = "freebsd"))]
     {
-        use std::os::{
-            fd::{self, FromRawFd},
-            unix::fs::FileTypeExt,
-        };
+        use std::os::{fd, unix::fs::FileTypeExt};
 
         let fd_str = path.strip_prefix("/dev/fd/")?;
 
@@ -712,8 +710,12 @@ fn anonymous_fd(path: &str) -> Option<fs::File> {
             return None;
         }
         let fd: fd::RawFd = fd_str.parse().ok()?;
-        let file = unsafe { fs::File::from_raw_fd(fd) };
-        Some(file)
+        // Duplicated rather than adopted: the same `/dev/fd/N` may be passed twice, or name a
+        // descriptor the process already owns, and taking ownership would close it twice.
+        // SAFETY: `fs::metadata` just resolved `/dev/fd/{fd}`, so `fd` is open; it is only
+        // borrowed to duplicate it.
+        let borrowed = unsafe { fd::BorrowedFd::borrow_raw(fd) };
+        borrowed.try_clone_to_owned().ok().map(fs::File::from)
     }
     #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "freebsd")))]
     {
@@ -997,6 +999,10 @@ mod mac_os {
                 Self::App { app_bundle, .. } => {
                     let app_path = app_bundle;
 
+                    // SAFETY: `url` outlives `CFURLCreateWithBytes`, which copies its bytes, and
+                    // `wrap_under_create_rule` panics on a null result. `app_url` and
+                    // `urls_to_open` stay alive across `LSOpenFromURLSpec`, which only reads the
+                    // spec, and its null out-parameter is optional.
                     let status = unsafe {
                         let app_url = CFURL::from_path(app_path, true)
                             .with_context(|| format!("invalid app path {app_path:?}"))?;

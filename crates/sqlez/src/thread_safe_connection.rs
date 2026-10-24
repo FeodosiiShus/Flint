@@ -38,7 +38,11 @@ pub struct ThreadSafeConnection {
     connections: Arc<ThreadLocal<Connection>>,
 }
 
+// SAFETY: every field is already `Send` (`Arc<ThreadLocal<Connection>>` because
+// `Connection: Send`), so this only restates the auto impl.
 unsafe impl Send for ThreadSafeConnection {}
+// SAFETY: `ThreadLocal` hands each thread only its own `Connection`, which is `Send` but not
+// `Sync`, so sharing this never lets two threads use one connection at once.
 unsafe impl Sync for ThreadSafeConnection {}
 
 pub struct ThreadSafeConnectionBuilder<M: Migrator + 'static = ()> {

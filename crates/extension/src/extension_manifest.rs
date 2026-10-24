@@ -291,6 +291,12 @@ pub struct DebugLocatorManifestEntry {}
 
 impl ExtensionManifest {
     pub async fn load(fs: Arc<dyn Fs>, extension_dir: &Path) -> Result<Self> {
+        let manifest = Self::parse(fs, extension_dir).await?;
+        check_extension_id(&manifest.id)?;
+        Ok(manifest)
+    }
+
+    async fn parse(fs: Arc<dyn Fs>, extension_dir: &Path) -> Result<Self> {
         let extension_name = extension_dir
             .file_name()
             .and_then(OsStr::to_str)
@@ -318,6 +324,17 @@ impl ExtensionManifest {
             anyhow::bail!("No extension manifest found for extension {extension_name}")
         }
     }
+}
+
+/// An extension id names the extension's work directory and its cache files, so it must be a
+/// single plain path component: `..` would leave the extensions directory, and a dot name such as
+/// `.compiled-components` could reach files the host trusts.
+pub fn check_extension_id(id: &str) -> Result<()> {
+    anyhow::ensure!(
+        !id.is_empty() && !id.starts_with('.') && !id.contains(['/', '\\', '\0']),
+        "invalid extension id {id:?}: it must be a plain name without path separators or a leading dot"
+    );
+    Ok(())
 }
 
 fn manifest_from_old_manifest(
@@ -367,6 +384,24 @@ mod tests {
     use crate::ProcessExecCapability;
 
     use super::*;
+
+    #[test]
+    fn extension_ids_must_be_plain_names() {
+        for id in ["html", "my-extension_2", "C"] {
+            assert!(check_extension_id(id).is_ok(), "{id:?} should be accepted");
+        }
+        for id in [
+            "",
+            ".",
+            "..",
+            ".compiled-components",
+            "a/b",
+            "a\\b",
+            "../escape",
+        ] {
+            assert!(check_extension_id(id).is_err(), "{id:?} should be rejected");
+        }
+    }
 
     fn extension_manifest() -> ExtensionManifest {
         ExtensionManifest {

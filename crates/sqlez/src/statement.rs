@@ -55,6 +55,8 @@ impl<'a> Statement<'a> {
         } {
             let mut raw_statement = ptr::null_mut::<sqlite3_stmt>();
             let mut remaining_sql_ptr = ptr::null();
+            // SAFETY: `connection.sqlite3` stays open while `connection` is borrowed,
+            // `remaining_sql` is a NUL-terminated suffix of `sql`, and the out-pointers are locals.
             unsafe {
                 sqlite3_prepare_v2(
                     connection.sqlite3,
@@ -69,10 +71,17 @@ impl<'a> Statement<'a> {
                 .last_error()
                 .with_context(|| format!("Prepare call failed for query:\n{}", query.as_ref()))?;
 
+            // SAFETY: `last_error` confirmed the prepare succeeded, so SQLite pointed
+            // `remaining_sql_ptr` at the unparsed, NUL-terminated rest of `sql`, which outlives it.
             remaining_sql = unsafe { CStr::from_ptr(remaining_sql_ptr) };
             statement.raw_statements.push(raw_statement);
 
+            // SAFETY: `raw_statement` was just prepared on `connection`; it is null for SQL
+            // without a statement, which `sqlite3_stmt_readonly` reports as read-only.
             if !connection.can_write() && unsafe { sqlite3_stmt_readonly(raw_statement) == 0 } {
+                // SAFETY: `raw_statement` is non-null here, and `sqlite3_sql` of a statement from
+                // `sqlite3_prepare_v2` is a NUL-terminated copy of its SQL that lives until
+                // `statement` drops and finalizes it, after the error message is formatted.
                 let sql = unsafe { CStr::from_ptr(sqlite3_sql(raw_statement)) };
 
                 bail!(
@@ -90,6 +99,8 @@ impl<'a> Statement<'a> {
     }
 
     pub fn reset(&mut self) {
+        // SAFETY: `raw_statements` only holds statements `prepare` made on `self.connection`,
+        // finalized only in `Drop`; null entries are a no-op for `sqlite3_reset`.
         unsafe {
             for raw_statement in self.raw_statements.iter() {
                 sqlite3_reset(*raw_statement);
@@ -99,6 +110,8 @@ impl<'a> Statement<'a> {
     }
 
     pub fn parameter_count(&self) -> i32 {
+        // SAFETY: `raw_statements` only holds live statements prepared on `self.connection`;
+        // `sqlite3_bind_parameter_count` returns 0 for the null ones.
         unsafe {
             self.raw_statements
                 .iter()
@@ -110,6 +123,8 @@ impl<'a> Statement<'a> {
 
     fn bind_index_with(&self, index: i32, bind: &dyn Fn(&*mut sqlite3_stmt)) -> Result<()> {
         let mut any_succeed = false;
+        // SAFETY: `raw_statements` only holds live statements prepared on `self.connection`;
+        // `sqlite3_bind_parameter_count` returns 0 for the null ones.
         unsafe {
             for raw_statement in self.raw_statements.iter() {
                 if index <= sqlite3_bind_parameter_count(*raw_statement) {
@@ -133,8 +148,10 @@ impl<'a> Statement<'a> {
     pub fn bind_blob(&self, index: i32, blob: &[u8]) -> Result<()> {
         let index = index as c_int;
         let blob_pointer = blob.as_ptr() as *const _;
-        let len = blob.len() as c_int;
+        let len = c_int::try_from(blob.len()).context("blob is too large to bind")?;
 
+        // SAFETY: `bind_index_with` only passes statements from `self.raw_statements`, and
+        // `SQLITE_TRANSIENT` makes SQLite copy the `len` bytes of `blob` before returning.
         self.bind_index_with(index, &|raw_statement| unsafe {
             sqlite3_bind_blob(*raw_statement, index, blob_pointer, len, SQLITE_TRANSIENT());
         })
@@ -142,6 +159,8 @@ impl<'a> Statement<'a> {
 
     pub fn column_blob(&mut self, index: i32) -> Result<&[u8]> {
         let index = index as c_int;
+        // SAFETY: `current_statement` is a live statement prepared on `self.connection` (or null),
+        // and SQLite returns NULL with SQLITE_RANGE for an out-of-range `index` or no current row.
         let pointer = unsafe { sqlite3_column_blob(self.current_statement(), index) };
 
         self.connection
@@ -150,17 +169,24 @@ impl<'a> Statement<'a> {
         if pointer.is_null() {
             return Ok(&[]);
         }
+        // SAFETY: `current_statement` is a live statement prepared on `self.connection` (or null),
+        // and SQLite range-checks `index` and the current row itself.
         let len = unsafe { sqlite3_column_bytes(self.current_statement(), index) as usize };
         self.connection
             .last_error()
             .with_context(|| format!("Failed to read length of blob at index {index}"))?;
 
+        // SAFETY: `pointer` is non-null and `len` comes from `sqlite3_column_bytes` called after
+        // `sqlite3_column_blob`, as SQLite requires; the slice borrows `self` mutably, so no step,
+        // reset, finalize or type conversion can invalidate the bytes while it lives.
         unsafe { Ok(slice::from_raw_parts(pointer as *const u8, len)) }
     }
 
     pub fn bind_double(&self, index: i32, double: f64) -> Result<()> {
         let index = index as c_int;
 
+        // SAFETY: `bind_index_with` only passes statements from `self.raw_statements`, and SQLite
+        // range-checks `index`.
         self.bind_index_with(index, &|raw_statement| unsafe {
             sqlite3_bind_double(*raw_statement, index, double);
         })
@@ -168,6 +194,8 @@ impl<'a> Statement<'a> {
 
     pub fn column_double(&self, index: i32) -> Result<f64> {
         let index = index as c_int;
+        // SAFETY: `current_statement` is a live statement prepared on `self.connection` (or null),
+        // and SQLite range-checks `index` and the current row itself.
         let result = unsafe { sqlite3_column_double(self.current_statement(), index) };
         self.connection
             .last_error()
@@ -177,6 +205,8 @@ impl<'a> Statement<'a> {
 
     pub fn bind_int(&self, index: i32, int: i32) -> Result<()> {
         let index = index as c_int;
+        // SAFETY: `bind_index_with` only passes statements from `self.raw_statements`, and SQLite
+        // range-checks `index`.
         self.bind_index_with(index, &|raw_statement| unsafe {
             sqlite3_bind_int(*raw_statement, index, int);
         })
@@ -184,6 +214,8 @@ impl<'a> Statement<'a> {
 
     pub fn column_int(&self, index: i32) -> Result<i32> {
         let index = index as c_int;
+        // SAFETY: `current_statement` is a live statement prepared on `self.connection` (or null),
+        // and SQLite range-checks `index` and the current row itself.
         let result = unsafe { sqlite3_column_int(self.current_statement(), index) };
         self.connection
             .last_error()
@@ -193,6 +225,8 @@ impl<'a> Statement<'a> {
 
     pub fn bind_int64(&self, index: i32, int: i64) -> Result<()> {
         let index = index as c_int;
+        // SAFETY: `bind_index_with` only passes statements from `self.raw_statements`, and SQLite
+        // range-checks `index`.
         self.bind_index_with(index, &|raw_statement| unsafe {
             sqlite3_bind_int64(*raw_statement, index, int);
         })
@@ -200,6 +234,8 @@ impl<'a> Statement<'a> {
 
     pub fn column_int64(&self, index: i32) -> Result<i64> {
         let index = index as c_int;
+        // SAFETY: `current_statement` is a live statement prepared on `self.connection` (or null),
+        // and SQLite range-checks `index` and the current row itself.
         let result = unsafe { sqlite3_column_int64(self.current_statement(), index) };
         self.connection
             .last_error()
@@ -209,6 +245,8 @@ impl<'a> Statement<'a> {
 
     pub fn bind_null(&self, index: i32) -> Result<()> {
         let index = index as c_int;
+        // SAFETY: `bind_index_with` only passes statements from `self.raw_statements`, and SQLite
+        // range-checks `index`.
         self.bind_index_with(index, &|raw_statement| unsafe {
             sqlite3_bind_null(*raw_statement, index);
         })
@@ -217,8 +255,11 @@ impl<'a> Statement<'a> {
     pub fn bind_text(&self, index: i32, text: &str) -> Result<()> {
         let index = index as c_int;
         let text_pointer = text.as_ptr() as *const _;
-        let len = text.len() as c_int;
+        // A length that wrapped negative would make SQLite look for a NUL that `&str` doesn't have.
+        let len = c_int::try_from(text.len()).context("text is too long to bind")?;
 
+        // SAFETY: `bind_index_with` only passes statements from `self.raw_statements`, and
+        // `SQLITE_TRANSIENT` makes SQLite copy the `len` bytes of `text` before returning.
         self.bind_index_with(index, &|raw_statement| unsafe {
             sqlite3_bind_text(*raw_statement, index, text_pointer, len, SQLITE_TRANSIENT());
         })
@@ -226,6 +267,8 @@ impl<'a> Statement<'a> {
 
     pub fn column_text(&mut self, index: i32) -> Result<&str> {
         let index = index as c_int;
+        // SAFETY: `current_statement` is a live statement prepared on `self.connection` (or null),
+        // and SQLite returns NULL with SQLITE_RANGE for an out-of-range `index` or no current row.
         let pointer = unsafe { sqlite3_column_text(self.current_statement(), index) };
 
         self.connection
@@ -234,11 +277,16 @@ impl<'a> Statement<'a> {
         if pointer.is_null() {
             return Ok("");
         }
+        // SAFETY: `current_statement` is a live statement prepared on `self.connection` (or null),
+        // and SQLite range-checks `index` and the current row itself.
         let len = unsafe { sqlite3_column_bytes(self.current_statement(), index) as usize };
         self.connection
             .last_error()
             .with_context(|| format!("Failed to read text length at {index}"))?;
 
+        // SAFETY: `pointer` is non-null and `len` comes from `sqlite3_column_bytes` called after
+        // `sqlite3_column_text`, as SQLite requires; the returned `&str` borrows `self` mutably, so
+        // no step, reset, finalize or type conversion can invalidate the bytes while it lives.
         let slice = unsafe { slice::from_raw_parts(pointer, len) };
         Ok(str::from_utf8(slice)?)
     }
@@ -253,6 +301,8 @@ impl<'a> Statement<'a> {
     }
 
     pub fn column_type(&mut self, index: i32) -> Result<SqlType> {
+        // SAFETY: `current_statement` is a live statement prepared on `self.connection` (or null),
+        // and SQLite range-checks `index` and the current row itself.
         let result = unsafe { sqlite3_column_type(self.current_statement(), index) };
         self.connection.last_error()?;
         match result {
@@ -271,6 +321,8 @@ impl<'a> Statement<'a> {
     }
 
     fn step(&mut self) -> Result<StepResult> {
+        // SAFETY: `current_statement` is a live statement prepared on `self.connection`, or null,
+        // for which `sqlite3_step` returns SQLITE_MISUSE.
         match unsafe { sqlite3_step(self.current_statement()) } {
             SQLITE_ROW => Ok(StepResult::Row),
             SQLITE_DONE => {
@@ -382,6 +434,8 @@ impl<'a> Statement<'a> {
 
 impl Drop for Statement<'_> {
     fn drop(&mut self) {
+        // SAFETY: each statement was prepared on `self.connection`, which `'a` keeps open, and is
+        // finalized exactly once here; null entries are a no-op.
         unsafe {
             for raw_statement in self.raw_statements.iter() {
                 sqlite3_finalize(*raw_statement);

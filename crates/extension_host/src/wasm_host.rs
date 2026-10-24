@@ -9,7 +9,7 @@ use extension::{
     CodeLabel, Command, Completion, DebugAdapterBinary, DebugTaskDefinition, ExtensionCapability,
     ExtensionHostProxy, KeyValueStoreDelegate, Symbol, WorktreeDelegate,
 };
-use fs::Fs;
+use fs::{Fs, RemoveOptions};
 use futures::future::LocalBoxFuture;
 use futures::{
     Future, FutureExt, StreamExt as _,
@@ -19,7 +19,7 @@ use futures::{
     },
     future::BoxFuture,
 };
-use gpui::{App, AsyncApp, BackgroundExecutor, EntityId, Task};
+use gpui::{App, AppContext as _, AsyncApp, BackgroundExecutor, EntityId, Task, TaskExt as _};
 use http_client::HttpClient;
 use language::LanguageName;
 use lsp::LanguageServerName;
@@ -517,7 +517,11 @@ fn cache_store() -> Arc<IncrementalCompilationCache> {
     CACHE_STORE.clone()
 }
 
-const COMPILED_COMPONENT_CACHE_DIRECTORY: &str = ".compiled-components";
+/// A sibling of the work directory, never inside it: an extension may write anywhere in its own
+/// work directory, and the host loads these files as trusted native code.
+const COMPILED_COMPONENT_CACHE_DIRECTORY: &str = "compiled-components";
+/// Where the cache used to live, inside the work directory.
+const LEGACY_COMPILED_COMPONENT_CACHE_DIRECTORY: &str = ".compiled-components";
 const COMPILED_COMPONENT_FILE_EXTENSION: &str = "cwasm";
 const COMPILED_COMPONENT_DIGEST_HEX_LENGTH: usize = 64;
 
@@ -554,6 +558,8 @@ fn compile_component_with_disk_cache(
 
 fn load_trusted_precompiled_component(engine: &Engine, cache_path: &Path) -> Result<Component> {
     let serialized = std::fs::read(cache_path).context("failed to read compiled wasm component")?;
+    // SAFETY: `store_compiled_component` wrote this file from a component this engine compiled,
+    // and it lives outside every extension's work directory, so no extension can replace it.
     let loaded = unsafe { Component::deserialize(engine, &serialized) };
     loaded
         .map_err(anyhow::Error::from)
@@ -654,6 +660,21 @@ impl WasmHost {
         });
 
         let extension_settings = ExtensionSettings::get_global(cx);
+        cx.background_spawn({
+            let fs = fs.clone();
+            let legacy_cache = work_dir.join(LEGACY_COMPILED_COMPONENT_CACHE_DIRECTORY);
+            async move {
+                fs.remove_dir(
+                    &legacy_cache,
+                    RemoveOptions {
+                        recursive: true,
+                        ignore_if_not_exists: true,
+                    },
+                )
+                .await
+            }
+        })
+        .detach_and_log_err(cx);
 
         Arc::new(Self {
             engine: wasm_engine(cx.background_executor()),
@@ -684,8 +705,10 @@ impl WasmHost {
         let compile_task = {
             let manifest_id = manifest.id.clone();
             let engine = this.engine.clone();
-            let cache_directory = (!this.fs.is_fake())
-                .then(|| this.work_dir.join(COMPILED_COMPONENT_CACHE_DIRECTORY));
+            let cache_directory = (!this.fs.is_fake()).then(|| {
+                this.work_dir
+                    .with_file_name(COMPILED_COMPONENT_CACHE_DIRECTORY)
+            });
 
             executor.spawn(async move {
                 let zed_api_version = parse_wasm_extension_version(&manifest_id, &wasm_bytes)?;
