@@ -20,11 +20,19 @@ use std::{
     future::Future,
     path::{Path, PathBuf},
     sync::Arc,
+    time::Duration,
 };
 use util::merge_json_value_into;
 use util::{fs::remove_matching, rel_path::RelPath};
 
 const DEFAULT_NODE_ARGUMENTS: &[&str] = &["--max-old-space-size=8192"];
+const DIAGNOSTICS_PULL_DELAY: Duration = Duration::from_millis(300);
+const CLIENT_FILE_WATCHER_GLOBS: &[&str] = &[
+    "**/.eslintr{c.js,c.cjs,c.yaml,c.yml,c,c.json}",
+    "**/eslint.config.{js,mjs,cjs,ts,mts,cts}",
+    "**/.eslintignore",
+    "**/package.json",
+];
 
 fn eslint_server_binary_arguments(server_path: &Path) -> Vec<OsString> {
     DEFAULT_NODE_ARGUMENTS
@@ -372,6 +380,24 @@ impl LspAdapter for EsLintLspAdapter {
 
     fn pulls_diagnostics_only_on_save(&self, settings: Option<&Value>) -> bool {
         runs_on_save(settings)
+    }
+
+    /// Every pull lints the whole file again, type-aware rules included, so ESLint waits for a
+    /// pause in typing like IntelliJ's reanalysis delay instead of linting between keystrokes.
+    fn diagnostics_pull_delay(&self) -> Option<Duration> {
+        Some(DIAGNOSTICS_PULL_DELAY)
+    }
+
+    /// The server reloads its configuration only when its client reports these files changing;
+    /// they are VS Code's ESLint client watchers.
+    fn client_file_watchers(&self) -> Vec<lsp::FileSystemWatcher> {
+        CLIENT_FILE_WATCHER_GLOBS
+            .iter()
+            .map(|glob| lsp::FileSystemWatcher {
+                glob_pattern: lsp::GlobPattern::String((*glob).to_string()),
+                kind: None,
+            })
+            .collect()
     }
 }
 

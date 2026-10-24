@@ -34,7 +34,8 @@ const SERVER_ACTIVATIONS: &[ServerActivation] = &[
         workspace_files: &[
             "**/.oxlintrc.json",
             "**/.oxlintrc.jsonc",
-            "**/oxlint.config.{ts,mts,cts,js,mjs,cjs}",
+            // oxlint finds only these configurations on its own; a `.js` one needs `configPath`.
+            "**/oxlint.config.{ts,mts}",
         ],
         package_dependencies: &["oxlint"],
     },
@@ -211,12 +212,17 @@ mod server_activation_tests {
             ".oxlintrc.json",
             ".oxlintrc.jsonc",
             "oxlint.config.ts",
-            "oxlint.config.mjs",
+            "oxlint.config.mts",
             "packages/web/.oxlintrc.json",
         ] {
             assert!(matches("oxlint", path), "{path} should activate oxlint");
         }
-        for path in ["eslint.config.js", "src/oxlint.ts", ".oxlintrc.json.bak"] {
+        for path in [
+            "eslint.config.js",
+            "src/oxlint.ts",
+            ".oxlintrc.json.bak",
+            "oxlint.config.mjs",
+        ] {
             assert!(
                 !matches("oxlint", path),
                 "{path} should not activate oxlint"

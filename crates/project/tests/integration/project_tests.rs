@@ -2962,6 +2962,329 @@ async fn test_reporting_fs_changes_to_language_servers(cx: &mut gpui::TestAppCon
 }
 
 #[gpui::test]
+async fn test_changes_inside_node_modules_reach_only_servers_watching_excluded_directories(
+    cx: &mut gpui::TestAppContext,
+) {
+    init_test(cx);
+    let fs = FakeFs::new(cx.executor());
+    fs.insert_tree(
+        path!("/the-root"),
+        json!({
+            "src": { "a.rs": "" },
+            "node_modules": { "left-pad": { "index.d.ts": "" } },
+        }),
+    )
+    .await;
+    let project = Project::test(fs.clone(), [path!("/the-root").as_ref()], cx).await;
+    let language_registry = project.read_with(cx, |project, _| project.languages().clone());
+    language_registry.add(rust_lang());
+    let mut type_checkers = language_registry.register_fake_lsp(
+        "Rust",
+        FakeLspAdapter {
+            name: "the-type-checker",
+            watches_excluded_directories: true,
+            ..FakeLspAdapter::default()
+        },
+    );
+    let mut linters = language_registry.register_fake_lsp(
+        "Rust",
+        FakeLspAdapter {
+            name: "the-linter",
+            ..FakeLspAdapter::default()
+        },
+    );
+    cx.executor().run_until_parked();
+    let (_buffer, _handle) = project
+        .update(cx, |project, cx| {
+            project.open_local_buffer_with_lsp(path!("/the-root/src/a.rs"), cx)
+        })
+        .await
+        .unwrap();
+    let type_checker = type_checkers.next().await.unwrap();
+    let linter = linters.next().await.unwrap();
+    cx.executor().run_until_parked();
+
+    let mut file_changes = Vec::new();
+    for server in [&type_checker, &linter] {
+        server
+            .request::<lsp::request::RegisterCapability>(
+                lsp::RegistrationParams {
+                    registrations: vec![lsp::Registration {
+                        id: Default::default(),
+                        method: "workspace/didChangeWatchedFiles".to_string(),
+                        register_options: serde_json::to_value(
+                            lsp::DidChangeWatchedFilesRegistrationOptions {
+                                watchers: vec![lsp::FileSystemWatcher {
+                                    glob_pattern: lsp::GlobPattern::String(
+                                        path!("/the-root/**/*").to_string(),
+                                    ),
+                                    kind: None,
+                                }],
+                            },
+                        )
+                        .ok(),
+                    }],
+                },
+                DEFAULT_LSP_REQUEST_TIMEOUT,
+            )
+            .await
+            .into_response()
+            .unwrap();
+        let changes = Arc::new(Mutex::new(Vec::new()));
+        server.handle_notification::<lsp::notification::DidChangeWatchedFiles, _>({
+            let changes = changes.clone();
+            move |params, _| {
+                let mut changes = changes.lock();
+                changes.extend(params.changes);
+                changes.sort_by(|a: &lsp::FileEvent, b| a.uri.cmp(&b.uri));
+            }
+        });
+        file_changes.push(changes);
+    }
+    cx.executor().run_until_parked();
+
+    fs.insert_tree(
+        path!("/the-root/node_modules/fresh"),
+        json!({ "index.d.ts": "" }),
+    )
+    .await;
+    fs.remove_file(
+        path!("/the-root/node_modules/left-pad/index.d.ts").as_ref(),
+        Default::default(),
+    )
+    .await
+    .unwrap();
+    fs.create_file(path!("/the-root/src/b.rs").as_ref(), Default::default())
+        .await
+        .unwrap();
+    cx.executor().run_until_parked();
+
+    let file_event = |path: &str, typ| lsp::FileEvent {
+        uri: lsp::Uri::from_file_path(path).unwrap(),
+        typ,
+    };
+    assert_eq!(
+        &*file_changes[0].lock(),
+        &[
+            file_event(
+                path!("/the-root/node_modules/fresh"),
+                lsp::FileChangeType::CREATED
+            ),
+            file_event(
+                path!("/the-root/node_modules/fresh/index.d.ts"),
+                lsp::FileChangeType::CREATED
+            ),
+            file_event(
+                path!("/the-root/node_modules/left-pad/index.d.ts"),
+                lsp::FileChangeType::DELETED
+            ),
+            file_event(path!("/the-root/src/b.rs"), lsp::FileChangeType::CREATED),
+        ],
+        "a type checker hears about packages installed into the excluded node_modules"
+    );
+    assert_eq!(
+        &*file_changes[1].lock(),
+        &[file_event(
+            path!("/the-root/src/b.rs"),
+            lsp::FileChangeType::CREATED
+        )],
+        "other servers hear nothing from excluded directories"
+    );
+    project.update(cx, |project, cx| {
+        let worktree = project.worktrees(cx).next().unwrap();
+        let worktree = worktree.read(cx);
+        assert_eq!(
+            worktree
+                .entry_for_path(rel_path("node_modules"))
+                .map(|entry| entry.kind),
+            Some(EntryKind::UnloadedDir),
+            "node_modules is still not loaded"
+        );
+        assert!(
+            worktree
+                .entry_for_path(rel_path("node_modules/fresh"))
+                .is_none()
+        );
+    });
+}
+
+#[gpui::test]
+async fn test_client_file_watchers_report_changes_the_server_never_registered_for(
+    cx: &mut gpui::TestAppContext,
+) {
+    init_test(cx);
+    let fs = FakeFs::new(cx.executor());
+    fs.insert_tree(
+        path!("/the-root"),
+        json!({
+            "eslint.config.js": "export default [];",
+            "src": { "a.rs": "" },
+        }),
+    )
+    .await;
+    let project = Project::test(fs.clone(), [path!("/the-root").as_ref()], cx).await;
+    let language_registry = project.read_with(cx, |project, _| project.languages().clone());
+    language_registry.add(rust_lang());
+    let mut fake_servers = language_registry.register_fake_lsp(
+        "Rust",
+        FakeLspAdapter {
+            name: "the-linter",
+            client_file_watchers: vec![lsp::FileSystemWatcher {
+                glob_pattern: lsp::GlobPattern::String(
+                    "**/eslint.config.{js,mjs,cjs,ts,mts,cts}".to_string(),
+                ),
+                kind: None,
+            }],
+            ..FakeLspAdapter::default()
+        },
+    );
+    cx.executor().run_until_parked();
+    let (_buffer, _handle) = project
+        .update(cx, |project, cx| {
+            project.open_local_buffer_with_lsp(path!("/the-root/src/a.rs"), cx)
+        })
+        .await
+        .unwrap();
+    let fake_server = fake_servers.next().await.unwrap();
+    let file_changes = Arc::new(Mutex::new(Vec::new()));
+    fake_server.handle_notification::<lsp::notification::DidChangeWatchedFiles, _>({
+        let file_changes = file_changes.clone();
+        move |params, _| file_changes.lock().extend(params.changes)
+    });
+    cx.executor().run_until_parked();
+
+    fs.save(
+        path!("/the-root/eslint.config.js").as_ref(),
+        &"export default [{ rules: {} }];".into(),
+        Default::default(),
+    )
+    .await
+    .unwrap();
+    fs.create_file(path!("/the-root/src/b.rs").as_ref(), Default::default())
+        .await
+        .unwrap();
+    cx.executor().run_until_parked();
+
+    assert_eq!(
+        &*file_changes.lock(),
+        &[lsp::FileEvent {
+            uri: lsp::Uri::from_file_path(path!("/the-root/eslint.config.js")).unwrap(),
+            typ: lsp::FileChangeType::CHANGED,
+        }],
+        "the server reloads its configuration without registering watchers itself"
+    );
+}
+
+#[gpui::test]
+async fn test_server_with_a_pull_delay_is_pulled_once_per_pause_in_typing(
+    cx: &mut gpui::TestAppContext,
+) {
+    init_test(cx);
+    let fs = FakeFs::new(cx.executor());
+    fs.insert_tree(path!("/dir"), json!({ "a.rs": "one two three" }))
+        .await;
+    let project = Project::test(fs, [path!("/dir").as_ref()], cx).await;
+    let language_registry = project.read_with(cx, |project, _| project.languages().clone());
+    language_registry.add(rust_lang());
+    let pulling_server =
+        |name: &'static str,
+         diagnostics_pull_delay: Option<Duration>,
+         pull_count: Arc<atomic::AtomicUsize>| FakeLspAdapter {
+            name,
+            diagnostics_pull_delay,
+            capabilities: lsp::ServerCapabilities {
+                diagnostic_provider: Some(lsp::DiagnosticServerCapabilities::Options(
+                    lsp::DiagnosticOptions {
+                        identifier: Some(name.to_string()),
+                        inter_file_dependencies: false,
+                        workspace_diagnostics: false,
+                        work_done_progress_options: Default::default(),
+                    },
+                )),
+                ..lsp::ServerCapabilities::default()
+            },
+            initializer: Some(Box::new(move |fake_server| {
+                let pull_count = pull_count.clone();
+                fake_server.set_request_handler::<lsp::request::DocumentDiagnosticRequest, _, _>(
+                    move |_, _| {
+                        pull_count.fetch_add(1, atomic::Ordering::SeqCst);
+                        async move {
+                            Ok(lsp::DocumentDiagnosticReportResult::Report(
+                                lsp::DocumentDiagnosticReport::Full(
+                                    lsp::RelatedFullDocumentDiagnosticReport::default(),
+                                ),
+                            ))
+                        }
+                    },
+                );
+            })),
+            ..FakeLspAdapter::default()
+        };
+    let linter_pulls = Arc::new(atomic::AtomicUsize::new(0));
+    let type_checker_pulls = Arc::new(atomic::AtomicUsize::new(0));
+    let mut linters = language_registry.register_fake_lsp(
+        "Rust",
+        pulling_server(
+            "the-linter",
+            Some(Duration::from_millis(300)),
+            linter_pulls.clone(),
+        ),
+    );
+    let mut type_checkers = language_registry.register_fake_lsp(
+        "Rust",
+        pulling_server("the-type-checker", None, type_checker_pulls.clone()),
+    );
+
+    let (buffer, _handle) = project
+        .update(cx, |project, cx| {
+            project.open_local_buffer_with_lsp(path!("/dir/a.rs"), cx)
+        })
+        .await
+        .unwrap();
+    let _linter = linters.next().await.unwrap();
+    let _type_checker = type_checkers.next().await.unwrap();
+    cx.executor().run_until_parked();
+    let lsp_store = project.read_with(cx, |project, _| project.lsp_store());
+    let pull = |cx: &mut gpui::TestAppContext| {
+        lsp_store.update(cx, |lsp_store, cx| {
+            lsp_store.pull_diagnostics_for_buffer(buffer.clone(), cx)
+        })
+    };
+    pull(cx).await.unwrap();
+    assert_eq!(
+        linter_pulls.load(atomic::Ordering::SeqCst),
+        1,
+        "a file that was not edited is linted right away"
+    );
+    let type_checker_pulls_before_typing = type_checker_pulls.load(atomic::Ordering::SeqCst);
+
+    for keystroke in ["a", "b"] {
+        buffer.update(cx, |buffer, cx| buffer.edit([(0..0, keystroke)], None, cx));
+        pull(cx).await.unwrap();
+        cx.executor().advance_clock(Duration::from_millis(100));
+        cx.executor().run_until_parked();
+    }
+    assert_eq!(
+        linter_pulls.load(atomic::Ordering::SeqCst),
+        1,
+        "the linter waits while typing goes on"
+    );
+    assert_eq!(
+        type_checker_pulls.load(atomic::Ordering::SeqCst),
+        type_checker_pulls_before_typing + 2,
+        "a server without a delay is pulled after every edit"
+    );
+
+    cx.executor().advance_clock(Duration::from_millis(200));
+    cx.executor().run_until_parked();
+    assert_eq!(
+        linter_pulls.load(atomic::Ordering::SeqCst),
+        2,
+        "the linter lints once when typing pauses"
+    );
+}
+
+#[gpui::test]
 async fn test_single_file_worktrees_diagnostics(cx: &mut gpui::TestAppContext) {
     init_test(cx);
 

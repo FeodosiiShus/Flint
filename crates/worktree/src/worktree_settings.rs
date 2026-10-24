@@ -94,7 +94,7 @@ impl WorktreeSettings {
     /// contents.
     pub fn is_directory_excluded(&self, path: &RelPath) -> bool {
         // Checked for every scanned path, so skip the matcher's allocations when nothing is
-        // excluded, which is the default.
+        // excluded.
         !self.excluded_directories.is_empty()
             && !path.is_empty()
             && self.excluded_directories.is_match(path)

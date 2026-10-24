@@ -30478,6 +30478,106 @@ async fn test_document_format_with_prettier(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+async fn test_auto_format_uses_biome_unless_the_project_installs_prettier(cx: &mut TestAppContext) {
+    init_test(cx, |_| {});
+    let fs = FakeFs::new(cx.executor());
+    fs.insert_tree(
+        path!("/biome-project"),
+        json!({ "package.json": "{}", "biome.json": "{}", "file.ts": "" }),
+    )
+    .await;
+    fs.insert_tree(
+        path!("/prettier-project"),
+        json!({
+            "package.json": r#"{"devDependencies": {"prettier": "3.6.2"}}"#,
+            "node_modules": { "prettier": { "package.json": "{}" } },
+            "biome.json": "{}",
+            "file.ts": "",
+        }),
+    )
+    .await;
+    let project = Project::test(
+        fs,
+        [
+            path!("/biome-project").as_ref(),
+            path!("/prettier-project").as_ref(),
+        ],
+        cx,
+    )
+    .await;
+    let language_registry = project.read_with(cx, |project, _| project.languages().clone());
+    language_registry.add(Arc::new(Language::new(
+        LanguageConfig {
+            name: "TypeScript".into(),
+            matcher: (LanguageMatcher {
+                path_suffixes: vec!["ts".to_string()],
+                ..Default::default()
+            })
+            .into(),
+            ..Default::default()
+        },
+        Some(tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into()),
+    )));
+    update_test_language_settings(cx, &|settings| {
+        settings.defaults.prettier.get_or_insert_default().allowed = Some(true);
+        settings.defaults.formatter = Some(FormatterList::default());
+    });
+    let mut biome_servers = language_registry.register_fake_lsp(
+        "TypeScript",
+        FakeLspAdapter {
+            name: "biome",
+            formats_projects_without_prettier: true,
+            capabilities: lsp::ServerCapabilities {
+                document_formatting_provider: Some(lsp::OneOf::Left(true)),
+                ..lsp::ServerCapabilities::default()
+            },
+            ..FakeLspAdapter::default()
+        },
+    );
+
+    let mut format_with_auto = async |file: &str, cx: &mut TestAppContext| {
+        let (buffer, _handle) = project
+            .update(cx, |project, cx| {
+                project.open_local_buffer_with_lsp(file, cx)
+            })
+            .await
+            .unwrap();
+        let biome = biome_servers.next().await.unwrap();
+        biome.set_request_handler::<lsp::request::Formatting, _, _>(|_, _| async {
+            Ok(Some(vec![lsp::TextEdit::new(
+                lsp::Range::new(lsp::Position::new(0, 0), lsp::Position::new(0, 0)),
+                "formatted by biome".to_string(),
+            )]))
+        });
+        cx.executor().run_until_parked();
+        project
+            .update(cx, |project, cx| {
+                project.format(
+                    HashSet::from_iter([buffer.clone()]),
+                    LspFormatTarget::Buffers,
+                    true,
+                    FormatTrigger::Manual,
+                    cx,
+                )
+            })
+            .await
+            .unwrap();
+        buffer.read_with(cx, |buffer, _| buffer.text())
+    };
+
+    assert_eq!(
+        format_with_auto(path!("/biome-project/file.ts"), cx).await,
+        "formatted by biome",
+        "a Biome project without its own Prettier is formatted by Biome, not the bundled Prettier"
+    );
+    assert_eq!(
+        format_with_auto(path!("/prettier-project/file.ts"), cx).await,
+        project::TEST_PRETTIER_FORMAT_SUFFIX,
+        "a project that installs Prettier keeps formatting with it"
+    );
+}
+
+#[gpui::test]
 async fn test_document_format_with_prettier_explicit_language(cx: &mut TestAppContext) {
     init_test(cx, |settings| {
         settings.defaults.formatter = Some(FormatterList::Single(Formatter::Prettier))

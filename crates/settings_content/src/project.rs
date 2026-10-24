@@ -285,7 +285,7 @@ pub struct WorktreeSettingsContent {
     pub file_scan_inclusions: Option<SplicingVec>,
 
     /// Directories that stay in the project tree but whose contents are never
-    /// scanned, watched or searched, like IntelliJ's excluded folders. "Mark
+    /// scanned, loaded or searched, like IntelliJ's excluded folders. "Mark
     /// Directory As > Excluded" in the project panel excludes a directory too,
     /// keeping that exclusion in Flint's own data rather than in this setting or
     /// any file of the project.

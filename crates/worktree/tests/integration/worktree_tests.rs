@@ -2814,6 +2814,158 @@ async fn test_excluded_directories_stay_in_the_tree_without_their_contents(
 }
 
 #[gpui::test]
+async fn test_changes_inside_excluded_directories_are_reported_without_loading_them(
+    cx: &mut TestAppContext,
+) {
+    init_test(cx);
+    cx.executor().allow_parking();
+    let dir = TempTree::new(json!({
+        "node_modules": {
+            "left-pad": {
+                "package.json": "{}",
+                "index.d.ts": "",
+            },
+        },
+        "src": {
+            "index.ts": "",
+        },
+    }));
+    let tree = Worktree::local(
+        dir.path(),
+        true,
+        RealFs::new(None, cx.executor()),
+        Default::default(),
+        true,
+        WorktreeId::from_proto(0),
+        &mut cx.to_async(),
+    )
+    .await
+    .unwrap();
+    cx.read(|cx| tree.read(cx).as_local().unwrap().scan_complete())
+        .await;
+    tree.flush_fs_events(cx).await;
+    let reported = record_excluded_path_changes(&tree, cx);
+
+    std::fs::create_dir_all(dir.path().join("node_modules/fresh"))
+        .expect("creating a package directory");
+    std::fs::write(dir.path().join("node_modules/fresh/package.json"), "{}")
+        .expect("writing the package manifest");
+    std::fs::write(dir.path().join("node_modules/fresh/index.d.ts"), "")
+        .expect("writing the package types");
+    std::fs::remove_file(dir.path().join("node_modules/left-pad/index.d.ts"))
+        .expect("removing a file of an installed package");
+    tree.flush_fs_events(cx).await;
+    cx.executor().run_until_parked();
+
+    let reported = reported.lock().clone();
+    for path in [
+        "node_modules/fresh",
+        "node_modules/fresh/package.json",
+        "node_modules/fresh/index.d.ts",
+    ] {
+        assert!(
+            reported.contains(&(rel_path(path).into(), PathChange::Added)),
+            "{path} is reported as created: {reported:?}"
+        );
+    }
+    // FSEvents may merge the removal with the file's creation moments before, so only the
+    // path is certain.
+    assert!(
+        reported
+            .iter()
+            .any(|(path, _)| path.as_ref() == rel_path("node_modules/left-pad/index.d.ts")),
+        "a removed file is reported: {reported:?}"
+    );
+    assert!(
+        reported
+            .iter()
+            .all(|(path, _)| path.starts_with(rel_path("node_modules"))),
+        "only paths inside the excluded directory are reported this way: {reported:?}"
+    );
+    tree.read_with(cx, |tree, _| {
+        assert_eq!(
+            tree.entry_for_path(rel_path("node_modules"))
+                .map(|entry| entry.kind),
+            Some(EntryKind::UnloadedDir),
+            "the excluded directory is still never read"
+        );
+        assert!(
+            tree.entry_for_path(rel_path("node_modules/fresh"))
+                .is_none(),
+            "reported changes are not loaded into the tree"
+        );
+    });
+}
+
+#[gpui::test]
+async fn test_the_first_install_into_a_fresh_checkout_is_reported(cx: &mut TestAppContext) {
+    init_test(cx);
+    cx.executor().allow_parking();
+    let dir = TempTree::new(json!({
+        "package.json": "{}",
+        "src": {
+            "index.ts": "",
+        },
+    }));
+    let tree = Worktree::local(
+        dir.path(),
+        true,
+        RealFs::new(None, cx.executor()),
+        Default::default(),
+        true,
+        WorktreeId::from_proto(0),
+        &mut cx.to_async(),
+    )
+    .await
+    .unwrap();
+    cx.read(|cx| tree.read(cx).as_local().unwrap().scan_complete())
+        .await;
+    tree.flush_fs_events(cx).await;
+    let reported = record_excluded_path_changes(&tree, cx);
+
+    std::fs::create_dir_all(dir.path().join("node_modules/fresh"))
+        .expect("creating node_modules with a package");
+    std::fs::write(dir.path().join("node_modules/fresh/index.d.ts"), "")
+        .expect("writing the package types");
+    tree.flush_fs_events(cx).await;
+    cx.executor().run_until_parked();
+
+    let reported = reported.lock().clone();
+    assert!(
+        reported.contains(&(
+            rel_path("node_modules/fresh/index.d.ts").into(),
+            PathChange::Added
+        )),
+        "a file installed together with node_modules is reported: {reported:?}"
+    );
+    tree.read_with(cx, |tree, _| {
+        assert_eq!(
+            tree.entry_for_path(rel_path("node_modules"))
+                .map(|entry| entry.kind),
+            Some(EntryKind::UnloadedDir),
+            "the new node_modules is excluded and not read"
+        );
+    });
+}
+
+fn record_excluded_path_changes(
+    tree: &Entity<Worktree>,
+    cx: &mut TestAppContext,
+) -> Arc<Mutex<Vec<(Arc<RelPath>, PathChange)>>> {
+    let reported = Arc::new(Mutex::new(Vec::new()));
+    tree.update(cx, |_, cx| {
+        let reported = reported.clone();
+        cx.subscribe(tree, move |_, _, event, _| {
+            if let Event::UpdatedExcludedPaths(changes) = event {
+                reported.lock().extend(changes.iter().cloned());
+            }
+        })
+        .detach();
+    });
+    reported
+}
+
+#[gpui::test]
 async fn test_ide_excluded_directories_apply_live_alongside_the_setting(cx: &mut TestAppContext) {
     init_test(cx);
     cx.executor().allow_parking();

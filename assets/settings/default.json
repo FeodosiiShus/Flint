@@ -1414,10 +1414,12 @@
   // that are overly broad can slow down Zed's file scanning. `file_scan_exclusions` takes
   // precedence over these inclusions.
   "file_scan_inclusions": [".env*"],
-  // Directories that stay in the project tree but whose contents are never scanned, watched,
+  // Directories that stay in the project tree but whose contents are never scanned, loaded,
   // searched or opened in a language server, like IntelliJ's excluded folders, so no linter or type
-  // checker reports problems in them. "Mark Directory As > Excluded" in the project panel excludes a
-  // directory too, keeping that in Flint's own data rather than in any project file.
+  // checker reports problems in them. Only the TypeScript server still gets the file changes in
+  // them that its watchers ask for, to notice installed packages. "Mark Directory As > Excluded" in
+  // the project panel excludes a directory too, keeping that in Flint's own data rather than in any
+  // project file.
   // Installed packages are the largest tree in a JavaScript or TypeScript repository and are never
   // edited, so they are excluded by default even when the repository does not ignore them in Git.
   "excluded_directories": ["**/node_modules"],
@@ -2233,17 +2235,22 @@
         },
       },
     },
-    // Biome's language server runs the project's `@biomejs/biome` (or a `biome` on `PATH`), so it
-    // needs no binary settings. `lsp.biome.settings` answers its `workspace/configuration`
-    // request with Biome's `requireConfiguration`, `configurationPath`, `inlineConfig` and
-    // `goToDefinition` keys; the `require_config_file`, `config_path`, `inline_config` and
-    // `goto_definition` names used by Biome's Zed extension are accepted too.
+    // Biome runs the project's own `@biomejs/biome` (or a `biome` on `PATH`) and finds the
+    // project's configuration itself, up to a monorepo's root `biome.json`. Its settings take
+    // Biome's names or the ones Biome's Zed extension uses:
+    // "biome": {
+    //   "settings": {
+    //     "requireConfiguration": true, // or "require_config_file"
+    //     "configurationPath": "biome.base.json", // or "config_path"
+    //     "inlineConfig": {}, // or "inline_config"
+    //     "goToDefinition": true // or "goto_definition"
+    //   }
+    // },
     "tsgo": {
       "settings": {
         "typescript": {
           "inlayHints": {
-            // Literals only, as in VS Code and WebStorm: asking for a hint on every call makes
-            // the server resolve parameter types for arguments whose names already say enough.
+            // Only literal arguments get a parameter name hint, as in WebStorm.
             "parameterNames": {
               "enabled": "literals",
               "suppressWhenArgumentMatchesName": false,
@@ -2268,8 +2275,7 @@
         },
         "javascript": {
           "inlayHints": {
-            // Literals only, as in VS Code and WebStorm: asking for a hint on every call makes
-            // the server resolve parameter types for arguments whose names already say enough.
+            // Only literal arguments get a parameter name hint, as in WebStorm.
             "parameterNames": {
               "enabled": "literals",
               "suppressWhenArgumentMatchesName": false,

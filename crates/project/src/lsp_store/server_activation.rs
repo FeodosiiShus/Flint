@@ -1,8 +1,12 @@
-use std::sync::Arc;
+use std::{ffi::OsStr, path::Path, sync::Arc};
 
 use collections::HashMap;
 use fs::Fs;
-use futures::channel::mpsc::{UnboundedReceiver, UnboundedSender, unbounded};
+use futures::{
+    StreamExt as _,
+    channel::mpsc::{UnboundedReceiver, UnboundedSender, unbounded},
+};
+use git::DOT_GIT;
 use language::{LanguageRegistry, ServerActivationRule};
 use lsp::LanguageServerName;
 use parking_lot::Mutex;
@@ -11,6 +15,8 @@ use worktree::{PathChange, Snapshot, UpdatedEntriesSet};
 
 const PACKAGE_MANIFEST_NAME: &str = "package.json";
 const MAX_PACKAGE_MANIFESTS: usize = 64;
+/// How many directories above a worktree are searched for the repository root.
+const MAX_ANCESTOR_DIRECTORIES: usize = 8;
 
 pub(crate) struct ProbeRequest {
     pub(crate) worktree_id: WorktreeId,
@@ -212,7 +218,64 @@ pub(crate) async fn probe(
         }
     }
 
+    if ancestors_activate(rule, snapshot.abs_path(), fs).await {
+        return Some(true);
+    }
+
     if inconclusive { None } else { Some(false) }
+}
+
+/// Node tools find their configuration and packages up the directory tree, so a package of a
+/// monorepo opened as its own project still uses the repository's configuration and root
+/// `package.json`. Only the directories up to the repository root count, so a configuration lying
+/// in the home directory does not start a server for every project below it.
+async fn ancestors_activate(
+    rule: &ServerActivationRule,
+    worktree_root: &Path,
+    fs: &dyn Fs,
+) -> bool {
+    if matches!(fs.metadata(&worktree_root.join(DOT_GIT)).await, Ok(Some(_))) {
+        return false;
+    }
+    let mut directories = Vec::new();
+    let mut found_repository_root = false;
+    for directory in worktree_root
+        .ancestors()
+        .skip(1)
+        .take(MAX_ANCESTOR_DIRECTORIES)
+    {
+        directories.push(directory);
+        if matches!(fs.metadata(&directory.join(DOT_GIT)).await, Ok(Some(_))) {
+            found_repository_root = true;
+            break;
+        }
+    }
+    if !found_repository_root {
+        return false;
+    }
+
+    for directory in directories {
+        if rule.has_workspace_files()
+            && let Ok(mut entries) = fs.read_dir(directory).await
+        {
+            while let Some(entry) = entries.next().await {
+                if let Ok(path) = entry
+                    && path
+                        .file_name()
+                        .and_then(OsStr::to_str)
+                        .is_some_and(|file_name| rule.matches_workspace_file(file_name))
+                {
+                    return true;
+                }
+            }
+        }
+        if let Ok(manifest) = fs.load(&directory.join(PACKAGE_MANIFEST_NAME)).await
+            && rule.manifest_declares_dependency(&manifest) == Some(true)
+        {
+            return true;
+        }
+    }
+    false
 }
 
 #[cfg(test)]
@@ -417,6 +480,105 @@ mod tests {
         assert_eq!(
             probe(&notes_rule, snapshot_for("plain"), fs.as_ref()).await,
             Some(false)
+        );
+    }
+
+    #[gpui::test]
+    async fn probe_counts_the_monorepo_above_a_package_opened_on_its_own(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            let settings_store = SettingsStore::test(cx);
+            cx.set_global(settings_store);
+        });
+        let fs = FakeFs::new(cx.executor());
+        fs.insert_tree(
+            path!("/monorepo"),
+            json!({
+                ".git": {},
+                "package.json": r#"{ "devDependencies": { "tailwindcss": "^4" } }"#,
+                "apps": { "web": { "src": { "main.ts": "" } } },
+            }),
+        )
+        .await;
+        fs.insert_tree(
+            path!("/configured"),
+            json!({
+                ".git": {},
+                "tailwind.config.ts": "",
+                "apps": { "admin": { "src": { "main.ts": "" } } },
+            }),
+        )
+        .await;
+        fs.insert_tree(
+            path!("/home"),
+            json!({
+                "package.json": r#"{ "devDependencies": { "tailwindcss": "^4" } }"#,
+                "scratch": { "notes": { "main.ts": "" } },
+            }),
+        )
+        .await;
+        let worktree_roots = [
+            path!("/monorepo/apps/web"),
+            path!("/configured/apps/admin"),
+            path!("/home/scratch/notes"),
+        ];
+        let project = Project::test(
+            fs.clone(),
+            worktree_roots.iter().map(|root| Path::new(*root)),
+            cx,
+        )
+        .await;
+        let snapshots = project.read_with(cx, |project, cx| {
+            project
+                .worktrees(cx)
+                .map(|worktree| worktree.read(cx).snapshot())
+                .collect::<Vec<_>>()
+        });
+        let snapshot_for = |root: &str| {
+            snapshots
+                .iter()
+                .find(|snapshot| snapshot.abs_path().as_ref() == Path::new(root))
+                .expect("worktree should exist")
+        };
+
+        assert_eq!(
+            probe(
+                &tailwind_rule(),
+                snapshot_for(worktree_roots[0]),
+                fs.as_ref()
+            )
+            .await,
+            Some(true),
+            "the root package.json of the repository declares the dependency"
+        );
+        assert_eq!(
+            probe(
+                &tailwind_rule(),
+                snapshot_for(worktree_roots[1]),
+                fs.as_ref()
+            )
+            .await,
+            Some(true),
+            "the repository root keeps the configuration file"
+        );
+        assert_eq!(
+            probe(
+                &tailwind_rule(),
+                snapshot_for(worktree_roots[2]),
+                fs.as_ref()
+            )
+            .await,
+            Some(false),
+            "outside a repository, directories above the project do not count"
+        );
+        assert_eq!(
+            probe(
+                &ServerActivationRule::new(&["**/.obsidian"], &[]),
+                snapshot_for(worktree_roots[0]),
+                fs.as_ref()
+            )
+            .await,
+            Some(false),
+            "only Node tools, which resolve up the tree, look above the project"
         );
     }
 }

@@ -6,7 +6,7 @@ use lsp::{CodeActionKind, LanguageServerBinary, LanguageServerName, Uri};
 use node_runtime::NodeRuntime;
 use project::Fs;
 use project::lsp_store::language_server_settings_for;
-use serde_json::{Map, Value, json};
+use serde_json::{Map, Value};
 use settings::SettingsLocation;
 use std::{
     ffi::{OsStr, OsString},
@@ -21,7 +21,6 @@ const SERVER_NAME: LanguageServerName = LanguageServerName::new_static("biome");
 const PROJECT_LAUNCHER: &str = "node_modules/@biomejs/biome/bin/biome";
 /// The section Biome's server asks for in `workspace/configuration`.
 const CONFIGURATION_SECTION: &str = "biome";
-const CONFIG_FILES: [&str; 4] = ["biome.json", "biome.jsonc", ".biome.json", ".biome.jsonc"];
 const FIX_ALL_CODE_ACTION: &str = "source.fixAll.biome";
 const ORGANIZE_IMPORTS_CODE_ACTION: &str = "source.organizeImports.biome";
 const NOT_INSTALLED: &str =
@@ -47,21 +46,6 @@ async fn find_project_launcher(fs: &dyn Fs, worktree_root: &Path) -> Option<Path
         let launcher = directory.join(PROJECT_LAUNCHER);
         if fs.is_file(&launcher).await {
             return Some(launcher);
-        }
-    }
-    None
-}
-
-/// Finds the nearest Biome configuration (`biome.json`, `biome.jsonc`, `.biome.json` or
-/// `.biome.jsonc`), so a package opened inside a monorepo uses the configuration the repository
-/// keeps above it.
-async fn find_config_file(fs: &dyn Fs, worktree_root: &Path) -> Option<PathBuf> {
-    for directory in worktree_root.ancestors() {
-        for file_name in CONFIG_FILES {
-            let config = directory.join(file_name);
-            if fs.is_file(&config).await {
-                return Some(config);
-            }
         }
     }
     None
@@ -96,22 +80,22 @@ fn server_setting_name(user_name: &str) -> &str {
     }
 }
 
-fn workspace_configuration_for(user_settings: Option<Value>, config_file: Option<&Path>) -> Value {
+/// No `configurationPath` is sent unless the user sets one: an explicit path replaces Biome's
+/// own search, which walks up from the opened folder past nested `"root": false` configurations
+/// to the monorepo's root configuration.
+fn workspace_configuration_for(user_settings: Option<Value>) -> Value {
     let mut settings = Map::new();
     if let Some(Value::Object(user_settings)) = user_settings {
         for (name, value) in user_settings {
             settings.insert(server_setting_name(&name).to_string(), value);
         }
     }
-    if !settings.contains_key("configurationPath")
-        && let Some(config_file) = config_file
-    {
-        settings.insert(
-            "configurationPath".to_string(),
-            Value::String(config_file.to_string_lossy().into_owned()),
-        );
-    }
-    json!({ CONFIGURATION_SECTION: settings })
+    // `workspace/configuration` reads the `biome` section, and so does
+    // `workspace/didChangeConfiguration` since Biome 2.4.9; the 2.4 releases before it parse
+    // the notification's settings as flat options, so both shapes are sent.
+    let mut configuration = settings.clone();
+    configuration.insert(CONFIGURATION_SECTION.to_string(), Value::Object(settings));
+    Value::Object(configuration)
 }
 
 impl LspInstaller for BiomeLspAdapter {
@@ -175,6 +159,10 @@ impl LspAdapter for BiomeLspAdapter {
         ])
     }
 
+    fn formats_projects_without_prettier(&self) -> bool {
+        true
+    }
+
     async fn workspace_configuration(
         self: Arc<Self>,
         delegate: &Arc<dyn LspAdapterDelegate>,
@@ -203,11 +191,7 @@ impl LspAdapter for BiomeLspAdapter {
             )
             .and_then(|settings| settings.settings.clone())
         });
-        let config_file = find_config_file(self.fs.as_ref(), worktree_root).await;
-        Ok(workspace_configuration_for(
-            user_settings,
-            config_file.as_deref(),
-        ))
+        Ok(workspace_configuration_for(user_settings))
     }
 }
 
@@ -216,6 +200,7 @@ mod tests {
     use super::*;
     use ::fs::FakeFs;
     use gpui::TestAppContext;
+    use serde_json::json;
     use util::path;
 
     #[test]
@@ -286,45 +271,6 @@ mod tests {
     }
 
     #[gpui::test]
-    async fn the_configuration_file_is_found_up_the_monorepo(cx: &mut TestAppContext) {
-        let fs = FakeFs::new(cx.executor());
-        fs.insert_tree(
-            path!("/repo"),
-            json!({
-                "biome.json": "{}",
-                "packages": {
-                    "web": { "biome.jsonc": "{}" },
-                    "ui": { ".biome.json": "{}" },
-                    "admin": { "biome.json": "{}", ".biome.json": "{}" },
-                    "api": { "src": { "index.ts": "" } },
-                },
-            }),
-        )
-        .await;
-
-        assert_eq!(
-            find_config_file(fs.as_ref(), Path::new(path!("/repo/packages/api"))).await,
-            Some(PathBuf::from(path!("/repo/biome.json"))),
-            "a package uses the monorepo's configuration"
-        );
-        assert_eq!(
-            find_config_file(fs.as_ref(), Path::new(path!("/repo/packages/web"))).await,
-            Some(PathBuf::from(path!("/repo/packages/web/biome.jsonc"))),
-            "the nearest configuration wins"
-        );
-        assert_eq!(
-            find_config_file(fs.as_ref(), Path::new(path!("/repo/packages/ui"))).await,
-            Some(PathBuf::from(path!("/repo/packages/ui/.biome.json"))),
-            "a hidden configuration in the nearest directory wins over a parent's"
-        );
-        assert_eq!(
-            find_config_file(fs.as_ref(), Path::new(path!("/repo/packages/admin"))).await,
-            Some(PathBuf::from(path!("/repo/packages/admin/biome.json"))),
-            "biome.json wins over .biome.json in the same directory"
-        );
-    }
-
-    #[gpui::test]
     async fn a_project_without_biome_has_no_launcher(cx: &mut TestAppContext) {
         let fs = FakeFs::new(cx.executor());
         fs.insert_tree(
@@ -341,29 +287,25 @@ mod tests {
     #[test]
     fn workspace_configuration_answers_the_biome_section() {
         assert_eq!(
-            workspace_configuration_for(None, None),
+            workspace_configuration_for(None),
             json!({ "biome": {} }),
-            "without user settings biome reads the project's configuration"
+            "without user settings no configuration path is sent, so Biome finds a monorepo's \
+             root configuration itself"
         );
         assert_eq!(
-            workspace_configuration_for(
-                Some(json!({
-                    "require_config_file": true,
-                    "config_path": "packages/web/biome.json",
-                    "inline_config": { "linter": { "rules": { "suspicious": { "noConsole": "off" } } } },
-                    "goto_definition": true
-                })),
-                None
-            ),
+            workspace_configuration_for(Some(json!({
+                "require_config_file": true,
+                "config_path": "packages/web/biome.json",
+                "inline_config": { "linter": { "rules": { "suspicious": { "noConsole": "off" } } } },
+                "goto_definition": true
+            })))["biome"],
             json!({
-                "biome": {
-                    "requireConfiguration": true,
-                    "configurationPath": "packages/web/biome.json",
-                    "inlineConfig": {
-                        "linter": { "rules": { "suspicious": { "noConsole": "off" } } }
-                    },
-                    "goToDefinition": true
-                }
+                "requireConfiguration": true,
+                "configurationPath": "packages/web/biome.json",
+                "inlineConfig": {
+                    "linter": { "rules": { "suspicious": { "noConsole": "off" } } }
+                },
+                "goToDefinition": true
             }),
             "the names the Biome Zed extension documents map to Biome's LSP settings"
         );
@@ -372,47 +314,32 @@ mod tests {
     #[test]
     fn workspace_configuration_passes_biomes_camel_case_settings_through() {
         assert_eq!(
-            workspace_configuration_for(
-                Some(json!({
-                    "requireConfiguration": false,
-                    "inlineConfig": { "formatter": { "lineWidth": 100 } }
-                })),
-                None
-            ),
+            workspace_configuration_for(Some(json!({
+                "requireConfiguration": false,
+                "inlineConfig": { "formatter": { "lineWidth": 100 } }
+            })))["biome"],
             json!({
-                "biome": {
-                    "requireConfiguration": false,
-                    "inlineConfig": { "formatter": { "lineWidth": 100 } }
-                }
+                "requireConfiguration": false,
+                "inlineConfig": { "formatter": { "lineWidth": 100 } }
             })
         );
     }
 
     #[test]
-    fn workspace_configuration_uses_the_detected_configuration_unless_the_user_sets_one() {
+    fn workspace_configuration_also_carries_the_settings_flat_for_biome_before_2_4_9() {
         assert_eq!(
-            workspace_configuration_for(None, Some(Path::new("/repo/biome.json"))),
+            workspace_configuration_for(Some(json!({
+                "config_path": "biome.base.json",
+                "requireConfiguration": true
+            }))),
             json!({
-                "biome": { "configurationPath": "/repo/biome.json" }
+                "configurationPath": "biome.base.json",
+                "requireConfiguration": true,
+                "biome": {
+                    "configurationPath": "biome.base.json",
+                    "requireConfiguration": true
+                }
             })
-        );
-        assert_eq!(
-            workspace_configuration_for(
-                Some(json!({ "config_path": "packages/web/biome.json" })),
-                Some(Path::new("/repo/biome.json"))
-            ),
-            json!({
-                "biome": { "configurationPath": "packages/web/biome.json" }
-            }),
-            "an explicit path wins over the detected one"
-        );
-        assert_eq!(
-            workspace_configuration_for(
-                Some(json!({ "configurationPath": null })),
-                Some(Path::new("/repo/biome.json"))
-            ),
-            json!({ "biome": { "configurationPath": null } }),
-            "an explicit null still stops the detected path from being sent"
         );
     }
 

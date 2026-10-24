@@ -455,6 +455,7 @@ enum ScanState {
         barrier: SmallVec<[barrier::Sender; 1]>,
         scanning: bool,
     },
+    ExcludedPathsUpdated(UpdatedExcludedPathsSet),
     RootUpdated {
         new_path: Arc<SanitizedPath>,
     },
@@ -470,6 +471,10 @@ struct UpdateObservationState {
 #[derive(Debug, Clone)]
 pub enum Event {
     UpdatedEntries(UpdatedEntriesSet),
+    /// Files changed inside excluded directories. The worktree never loads them, but language
+    /// servers that watch them still need the changes: the TypeScript server only learns about
+    /// installed packages from changes inside `node_modules`.
+    UpdatedExcludedPaths(UpdatedExcludedPathsSet),
     UpdatedGitRepositories(UpdatedGitRepositoriesSet),
     UpdatedRootRepoCommonDir {
         old: Option<Arc<SanitizedPath>>,
@@ -1446,6 +1451,9 @@ impl LocalWorktree {
                             *this.is_scanning.0.borrow_mut() = scanning;
                             this.set_snapshot(snapshot, changes, cx);
                             drop(barrier);
+                        }
+                        ScanState::ExcludedPathsUpdated(changes) => {
+                            cx.emit(Event::UpdatedExcludedPaths(changes));
                         }
                         ScanState::RootUpdated { new_path } => {
                             this.update_abs_path_and_refresh(new_path, cx);
@@ -4085,6 +4093,7 @@ pub struct UpdatedGitRepository {
 }
 
 pub type UpdatedEntriesSet = Arc<[(Arc<RelPath>, ProjectEntryId, PathChange)]>;
+pub type UpdatedExcludedPathsSet = Arc<[(Arc<RelPath>, PathChange)]>;
 pub type UpdatedGitRepositoriesSet = Arc<[UpdatedGitRepository]>;
 
 #[derive(Clone, Debug)]
@@ -4756,6 +4765,48 @@ impl BackgroundScanner {
         self.send_status_update(scanning, request.done, &[]).await
     }
 
+    /// Takes the events inside excluded directories out of `events` and returns them as
+    /// changes, since the scanner never loads those directories and would drop the events.
+    fn take_excluded_path_changes(
+        &self,
+        snapshot: &Snapshot,
+        root_path: &SanitizedPath,
+        root_canonical_path: &SanitizedPath,
+        events: &mut Vec<PathEvent>,
+    ) -> Vec<(Arc<RelPath>, PathChange)> {
+        let mut changes = Vec::new();
+        if self.settings.excluded_directories.is_empty() {
+            return changes;
+        }
+        events.retain(|event| {
+            let abs_path = SanitizedPath::new(&event.path);
+            let Some(path) = abs_path
+                .strip_prefix(root_canonical_path)
+                .or_else(|_| abs_path.strip_prefix(root_path))
+                .ok()
+                .and_then(|path| RelPath::new(path, PathStyle::local()).ok())
+            else {
+                return true;
+            };
+            if !is_inside_excluded_directory(snapshot, &self.settings, &path) {
+                return true;
+            }
+            // Not checked against the disk: FSEvents can merge a removal with the file's
+            // creation, so a removed file may arrive as created, but the TypeScript server
+            // re-reads every known path it is told was created, and a stat per event would
+            // add hundreds of thousands of calls to a package install.
+            let change = match event.kind {
+                Some(PathEventKind::Created) => PathChange::Added,
+                Some(PathEventKind::Removed) => PathChange::Removed,
+                Some(PathEventKind::Changed) => PathChange::Updated,
+                Some(PathEventKind::Rescan) | None => PathChange::AddedOrUpdated,
+            };
+            changes.push((path.into_arc(), change));
+            false
+        });
+        changes
+    }
+
     fn normalized_events_for_worktree(
         state: &BackgroundScannerState,
         root_canonical_path: &SanitizedPath,
@@ -4882,6 +4933,19 @@ impl BackgroundScanner {
         {
             let state = self.state.lock().await;
             events = Self::normalized_events_for_worktree(&state, &root_canonical_path, events);
+            let excluded_path_changes = self.take_excluded_path_changes(
+                &state.snapshot,
+                &root_path,
+                root_canonical_path,
+                &mut events,
+            );
+            if !excluded_path_changes.is_empty() {
+                self.status_updates_tx
+                    .unbounded_send(ScanState::ExcludedPathsUpdated(
+                        excluded_path_changes.into(),
+                    ))
+                    .ok();
+            }
         }
 
         log::debug!("raw events for process_events: {events:?}");
@@ -6552,6 +6616,33 @@ fn build_diff(
 
 fn is_beyond_scan_depth(file_scan_depth: Option<u32>, path: &RelPath) -> bool {
     file_scan_depth.is_some_and(|depth| path.components().count() >= depth as usize)
+}
+
+/// Whether `path` lies inside an excluded directory. A package install sends hundreds of
+/// thousands of events, so this walks down from the root and stops at the first unloaded
+/// directory, which is usually one or two levels deep, instead of glob-matching every ancestor.
+fn is_inside_excluded_directory(
+    snapshot: &Snapshot,
+    settings: &WorktreeSettings,
+    path: &RelPath,
+) -> bool {
+    for ancestor in path.ancestors().rev() {
+        if ancestor == path {
+            break;
+        }
+        if ancestor.is_empty() {
+            continue;
+        }
+        match snapshot.entry_for_path(ancestor).map(|entry| entry.kind) {
+            Some(EntryKind::UnloadedDir) => return settings.is_directory_excluded(ancestor),
+            Some(EntryKind::Dir | EntryKind::PendingDir) => {}
+            Some(EntryKind::File) => return false,
+            // The directory was created in this batch of events, before the scanner saw it,
+            // as `node_modules` is when the first install of a fresh checkout runs.
+            None => return settings.is_path_in_excluded_directory(path),
+        }
+    }
+    false
 }
 
 fn swap_to_front(child_paths: &mut Vec<PathBuf>, file: &str) {

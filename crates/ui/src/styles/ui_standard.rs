@@ -121,8 +121,9 @@ impl SurfaceKind {
 }
 
 /// The Liquid Glass material of [`SurfaceMaterial::Glass`] surfaces, emulated by the renderer
-/// because AppKit's `NSGlassEffectView` samples the window backdrop, not the sibling views a
-/// popup floats above; native glass would blur the desktop behind Flint instead of the editor.
+/// because GPUI draws the editor and the popups above it into one Metal layer. AppKit's
+/// `NSGlassEffectView` refracts the views beneath it, so above that layer it would blur the
+/// popup's own content, and below it the opaque editor would hide it.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct GlassMaterial {
     pub blur_radius: Pixels,

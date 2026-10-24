@@ -641,6 +641,32 @@ pub trait LspAdapter: 'static + Send + Sync + DynLspInstaller {
         None
     }
 
+    /// Whether `"formatter": "auto"` formats with this server instead of Flint's bundled
+    /// Prettier in a project that does not install Prettier itself, because the server is the
+    /// project's own formatter.
+    fn formats_projects_without_prettier(&self) -> bool {
+        false
+    }
+
+    /// Whether changes to files inside excluded directories reach this server's file watchers.
+    /// Other servers never hear about excluded directories, like in IntelliJ.
+    fn watches_excluded_directories(&self) -> bool {
+        false
+    }
+
+    /// File watchers the editor registers for the server, like VS Code's
+    /// `synchronize.fileEvents`, for a server that relies on its client to report changes to its
+    /// configuration files instead of registering watchers itself.
+    fn client_file_watchers(&self) -> Vec<lsp::FileSystemWatcher> {
+        Vec::new()
+    }
+
+    /// How long a buffer must go without edits before this server's diagnostics are pulled, for
+    /// a server that recomputes all of a file's diagnostics on every pull.
+    fn diagnostics_pull_delay(&self) -> Option<std::time::Duration> {
+        None
+    }
+
     fn disk_based_diagnostic_sources(&self) -> Vec<String> {
         Default::default()
     }
@@ -951,6 +977,10 @@ pub struct FakeLspAdapter {
     pub language_server_binary: LanguageServerBinary,
     pub opt_in_languages: HashSet<LanguageName>,
     pub pulls_diagnostics_only_on_save: Option<fn(Option<&Value>) -> bool>,
+    pub formats_projects_without_prettier: bool,
+    pub watches_excluded_directories: bool,
+    pub client_file_watchers: Vec<lsp::FileSystemWatcher>,
+    pub diagnostics_pull_delay: Option<std::time::Duration>,
 
     pub capabilities: lsp::ServerCapabilities,
     pub initializer: Option<Box<dyn 'static + Send + Sync + Fn(&mut lsp::FakeLanguageServer)>>,
@@ -1569,6 +1599,10 @@ impl Default for FakeLspAdapter {
             },
             opt_in_languages: HashSet::default(),
             pulls_diagnostics_only_on_save: None,
+            formats_projects_without_prettier: false,
+            watches_excluded_directories: false,
+            client_file_watchers: Vec::new(),
+            diagnostics_pull_delay: None,
             label_for_completion: None,
         }
     }
@@ -1678,6 +1712,22 @@ impl LspAdapter for FakeLspAdapter {
     fn pulls_diagnostics_only_on_save(&self, settings: Option<&Value>) -> bool {
         self.pulls_diagnostics_only_on_save
             .is_some_and(|pulls_only_on_save| pulls_only_on_save(settings))
+    }
+
+    fn formats_projects_without_prettier(&self) -> bool {
+        self.formats_projects_without_prettier
+    }
+
+    fn watches_excluded_directories(&self) -> bool {
+        self.watches_excluded_directories
+    }
+
+    fn client_file_watchers(&self) -> Vec<lsp::FileSystemWatcher> {
+        self.client_file_watchers.clone()
+    }
+
+    fn diagnostics_pull_delay(&self) -> Option<std::time::Duration> {
+        self.diagnostics_pull_delay
     }
 
     fn is_extension(&self) -> bool {

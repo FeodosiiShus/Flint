@@ -181,6 +181,8 @@ const CROSS_BUFFER_DIAGNOSTICS_PULL_DELAY: Duration = Duration::from_millis(100)
 const DOCUMENT_DIAGNOSTICS_RETRIGGER_LIMIT: usize = 3;
 const DOCUMENT_DIAGNOSTICS_RETRIGGER_DELAY: Duration = Duration::from_millis(100);
 const SERVER_DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(10);
+/// Registration id of the watchers an adapter asks the editor to register on its server's behalf.
+const CLIENT_FILE_WATCHERS_REGISTRATION_ID: &str = "flint-client-file-watchers";
 static NEXT_PROMPT_REQUEST_ID: AtomicUsize = AtomicUsize::new(0);
 
 /// Refresh messages carry a monotonic id for backwards compatibility only: older peers
@@ -1798,6 +1800,24 @@ impl LocalLspStore {
             ) => settings.formatter.as_ref(),
         };
 
+        // A project formatted by Biome must not be reformatted by Flint's bundled Prettier, so
+        // `auto` picks such a server unless the project installs Prettier itself.
+        let auto_language_server_formatter = if settings.prettier.allowed
+            && formatters.contains(&Formatter::Auto)
+            && let Some((adapter, _)) = adapters_and_servers
+                .iter()
+                .find(|(adapter, _)| adapter.adapter.formats_projects_without_prettier())
+            && !Self::project_installs_prettier(&lsp_store, buffer, cx).await
+        {
+            Some(Formatter::LanguageServer(
+                settings::LanguageServerFormatterSpecifier::Specific {
+                    name: adapter.name.0.to_string(),
+                },
+            ))
+        } else {
+            None
+        };
+
         let formatters = code_actions_on_format_formatters
             .iter()
             .flatten()
@@ -1810,7 +1830,10 @@ impl LocalLspStore {
         for formatter in formatters {
             let is_auto = formatter == &Formatter::Auto;
             let formatter = if is_auto {
-                if settings.prettier.allowed {
+                if let Some(language_server_formatter) = &auto_language_server_formatter {
+                    zlog::trace!(logger => "Formatter set to auto: using the project's formatting language server");
+                    language_server_formatter
+                } else if settings.prettier.allowed {
                     zlog::trace!(logger => "Formatter set to auto: defaulting to prettier");
                     &Formatter::Prettier
                 } else {
@@ -1845,6 +1868,30 @@ impl LocalLspStore {
             Some(err) => Err(err),
             None => Ok(()),
         }
+    }
+
+    async fn project_installs_prettier(
+        lsp_store: &WeakEntity<LspStore>,
+        buffer: &FormattableBuffer,
+        cx: &mut AsyncApp,
+    ) -> bool {
+        let Some(abs_path) = buffer.abs_path.as_deref() else {
+            return false;
+        };
+        let Ok(Some(fs)) = lsp_store.read_with(cx, |lsp_store, _| {
+            lsp_store.as_local().map(|local| local.fs.clone())
+        }) else {
+            return false;
+        };
+        matches!(
+            prettier::Prettier::locate_prettier_installation(
+                fs.as_ref(),
+                &HashSet::default(),
+                abs_path
+            )
+            .await,
+            Ok(ControlFlow::Continue(Some(_)))
+        )
     }
 
     async fn apply_formatter(
@@ -4576,6 +4623,8 @@ pub struct LspStore {
     lsp_data: HashMap<BufferId, BufferLspData>,
     buffer_reload_tasks: HashMap<BufferId, Task<anyhow::Result<()>>>,
     buffer_save_diagnostics_pulls: HashMap<BufferId, Task<()>>,
+    buffer_edit_times: HashMap<BufferId, Instant>,
+    deferred_diagnostics_pulls: HashMap<BufferId, Task<()>>,
     next_hint_id: Arc<AtomicUsize>,
 }
 
@@ -4971,6 +5020,8 @@ impl LspStore {
             lsp_data: HashMap::default(),
             buffer_reload_tasks: HashMap::default(),
             buffer_save_diagnostics_pulls: HashMap::default(),
+            buffer_edit_times: HashMap::default(),
+            deferred_diagnostics_pulls: HashMap::default(),
             next_hint_id: Arc::default(),
             active_entry: None,
             _maintain_workspace_config,
@@ -5047,6 +5098,18 @@ impl LspStore {
                 cx.subscribe(worktree, |this, worktree, event, cx| match event {
                     worktree::Event::UpdatedEntries(changes) => {
                         this.update_local_worktree_language_servers(&worktree, changes, cx);
+                    }
+                    worktree::Event::UpdatedExcludedPaths(changes) => {
+                        this.notify_language_servers_of_watched_changes(
+                            &worktree,
+                            WatchedChangesRecipients::ServersWatchingExcludedDirectories,
+                            || {
+                                changes
+                                    .iter()
+                                    .map(|(path, change)| (path.as_ref(), *change))
+                            },
+                            cx,
+                        );
                     }
                     worktree::Event::UpdatedGitRepositories(_)
                     | worktree::Event::DeletedEntry(_)
@@ -5327,6 +5390,8 @@ impl LspStore {
                         lsp_store.lsp_data.remove(&buffer_id);
                         lsp_store.buffer_reload_tasks.remove(&buffer_id);
                         lsp_store.buffer_save_diagnostics_pulls.remove(&buffer_id);
+                        lsp_store.buffer_edit_times.remove(&buffer_id);
+                        lsp_store.deferred_diagnostics_pulls.remove(&buffer_id);
                         let local = lsp_store.as_local_mut().unwrap();
                         local.registered_buffers.remove(&buffer_id);
                         local.partially_registered_buffers.remove(&buffer_id);
@@ -8555,6 +8620,7 @@ impl LspStore {
                 }
                 servers
             });
+            let servers = self.servers_ready_for_diagnostics_pull(&buffer, servers, cx);
 
             let pull_diagnostics = servers
                 .into_iter()
@@ -8633,6 +8699,56 @@ impl LspStore {
                 Ok(Some(responses))
             })
         }
+    }
+
+    /// Leaves out the servers that pull diagnostics only after a pause in typing while the buffer
+    /// was edited too recently, and pulls again once the pause is long enough. Each edit
+    /// replaces the pending pull, so such a server lints once per pause instead of once per
+    /// keystroke.
+    fn servers_ready_for_diagnostics_pull(
+        &mut self,
+        buffer: &Entity<Buffer>,
+        mut servers: Vec<(Arc<CachedLspAdapter>, Arc<LanguageServer>)>,
+        cx: &mut Context<Self>,
+    ) -> Vec<(Arc<CachedLspAdapter>, Arc<LanguageServer>)> {
+        let buffer_id = buffer.read(cx).remote_id();
+        let Some(edited_at) = self.buffer_edit_times.get(&buffer_id).copied() else {
+            return servers;
+        };
+        let idle = cx
+            .background_executor()
+            .now()
+            .saturating_duration_since(edited_at);
+        let mut wait: Option<Duration> = None;
+        servers.retain(
+            |(adapter, _)| match adapter.adapter.diagnostics_pull_delay() {
+                Some(delay) if idle < delay => {
+                    let remaining = delay - idle;
+                    wait = Some(wait.map_or(remaining, |wait| wait.max(remaining)));
+                    false
+                }
+                _ => true,
+            },
+        );
+        if let Some(wait) = wait {
+            let buffer = buffer.downgrade();
+            self.deferred_diagnostics_pulls.insert(
+                buffer_id,
+                cx.spawn(async move |lsp_store, cx| {
+                    cx.background_executor().timer(wait).await;
+                    let Some(buffer) = buffer.upgrade() else {
+                        return;
+                    };
+                    let Ok(pull) = lsp_store.update(cx, |lsp_store, cx| {
+                        lsp_store.pull_diagnostics_for_buffer(buffer, cx)
+                    }) else {
+                        return;
+                    };
+                    pull.await.log_err();
+                }),
+            );
+        }
+        servers
     }
 
     pub fn applicable_inlay_chunks(
@@ -9515,6 +9631,8 @@ impl LspStore {
         buffer: Entity<Buffer>,
         cx: &mut Context<Self>,
     ) -> Option<()> {
+        self.buffer_edit_times
+            .insert(buffer.read(cx).remote_id(), cx.background_executor().now());
         let language_servers: Vec<_> = buffer.update(cx, |buffer, cx| {
             Some(
                 self.as_local()?
@@ -13426,6 +13544,17 @@ impl LspStore {
                     .insert(server_id, watcher);
             }
         }
+        let client_file_watchers = adapter.adapter.client_file_watchers();
+        if !client_file_watchers.is_empty() {
+            local.on_lsp_did_change_watched_files(
+                server_id,
+                CLIENT_FILE_WATCHERS_REGISTRATION_ID,
+                DidChangeWatchedFilesRegistrationOptions {
+                    watchers: client_file_watchers,
+                },
+                cx,
+            );
+        }
 
         self.language_server_statuses.insert(
             server_id,
@@ -13787,7 +13916,46 @@ impl LspStore {
             prettier_store.update_prettier_settings(worktree_handle, changes, cx)
         });
 
-        let worktree_id = worktree_handle.read(cx).id();
+        self.notify_language_servers_of_watched_changes(
+            worktree_handle,
+            WatchedChangesRecipients::AllServers,
+            || {
+                changes
+                    .iter()
+                    .map(|(path, _, change)| (path.as_ref(), *change))
+            },
+            cx,
+        );
+
+        let Some(local) = self.as_local() else {
+            return;
+        };
+        for (path, _, _) in changes {
+            if let Some(file_name) = path.file_name()
+                && local.watched_manifest_filenames.contains(file_name)
+            {
+                self.request_workspace_config_refresh();
+                break;
+            }
+        }
+    }
+
+    /// Sends each of the worktree's running language servers the changed paths that match the
+    /// globs it asked to watch.
+    fn notify_language_servers_of_watched_changes<'a, Changes>(
+        &mut self,
+        worktree_handle: &Entity<Worktree>,
+        recipients: WatchedChangesRecipients,
+        changes: impl Fn() -> Changes,
+        cx: &App,
+    ) where
+        Changes: Iterator<Item = (&'a RelPath, PathChange)>,
+    {
+        let Some(local) = self.as_local_mut() else {
+            return;
+        };
+        let worktree = worktree_handle.read(cx);
+        let worktree_id = worktree.id();
         let mut language_server_ids = local
             .language_server_ids
             .iter()
@@ -13796,19 +13964,20 @@ impl LspStore {
         language_server_ids.sort_unstable();
         language_server_ids.dedup();
 
-        // let abs_path = worktree_handle.read(cx).abs_path();
         for server_id in &language_server_ids {
-            if let Some(LanguageServerState::Running { server, .. }) =
-                local.language_servers.get(server_id)
+            if let Some(LanguageServerState::Running {
+                adapter, server, ..
+            }) = local.language_servers.get(server_id)
+                && (recipients == WatchedChangesRecipients::AllServers
+                    || adapter.adapter.watches_excluded_directories())
                 && let Some(watched_paths) = local
                     .language_server_watched_paths
                     .get_mut(server_id)
                     .and_then(|paths| paths.worktree_paths.get_mut(&worktree_id))
             {
                 let params = lsp::DidChangeWatchedFilesParams {
-                    changes: changes
-                        .iter()
-                        .filter_map(|(path, _, change)| {
+                    changes: changes()
+                        .filter_map(|(path, change)| {
                             let typ = match change {
                                 PathChange::Loaded => return None,
                                 PathChange::Added => lsp::FileChangeType::CREATED,
@@ -13819,10 +13988,7 @@ impl LspStore {
                             if !watched_paths.is_match(path.as_std_path()) {
                                 return None;
                             }
-                            let uri = lsp::Uri::from_file_path(
-                                worktree_handle.read(cx).absolutize(&path),
-                            )
-                            .ok()?;
+                            let uri = lsp::Uri::from_file_path(worktree.absolutize(path)).ok()?;
                             Some(lsp::FileEvent { uri, typ })
                         })
                         .collect(),
@@ -13832,14 +13998,6 @@ impl LspStore {
                         .notify::<lsp::notification::DidChangeWatchedFiles>(params)
                         .ok();
                 }
-            }
-        }
-        for (path, _, _) in changes {
-            if let Some(file_name) = path.file_name()
-                && local.watched_manifest_filenames.contains(file_name)
-            {
-                self.request_workspace_config_refresh();
-                break;
             }
         }
     }
@@ -15777,6 +15935,13 @@ impl RenameActionPredicate {
             kind == &expected_kind
         }) && self.glob.is_match(path)
     }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum WatchedChangesRecipients {
+    AllServers,
+    /// Changes inside excluded directories reach only the servers whose adapters ask for them.
+    ServersWatchingExcludedDirectories,
 }
 
 #[derive(Default)]

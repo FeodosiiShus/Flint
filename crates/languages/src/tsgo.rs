@@ -113,11 +113,10 @@ fn workspace_configuration_with_overrides(override_options: Option<Value>) -> Va
                 "enabled": true
             }
         },
-        // A code lens resolves references or implementations for every declaration it appears
-        // above. Asking for them on every function and class method makes the server walk the
-        // whole project each time a lens request arrives, which is the slowest editor feature in
-        // a large TypeScript monorepo. Exported functions and interface methods keep the lens;
-        // class methods and implementation details resolve their usages on demand instead.
+        // Resolving an implementations lens searches every file of the program and again from
+        // each hit, so in a large monorepo class methods only get one when they are abstract.
+        // A references lens on a function that is not exported searches only its own file,
+        // which keeps "N usages" on every function, as in IntelliJ, at little cost.
         "implementationsCodeLens": {
             "enabled": true,
             "showOnAllClassMethods": false,
@@ -125,7 +124,7 @@ fn workspace_configuration_with_overrides(override_options: Option<Value>) -> Va
         },
         "referencesCodeLens": {
             "enabled": true,
-            "showOnAllFunctions": false
+            "showOnAllFunctions": true
         },
     });
 
@@ -228,6 +227,13 @@ impl LspInstaller for TsgoLspAdapter {
 impl LspAdapter for TsgoLspAdapter {
     fn name(&self) -> LanguageServerName {
         SERVER_NAME
+    }
+
+    /// The server learns about installed, upgraded and removed packages only from the changes
+    /// inside `node_modules` its watchers ask for, and keeps stale types until it restarts
+    /// otherwise.
+    fn watches_excluded_directories(&self) -> bool {
+        true
     }
 
     fn default_server_env(&self) -> HashMap<String, String> {
@@ -382,8 +388,9 @@ mod tests {
             true
         );
         assert_eq!(
-            defaults["typescript"]["referencesCodeLens"]["showOnAllFunctions"], false,
-            "a large monorepo should not resolve references for every function"
+            defaults["typescript"]["referencesCodeLens"]["showOnAllFunctions"], true,
+            "every function shows its usages; a function that is not exported is searched for \
+             only in its own file"
         );
         assert_eq!(
             defaults["typescript"]["implementationsCodeLens"]["showOnAllClassMethods"], false,
