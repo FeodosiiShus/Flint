@@ -139,6 +139,7 @@ fn path_match_helper<'a>(
     query: &Query,
     candidates: impl Iterator<Item = PathMatchCandidate<'a>>,
     results: &mut Vec<PathMatch>,
+    max_results: usize,
     worktree_id: usize,
     path_prefix: &Arc<RelPath>,
     root_is_file: bool,
@@ -146,6 +147,11 @@ fn path_match_helper<'a>(
     path_style: PathStyle,
     cancel_flag: &AtomicBool,
 ) -> Result<(), Cancelled> {
+    // Only the best `max_results` matches are returned, so at most twice that many are kept and
+    // anything scoring below the worst kept one is skipped before its positions and path are
+    // copied: a short query matches nearly every path of a large project.
+    let retained_limit = max_results.saturating_mul(2);
+    let mut lowest_kept_score = lowest_score_once_full(results, max_results);
     let mut candidate_buf = if !path_prefix.is_empty() && !root_is_file {
         let mut s = path_prefix.display(path_style).to_string();
         s.push_str(path_style.primary_separator());
@@ -195,6 +201,9 @@ fn path_match_helper<'a>(
         let filename_bonus = get_filename_match_bonus(&candidate_buf, &query.pattern, matcher);
         let positive = (score as f64 + filename_bonus) * case_penalty(case_mismatches);
         let adjusted_score = positive - length_penalty;
+        if adjusted_score < lowest_kept_score {
+            continue;
+        }
         let positions = positions_from_sorted(&candidate_buf, &matched_chars);
 
         results.push(PathMatch {
@@ -216,8 +225,23 @@ fn path_match_helper<'a>(
                 distance_between_paths(candidate.path, relative_to.as_ref())
             }),
         });
+        if results.len() >= retained_limit {
+            gpui_util::truncate_to_bottom_n_sorted_by(results, max_results, &|a, b| b.cmp(a));
+            lowest_kept_score = lowest_score_once_full(results, max_results);
+        }
     }
     Ok(())
+}
+
+fn lowest_score_once_full(results: &[PathMatch], max_results: usize) -> f64 {
+    if results.len() < max_results {
+        f64::NEG_INFINITY
+    } else {
+        results
+            .iter()
+            .map(|path_match| path_match.score)
+            .fold(f64::INFINITY, f64::min)
+    }
 }
 
 pub fn match_fixed_path_set(
@@ -248,6 +272,7 @@ pub fn match_fixed_path_set(
         &query,
         candidates.into_iter(),
         &mut results,
+        max_results,
         worktree_id,
         &path_prefix,
         root_is_file,
@@ -322,6 +347,7 @@ pub async fn match_path_sets<'a, Set: PathMatchCandidateSet<'a>>(
                                 query,
                                 candidates,
                                 results,
+                                max_results,
                                 candidate_set.id(),
                                 &candidate_set.prefix(),
                                 candidate_set.root_is_file(),
