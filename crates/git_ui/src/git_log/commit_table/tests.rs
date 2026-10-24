@@ -8,7 +8,6 @@ use gpui::{TestAppContext, VisualTestContext, point, px, size};
 use project::{FakeFs, Project};
 use serde_json::json;
 use settings::SettingsStore;
-use smallvec::smallvec;
 
 use super::*;
 
@@ -36,7 +35,7 @@ fn graph_commit(own: u8, parents: &[u8], ref_names: &[&str]) -> Arc<InitialGraph
             .map(|name| SharedString::from(name.to_string()))
             .collect(),
         committer_timestamp: i64::from(own),
-        dotted_parents: smallvec![],
+        dotted_parents: Vec::new(),
     })
 }
 
@@ -153,7 +152,7 @@ async fn a_history_streamed_in_chunks_is_shown_whole_once_loaded(cx: &mut TestAp
                         Vec::new()
                     },
                     committer_timestamp: i64::from(COMMIT_COUNT - number),
-                    dotted_parents: smallvec![],
+                    dotted_parents: Vec::new(),
                 })
             })
             .collect(),

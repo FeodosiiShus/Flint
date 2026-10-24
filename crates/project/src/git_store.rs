@@ -12431,7 +12431,7 @@ fn initial_graph_commit_from_proto(
     for parent in &commit.parents {
         parents.push(Oid::from_str(parent)?);
     }
-    let mut dotted_parents = SmallVec::with_capacity(commit.dotted_parents.len());
+    let mut dotted_parents = Vec::with_capacity(commit.dotted_parents.len());
     for parent in &commit.dotted_parents {
         dotted_parents.push(Oid::from_str(parent)?);
     }

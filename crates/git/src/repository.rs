@@ -121,7 +121,9 @@ pub struct InitialGraphCommitData {
     pub parents: SmallVec<[Oid; 1]>,
     pub ref_names: Vec<SharedString>,
     pub committer_timestamp: i64,
-    pub dotted_parents: SmallVec<[Oid; 1]>,
+    /// Almost always empty, so unlike `parents` it keeps no inline slot: a 33-byte [`Oid`] on
+    /// every commit of a long history adds up to tens of megabytes.
+    pub dotted_parents: Vec<Oid>,
 }
 
 impl InitialGraphCommitData {
@@ -6041,7 +6043,7 @@ fn parse_initial_graph_output<'a>(
                 parents,
                 ref_names,
                 committer_timestamp,
-                dotted_parents: SmallVec::new(),
+                dotted_parents: Vec::new(),
             }))
         })
         .collect()
@@ -6150,7 +6152,7 @@ pub fn visible_graph_commits(
         .filter(|(index, _)| visible[*index])
         .map(|(index, commit)| {
             let mut parents = SmallVec::<[Oid; 1]>::new();
-            let mut rewritten_parents = SmallVec::<[Oid; 1]>::new();
+            let mut rewritten_parents = Vec::new();
             for &parent in parent_indices[index]
                 .iter()
                 .filter(|parent| visible[**parent])
@@ -8675,7 +8677,7 @@ exit 2
                 SharedString::from("refs/heads/feature"),
             ],
             committer_timestamp: 0,
-            dotted_parents: SmallVec::new(),
+            dotted_parents: Vec::new(),
         };
 
         assert_eq!(commit.tag_names(), ["v1.0.0", "v1.1.0"]);
@@ -8690,7 +8692,7 @@ exit 2
                 .collect(),
             ref_names: Vec::new(),
             committer_timestamp: 0,
-            dotted_parents: SmallVec::new(),
+            dotted_parents: Vec::new(),
         })
     }
 
@@ -8728,7 +8730,7 @@ exit 2
         assert!(
             graph
                 .iter()
-                .all(|commit| commit.dotted_parents == commit.parents)
+                .all(|commit| commit.dotted_parents.as_slice() == commit.parents.as_slice())
         );
     }
 

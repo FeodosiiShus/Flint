@@ -417,7 +417,6 @@ pub(super) fn subject_text(subject: &str) -> SharedString {
 mod tests {
     use super::*;
     use gpui::px;
-    use smallvec::smallvec;
 
     #[test]
     fn right_aligned_labels_tooltip_starts_at_column_width_minus_labels_width() {
@@ -601,7 +600,7 @@ mod tests {
                 parents: parents.iter().map(|parent| sha(*parent)).collect(),
                 ref_names: refs,
                 committer_timestamp: 0,
-                dotted_parents: smallvec![],
+                dotted_parents: Vec::new(),
             })
         };
         let commits = vec![
