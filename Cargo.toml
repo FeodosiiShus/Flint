@@ -308,7 +308,7 @@ bytes = "1.0"
 cbindgen = { version = "0.28.0", default-features = false }
 chardetng = "0.1"
 chrono = { version = "0.4", features = ["serde"] }
-circular-buffer = "1.0"
+circular-buffer = "2.0"
 clap = { version = "4.4", features = ["derive", "wrap_help"] }
 clap_complete = { version = "4.4" }
 clap_complete_nushell = { version = "4.4" }
@@ -391,7 +391,7 @@ libc = "0.2"
 libsqlite3-sys = { version = "0.30.1", features = ["bundled"] }
 linkify = "0.10.0"
 log = { version = "0.4.16", features = ["kv_unstable_serde", "serde"] }
-lru = "0.16"
+lru = "0.19"
 lsp-types = { git = "https://github.com/zed-industries/lsp-types", rev = "f1783e63a7f4eb4397bf51d4148b4895a1f7ab16" }
 mach2 = "0.5"
 markup5ever_rcdom = "0.39"
@@ -646,7 +646,31 @@ syn = { opt-level = 3 }
 proc-macro2 = { opt-level = 3 }
 # proc-macros end
 
+# Line tables keep file:line in dependency backtraces at a fraction of full debug info's
+# compile, link and disk cost; workspace crates keep `debug = "limited"`.
+"*" = { debug = "line-tables-only" }
 tree-sitter = { opt-level = 3 }
+# C code built through `cc` follows the profile's opt-level, so grammars and SQLite would
+# otherwise parse and query at -O0 in dev builds and tests.
+libsqlite3-sys = { opt-level = 3 }
+tree-sitter-bash = { opt-level = 3 }
+tree-sitter-c = { opt-level = 3 }
+tree-sitter-css = { opt-level = 3 }
+tree-sitter-diff = { opt-level = 3 }
+tree-sitter-gitcommit = { opt-level = 3 }
+tree-sitter-go = { opt-level = 3 }
+tree-sitter-gomod = { opt-level = 3 }
+tree-sitter-gowork = { opt-level = 3 }
+tree-sitter-html = { opt-level = 3 }
+tree-sitter-java = { opt-level = 3 }
+tree-sitter-jsdoc = { opt-level = 3 }
+tree-sitter-json = { opt-level = 3 }
+tree-sitter-md = { opt-level = 3 }
+tree-sitter-python = { opt-level = 3 }
+tree-sitter-regex = { opt-level = 3 }
+tree-sitter-rust = { opt-level = 3 }
+tree-sitter-typescript = { opt-level = 3 }
+tree-sitter-yaml = { opt-level = 3 }
 taffy = { opt-level = 3 }
 resvg = { opt-level = 3 }
 wasmtime = { opt-level = 3 }
