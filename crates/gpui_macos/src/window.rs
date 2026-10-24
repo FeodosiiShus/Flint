@@ -4081,8 +4081,10 @@ fn display_id_for_screen(screen: id) -> Option<CGDirectDisplayID> {
     }
 }
 
-/// More glass levels than this in one frame fall back to the emulated glass for that frame.
-const MAX_GLASS_LEVELS: usize = 4;
+/// More glass levels than this in one frame fall back to the emulated glass for that frame,
+/// which looks different. Glass tool windows take one level, and a menu with nested submenus
+/// over them one per menu; a level only costs an overlay layer once it appears.
+const MAX_GLASS_LEVELS: usize = 6;
 
 /// Whether glass surfaces use AppKit's `NSGlassEffectView` (macOS 26) rather than the
 /// renderer's emulation. `FLINT_EMULATED_GLASS` keeps the emulation, to compare the two.
