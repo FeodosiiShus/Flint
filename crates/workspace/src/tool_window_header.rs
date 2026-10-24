@@ -29,11 +29,11 @@ fn header_hide_tooltip_action() -> Box<dyn Action> {
     crate::CloseActiveDock.boxed_clone()
 }
 
-// At rest IntelliJ draws the header's bottom line only for bottom-anchored tool windows and for
-// tabbed ones with more than one content (`ToolWindowHeader.paintComponent`). Header content is
-// where a panel puts such tabs, like the Git tool window's.
-fn draws_bottom_line(position: DockPosition, has_header_content: bool) -> bool {
-    position == DockPosition::Bottom || has_header_content
+// The header's bottom line separates header tabs, like the Git tool window's, from their
+// content. IntelliJ also draws it under every bottom-anchored tool window
+// (`ToolWindowHeader.paintComponent`), where it only reads as a stray line above a list.
+fn draws_bottom_line(has_header_content: bool) -> bool {
+    has_header_content
 }
 
 fn header_label_size(window: &Window, cx: &App) -> LabelSize {
@@ -99,31 +99,33 @@ pub(crate) fn render_tool_window_header(
     // Dark and gray-150 in Islands Light.
     let bottom_border_color = cx.theme().colors().background;
 
-    let options_button = PopoverMenu::new(("tool-window-header-options", panel_id))
-        .anchor(Anchor::TopRight)
-        .menu({
-            let panel = panel.clone();
-            let dock = dock.clone();
-            move |window, cx| {
-                Some(panel_context_menu(
-                    panel.clone(),
-                    dock.clone(),
-                    false,
-                    window,
-                    cx,
-                ))
-            }
-        })
-        .trigger_with_tooltip(
-            header_action_button(
-                ("tool-window-header-options-button", panel_id),
-                IconName::EllipsisVertical,
-                "Options",
-                icon_size,
-                button_side,
-            ),
-            Tooltip::text("Options"),
-        );
+    let options_button = panel.header_options(cx).then(|| {
+        PopoverMenu::new(("tool-window-header-options", panel_id))
+            .anchor(Anchor::TopRight)
+            .menu({
+                let panel = panel.clone();
+                let dock = dock.clone();
+                move |window, cx| {
+                    Some(panel_context_menu(
+                        panel.clone(),
+                        dock.clone(),
+                        false,
+                        window,
+                        cx,
+                    ))
+                }
+            })
+            .trigger_with_tooltip(
+                header_action_button(
+                    ("tool-window-header-options-button", panel_id),
+                    IconName::EllipsisVertical,
+                    "Options",
+                    icon_size,
+                    button_side,
+                ),
+                Tooltip::text("Options"),
+            )
+    });
 
     let header_action_buttons = panel
         .header_actions(window, cx)
@@ -174,11 +176,13 @@ pub(crate) fn render_tool_window_header(
             this.visible_on_hover(TOOL_WINDOW_GROUP)
         })
         .children(header_action_buttons)
-        .child(
-            div()
-                .debug_selector(move || format!("tool_window_header_options_{position_key}"))
-                .child(options_button),
-        )
+        .when_some(options_button, |this, options_button| {
+            this.child(
+                div()
+                    .debug_selector(move || format!("tool_window_header_options_{position_key}"))
+                    .child(options_button),
+            )
+        })
         .child(
             div()
                 .debug_selector(move || format!("tool_window_header_hide_{position_key}"))
@@ -186,7 +190,7 @@ pub(crate) fn render_tool_window_header(
         );
 
     let header_content = panel.header_content(window, cx);
-    let has_bottom_line = draws_bottom_line(position, header_content.is_some());
+    let has_bottom_line = draws_bottom_line(header_content.is_some());
     let leading = match header_content {
         Some(content) => h_flex()
             .flex_1()
@@ -305,15 +309,11 @@ mod tests {
     }
 
     #[test]
-    fn tool_window_header_bottom_line_is_drawn_only_for_the_bottom_dock_or_header_tabs() {
-        assert!(draws_bottom_line(DockPosition::Bottom, false));
-        assert!(draws_bottom_line(DockPosition::Bottom, true));
-        assert!(!draws_bottom_line(DockPosition::Left, false));
-        assert!(!draws_bottom_line(DockPosition::Right, false));
+    fn tool_window_header_bottom_line_is_drawn_only_under_header_tabs() {
+        assert!(draws_bottom_line(true));
         assert!(
-            draws_bottom_line(DockPosition::Left, true),
-            "a side tool window with header tabs keeps the line, like IntelliJ's tabbed headers"
+            !draws_bottom_line(false),
+            "a tool window without header tabs, docked anywhere, has no line under its header"
         );
-        assert!(draws_bottom_line(DockPosition::Right, true));
     }
 }

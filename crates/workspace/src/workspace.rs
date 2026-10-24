@@ -15640,7 +15640,7 @@ mod tests {
     }
 
     #[gpui::test]
-    async fn tool_window_header_draws_a_bottom_line_only_in_the_bottom_dock_or_under_header_tabs(
+    async fn tool_window_header_draws_a_bottom_line_only_under_header_tabs(
         cx: &mut TestAppContext,
     ) {
         let (workspace, [left_panel, _, _], cx) = tool_window_bar_test_workspace(cx).await;
@@ -15665,12 +15665,9 @@ mod tests {
             })
         };
 
-        let bottom_line = header_bottom_line("tool_window_header_bottom", cx)
-            .expect("the bottom dock header draws IntelliJ's 1 px bottom line");
-        assert_eq!(
-            bottom_line.background.as_solid(),
-            Some(line_color),
-            "the line has ToolWindow.Header.borderColor, the main window background"
+        assert!(
+            header_bottom_line("tool_window_header_bottom", cx).is_none(),
+            "a bottom tool window without header tabs has no line under its header"
         );
         assert!(
             header_bottom_line("tool_window_header_left", cx).is_none(),
@@ -15686,7 +15683,11 @@ mod tests {
         let tabs_line = header_bottom_line("tool_window_header_left", cx).expect(
             "a left tool window with header tabs draws the line, like IntelliJ's tabbed header",
         );
-        assert_eq!(tabs_line.background.as_solid(), Some(line_color));
+        assert_eq!(
+            tabs_line.background.as_solid(),
+            Some(line_color),
+            "the line has ToolWindow.Header.borderColor, the main window background"
+        );
     }
 
     #[gpui::test]

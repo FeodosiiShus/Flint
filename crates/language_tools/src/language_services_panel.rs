@@ -345,24 +345,6 @@ impl LanguageServicesPanel {
             }))
     }
 
-    fn push_toggle_all_row(
-        row_elements: &mut Vec<AnyElement>,
-        toggle_all_buttons: &mut Vec<DialogButton>,
-    ) {
-        if toggle_all_buttons.is_empty() {
-            return;
-        }
-        row_elements.push(
-            h_flex()
-                .w_full()
-                .px_2()
-                .py_1()
-                .gap_2()
-                .children(toggle_all_buttons.drain(..))
-                .into_any_element(),
-        );
-    }
-
     fn render_server_row(&self, row: ServerRow, cx: &mut Context<Self>) -> impl IntoElement {
         let state = self.server_state.read(cx);
         let server_selector = row.info.server_selector();
@@ -512,21 +494,30 @@ impl Render for LanguageServicesPanel {
                     toggle_all_buttons.push(Self::render_toggle_all_button(restart, cx));
                 }
                 PanelRow::Header(name) => {
-                    Self::push_toggle_all_row(&mut row_elements, &mut toggle_all_buttons);
                     row_elements.push(Self::render_header_row(name).into_any_element());
                 }
                 PanelRow::Server(server_row) => {
-                    Self::push_toggle_all_row(&mut row_elements, &mut toggle_all_buttons);
                     row_elements.push(self.render_server_row(server_row, cx).into_any_element());
                 }
             }
         }
-        Self::push_toggle_all_row(&mut row_elements, &mut toggle_all_buttons);
 
         v_flex()
             .key_context("LanguageServicesPanel")
             .track_focus(&self.focus_handle)
             .size_full()
+            // Above the list rather than after it, so they never scroll out of reach.
+            .when(!toggle_all_buttons.is_empty(), |this| {
+                this.child(
+                    h_flex()
+                        .flex_none()
+                        .w_full()
+                        .px_2()
+                        .py_1()
+                        .gap_2()
+                        .children(toggle_all_buttons),
+                )
+            })
             .child(
                 v_flex()
                     .id("language-services-rows")
@@ -615,6 +606,10 @@ impl Panel for LanguageServicesPanel {
         if active {
             self.refresh_items(cx);
         }
+    }
+
+    fn header_options(&self, _: &App) -> bool {
+        false
     }
 
     fn hide_button_setting(&self, _: &App) -> Option<HideButtonSetting> {

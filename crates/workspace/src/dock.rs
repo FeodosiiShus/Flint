@@ -139,6 +139,11 @@ pub trait Panel: Focusable + EventEmitter<PanelEvent> + Render + Sized {
     fn header_content(&self, _window: &Window, _cx: &App) -> Option<AnyView> {
         None
     }
+    /// Whether the tool window header offers its Options menu next to Hide. The same menu stays
+    /// on the tool window button's right click.
+    fn header_options(&self, _cx: &App) -> bool {
+        true
+    }
 }
 
 pub trait PanelHandle: Send + Sync {
@@ -173,6 +178,7 @@ pub trait PanelHandle: Send + Sync {
     fn hide_button_setting(&self, cx: &App) -> Option<HideButtonSetting>;
     fn header_actions(&self, window: &Window, cx: &App) -> Vec<PanelHeaderAction>;
     fn header_content(&self, window: &Window, cx: &App) -> Option<AnyView>;
+    fn header_options(&self, cx: &App) -> bool;
     fn move_to_next_position(&self, window: &mut Window, cx: &mut App) {
         let current_position = self.position(window, cx);
         let next_position = [
@@ -312,6 +318,10 @@ where
 
     fn header_content(&self, window: &Window, cx: &App) -> Option<AnyView> {
         self.read(cx).header_content(window, cx)
+    }
+
+    fn header_options(&self, cx: &App) -> bool {
+        self.read(cx).header_options(cx)
     }
 }
 
