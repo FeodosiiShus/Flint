@@ -4,7 +4,7 @@ use git::{
     Oid,
     repository::{CommitData, InitialGraphCommitData},
 };
-use gpui::{TestAppContext, VisualTestContext};
+use gpui::{TestAppContext, VisualTestContext, point, px, size};
 use project::{FakeFs, Project};
 use serde_json::json;
 use settings::SettingsStore;
@@ -88,6 +88,12 @@ async fn project_with_commits(cx: &mut TestAppContext) -> Entity<Project> {
 }
 
 fn open_table(project: &Entity<Project>, cx: &mut VisualTestContext) -> Entity<CommitTable> {
+    let table = create_table(project, cx);
+    draw_table(&table, cx);
+    table
+}
+
+fn create_table(project: &Entity<Project>, cx: &mut VisualTestContext) -> Entity<CommitTable> {
     let repository = project.read_with(&*cx, |project, cx| {
         project
             .active_repository(cx)
@@ -109,6 +115,41 @@ fn open_table(project: &Entity<Project>, cx: &mut VisualTestContext) -> Entity<C
     table.update(cx, |table, cx| table.set_repository(Some(repository), cx));
     cx.run_until_parked();
     table
+}
+
+fn draw_table(table: &Entity<CommitTable>, cx: &mut VisualTestContext) {
+    let table = table.clone();
+    cx.draw(point(px(0.), px(0.)), size(px(800.), px(600.)), |_, _| {
+        table.into_any_element()
+    });
+    cx.run_until_parked();
+}
+
+#[gpui::test]
+async fn history_loads_once_the_table_is_first_drawn(cx: &mut TestAppContext) {
+    init_test(cx);
+    let project = project_with_commits(cx).await;
+    let cx = cx.add_empty_window();
+    let table = create_table(&project, cx);
+    let repository = project.read_with(&*cx, |project, cx| {
+        project
+            .active_repository(cx)
+            .expect("the project should have a repository")
+    });
+    let log_source = table.read_with(&*cx, |table, _| table.log_source());
+
+    table.read_with(&*cx, |table, _| assert_eq!(table.row_count(), 0));
+    repository.read_with(&*cx, |repository, _| {
+        assert!(
+            repository
+                .get_graph_data(log_source.clone(), LOG_ORDER)
+                .is_none(),
+            "a table that was never drawn shouldn't load the history"
+        )
+    });
+
+    draw_table(&table, cx);
+    table.read_with(&*cx, |table, _| assert_eq!(table.row_count(), 3));
 }
 
 #[gpui::test]

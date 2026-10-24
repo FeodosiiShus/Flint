@@ -103,7 +103,7 @@ impl EditorconfigStore {
                                 .internal_configs
                                 .insert(rel_path.clone(), (content.to_owned(), None));
                             return Err(InvalidSettingsError::Editorconfig {
-                                message: e.to_string(),
+                                message: format!("{e:#}"),
                                 path: LocalSettingsPath::InWorktree(
                                     rel_path
                                         .join(RelPath::from_unix_str(EDITORCONFIG_NAME).unwrap())
@@ -131,7 +131,7 @@ impl EditorconfigStore {
                             self.external_configs
                                 .insert(abs_path.clone(), (content.to_owned(), None));
                             return Err(InvalidSettingsError::Editorconfig {
-                                message: e.to_string(),
+                                message: format!("{e:#}"),
                                 path: LocalSettingsPath::OutsideWorktree(
                                     abs_path.join(EDITORCONFIG_NAME).into(),
                                 ),

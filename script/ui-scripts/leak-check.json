@@ -13,6 +13,7 @@
       {"click": {"x": 1300, "y": 700}}
     ]}},
     {"memory": {"label": "after warm-up"}},
+    {"frame_times": {"label": "after warm-up"}},
     {"repeat": {"times": 100, "steps": [
       {"action": {"name": "command_palette::Toggle"}},
       {"keystrokes": {"keys": "escape"}},
@@ -23,6 +24,7 @@
       {"click": {"x": 1300, "y": 700}}
     ]}},
     {"memory": {"label": "after 100 rounds"}},
+    {"frame_times": {"label": "after 100 rounds"}},
     {"repeat": {"times": 100, "steps": [
       {"action": {"name": "command_palette::Toggle"}},
       {"keystrokes": {"keys": "escape"}},
@@ -33,7 +35,7 @@
       {"click": {"x": 1300, "y": 700}}
     ]}},
     {"memory": {"label": "after 200 rounds"}},
-    {"frame_times": {"label": "leak check"}},
+    {"frame_times": {"label": "after 200 rounds"}},
     {"wait": {"milliseconds": 30000}},
     "quit"
   ]

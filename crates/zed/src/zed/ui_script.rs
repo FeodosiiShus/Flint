@@ -12,10 +12,12 @@
 //! output directory.
 
 use anyhow::{Context as _, Result};
+use collections::HashMap;
 use gpui::{
     AnyWindowHandle, App, AsyncApp, Keystroke, Modifiers, MouseButton, MouseDownEvent,
     MouseMoveEvent, MouseUpEvent, PlatformInput, point, px,
 };
+use hdrhistogram::Histogram;
 use serde::Deserialize;
 use std::{
     path::{Path, PathBuf},
@@ -86,7 +88,8 @@ enum Step {
     Memory {
         label: String,
     },
-    /// Logs how long the active window's frames took to draw since it opened.
+    /// Logs how long the active window's frames took to draw since the previous `frame_times`
+    /// step for that window, or since it opened.
     FrameTimes {
         label: String,
     },
@@ -101,6 +104,11 @@ pub fn run_if_requested(cx: &mut App) {
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from(DEFAULT_OUTPUT));
     cx.spawn(async move |cx| {
+        // macOS naps an app whose windows are covered: it moves it to slower cores and stretches
+        // its timers, so frame times would measure the throttling rather than the app.
+        let _app_nap_guard = cx
+            .background_executor()
+            .prevent_app_nap("running a UI script");
         let started = Instant::now();
         let result = run_script(Path::new(&script_path), &output, cx).await;
         match &result {
@@ -128,7 +136,16 @@ async fn run_script(script_path: &Path, output: &Path, cx: &mut AsyncApp) -> Res
     std::fs::create_dir_all(output)
         .with_context(|| format!("creating the output directory {}", output.display()))?;
     wait_for_workspace_window(cx).await?;
-    run_steps(&script.steps, output, cx).await
+    let mut run = Run {
+        output: output.to_path_buf(),
+        reported_frames: HashMap::default(),
+    };
+    run_steps(&script.steps, &mut run, cx).await
+}
+
+struct Run {
+    output: PathBuf,
+    reported_frames: HashMap<AnyWindowHandle, Histogram<u64>>,
 }
 
 async fn wait_for_workspace_window(cx: &mut AsyncApp) -> Result<()> {
@@ -152,17 +169,17 @@ async fn wait_for_workspace_window(cx: &mut AsyncApp) -> Result<()> {
     }
 }
 
-async fn run_steps(steps: &[Step], output: &Path, cx: &mut AsyncApp) -> Result<()> {
+async fn run_steps(steps: &[Step], run: &mut Run, cx: &mut AsyncApp) -> Result<()> {
     for step in steps {
         log::info!("UI script step: {step:?}");
-        run_step(step, output, cx)
+        run_step(step, run, cx)
             .await
             .with_context(|| format!("running {step:?}"))?;
     }
     Ok(())
 }
 
-async fn run_step(step: &Step, output: &Path, cx: &mut AsyncApp) -> Result<()> {
+async fn run_step(step: &Step, run: &mut Run, cx: &mut AsyncApp) -> Result<()> {
     match step {
         Step::Wait { milliseconds } => {
             draw_frames_for(Duration::from_millis(*milliseconds), cx).await?;
@@ -261,10 +278,10 @@ async fn run_step(step: &Step, output: &Path, cx: &mut AsyncApp) -> Result<()> {
             })?;
             draw_frames_after_input(cx).await?;
         }
-        Step::Capture { name } => capture_windows(name, output, cx).await?,
+        Step::Capture { name } => capture_windows(name, &run.output, cx).await?,
         Step::Repeat { times, steps } => {
             for _ in 0..*times {
-                Box::pin(run_steps(steps, output, cx)).await?;
+                Box::pin(run_steps(steps, run, cx)).await?;
             }
         }
         Step::Memory { label } => {
@@ -274,9 +291,16 @@ async fn run_step(step: &Step, output: &Path, cx: &mut AsyncApp) -> Result<()> {
             );
         }
         Step::FrameTimes { label } => {
-            let frames =
-                active_window(cx)?.update(cx, |_, window, _| window.frame_duration_snapshot())?;
-            let draw = &frames.draw_duration_histogram;
+            let window = active_window(cx)?;
+            let frames = window.update(cx, |_, window, _| window.frame_duration_snapshot())?;
+            let mut draw = frames.draw_duration_histogram.clone();
+            if let Some(reported) = run
+                .reported_frames
+                .insert(window, frames.draw_duration_histogram)
+            {
+                draw.subtract(reported)
+                    .context("removing the frames reported before")?;
+            }
             let milliseconds = |nanoseconds: u64| nanoseconds as f64 / 1_000_000.;
             log::info!(
                 "UI script frame times {label}: {} frames drawn, median {:.2} ms, 95th percentile {:.2} ms, 99th {:.2} ms, slowest {:.2} ms",

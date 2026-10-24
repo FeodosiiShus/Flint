@@ -1106,6 +1106,9 @@ fn apply_local_settings(
                     InvalidSettingsError::LocalSettings { path, message },
                 )));
             }
+            Err(InvalidSettingsError::Editorconfig { path, message }) => {
+                log::error!("Failed to parse {path:?}: {message}")
+            }
             Err(e) => log::error!("Failed to set local settings: {e}"),
             Ok(()) => {
                 let settings_path = match &path {

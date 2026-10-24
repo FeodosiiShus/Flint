@@ -6994,24 +6994,20 @@ fn parse_containing_branches(output: &str) -> Vec<SharedString> {
     local_branches
 }
 
+/// The output has a line per commit, so a large history repeats each author many times over:
+/// keep only the first line of each author before allocating.
 fn parse_log_authors(output: &str) -> Vec<GitUser> {
+    let mut seen = HashSet::new();
     let mut users = output
         .lines()
-        .filter_map(|line| {
-            let (name, email) = line.split_once('\0')?;
-            Some(GitUser {
-                name: name.to_string().into(),
-                email: email.to_string().into(),
-            })
+        .filter_map(|line| line.split_once('\0'))
+        .filter(|author| seen.insert(*author))
+        .map(|(name, email)| GitUser {
+            name: name.to_string().into(),
+            email: email.to_string().into(),
         })
         .collect::<Vec<_>>();
-    users.sort_by(|left, right| {
-        left.name
-            .to_lowercase()
-            .cmp(&right.name.to_lowercase())
-            .then_with(|| left.email.to_lowercase().cmp(&right.email.to_lowercase()))
-    });
-    users.dedup();
+    users.sort_by_cached_key(|user| (user.name.to_lowercase(), user.email.to_lowercase()));
     users
 }
 
@@ -8831,6 +8827,28 @@ exit 2
                 ..LogFilter::default()
             }
             .matches_nothing()
+        );
+    }
+
+    #[test]
+    fn test_parse_log_authors_keeps_each_author_once_sorted_ignoring_case() {
+        let output = "bob\0bob@example.com\n\
+            Alice\0alice@example.com\n\
+            bob\0bob@example.com\n\
+            alice\0alice@example.com\n\
+            Alice\0alice@example.com\n\
+            not an author line\n";
+        let users = parse_log_authors(output)
+            .into_iter()
+            .map(|user| format!("{} <{}>", user.name, user.email))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            users,
+            [
+                "Alice <alice@example.com>",
+                "alice <alice@example.com>",
+                "bob <bob@example.com>",
+            ]
         );
     }
 

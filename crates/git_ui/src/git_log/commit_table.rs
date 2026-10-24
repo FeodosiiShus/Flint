@@ -201,6 +201,9 @@ pub(crate) struct CommitTable {
     ref_context: RefGroupingContext,
     branch_names: Vec<SharedString>,
     commits: Vec<Arc<InitialGraphCommitData>>,
+    /// The history and its authors load once the table is first drawn: on a huge repository they
+    /// take hundreds of megabytes, which a Git tool window that stays closed shouldn't cost.
+    shown: bool,
     displayed: Option<DisplayedLog>,
     is_loading: bool,
     fully_loaded: bool,
@@ -265,6 +268,7 @@ impl CommitTable {
             ref_context: RefGroupingContext::default(),
             branch_names: Vec::new(),
             commits: Vec::new(),
+            shown: false,
             displayed: None,
             is_loading: false,
             fully_loaded: false,
@@ -472,7 +476,7 @@ impl CommitTable {
     ) {
         match event {
             RepositoryEvent::GraphEvent((source, order), graph_event) => {
-                if *order != LOG_ORDER || *source != self.log_source() {
+                if !self.shown || *order != LOG_ORDER || *source != self.log_source() {
                     return;
                 }
                 match graph_event {
@@ -528,6 +532,9 @@ impl CommitTable {
     fn load_authors(&mut self, cx: &mut Context<Self>) {
         self.authors = None;
         self.update_my_identities();
+        if !self.shown {
+            return;
+        }
         let Some(repository) = &self.repository else {
             self._authors_task = None;
             return;
@@ -573,6 +580,9 @@ impl CommitTable {
         self.rebuild_requested = false;
         self.fully_loaded = false;
         self.load_error = None;
+        if !self.shown {
+            return;
+        }
         let Some(repository) = self.repository.clone() else {
             self.displayed = None;
             self.set_loading(false, cx);
@@ -2380,6 +2390,13 @@ fn table_colors(cx: &App) -> TableColors {
 
 impl Render for CommitTable {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if !self.shown {
+            self.shown = true;
+            cx.defer_in(window, |this, _, cx| {
+                this.load_authors(cx);
+                this.reload(cx);
+            });
+        }
         let frame = self.compute_frame(window, cx);
         let background = frame.colors.background;
         let font = frame.font.clone();

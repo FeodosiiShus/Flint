@@ -12196,6 +12196,7 @@ dependencies = [
  "gpui",
  "gpui_platform",
  "gpui_tokio",
+ "hdrhistogram",
  "image",
  "install_cli",
  "itertools 0.14.0",

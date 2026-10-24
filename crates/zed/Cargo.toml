@@ -60,6 +60,7 @@ go_to_line.workspace = true
 gpui = { workspace = true, features = ["profiler", "stacker"] }
 gpui_platform = { workspace = true, features = ["font-kit"] }
 gpui_tokio.workspace = true
+hdrhistogram.workspace = true
 image.workspace = true
 itertools.workspace = true
 rayon.workspace = true
