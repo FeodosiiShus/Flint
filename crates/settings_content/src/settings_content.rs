@@ -269,6 +269,9 @@ pub struct SettingsContent {
     /// Settings for the which-key popup.
     pub which_key: Option<WhichKeySettingsContent>,
 
+    /// Liquid Glass material shared by popups and glass tool windows.
+    pub glass: Option<GlassSettingsContent>,
+
     /// Number of lines to search for modelines at the beginning and end of files.
     /// Modelines contain editor directives (e.g., vim/emacs settings) that configure
     /// the editor behavior for specific files.
@@ -296,7 +299,7 @@ fallible_options::flattened_deserialize!(SettingsContent {
         global_lsp_settings, markdown_preview, helix_mode, hide_mouse,
         log, project_panel,
         node, proxy, reduce_motion, session, terminal,
-        title_bar, vim_mode, which_key, modeline_lines, feature_flags,
+        title_bar, vim_mode, which_key, glass, modeline_lines, feature_flags,
     },
     defaults: {},
 });
@@ -816,6 +819,22 @@ pub struct WhichKeySettingsContent {
     ///
     /// Default: 1000
     pub delay_ms: Option<u64>,
+}
+
+/// The Liquid Glass material that popups, dialogs and glass tool windows are drawn from.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema, MergeFrom)]
+pub struct GlassSettingsContent {
+    /// How much of the theme's surface colour covers the glass, in percent: 0 leaves the
+    /// material untouched, 100 hides the blurred backdrop completely behind the colour.
+    ///
+    /// Default: 20
+    pub tint: Option<u32>,
+    /// How far the blurred backdrop spreads where the renderer draws the glass itself, in
+    /// pixels. macOS 26 draws its own material with the system's blur, which this does not
+    /// change.
+    ///
+    /// Default: 20
+    pub blur_radius: Option<f32>,
 }
 
 // An ExtendingVec in the settings can only accumulate new values.

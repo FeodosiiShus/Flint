@@ -10,8 +10,8 @@ use settings::{SettingsStore, ThemeColorsContent, ThemeStyleContent};
 use std::sync::Arc;
 use theme::LoadThemes;
 use ui::{
-    ActiveTheme, ContextMenu, GLASS_MATERIAL, POPUP_MENU_METRICS, POPUP_SURFACE_METRICS,
-    PopupRowMetrics, PopupRowStyle, StyledExt, TOOLTIP_METRICS, tooltip_container,
+    ActiveTheme, ContextMenu, POPUP_MENU_METRICS, POPUP_SURFACE_METRICS, PopupRowMetrics,
+    PopupRowStyle, StyledExt, TOOLTIP_METRICS, tooltip_container,
 };
 
 const TRANSLUCENT_ELEVATED_SURFACE: &str = "#22272f99";
@@ -221,7 +221,7 @@ fn pixels_context_menu_rows_and_separators_follow_the_intellij_popup_metrics() {
     // The menu is Liquid Glass: the surface color over the blurred red backdrop.
     let (surface, selection, separator) = cx.update(|cx| {
         let colors = cx.theme().colors();
-        let opacity = GLASS_MATERIAL.surface_opacity;
+        let opacity = theme_settings::GlassSettings::default().tint;
         let surface = rgb_channels(colors.elevated_surface_background);
         let backdrop = rgb_channels(gpui::rgb(BACKDROP).into());
         (

@@ -1,10 +1,9 @@
 use gpui::{App, BoxShadow, Hsla, Styled, Window, hsla, px};
 
 use crate::prelude::*;
-use crate::{
-    DialogWidth, ElevationIndex, GLASS_MATERIAL, POPUP_SURFACE_METRICS, SurfaceKind,
-    SurfaceMaterial,
-};
+use crate::{DialogWidth, ElevationIndex, POPUP_SURFACE_METRICS, SurfaceKind, SurfaceMaterial};
+use settings::Settings as _;
+use theme_settings::GlassSettings;
 
 /// How far below the window top the modal layer places a centred dialog (`top_20`).
 pub const DIALOG_TOP_OFFSET: Pixels = px(80.);
@@ -22,20 +21,19 @@ pub fn surface_is_glass(kind: SurfaceKind, cx: &App) -> bool {
 /// element only hands it the theme tint and paints no fill of its own; a fill would sit above the
 /// material and flatten it. The renderer's emulation blurs behind the element, so there the tint
 /// is the element's background.
+///
+/// [`GlassSettings`] sets how much of the theme's colour covers the glass.
 pub fn glass_material<E: Styled>(this: E, cx: &App) -> E {
-    let colors = cx.theme().colors();
+    let glass = GlassSettings::get_global(cx);
+    let tint = cx
+        .theme()
+        .colors()
+        .elevated_surface_background
+        .opacity(glass.tint);
     if cx.supports_native_glass() {
-        this.backdrop_glass(
-            GLASS_MATERIAL.blur_radius,
-            colors
-                .elevated_surface_background
-                .opacity(GLASS_MATERIAL.native_surface_opacity),
-        )
+        this.backdrop_glass(glass.blur_radius, tint)
     } else {
-        this.bg(colors
-            .elevated_surface_background
-            .opacity(GLASS_MATERIAL.surface_opacity))
-            .backdrop_blur(GLASS_MATERIAL.blur_radius)
+        this.bg(tint).backdrop_blur(glass.blur_radius)
     }
 }
 

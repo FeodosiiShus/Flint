@@ -14905,7 +14905,7 @@ mod tests {
             (
                 colors
                     .elevated_surface_background
-                    .opacity(ui::GLASS_MATERIAL.native_surface_opacity),
+                    .opacity(theme_settings::GlassSettings::default().tint),
                 colors.panel_background,
             )
         });

@@ -11,7 +11,8 @@ use image::RgbaImage;
 use settings::SettingsStore;
 use std::sync::Arc;
 use theme::LoadThemes;
-use ui::{ActiveTheme, DialogWidth, GLASS_MATERIAL, StyledSurface};
+use theme_settings::GlassSettings;
+use ui::{ActiveTheme, DialogWidth, StyledSurface};
 
 const WINDOW_SIZE: f32 = 300.;
 const SURFACE_ORIGIN: f32 = 60.;
@@ -143,7 +144,7 @@ fn pixels_glass_surfaces_blur_the_content_behind_them() {
             "neighbouring stripes blur into one color under the {surface:?}: {first:?} {next:?}"
         );
 
-        let opacity = GLASS_MATERIAL.surface_opacity;
+        let opacity = GlassSettings::default().tint;
         let behind = [0.5, 0., 0.5];
         let expected: [f32; 3] = std::array::from_fn(|index| {
             surface_color[index] * opacity + behind[index] * (1. - opacity)

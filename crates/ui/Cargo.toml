@@ -25,9 +25,11 @@ menu.workspace = true
 num-format.workspace = true
 schemars.workspace = true
 serde.workspace = true
+settings.workspace = true
 smallvec.workspace = true
 strum.workspace = true
 theme.workspace = true
+theme_settings.workspace = true
 ui_macros.workspace = true
 web-time.workspace = true
 gpui_util.workspace = true
@@ -37,7 +39,6 @@ gpui = { workspace = true, features = ["test-support"] }
 gpui_platform = { workspace = true, features = ["test-support"] }
 image.workspace = true
 settings = { workspace = true, features = ["test-support"] }
-theme_settings.workspace = true
 
 [package.metadata.cargo-shear]
 ignored = ["log"]

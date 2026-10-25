@@ -6,6 +6,7 @@
 //! bridging the theme system with the settings infrastructure.
 
 mod chrome_size;
+mod glass;
 mod schema;
 mod settings;
 
@@ -22,6 +23,7 @@ use theme::{
     ThemeSettingsProvider, ThemeStyles, default_color_scales, try_parse_color,
 };
 
+pub use crate::glass::{DEFAULT_GLASS_BLUR_RADIUS, DEFAULT_GLASS_TINT_PERCENT, GlassSettings};
 pub use crate::schema::{
     FontStyleContent, FontWeightContent, HighlightStyleContent, StatusColorsContent,
     ThemeColorsContent, ThemeContent, ThemeFamilyContent, ThemeStyleContent,
