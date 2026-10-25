@@ -18,8 +18,12 @@ pub enum SurfaceKind {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SurfaceMaterial {
-    /// macOS 26's "regular" Liquid Glass: the content behind the surface is blurred and the
-    /// surface colour is laid over it.
+    /// Liquid Glass: the content behind the surface is blurred and the theme's surface colour
+    /// lies over it, as [`GlassSettings`](theme_settings::GlassSettings) sets. macOS 26 draws
+    /// the blur with its own `NSGlassEffectView` — the window draws everything below a surface
+    /// into its layer, places the glass view, and draws the surface's content into a transparent
+    /// layer above it — and the theme colour reaches that view as its tint; elsewhere, and in
+    /// headless tests, the renderer emulates the blur.
     Glass,
     /// macOS 26 keeps its own tooltips off glass, and so does Flint.
     Opaque,
@@ -119,13 +123,6 @@ impl SurfaceKind {
         )
     }
 }
-
-/// The Liquid Glass material of [`SurfaceMaterial::Glass`] surfaces is [`GlassSettings`]
-/// ([`theme_settings::GlassSettings`]): the theme's elevated surface colour over a blurred
-/// backdrop. On macOS 26 AppKit draws it with its own `NSGlassEffectView` — the window draws
-/// everything below a surface into its layer, places the glass view, and draws the surface's
-/// content into a transparent layer above it — and the theme colour reaches that view as its
-/// tint. Elsewhere, and in headless tests, the renderer emulates it with a blur.
 
 /// The widest a content-sized popup (a menu, the branches popup) may grow before its rows elide.
 pub const POPUP_MAX_CONTENT_WIDTH: Pixels = px(560.);

@@ -836,29 +836,7 @@ impl GlassLevel {
                     let () = msg_send![self.overlay_layer, setDrawableSize: NSSize::new(1., 1.)];
                 }
             }
-            while self.glass_views.len() < frames.len() {
-                let (frame, _, _) = frames[self.glass_views.len()];
-                let view: id = msg_send![window_classes().glass_view, alloc];
-                let view: id = msg_send![view, initWithFrame: frame];
-                // The system's "regular" material diffuses a backdrop into almost flat colour, so
-                // a popup over code shows none of it. Its "clear" style keeps about a quarter more
-                // of the backdrop's light and half again its detail, which is what a translucent
-                // panel wants; the material's tint stays the theme's.
-                let style_selector = sel!(setStyle:);
-                let responds: BOOL = msg_send![view, respondsToSelector: style_selector];
-                if responds == YES {
-                    let () = msg_send![view, setStyle: NSGlassEffectViewStyleClear];
-                }
-                let () = msg_send![
-                    content_view,
-                    addSubview: view
-                    positioned: NSWindowOrderingMode::NSWindowBelow
-                    relativeTo: self.overlay_view
-                ];
-                self.glass_views.push(view);
-                self.tints.push(Hsla::transparent_black());
-                changed = true;
-            }
+            changed |= self.add_views(frames.len(), content_view);
             for (index, view) in self.glass_views.iter().enumerate() {
                 let Some((frame, corner_radius, tint)) = frames.get(index).copied() else {
                     changed |= set_view_hidden(*view, true);
@@ -881,6 +859,47 @@ impl GlassLevel {
                     self.tints[index] = tint;
                     changed = true;
                 }
+            }
+        }
+        changed
+    }
+
+    /// Adds hidden glass views until the level has `count` of them, each below the level's overlay
+    /// view. Returns whether any view was created.
+    ///
+    /// Views are created once and then only moved, retinted and hidden: a new `NSGlassEffectView`
+    /// reaches the screen before the window server has sampled what lies behind it, which shows as
+    /// a flash of its material, so a window creates them before anything needs them.
+    fn add_views(&mut self, count: usize, content_view: id) -> bool {
+        let mut changed = false;
+        // SAFETY: the views are live subviews of `content_view`, retained by this level, and
+        // frames are drawn on the main thread.
+        unsafe {
+            while self.glass_views.len() < count {
+                let view: id = msg_send![window_classes().glass_view, alloc];
+                let view: id = msg_send![view, initWithFrame: NSRect::new(
+                    NSPoint::new(0., 0.),
+                    NSSize::new(0., 0.),
+                )];
+                // The system's "regular" material diffuses a backdrop into almost flat colour, so
+                // a popup over code shows none of it. Its "clear" style keeps about a quarter more
+                // of the backdrop's light and half again its detail, which is what a translucent
+                // panel wants; the material's tint stays the theme's.
+                let style_selector = sel!(setStyle:);
+                let responds: BOOL = msg_send![view, respondsToSelector: style_selector];
+                if responds == YES {
+                    let () = msg_send![view, setStyle: GLASS_STYLE_CLEAR];
+                }
+                let () = msg_send![
+                    content_view,
+                    addSubview: view
+                    positioned: NSWindowOrderingMode::NSWindowBelow
+                    relativeTo: self.overlay_view
+                ];
+                set_view_hidden(view, true);
+                self.glass_views.push(view);
+                self.tints.push(Hsla::transparent_black());
+                changed = true;
             }
         }
         changed
@@ -961,6 +980,27 @@ impl MacWindowState {
             changed |= level.show(level_frames, content_view);
         }
         changed
+    }
+
+    /// Creates every level of glass a frame may need, with its first glass view, before the
+    /// window shows anything. A level that appeared first would otherwise create its
+    /// `NSGlassEffectView` in the frame that needs it, which flashes: the new view reaches the
+    /// screen before the window server has sampled what lies behind it.
+    fn prewarm_glass_levels(&mut self) {
+        if !native_glass_available() || !self.glass_levels.is_empty() {
+            return;
+        }
+        // SAFETY: the content view belongs to this window, and window creation runs on the main
+        // thread.
+        let (content_view, content_bounds) = unsafe {
+            let content_view = self.native_window.contentView();
+            (content_view, NSView::bounds(content_view))
+        };
+        self.add_glass_levels(MAX_GLASS_LEVELS, content_view, content_bounds);
+        for level in &mut self.glass_levels {
+            level.add_views(1, content_view);
+            level.show(&[], content_view);
+        }
     }
 
     /// Hides every level of glass, keeping it for the next frame that has glass. Returns whether
@@ -1674,8 +1714,15 @@ impl MacWindow {
 
             pool.drain();
 
+            window.prewarm_glass_levels();
             window
         }
+    }
+
+    /// Creates this window's glass levels before it draws, so the first surface that needs glass
+    /// does not create a view while the user is watching.
+    fn prewarm_glass_levels(&self) {
+        self.0.lock().prewarm_glass_levels();
     }
 
     pub fn active_window() -> Option<AnyWindowHandle> {
@@ -4129,9 +4176,10 @@ fn display_id_for_screen(screen: id) -> Option<CGDirectDisplayID> {
 /// over them one per menu; a level only costs an overlay layer once it appears.
 const MAX_GLASS_LEVELS: usize = 6;
 
-/// `NSGlassEffectView.Style.clear`: the system's more transparent material, which lets more of
-/// the backdrop's light and detail through than `regular` (its raw value in the macOS 26 SDK).
-const NSGlassEffectViewStyleClear: NSInteger = 1;
+/// The raw value of `NSGlassEffectView.Style.clear` in the macOS 26 SDK: the system's more
+/// transparent material, which lets more of the backdrop's light and detail through than
+/// `regular`.
+const GLASS_STYLE_CLEAR: NSInteger = 1;
 
 /// Whether glass surfaces use AppKit's `NSGlassEffectView` (macOS 26) rather than the
 /// renderer's emulation. `FLINT_EMULATED_GLASS` keeps the emulation, to compare the two.
