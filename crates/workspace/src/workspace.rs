@@ -14850,7 +14850,7 @@ mod tests {
         cx.run_until_parked();
     }
 
-    fn innermost_painted_background(position: Point<Pixels>, cx: &mut VisualTestContext) -> Hsla {
+    fn innermost_painted_quad(position: Point<Pixels>, cx: &mut VisualTestContext) -> gpui::Quad {
         cx.update(|window, _| {
             let position = position.scale(window.scale_factor());
             window
@@ -14860,11 +14860,19 @@ mod tests {
                 .min_by(|first, second| {
                     let first_area = first.bounds.size.width.0 * first.bounds.size.height.0;
                     let second_area = second.bounds.size.width.0 * second.bounds.size.height.0;
-                    first_area.total_cmp(&second_area)
+                    first_area
+                        .total_cmp(&second_area)
+                        .then_with(|| second.order.cmp(&first.order))
                 })
-                .and_then(|quad| quad.background.as_solid())
                 .expect("a solid background is painted at the position")
         })
+    }
+
+    fn innermost_painted_background(position: Point<Pixels>, cx: &mut VisualTestContext) -> Hsla {
+        innermost_painted_quad(position, cx)
+            .background
+            .as_solid()
+            .expect("the innermost background is solid")
     }
 
     #[gpui::test]
@@ -14875,10 +14883,24 @@ mod tests {
         let (workspace, [left_panel, bottom_panel, _right_panel], cx) =
             tool_window_bar_test_workspace(cx).await;
         left_panel.update(cx, |panel, _| panel.glass_background = false);
+        cx.update(|window, cx| {
+            let images = ui::WindowBackgroundImages {
+                editor_and_tools: Some(ui::BackgroundImagePaintLayer {
+                    image: Arc::new(gpui::RenderImage::new(vec![image::Frame::new(
+                        image::RgbaImage::new(4, 4),
+                    )])),
+                    mode: ui::BackgroundImageMode::Scale,
+                    alignment: ui::BackgroundImageAlignment::Center,
+                }),
+                empty_frame: None,
+            };
+            ui::BackgroundImageLayers::set_window(window.window_handle().window_id(), images, cx);
+            window.refresh();
+        });
         open_dock_with_center_focus(&workspace, DockPosition::Bottom, cx);
         open_dock_with_center_focus(&workspace, DockPosition::Left, cx);
 
-        let (popup_material, panel_background) = cx.update(|_, cx| {
+        let (popup_material, island_fill) = cx.update(|_, cx| {
             let colors = cx.theme().colors();
             (
                 colors
@@ -14887,23 +14909,59 @@ mod tests {
                 colors.panel_background,
             )
         });
-        let island_background = |cx: &mut VisualTestContext| {
-            let content = cx
-                .debug_bounds("tool_window_content_bottom")
-                .expect("the bottom dock is open");
-            innermost_painted_background(content.center(), cx)
-        };
+        let scale_factor = cx.update(|window, _| window.scale_factor());
+        let bottom_center = cx
+            .debug_bounds("tool_window_content_bottom")
+            .expect("the bottom dock is open")
+            .center();
+        let project_center = cx
+            .debug_bounds("tool_window_content_left")
+            .expect("the left dock is open")
+            .center();
+        let bottom_point = bottom_center.scale(scale_factor);
+        let project_point = project_center.scale(scale_factor);
+        let island_bounds = cx
+            .debug_bounds("tool_window_bottom")
+            .expect("the bottom dock is open")
+            .scale(scale_factor);
+        let project_bounds = cx
+            .debug_bounds("tool_window_left")
+            .expect("the left dock is open")
+            .scale(scale_factor);
+        let island_quad = |cx: &mut VisualTestContext| innermost_painted_quad(bottom_center, cx);
         let rendered_on_glass = |panel: &Entity<TestPanel>, cx: &mut VisualTestContext| {
             panel.read_with(cx, |panel, _| panel.rendered_on_glass)
+        };
+        let backdrop_at = |position: gpui::Point<gpui::ScaledPixels>,
+                           cx: &mut VisualTestContext| {
+            cx.update(|window, _| {
+                window.painted_backdrops().into_iter().find(|backdrop| {
+                    backdrop.bounds.contains(&position)
+                        && backdrop.content_mask.bounds.contains(&position)
+                })
+            })
+        };
+        let image_at = |position: gpui::Point<gpui::ScaledPixels>, cx: &mut VisualTestContext| {
+            cx.update(|window, _| {
+                window
+                    .painted_polychrome_sprites()
+                    .into_iter()
+                    .filter(|sprite| {
+                        sprite.bounds.contains(&position)
+                            && sprite.content_mask.bounds.contains(&position)
+                    })
+                    .max_by_key(|sprite| sprite.order)
+            })
         };
         let redraw = |cx: &mut VisualTestContext| {
             cx.update(|window, _| window.refresh());
             cx.run_until_parked();
         };
 
+        let material = island_quad(cx);
         assert_eq!(
-            island_background(cx),
-            popup_material,
+            material.background.as_solid(),
+            Some(popup_material),
             "a glass island fills with the popup glass material"
         );
         assert_eq!(
@@ -14917,22 +14975,80 @@ mod tests {
             "a panel that opts out of glass, like the Project panel, stays opaque"
         );
 
+        let backdrop =
+            backdrop_at(bottom_point, cx).expect("the glass island blurs the background behind it");
+        assert!(
+            material.order > backdrop.order,
+            "the island's material is drawn above the glass it fills"
+        );
+        let image = image_at(bottom_point, cx)
+            .expect("the window paints the background image behind the island");
+        assert_eq!(
+            image.content_mask.bounds, island_bounds,
+            "the island paints the background image inside itself, under its glass"
+        );
+        assert!(
+            image.order < backdrop.order,
+            "the island's glass blurs the background image, it does not cover it"
+        );
+
+        assert!(
+            backdrop_at(project_point, cx).is_none(),
+            "a panel that opts out of glass blurs nothing"
+        );
+        let project_fill = innermost_painted_quad(project_center, cx);
+        assert_eq!(
+            project_fill.background.as_solid(),
+            Some(island_fill),
+            "the Project panel keeps its opaque island fill"
+        );
+        let project_image = image_at(project_point, cx)
+            .expect("the Project panel paints the background image itself");
+        assert_eq!(
+            project_image.content_mask.bounds, project_bounds,
+            "the Project panel paints the background image inside itself"
+        );
+        assert!(
+            project_image.order > project_fill.order,
+            "the Project panel shows the background image unblurred over its fill"
+        );
+
+        let assert_opaque_island = |context: &str, cx: &mut VisualTestContext| {
+            let fill = island_quad(cx);
+            assert_eq!(
+                fill.background.as_solid(),
+                Some(island_fill),
+                "{context}: the island is opaque"
+            );
+            assert_eq!(
+                rendered_on_glass(&bottom_panel, cx),
+                Some(false),
+                "{context}: the content is opaque"
+            );
+            assert!(
+                backdrop_at(bottom_point, cx).is_none(),
+                "{context}: the island blurs nothing"
+            );
+            let image = image_at(bottom_point, cx)
+                .expect("an opaque island paints the background image itself");
+            assert_eq!(
+                image.content_mask.bounds, island_bounds,
+                "{context}: the image stays inside the island"
+            );
+            assert!(
+                image.order > fill.order,
+                "{context}: the image is painted over the fill, unblurred"
+            );
+        };
+
         cx.set_reduce_transparency(true);
         redraw(cx);
-        assert_eq!(
-            (island_background(cx), rendered_on_glass(&bottom_panel, cx)),
-            (panel_background, Some(false)),
-            "with Reduce Transparency the island and its content are opaque"
-        );
+        assert_opaque_island("with Reduce Transparency", cx);
 
         cx.set_reduce_transparency(false);
         cx.set_native_glass(false);
         redraw(cx);
-        assert_eq!(
-            (island_background(cx), rendered_on_glass(&bottom_panel, cx)),
-            (panel_background, Some(false)),
-            "without native glass the island and its content are opaque"
-        );
+        assert_opaque_island("without native glass", cx);
     }
 
     #[test]

@@ -1476,6 +1476,11 @@ impl Render for Dock {
                 let glass = entry.panel.glass_background(cx)
                     && cx.supports_native_glass()
                     && !cx.should_reduce_transparency();
+                let island_background = if glass {
+                    cx.theme().colors().background
+                } else {
+                    panel_background
+                };
                 return dock_panel
                     .p(islands.half_gap())
                     .child(
@@ -1487,30 +1492,35 @@ impl Render for Dock {
                             .size_full()
                             .rounded(islands.corner_radius)
                             .overflow_hidden()
-                            .map(|this| {
-                                if glass {
-                                    // The window frame paints the Editor and Tools image behind
-                                    // the layout, so the glass blurs it.
-                                    glass_material(this, cx)
-                                } else {
-                                    this.bg(panel_background).child(background_image_layer(
-                                        BackgroundImageTarget::EditorAndTools,
-                                        BackgroundImageArea::Window,
-                                        panel_background,
-                                        true,
-                                        gpui::Corners::all(islands.corner_radius),
-                                    ))
-                                }
-                            })
-                            .child(
-                                div()
+                            .bg(island_background)
+                            .child(background_image_layer(
+                                BackgroundImageTarget::EditorAndTools,
+                                BackgroundImageArea::Window,
+                                island_background,
+                                true,
+                                gpui::Corners::all(islands.corner_radius),
+                            ))
+                            .child({
+                                let surface = div()
                                     .flex()
                                     .flex_col()
                                     .size_full()
-                                    .p(content_inset)
-                                    .children(header)
-                                    .child(panel_content),
-                            ),
+                                    .rounded(islands.corner_radius);
+                                let surface = if glass {
+                                    glass_material(surface, cx)
+                                } else {
+                                    surface
+                                };
+                                surface.child(
+                                    div()
+                                        .flex()
+                                        .flex_col()
+                                        .size_full()
+                                        .p(content_inset)
+                                        .children(header)
+                                        .child(panel_content),
+                                )
+                            }),
                     )
                     .when(self.resizable(cx), |this| {
                         this.child(create_resize_handle())
