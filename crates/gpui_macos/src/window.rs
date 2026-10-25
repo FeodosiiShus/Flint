@@ -840,6 +840,15 @@ impl GlassLevel {
                 let (frame, _, _) = frames[self.glass_views.len()];
                 let view: id = msg_send![window_classes().glass_view, alloc];
                 let view: id = msg_send![view, initWithFrame: frame];
+                // The system's "regular" material diffuses a backdrop into almost flat colour, so
+                // a popup over code shows none of it. Its "clear" style keeps about a quarter more
+                // of the backdrop's light and half again its detail, which is what a translucent
+                // panel wants; the material's tint stays the theme's.
+                let style_selector = sel!(setStyle:);
+                let responds: BOOL = msg_send![view, respondsToSelector: style_selector];
+                if responds == YES {
+                    let () = msg_send![view, setStyle: NSGlassEffectViewStyleClear];
+                }
                 let () = msg_send![
                     content_view,
                     addSubview: view
@@ -4120,6 +4129,10 @@ fn display_id_for_screen(screen: id) -> Option<CGDirectDisplayID> {
 /// over them one per menu; a level only costs an overlay layer once it appears.
 const MAX_GLASS_LEVELS: usize = 6;
 
+/// `NSGlassEffectView.Style.clear`: the system's more transparent material, which lets more of
+/// the backdrop's light and detail through than `regular` (its raw value in the macOS 26 SDK).
+const NSGlassEffectViewStyleClear: NSInteger = 1;
+
 /// Whether glass surfaces use AppKit's `NSGlassEffectView` (macOS 26) rather than the
 /// renderer's emulation. `FLINT_EMULATED_GLASS` keeps the emulation, to compare the two.
 pub(crate) fn native_glass_available() -> bool {
@@ -4538,6 +4551,21 @@ mod native_glass_tests {
             (100., 1000. - 50. - 150., 200., 150.)
         );
         assert_eq!(corner_radius, 12.);
+    }
+
+    #[test]
+    fn the_system_glass_offers_the_clear_style_this_app_draws_with() {
+        let glass_view = window_classes().glass_view;
+        if glass_view.is_null() {
+            return;
+        }
+        // SAFETY: the glass class is a live Objective-C class on macOS 26.
+        let responds: BOOL =
+            unsafe { msg_send![glass_view, instancesRespondToSelector: sel!(setStyle:)] };
+        assert_eq!(
+            responds, YES,
+            "a system glass view can take the clear style, or the window would send it a selector it does not know"
+        );
     }
 
     #[test]
