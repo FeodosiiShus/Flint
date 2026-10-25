@@ -1,8 +1,8 @@
 use crate::dock::{Dock, DockPosition, PanelHandle, PanelHeaderAction, panel_context_menu};
-use gpui::{Action, Anchor, ElementId, Entity, FocusHandle, FontWeight};
+use gpui::{Action, ElementId, Entity, FocusHandle, FontWeight};
 use std::sync::Arc;
 use theme::UiDensity;
-use ui::{ChromeRegion, IconButtonShape, PopoverMenu, Tooltip, prelude::*, right_click_menu};
+use ui::{ChromeRegion, IconButtonShape, Tooltip, prelude::*, right_click_menu};
 
 pub(crate) const TOOL_WINDOW_GROUP: &str = "tool-window";
 const PANEL_NAME_SUFFIX: &str = " Panel";
@@ -82,6 +82,7 @@ pub(crate) fn render_tool_window_header(
     dock_focus_handle: FocusHandle,
     hide_action: Box<dyn Action>,
     show_actions: bool,
+    header_content: Option<AnyElement>,
     window: &Window,
     cx: &App,
 ) -> AnyElement {
@@ -98,34 +99,6 @@ pub(crate) fn render_tool_window_header(
     // `ToolWindow.Header.borderColor` resolves to the main window background, gray-30 in Islands
     // Dark and gray-150 in Islands Light.
     let bottom_border_color = cx.theme().colors().background;
-
-    let options_button = panel.header_options(cx).then(|| {
-        PopoverMenu::new(("tool-window-header-options", panel_id))
-            .anchor(Anchor::TopRight)
-            .menu({
-                let panel = panel.clone();
-                let dock = dock.clone();
-                move |window, cx| {
-                    Some(panel_context_menu(
-                        panel.clone(),
-                        dock.clone(),
-                        false,
-                        window,
-                        cx,
-                    ))
-                }
-            })
-            .trigger_with_tooltip(
-                header_action_button(
-                    ("tool-window-header-options-button", panel_id),
-                    IconName::EllipsisVertical,
-                    "Options",
-                    icon_size,
-                    button_side,
-                ),
-                Tooltip::text("Options"),
-            )
-    });
 
     let header_action_buttons = panel
         .header_actions(window, cx)
@@ -176,20 +149,12 @@ pub(crate) fn render_tool_window_header(
             this.visible_on_hover(TOOL_WINDOW_GROUP)
         })
         .children(header_action_buttons)
-        .when_some(options_button, |this, options_button| {
-            this.child(
-                div()
-                    .debug_selector(move || format!("tool_window_header_options_{position_key}"))
-                    .child(options_button),
-            )
-        })
         .child(
             div()
                 .debug_selector(move || format!("tool_window_header_hide_{position_key}"))
                 .child(hide_button),
         );
 
-    let header_content = panel.header_content(window, cx);
     let has_bottom_line = draws_bottom_line(header_content.is_some());
     let leading = match header_content {
         Some(content) => h_flex()

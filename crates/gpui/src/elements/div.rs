@@ -1948,11 +1948,13 @@ impl Element for Div {
                 cx,
                 |style, window, cx| {
                     window.with_text_style(style.text_style().cloned(), |window| {
-                        child_layout_ids = self
-                            .children
-                            .iter_mut()
-                            .map(|child| child.request_layout(window, cx))
-                            .collect::<SmallVec<_>>();
+                        child_layout_ids =
+                            window.with_glass_surface(style.backdrop_blur.is_some(), |window| {
+                                self.children
+                                    .iter_mut()
+                                    .map(|child| child.request_layout(window, cx))
+                                    .collect::<SmallVec<_>>()
+                            });
                         window.request_layout(style, child_layout_ids.iter().copied(), cx)
                     })
                 },
@@ -2033,18 +2035,20 @@ impl Element for Div {
 
                 window.with_image_cache(image_cache, |window| {
                     window.with_element_offset(scroll_offset, |window| {
-                        if let Some(order_fn) = &self.prepaint_order_fn {
-                            let order = order_fn(window, cx);
-                            for idx in order {
-                                if let Some(child) = self.children.get_mut(idx) {
+                        window.with_glass_surface(style.backdrop_blur.is_some(), |window| {
+                            if let Some(order_fn) = &self.prepaint_order_fn {
+                                let order = order_fn(window, cx);
+                                for idx in order {
+                                    if let Some(child) = self.children.get_mut(idx) {
+                                        child.prepaint(window, cx);
+                                    }
+                                }
+                            } else {
+                                for child in &mut self.children {
                                     child.prepaint(window, cx);
                                 }
                             }
-                        } else {
-                            for child in &mut self.children {
-                                child.prepaint(window, cx);
-                            }
-                        }
+                        });
                     });
 
                     if let Some(listener) = self.prepaint_listener.as_ref() {
@@ -2087,9 +2091,11 @@ impl Element for Div {
                         return;
                     }
 
-                    for child in &mut self.children {
-                        child.paint(window, cx);
-                    }
+                    window.with_glass_surface(style.backdrop_blur.is_some(), |window| {
+                        for child in &mut self.children {
+                            child.paint(window, cx);
+                        }
+                    });
                 },
             )
         });
@@ -5648,5 +5654,103 @@ mod tests {
         assert_eq!(bounds("cell-0").origin.x, px(0.));
         assert_eq!(bounds("cell-1").origin.x, px(100.));
         assert_eq!(bounds("cell-2").origin.x, px(300.));
+    }
+
+    struct GlassProbe {
+        seen: Rc<RefCell<Vec<(&'static str, bool)>>>,
+    }
+
+    impl Render for GlassProbe {
+        fn render(&mut self, window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+            self.seen
+                .borrow_mut()
+                .push(("render", window.on_glass_surface()));
+            let prepaint_seen = self.seen.clone();
+            let paint_seen = self.seen.clone();
+            div().size_full().child(canvas(
+                move |_, window, _| {
+                    prepaint_seen
+                        .borrow_mut()
+                        .push(("prepaint", window.on_glass_surface()))
+                },
+                move |_, _, window, _| {
+                    paint_seen
+                        .borrow_mut()
+                        .push(("paint", window.on_glass_surface()))
+                },
+            ))
+        }
+    }
+
+    struct GlassHost {
+        glass: bool,
+        probe: Entity<GlassProbe>,
+        outside: Rc<Cell<Option<bool>>>,
+    }
+
+    impl Render for GlassHost {
+        fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+            let outside = self.outside.clone();
+            div()
+                .size_full()
+                .child(
+                    div()
+                        .size(px(50.))
+                        .when(self.glass, |this| this.backdrop_blur(px(20.)))
+                        .child(
+                            self.probe
+                                .clone()
+                                .cached(StyleRefinement::default().size_full()),
+                        ),
+                )
+                .child(canvas(
+                    move |_, window, _| outside.set(Some(window.on_glass_surface())),
+                    |_, _, _, _| {},
+                ))
+        }
+    }
+
+    #[gpui::test]
+    fn content_of_a_backdrop_blur_draws_on_a_glass_surface(cx: &mut TestAppContext) {
+        let seen = Rc::new(RefCell::new(Vec::new()));
+        let outside = Rc::new(Cell::new(None));
+        let window = cx.add_window({
+            let seen = seen.clone();
+            let outside = outside.clone();
+            move |_, cx| GlassHost {
+                glass: true,
+                probe: cx.new(|_| GlassProbe { seen }),
+                outside,
+            }
+        });
+        let draw = |cx: &mut TestAppContext| {
+            cx.update_window(window.into(), |_, window, cx| window.draw(cx).clear(cx))
+                .unwrap();
+        };
+
+        draw(cx);
+        assert_eq!(
+            seen.take(),
+            vec![("render", true), ("prepaint", true), ("paint", true)],
+            "a view inside a backdrop blur renders, prepaints and paints on glass"
+        );
+        assert_eq!(
+            outside.get(),
+            Some(false),
+            "a sibling of the glass surface is not on glass"
+        );
+
+        window
+            .update(cx, |host, _, cx| {
+                host.glass = false;
+                cx.notify();
+            })
+            .unwrap();
+        draw(cx);
+        assert_eq!(
+            seen.take(),
+            vec![("render", false), ("prepaint", false), ("paint", false)],
+            "a cached view re-renders when its surface stops being glass, though it was not notified"
+        );
     }
 }

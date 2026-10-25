@@ -107,7 +107,8 @@ const DIAGNOSTICS_UPDATE_DEBOUNCE: Duration = Duration::from_millis(50);
 const DIAGNOSTICS_SUMMARY_UPDATE_DEBOUNCE: Duration = Duration::from_millis(30);
 
 impl Render for ProjectDiagnosticsEditor {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let background = ui::content_background(cx.theme().colors().editor_background, window);
         let warning_count = if self.include_warnings {
             self.summary.warning_count
         } else {
@@ -128,11 +129,11 @@ impl Render for ProjectDiagnosticsEditor {
                     .justify_center()
                     .items_center()
                     .text_center()
-                    .bg(cx.theme().colors().editor_background)
+                    .bg(background)
                     .child(ui::background_image_layer(
                         ui::BackgroundImageTarget::EditorAndTools,
                         ui::BackgroundImageArea::Window,
-                        cx.theme().colors().editor_background,
+                        background,
                         true,
                         gpui::Corners::default(),
                     ))

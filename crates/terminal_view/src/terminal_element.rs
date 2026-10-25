@@ -1541,12 +1541,13 @@ impl Element for TerminalElement {
                 let terminal_view = self.terminal_view.read(cx);
                 let scroll_top = terminal_view.scroll_top;
                 let mouse_input_mode = terminal_view.mouse_input_mode();
-                window.paint_quad(fill(bounds, layout.background_color));
+                let background_color = ui::content_background(layout.background_color, window);
+                window.paint_quad(fill(bounds, background_color));
                 ui::paint_background_image(
                     bounds,
                     ui::window_background_image_area(window),
                     ui::BackgroundImageTarget::EditorAndTools,
-                    layout.background_color,
+                    background_color,
                     true,
                     gpui::Corners::default(),
                     window,

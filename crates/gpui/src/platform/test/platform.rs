@@ -50,6 +50,8 @@ pub(crate) struct TestPlatform {
     idle_sleep_prevention_count: Arc<AtomicUsize>,
     idle_sleep_prevention_delay: Cell<Duration>,
     idle_sleep_prevention_fails: Cell<bool>,
+    native_glass: Cell<bool>,
+    reduce_transparency: Cell<bool>,
     headless_renderer_factory:
         Option<Box<dyn Fn() -> anyhow::Result<Option<Box<dyn PlatformHeadlessRenderer>>>>>,
     weak: Weak<Self>,
@@ -166,6 +168,8 @@ impl TestPlatform {
             idle_sleep_prevention_count: Arc::new(AtomicUsize::new(0)),
             idle_sleep_prevention_delay: Cell::new(Duration::ZERO),
             idle_sleep_prevention_fails: Cell::new(false),
+            native_glass: Cell::new(false),
+            reduce_transparency: Cell::new(false),
             weak: weak.clone(),
             opened_url: Default::default(),
             system_notifications: Default::default(),
@@ -332,6 +336,16 @@ impl TestPlatform {
     #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn set_idle_sleep_prevention_fails(&self, fails: bool) {
         self.idle_sleep_prevention_fails.set(fails);
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub(crate) fn set_native_glass(&self, native_glass: bool) {
+        self.native_glass.set(native_glass);
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub(crate) fn set_reduce_transparency(&self, reduce_transparency: bool) {
+        self.reduce_transparency.set(reduce_transparency);
     }
 
     #[cfg(any(test, feature = "test-support"))]
@@ -670,6 +684,14 @@ impl Platform for TestPlatform {
 
     fn should_auto_hide_scrollbars(&self) -> bool {
         false
+    }
+
+    fn should_reduce_transparency(&self) -> bool {
+        self.reduce_transparency.get()
+    }
+
+    fn supports_native_glass(&self) -> bool {
+        self.native_glass.get()
     }
 
     fn read_from_clipboard(&self) -> Option<ClipboardItem> {

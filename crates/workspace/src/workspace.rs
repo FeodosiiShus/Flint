@@ -14867,6 +14867,74 @@ mod tests {
         })
     }
 
+    #[gpui::test]
+    async fn glass_tool_windows_use_the_popup_material_and_put_their_content_on_glass(
+        cx: &mut TestAppContext,
+    ) {
+        cx.set_native_glass(true);
+        let (workspace, [left_panel, bottom_panel, _right_panel], cx) =
+            tool_window_bar_test_workspace(cx).await;
+        left_panel.update(cx, |panel, _| panel.glass_background = false);
+        open_dock_with_center_focus(&workspace, DockPosition::Bottom, cx);
+        open_dock_with_center_focus(&workspace, DockPosition::Left, cx);
+
+        let (popup_material, panel_background) = cx.update(|_, cx| {
+            let colors = cx.theme().colors();
+            (
+                colors
+                    .elevated_surface_background
+                    .opacity(ui::GLASS_MATERIAL.native_surface_opacity),
+                colors.panel_background,
+            )
+        });
+        let island_background = |cx: &mut VisualTestContext| {
+            let content = cx
+                .debug_bounds("tool_window_content_bottom")
+                .expect("the bottom dock is open");
+            innermost_painted_background(content.center(), cx)
+        };
+        let rendered_on_glass = |panel: &Entity<TestPanel>, cx: &mut VisualTestContext| {
+            panel.read_with(cx, |panel, _| panel.rendered_on_glass)
+        };
+        let redraw = |cx: &mut VisualTestContext| {
+            cx.update(|window, _| window.refresh());
+            cx.run_until_parked();
+        };
+
+        assert_eq!(
+            island_background(cx),
+            popup_material,
+            "a glass island fills with the popup glass material"
+        );
+        assert_eq!(
+            rendered_on_glass(&bottom_panel, cx),
+            Some(true),
+            "the content of a glass island draws on glass"
+        );
+        assert_eq!(
+            rendered_on_glass(&left_panel, cx),
+            Some(false),
+            "a panel that opts out of glass, like the Project panel, stays opaque"
+        );
+
+        cx.set_reduce_transparency(true);
+        redraw(cx);
+        assert_eq!(
+            (island_background(cx), rendered_on_glass(&bottom_panel, cx)),
+            (panel_background, Some(false)),
+            "with Reduce Transparency the island and its content are opaque"
+        );
+
+        cx.set_reduce_transparency(false);
+        cx.set_native_glass(false);
+        redraw(cx);
+        assert_eq!(
+            (island_background(cx), rendered_on_glass(&bottom_panel, cx)),
+            (panel_background, Some(false)),
+            "without native glass the island and its content are opaque"
+        );
+    }
+
     #[test]
     fn tool_window_header_title_drops_the_panel_suffix() {
         use crate::tool_window_header::tool_window_title;
@@ -15044,19 +15112,12 @@ mod tests {
         );
 
         cx.simulate_mouse_move(header.center(), None, gpui::Modifiers::none());
-        let options = cx
-            .debug_bounds("tool_window_header_options_left")
-            .expect("hovering the dock reveals the options button");
         let hide = cx
             .debug_bounds("tool_window_header_hide_left")
             .expect("hovering the dock reveals the hide button");
         assert!(
-            header.contains(&options.center()) && header.contains(&hide.center()),
-            "the actions sit in the header: header {header:?}, options {options:?}, hide {hide:?}"
-        );
-        assert!(
-            options.right() <= hide.left(),
-            "the hide button is the last header action"
+            header.contains(&hide.center()),
+            "the hide button sits in the header: header {header:?}, hide {hide:?}"
         );
 
         cx.simulate_mouse_move(center.center(), None, gpui::Modifiers::none());
@@ -15097,8 +15158,7 @@ mod tests {
         });
         cx.run_until_parked();
         assert!(
-            cx.debug_bounds("tool_window_header_options_left").is_some()
-                && cx.debug_bounds("tool_window_header_hide_left").is_some(),
+            cx.debug_bounds("tool_window_header_hide_left").is_some(),
             "always_show_actions shows the actions without hover or focus"
         );
     }
@@ -15162,7 +15222,7 @@ mod tests {
     }
 
     #[gpui::test]
-    async fn tool_window_header_panel_actions_precede_options_and_hide(cx: &mut TestAppContext) {
+    async fn tool_window_header_panel_actions_precede_hide(cx: &mut TestAppContext) {
         let (workspace, _first_runs, _second_runs, cx) =
             tool_window_header_action_test_workspace(cx).await;
         open_dock_with_center_focus(&workspace, DockPosition::Left, cx);
@@ -15177,19 +15237,11 @@ mod tests {
         let second = cx
             .debug_bounds("tool_window_header_action_second_left")
             .expect("hovering the dock reveals the second panel action");
-        let options = cx
-            .debug_bounds("tool_window_header_options_left")
-            .expect("hovering the dock reveals the options button");
         let hide = cx
             .debug_bounds("tool_window_header_hide_left")
             .expect("hovering the dock reveals the hide button");
 
-        for (name, bounds) in [
-            ("first", first),
-            ("second", second),
-            ("options", options),
-            ("hide", hide),
-        ] {
+        for (name, bounds) in [("first", first), ("second", second), ("hide", hide)] {
             assert!(
                 header.contains(&bounds.center()),
                 "the {name} button sits in the header: header {header:?}, button {bounds:?}"
@@ -15200,11 +15252,7 @@ mod tests {
             "the panel actions keep their declared order"
         );
         assert!(
-            second.right() <= options.left(),
-            "the panel actions come before the options button"
-        );
-        assert!(
-            options.right() <= hide.left(),
+            second.right() <= hide.left(),
             "the hide button stays the last header action"
         );
     }
@@ -15365,9 +15413,8 @@ mod tests {
             .expect("the open left dock has a header");
         cx.simulate_mouse_move(header.center(), None, gpui::Modifiers::none());
         assert!(
-            cx.debug_bounds("tool_window_header_options_left").is_some()
-                && cx.debug_bounds("tool_window_header_hide_left").is_some(),
-            "hovering the dock reveals the options and hide buttons"
+            cx.debug_bounds("tool_window_header_hide_left").is_some(),
+            "hovering the dock reveals the hide button"
         );
         assert_eq!(
             cx.debug_bounds("tool_window_header_action_first_left"),
@@ -15425,29 +15472,56 @@ mod tests {
     }
 
     #[gpui::test]
-    async fn tool_window_header_options_button_opens_the_panel_menu(cx: &mut TestAppContext) {
+    async fn tool_window_header_offers_only_the_hide_button(cx: &mut TestAppContext) {
         let (workspace, _panels, cx) = tool_window_bar_test_workspace(cx).await;
-        open_dock_with_center_focus(&workspace, DockPosition::Left, cx);
-        assert_eq!(
-            cx.debug_bounds("MENU_ITEM-Dock Right"),
-            None,
-            "no panel menu is open yet"
-        );
-
-        let header = cx
-            .debug_bounds("tool_window_header_left")
-            .expect("the open left dock has a header");
-        cx.simulate_mouse_move(header.center(), None, gpui::Modifiers::none());
-        let options = cx
-            .debug_bounds("tool_window_header_options_left")
-            .expect("hovering the dock reveals the options button");
-        cx.simulate_click(options.center(), gpui::Modifiers::none());
-        cx.run_until_parked();
-
-        assert!(
-            cx.debug_bounds("MENU_ITEM-Dock Right").is_some(),
-            "the options button opens the panel menu with the dock positions"
-        );
+        for (position, header_selector, hide_selector) in [
+            (
+                DockPosition::Left,
+                "tool_window_header_left",
+                "tool_window_header_hide_left",
+            ),
+            (
+                DockPosition::Bottom,
+                "tool_window_header_bottom",
+                "tool_window_header_hide_bottom",
+            ),
+            (
+                DockPosition::Right,
+                "tool_window_header_right",
+                "tool_window_header_hide_right",
+            ),
+        ] {
+            open_dock_with_center_focus(&workspace, position, cx);
+            let key = position.key();
+            let header = cx
+                .debug_bounds(header_selector)
+                .expect("the open dock has a header");
+            cx.simulate_mouse_move(header.center(), None, gpui::Modifiers::none());
+            let hide = cx
+                .debug_bounds(hide_selector)
+                .expect("hovering the dock reveals the hide button");
+            assert_eq!(
+                header.right() - hide.right(),
+                px(8.),
+                "the hide button ends the {key} header"
+            );
+            let header_parts = cx
+                .debug_bounds_with_prefix("tool_window_header_")
+                .into_iter()
+                .map(|(selector, _)| selector)
+                .filter(|selector| {
+                    selector.ends_with(&format!("_{key}"))
+                        && selector != header_selector
+                        && !selector.starts_with("tool_window_header_title_")
+                        && !selector.starts_with("tool_window_header_content_")
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(
+                header_parts,
+                vec![hide_selector.to_string()],
+                "a panel without header actions shows only Hide in its {key} header, no Options"
+            );
+        }
     }
 
     #[gpui::test]
@@ -15513,6 +15587,66 @@ mod tests {
         );
     }
 
+    #[gpui::test]
+    async fn tool_window_header_shows_the_tabs_of_a_pane_that_moves_them_there(
+        cx: &mut TestAppContext,
+    ) {
+        let (workspace, [_left_panel, bottom_panel, _right_panel], cx) =
+            tool_window_bar_test_workspace(cx).await;
+        let pane = workspace.update_in(cx, |workspace, window, cx| {
+            let pane = cx.new(|cx| {
+                let mut pane = Pane::new(
+                    workspace.weak_handle(),
+                    workspace.project().clone(),
+                    workspace.pane_history_timestamp.clone(),
+                    None,
+                    NewFile.boxed_clone(),
+                    true,
+                    window,
+                    cx,
+                );
+                pane.set_tab_bar_in_tool_window_header(true);
+                pane
+            });
+            pane.update(cx, |pane, cx| {
+                let item = Box::new(cx.new(TestItem::new));
+                pane.add_item(item, true, true, None, window, cx);
+            });
+            pane
+        });
+        bottom_panel.update(cx, |panel, _| panel.pane = Some(pane.clone()));
+
+        open_dock_with_center_focus(&workspace, DockPosition::Bottom, cx);
+        let header = cx
+            .debug_bounds("tool_window_header_bottom")
+            .expect("a terminal-like panel shows the tool window header");
+        let title = cx
+            .debug_bounds("tool_window_header_title_bottom")
+            .expect("the header names the panel");
+        let tabs = cx
+            .debug_bounds("tool_window_header_content_bottom")
+            .expect("the header shows the pane's tabs");
+        assert!(
+            title.right() <= tabs.left() && header.contains(&tabs.center()),
+            "the tabs follow the panel name inside the header: header {header:?}, title {title:?}, tabs {tabs:?}"
+        );
+        pane.update_in(cx, |pane, window, cx| {
+            assert!(
+                pane.shows_tab_bar_in_tool_window_header(cx),
+                "the pane leaves its tab bar to the header"
+            );
+            pane.set_zoomed(true, cx);
+            window.refresh();
+        });
+        cx.run_until_parked();
+        pane.read_with(cx, |pane, cx| {
+            assert!(
+                !pane.shows_tab_bar_in_tool_window_header(cx),
+                "a zoomed pane, whose header is hidden, keeps its own tab bar"
+            );
+        });
+    }
+
     struct TestHeaderContent;
 
     impl Render for TestHeaderContent {
@@ -15551,9 +15685,6 @@ mod tests {
         let content = cx
             .debug_bounds("tool_window_header_content_bottom")
             .expect("notifying the panel re-renders the header with its content");
-        let options = cx
-            .debug_bounds("tool_window_header_options_bottom")
-            .expect("hovering the dock reveals the options button");
         let hide = cx
             .debug_bounds("tool_window_header_hide_bottom")
             .expect("hovering the dock reveals the hide button");
@@ -15574,8 +15705,8 @@ mod tests {
             "the content spans the header height"
         );
         assert!(
-            content.right() <= options.left() && options.right() <= hide.left(),
-            "the content ends before the options and hide buttons: content {content:?}, options {options:?}, hide {hide:?}"
+            content.right() <= hide.left(),
+            "the content ends before the hide button: content {content:?}, hide {hide:?}"
         );
     }
 
@@ -15608,29 +15739,19 @@ mod tests {
             .debug_bounds("tool_window_header_left")
             .expect("the open left dock has a header");
         cx.simulate_mouse_move(header.center(), None, gpui::Modifiers::none());
-        let options = cx
-            .debug_bounds("tool_window_header_options_left")
-            .expect("hovering the dock reveals the options button");
         let hide = cx
             .debug_bounds("tool_window_header_hide_left")
             .expect("hovering the dock reveals the hide button");
 
-        for (name, button) in [("options", options), ("hide", hide)] {
-            assert_eq!(
-                button.size.width,
-                px(22.),
-                "the {name} button is IntelliJ's 22 px toolbar button"
-            );
-            assert_eq!(button.size.height, px(22.));
-            assert!(
-                (f32::from(button.center().y) - f32::from(header.center().y)).abs() < 0.5,
-                "the {name} button is centered in the header: header {header:?}, button {button:?}"
-            );
-        }
         assert_eq!(
-            options.right(),
-            hide.left(),
-            "the header toolbar lays its buttons edge to edge"
+            hide.size.width,
+            px(22.),
+            "the hide button is IntelliJ's 22 px toolbar button"
+        );
+        assert_eq!(hide.size.height, px(22.));
+        assert!(
+            (f32::from(hide.center().y) - f32::from(header.center().y)).abs() < 0.5,
+            "the hide button is centered in the header: header {header:?}, button {hide:?}"
         );
         assert_eq!(
             header.right() - hide.right(),
@@ -15808,15 +15929,12 @@ mod tests {
         let header = cx
             .debug_bounds("tool_window_header_left")
             .expect("the open left dock has a header");
-        cx.simulate_mouse_move(header.center(), None, gpui::Modifiers::none());
-        let options = cx
-            .debug_bounds("tool_window_header_options_left")
-            .expect("hovering the dock reveals the options button");
-        cx.simulate_click(options.center(), gpui::Modifiers::none());
+        cx.simulate_mouse_down(header.center(), MouseButton::Right, gpui::Modifiers::none());
+        cx.simulate_mouse_up(header.center(), MouseButton::Right, gpui::Modifiers::none());
         cx.run_until_parked();
         assert!(
             cx.debug_bounds("MENU_ITEM-Dock Right").is_some(),
-            "the header options menu is open"
+            "the header menu is open"
         );
         assert_eq!(
             cx.debug_bounds("MENU_ITEM-Show Tool Window Names"),

@@ -1205,6 +1205,7 @@ impl Render for TerminalView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // TODO: this should be moved out of render
         self.scroll_handle.update(self.terminal.read(cx));
+        let background = ui::content_background(cx.theme().colors().editor_background, window);
 
         if let Some(new_display_offset) = self.scroll_handle.future_display_offset.take() {
             self.terminal.update(cx, |term, _| {
@@ -1271,11 +1272,11 @@ impl Render for TerminalView {
                 div()
                     .id("terminal-view-container")
                     .size_full()
-                    .bg(cx.theme().colors().editor_background)
+                    .bg(background)
                     .child(ui::background_image_layer(
                         ui::BackgroundImageTarget::EditorAndTools,
                         ui::BackgroundImageArea::Window,
-                        cx.theme().colors().editor_background,
+                        background,
                         true,
                         gpui::Corners::default(),
                     ))

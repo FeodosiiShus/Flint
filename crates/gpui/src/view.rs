@@ -303,6 +303,7 @@ struct ViewElementCacheKey {
     bounds: Bounds<Pixels>,
     content_mask: ContentMask<Pixels>,
     text_style: TextStyle,
+    on_glass_surface: bool,
 }
 
 impl<V: View> Element for ViewElement<V> {
@@ -480,11 +481,13 @@ fn prepaint_view(
             |element_state, window| {
                 let content_mask = window.content_mask();
                 let text_style = window.text_style();
+                let on_glass_surface = window.on_glass_surface();
 
                 if let Some(mut element_state) = element_state
                     && element_state.cache_key.bounds == bounds
                     && element_state.cache_key.content_mask == content_mask
                     && element_state.cache_key.text_style == text_style
+                    && element_state.cache_key.on_glass_surface == on_glass_surface
                     && !window.dirty_views.contains(&entity_id)
                     && !window.refreshing
                 {
@@ -520,6 +523,7 @@ fn prepaint_view(
                             bounds,
                             content_mask,
                             text_style,
+                            on_glass_surface,
                         },
                     },
                 )

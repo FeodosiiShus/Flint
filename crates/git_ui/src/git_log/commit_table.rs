@@ -84,6 +84,9 @@ const LOG_ORDER: LogOrder = LogOrder::DateOrder;
 const UP_PRELOAD_COUNT: usize = 20;
 const DOWN_PRELOAD_COUNT: usize = 40;
 const MINIMUM_ROW_HEIGHT: Pixels = px(26.);
+// The current branch highlight is opaque; on glass it becomes a tint, or a log whose commits
+// are all on the current branch would cover the glass entirely.
+const GLASS_ROW_HIGHLIGHT_OPACITY: f32 = 0.5;
 const VERTICAL_PADDING: Pixels = px(7.);
 const SELECTION_INSET: Pixels = px(4.);
 const SELECTION_RADIUS: Pixels = px(4.);
@@ -149,7 +152,11 @@ struct FrameLayout {
 
 #[derive(Clone, Copy)]
 struct RowStyle {
+    /// What the graph's rings and the ref label icons are drawn against.
     background: Hsla,
+    /// What the row paints under itself: on glass a plain row leaves the glass showing and a
+    /// highlighted one tints it.
+    fill: Option<Hsla>,
     foreground: Hsla,
     bold_author: bool,
     bold_all: bool,
@@ -1813,7 +1820,9 @@ impl CommitTable {
             let data = self.metadata.get(&commit.sha).cloned();
             let selected = is_selected(row);
             let hovered = self.hovered_row == Some(row);
+            let on_glass = window.on_glass_surface();
             let mut background = frame.colors.background;
+            let mut row_fill = (!on_glass).then_some(background);
             let mut foreground = frame.colors.foreground;
             let mut bold = false;
             if let Some(data) = &data {
@@ -1822,6 +1831,11 @@ impl CommitTable {
                         .is_some_and(|contained| contained.get(index) == Some(&true))
                 {
                     background = frame.colors.current_branch;
+                    row_fill = Some(if on_glass {
+                        background.opacity(GLASS_ROW_HIGHLIGHT_OPACITY)
+                    } else {
+                        background
+                    });
                 }
                 if !selected
                     && self.tab_properties.highlight_merge_commits
@@ -1852,6 +1866,7 @@ impl CommitTable {
             };
             let style = RowStyle {
                 background,
+                fill: row_fill,
                 foreground,
                 bold_author: bold && author_visible,
                 bold_all: bold && !author_visible,
@@ -1900,12 +1915,14 @@ impl CommitTable {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let row_height = frame.row_height;
-        let background = style.background;
+        let row_fill = style.fill;
         let overlay = style.overlay;
         let background_layer = canvas(
             |_, _, _| {},
             move |bounds, _, window, _| {
-                window.paint_quad(fill(bounds, background));
+                if let Some(row_fill) = row_fill {
+                    window.paint_quad(fill(bounds, row_fill));
+                }
                 if let Some((color, row_type)) = overlay {
                     let overlay_bounds = Bounds::from_corners(
                         point(bounds.left() + SELECTION_INSET, bounds.top()),
@@ -2413,7 +2430,7 @@ impl Render for CommitTable {
             });
         }
         let frame = self.compute_frame(window, cx);
-        let background = frame.colors.background;
+        let background = ui::content_background(frame.colors.background, window);
         let font = frame.font.clone();
         let font_size = frame.font_size;
         self.frame = Some(frame);

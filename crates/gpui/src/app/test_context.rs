@@ -228,6 +228,17 @@ impl TestAppContext {
         self.test_platform.set_idle_sleep_prevention_fails(fails);
     }
 
+    /// Makes the platform draw glass natively, like macOS 26, or not.
+    pub fn set_native_glass(&self, native_glass: bool) {
+        self.test_platform.set_native_glass(native_glass);
+    }
+
+    /// Simulates the system's Reduce Transparency setting.
+    pub fn set_reduce_transparency(&self, reduce_transparency: bool) {
+        self.test_platform
+            .set_reduce_transparency(reduce_transparency);
+    }
+
     /// returns a new `TestAppContext` re-using the same executors to interleave tasks.
     pub fn new_app(&self) -> TestAppContext {
         Self::build(self.dispatcher.clone(), self.fn_name)

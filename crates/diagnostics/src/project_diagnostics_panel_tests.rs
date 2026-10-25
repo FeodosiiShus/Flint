@@ -450,6 +450,47 @@ async fn test_project_diagnostics_panel_header_actions_follow_hosted_view(cx: &m
 }
 
 #[gpui::test]
+async fn test_project_diagnostics_panel_shows_its_tabs_in_the_tool_window_header(
+    cx: &mut TestAppContext,
+) {
+    init_test(cx);
+    let project = build_project(cx).await;
+    let (workspace, cx) = build_workspace(project, cx);
+    let panel = add_project_diagnostics_panel(&workspace, cx);
+    workspace.update_in(cx, |workspace, window, cx| {
+        workspace.toggle_panel_focus::<ProjectDiagnosticsPanel>(window, cx);
+    });
+    cx.run_until_parked();
+
+    let header = cx
+        .debug_bounds("tool_window_header_bottom")
+        .expect("the open panel has a tool window header");
+    let title = cx
+        .debug_bounds("tool_window_header_title_bottom")
+        .expect("the header names the panel");
+    let file_tab = cx
+        .debug_bounds("problems-tab-file")
+        .expect("the File tab is shown");
+    let project_tab = cx
+        .debug_bounds("problems-tab-project")
+        .expect("the Project tab is shown");
+    for (name, tab) in [("File", file_tab), ("Project", project_tab)] {
+        assert!(
+            header.contains(&tab.center()) && title.right() <= tab.left(),
+            "the {name} tab follows the panel name in the header: header {header:?}, title {title:?}, tab {tab:?}"
+        );
+    }
+
+    cx.simulate_click(file_tab.center(), gpui::Modifiers::none());
+    cx.run_until_parked();
+    assert_eq!(
+        selected_tab(&panel, cx),
+        ProblemsTab::File,
+        "clicking a header tab selects it"
+    );
+}
+
+#[gpui::test]
 async fn test_project_diagnostics_panel_toggle_warnings_action_flips_include_warnings(
     cx: &mut TestAppContext,
 ) {

@@ -4,16 +4,16 @@ use anyhow::Result;
 use editor::Editor;
 use fs::Fs;
 use gpui::{
-    Action, AsyncWindowContext, Entity, EntityId, EventEmitter, FocusHandle, Focusable,
+    Action, AnyView, AsyncWindowContext, Entity, EntityId, EventEmitter, FocusHandle, Focusable,
     Subscription, Task, WeakEntity,
 };
 use language::Buffer;
 use project::{DiagnosticSummary, Project, ProjectPath};
 use settings::{IntoGpui, RegisterSetting, Settings};
-use ui::{ButtonLike, prelude::*};
+use ui::prelude::*;
 use util::ResultExt;
 use workspace::{
-    HideButtonSetting, Workspace,
+    HideButtonSetting, Workspace, WorkspaceSettings,
     dock::{DockPosition, Panel, PanelEvent, PanelHeaderAction},
     item::{Item, ItemHandle},
 };
@@ -27,6 +27,8 @@ use crate::{
 const PROJECT_DIAGNOSTICS_PANEL_KEY: &str = "ProjectDiagnosticsPanel";
 const PROJECT_DIAGNOSTICS_PANEL_ACTIVATION_PRIORITY: u32 = 3;
 const TAB_PROBLEM_COUNT_GAP: Pixels = px(8.);
+const TAB_HORIZONTAL_PADDING: Pixels = px(11.);
+const TAB_UNDERLINE_HEIGHT: Pixels = px(3.);
 const NO_SELECTED_FILE_TEXT: &str = "Open file in editor to see problems";
 const PROBLEMS_FILTERED_OUT_TEXT: &str = "Problems could be filtered out";
 
@@ -244,6 +246,7 @@ pub struct ProjectDiagnosticsPanel {
     pub(crate) selected_tab: ProblemsTab,
     pub(crate) project_view: Option<Entity<ProjectDiagnosticsEditor>>,
     file_problems: Option<FileProblems>,
+    header_tabs: Entity<ProblemsHeaderTabs>,
     error_count: usize,
     problem_count_update: Task<()>,
     _project_view_observation: Option<Subscription>,
@@ -299,6 +302,10 @@ impl ProjectDiagnosticsPanel {
                 this.sync_file_view_warnings(window, cx);
             });
         let error_count = project.read(cx).diagnostic_summary(false, cx).error_count;
+        let header_tabs = cx.new({
+            let panel = cx.weak_entity();
+            |_| ProblemsHeaderTabs { panel }
+        });
         Self {
             focus_handle: cx.focus_handle(),
             workspace: workspace.weak_handle(),
@@ -307,6 +314,7 @@ impl ProjectDiagnosticsPanel {
             selected_tab: ProblemsTab::Project,
             project_view: None,
             file_problems: None,
+            header_tabs,
             error_count,
             problem_count_update: Task::ready(()),
             _project_view_observation: None,
@@ -543,37 +551,63 @@ impl ProjectDiagnosticsPanel {
         }
     }
 
-    fn render_tab_row(&self, cx: &Context<Self>) -> impl IntoElement {
-        h_flex()
-            .flex_none()
-            .w_full()
-            .px_1()
-            .py_0p5()
-            .gap_0p5()
-            .border_b_1()
-            .border_color(cx.theme().colors().border_variant)
-            .children(ProblemsTab::ALL.map(|tab| self.render_tab(tab, cx)))
-    }
-
-    fn render_tab(&self, tab: ProblemsTab, cx: &Context<Self>) -> impl IntoElement {
+    /// Drawn like the Git tool window's header tabs: the selected tab is an island pill, or
+    /// underlined without islands.
+    fn render_tab(
+        &self,
+        tab: ProblemsTab,
+        panel: WeakEntity<Self>,
+        focused: bool,
+        cx: &App,
+    ) -> impl IntoElement + use<> {
         let problem_count = self.problem_count(tab, cx);
-        ButtonLike::new(tab.element_id())
-            .toggle_state(self.selected_tab == tab)
-            .child(
-                h_flex()
-                    .gap(TAB_PROBLEM_COUNT_GAP)
-                    .child(Label::new(tab.title()).size(LabelSize::Small))
-                    .when(problem_count > 0, |this| {
-                        this.child(
-                            Label::new(problem_count.to_string())
-                                .size(LabelSize::Small)
-                                .color(Color::Muted),
-                        )
-                    }),
-            )
-            .on_click(cx.listener(move |panel, _, window, cx| {
-                panel.select_tab(tab, window, cx);
-            }))
+        let selected = self.selected_tab == tab;
+        let colors = cx.theme().colors();
+        let metrics = ui::island_tab_metrics(cx);
+        let islands = WorkspaceSettings::get_global(cx).islands.enabled;
+        let pill = ui::island_tab_pill_colors(focused, colors);
+        let hover_background = ui::island_tab_hover_background(selected, focused, colors);
+        h_flex()
+            .id(tab.element_id())
+            .debug_selector(move || tab.element_id().into())
+            .relative()
+            .h(metrics.pill_height)
+            .px(TAB_HORIZONTAL_PADDING)
+            .gap(TAB_PROBLEM_COUNT_GAP)
+            .rounded(metrics.pill_radius)
+            .border_1()
+            .border_color(colors.border_transparent)
+            .cursor_pointer()
+            .when(islands && selected, |this| {
+                this.bg(pill.background).border_color(pill.border)
+            })
+            .when(!islands && selected, |this| {
+                this.child(
+                    div()
+                        .absolute()
+                        .left_0()
+                        .right_0()
+                        .bottom_0()
+                        .h(TAB_UNDERLINE_HEIGHT)
+                        .bg(if focused {
+                            colors.border_selected
+                        } else {
+                            colors.border
+                        }),
+                )
+            })
+            .when_some(hover_background, |this, hover_background| {
+                this.hover(move |style| style.bg(hover_background))
+            })
+            .child(Label::new(tab.title()))
+            .when(problem_count > 0, |this| {
+                this.child(Label::new(problem_count.to_string()).color(Color::Muted))
+            })
+            .on_click(move |_, window, cx| {
+                panel
+                    .update(cx, |panel, cx| panel.select_tab(tab, window, cx))
+                    .log_err();
+            })
     }
 
     fn render_project_content(&self) -> AnyElement {
@@ -632,8 +666,25 @@ impl Render for ProjectDiagnosticsPanel {
             .key_context("ProjectDiagnosticsPanel")
             .track_focus(&self.focus_handle)
             .size_full()
-            .child(self.render_tab_row(cx))
             .child(div().flex_1().min_h_0().w_full().child(content))
+    }
+}
+
+/// The File and Project tabs, which the tool window header shows after the panel name.
+struct ProblemsHeaderTabs {
+    panel: WeakEntity<ProjectDiagnosticsPanel>,
+}
+
+impl Render for ProblemsHeaderTabs {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let Some(panel) = self.panel.upgrade() else {
+            return div();
+        };
+        let panel = panel.read(cx);
+        let focused = panel.focus_handle.contains_focused(window, cx);
+        h_flex().h_full().gap_0p5().children(
+            ProblemsTab::ALL.map(|tab| panel.render_tab(tab, self.panel.clone(), focused, cx)),
+        )
     }
 }
 
@@ -719,6 +770,10 @@ impl Panel for ProjectDiagnosticsPanel {
                 .get_or_insert_default()
                 .button = Some(false);
         }))
+    }
+
+    fn header_content(&self, _: &Window, _: &App) -> Option<AnyView> {
+        Some(self.header_tabs.clone().into())
     }
 
     fn header_actions(&self, _: &Window, cx: &App) -> Vec<PanelHeaderAction> {

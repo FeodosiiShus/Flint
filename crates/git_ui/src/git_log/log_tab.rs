@@ -928,7 +928,10 @@ impl Render for GitLogTab {
             .size_full()
             .flex()
             .flex_row()
-            .bg(cx.theme().colors().panel_background);
+            .bg(ui::content_background(
+                cx.theme().colors().panel_background,
+                window,
+            ));
         if self.repository.is_none() {
             return root
                 .track_focus(&self.focus_handle)

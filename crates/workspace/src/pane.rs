@@ -430,6 +430,7 @@ pub struct Pane {
         Option<Arc<dyn Fn(&mut Self, &dyn Any, &mut Window, &mut Context<Self>) -> bool>>,
     can_toggle_zoom: bool,
     should_display_tab_bar: Rc<dyn Fn(&Window, &mut Context<Pane>) -> bool>,
+    tab_bar_in_tool_window_header: bool,
     should_display_welcome_page: bool,
     render_tab_bar_buttons: Rc<
         dyn Fn(
@@ -619,6 +620,7 @@ impl Pane {
             can_split_predicate: None,
             can_toggle_zoom: true,
             should_display_tab_bar: Rc::new(|_, cx| TabBarSettings::get_global(cx).show),
+            tab_bar_in_tool_window_header: false,
             should_display_welcome_page: false,
             render_tab_bar_buttons: Rc::new(default_render_tab_bar_buttons),
             render_tab_bar: Rc::new(Self::render_tab_bar),
@@ -853,6 +855,30 @@ impl Pane {
         F: 'static + Fn(&Window, &mut Context<Pane>) -> bool,
     {
         self.should_display_tab_bar = Rc::new(should_display_tab_bar);
+    }
+
+    /// Moves the tab bar of a pane that fills a tool window into the tool window header, like
+    /// the tabs of IntelliJ's terminal.
+    pub fn set_tab_bar_in_tool_window_header(&mut self, in_header: bool) {
+        self.tab_bar_in_tool_window_header = in_header;
+    }
+
+    /// A zoomed panel shows no tool window header, so its pane keeps its own tab bar then.
+    pub(crate) fn shows_tab_bar_in_tool_window_header(&self, cx: &App) -> bool {
+        self.tab_bar_in_tool_window_header
+            && !self.zoomed
+            && WorkspaceSettings::get_global(cx).tool_window_headers.show
+    }
+
+    pub(crate) fn render_tool_window_header_tab_bar(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        if self.active_item().is_none() {
+            return gpui::Empty.into_any();
+        }
+        (self.render_tab_bar.clone())(self, window, cx)
     }
 
     pub fn set_should_display_welcome_page(&mut self, should_display_welcome_page: bool) {
@@ -3357,7 +3383,8 @@ impl Pane {
             self.update_hidden_tabs_button_visibility(unpinned_tabs.len(), cx);
 
         let tab_bar_settings = TabBarSettings::get_global(cx);
-        let use_separate_rows = tab_bar_settings.show_pinned_tabs_in_separate_row;
+        let use_separate_rows = tab_bar_settings.show_pinned_tabs_in_separate_row
+            && !self.shows_tab_bar_in_tool_window_header(cx);
 
         if use_separate_rows && !pinned_tabs.is_empty() && !unpinned_tabs.is_empty() {
             self.render_two_row_tab_bar(
@@ -3394,6 +3421,7 @@ impl Pane {
     ) -> TabBar {
         tab_bar
             .islands(WorkspaceSettings::get_global(cx).islands.enabled)
+            .in_header(self.shows_tab_bar_in_tool_window_header(cx))
             .when(
                 self.display_nav_history_buttons.unwrap_or_default(),
                 |tab_bar| {
@@ -4390,7 +4418,8 @@ impl Render for Pane {
             .contribute_context(&mut key_context, cx);
 
         let should_display_tab_bar = self.should_display_tab_bar.clone();
-        let display_tab_bar = should_display_tab_bar(window, cx);
+        let display_tab_bar =
+            should_display_tab_bar(window, cx) && !self.shows_tab_bar_in_tool_window_header(cx);
         let Some(project) = self.project.upgrade() else {
             return div().track_focus(&self.focus_handle(cx));
         };

@@ -16,6 +16,7 @@ pub struct TabBar {
     end_children: SmallVec<[AnyElement; 2]>,
     scroll_handle: Option<ScrollHandle>,
     islands: bool,
+    in_header: bool,
 }
 
 impl TabBar {
@@ -27,6 +28,7 @@ impl TabBar {
             end_children: SmallVec::new(),
             scroll_handle: None,
             islands: false,
+            in_header: false,
         }
     }
 
@@ -37,6 +39,13 @@ impl TabBar {
 
     pub fn islands(mut self, islands: bool) -> Self {
         self.islands = islands;
+        self
+    }
+
+    /// Lays the tab bar out inside a tool window header, which draws the strip's background and
+    /// bottom line itself.
+    pub fn in_header(mut self, in_header: bool) -> Self {
+        self.in_header = in_header;
         self
     }
 
@@ -109,14 +118,18 @@ impl ParentElement for TabBar {
 }
 
 impl RenderOnce for TabBar {
-    fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let islands = self.islands;
-        let classic_borders = !islands;
-        let background = if islands {
-            cx.theme().colors().editor_background
-        } else {
-            cx.theme().colors().tab_bar_background
-        };
+        let in_header = self.in_header;
+        let classic_borders = !islands && !in_header;
+        let background = crate::content_background(
+            if islands {
+                cx.theme().colors().editor_background
+            } else {
+                cx.theme().colors().tab_bar_background
+            },
+            window,
+        );
         let bottom_border_width = island_tab_metrics(cx).bottom_border_width;
         div()
             .id(self.id)
@@ -124,15 +137,21 @@ impl RenderOnce for TabBar {
             .flex()
             .flex_none()
             .w_full()
-            .h(Self::strip_height(islands, cx))
-            .bg(background)
-            .child(crate::background_image_layer(
-                crate::BackgroundImageTarget::EditorAndTools,
-                crate::BackgroundImageArea::Window,
-                background,
-                true,
-                gpui::Corners::default(),
-            ))
+            .map(|this| {
+                if in_header {
+                    this.h_full()
+                } else {
+                    this.h(Self::strip_height(islands, cx))
+                        .bg(background)
+                        .child(crate::background_image_layer(
+                            crate::BackgroundImageTarget::EditorAndTools,
+                            crate::BackgroundImageArea::Window,
+                            background,
+                            true,
+                            gpui::Corners::default(),
+                        ))
+                }
+            })
             .when(!self.start_children.is_empty(), |this| {
                 this.child(
                     h_flex()
@@ -153,6 +172,8 @@ impl RenderOnce for TabBar {
                     .flex_1()
                     .h_full()
                     .overflow_x_hidden()
+                    // Tabs keep the height of a tab strip, which a header may not have.
+                    .when(in_header, |this| this.flex().items_center())
                     .when(classic_borders, |this| {
                         this.child(
                             div()
@@ -194,7 +215,7 @@ impl RenderOnce for TabBar {
                         .children(self.end_children),
                 )
             })
-            .when(islands, |this| {
+            .when(islands && !in_header, |this| {
                 this.child(
                     div()
                         .absolute()

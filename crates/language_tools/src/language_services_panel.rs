@@ -608,10 +608,6 @@ impl Panel for LanguageServicesPanel {
         }
     }
 
-    fn header_options(&self, _: &App) -> bool {
-        false
-    }
-
     fn hide_button_setting(&self, _: &App) -> Option<HideButtonSetting> {
         Some(HideButtonSetting::new(|settings| {
             settings

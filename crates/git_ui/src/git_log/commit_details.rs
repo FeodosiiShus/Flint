@@ -698,7 +698,7 @@ impl Focusable for CommitDetailsPanel {
 impl Render for CommitDetailsPanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = cx.theme().colors();
-        let background = colors.panel_background;
+        let background = ui::content_background(colors.panel_background, window);
         let separator = colors.border;
         let source = self.ref_source(cx);
         let mut content = Vec::new();

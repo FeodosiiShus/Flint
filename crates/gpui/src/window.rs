@@ -1181,6 +1181,8 @@ pub struct Window {
     /// This is used by `with_rem_size` to allow rendering an element tree with
     /// a given rem size.
     rem_size_override_stack: SmallVec<[Pixels; 8]>,
+    /// How many elements that blur their backdrop enclose the element being drawn.
+    glass_surface_depth: usize,
     pub(crate) viewport_size: Size<Pixels>,
     layout_engine: Option<TaffyLayoutEngine>,
     pub(crate) root: Option<AnyView>,
@@ -2076,6 +2078,7 @@ impl Window {
             text_rendering_mode: cx.text_rendering_mode.clone(),
             rem_size: px(16.),
             rem_size_override_stack: SmallVec::new(),
+            glass_surface_depth: 0,
             viewport_size: content_size,
             layout_engine: Some(TaffyLayoutEngine::new()),
             root: None,
@@ -3069,6 +3072,27 @@ impl Window {
             self.rem_size_override_stack.push(rem_size.into());
             let result = f(self);
             self.rem_size_override_stack.pop();
+            result
+        } else {
+            f(self)
+        }
+    }
+
+    /// Whether the element being drawn lies on a surface that blurs its backdrop (Liquid Glass).
+    /// Content there leaves its empty areas unfilled, so the glass shows through them.
+    pub fn on_glass_surface(&self) -> bool {
+        self.glass_surface_depth > 0
+    }
+
+    /// Runs `f` with the elements it draws on a glass surface when `glass` is true.
+    ///
+    /// This method must only be called as part of element drawing.
+    #[inline]
+    pub fn with_glass_surface<R>(&mut self, glass: bool, f: impl FnOnce(&mut Self) -> R) -> R {
+        if glass {
+            self.glass_surface_depth += 1;
+            let result = f(self);
+            self.glass_surface_depth -= 1;
             result
         } else {
             f(self)

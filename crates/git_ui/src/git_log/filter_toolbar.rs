@@ -1452,7 +1452,7 @@ impl LogFilterToolbar {
                         this.border_2().border_color(colors.border_focused)
                     })
                     .when(!focused, |this| this.border_1().border_color(colors.border))
-                    .bg(colors.editor_background)
+                    .bg(ui::content_background(colors.editor_background, window))
                     .pr(px(2.))
                     .child(
                         div()

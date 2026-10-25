@@ -18,8 +18,8 @@ use settings::{
 };
 use std::sync::Arc;
 use ui::{
-    BackgroundImageArea, BackgroundImageTarget, ContextMenu, GLASS_MATERIAL,
-    background_image_layer, prelude::*,
+    BackgroundImageArea, BackgroundImageTarget, ContextMenu, background_image_layer,
+    glass_material, prelude::*,
 };
 use util::ResultExt as _;
 
@@ -140,11 +140,6 @@ pub trait Panel: Focusable + EventEmitter<PanelEvent> + Render + Sized {
     fn header_content(&self, _window: &Window, _cx: &App) -> Option<AnyView> {
         None
     }
-    /// Whether the tool window header offers its Options menu next to Hide. The same menu stays
-    /// on the tool window button's right click.
-    fn header_options(&self, _cx: &App) -> bool {
-        true
-    }
     /// Whether the tool window's island is Liquid Glass that blurs the window background behind
     /// it, where macOS draws glass natively. A panel that reads like the editor, such as the
     /// Project panel, stays opaque instead.
@@ -185,7 +180,6 @@ pub trait PanelHandle: Send + Sync {
     fn hide_button_setting(&self, cx: &App) -> Option<HideButtonSetting>;
     fn header_actions(&self, window: &Window, cx: &App) -> Vec<PanelHeaderAction>;
     fn header_content(&self, window: &Window, cx: &App) -> Option<AnyView>;
-    fn header_options(&self, cx: &App) -> bool;
     fn glass_background(&self, cx: &App) -> bool;
     fn move_to_next_position(&self, window: &mut Window, cx: &mut App) {
         let current_position = self.position(window, cx);
@@ -326,10 +320,6 @@ where
 
     fn header_content(&self, window: &Window, cx: &App) -> Option<AnyView> {
         self.read(cx).header_content(window, cx)
-    }
-
-    fn header_options(&self, cx: &App) -> bool {
-        self.read(cx).header_options(cx)
     }
 
     fn glass_background(&self, cx: &App) -> bool {
@@ -1362,6 +1352,15 @@ impl Render for Dock {
         let dispatch_context = Self::dispatch_context();
         if let Some(entry) = self.visible_entry() {
             let position = self.position;
+            let pane = entry.panel.pane(cx);
+            let header_tab_bar = pane
+                .as_ref()
+                .filter(|pane| pane.read(cx).shows_tab_bar_in_tool_window_header(cx))
+                .map(|pane| {
+                    pane.update(cx, |pane, cx| {
+                        pane.render_tool_window_header_tab_bar(window, cx)
+                    })
+                });
             let create_resize_handle = || {
                 let handle = div()
                     .id("resize-handle")
@@ -1426,8 +1425,16 @@ impl Render for Dock {
             let islands = workspace_settings.islands;
             let header_settings = workspace_settings.tool_window_headers;
             let position_key = position.key();
-            let hosts_own_pane = entry.panel.pane(cx).is_some();
-            let header = (header_settings.show && !hosts_own_pane).then(|| {
+            // A pane that keeps its tab bar shows its tabs and their buttons where the header
+            // would be.
+            let header_shown = header_settings.show && (pane.is_none() || header_tab_bar.is_some());
+            let header = header_shown.then(|| {
+                let header_content = header_tab_bar.or_else(|| {
+                    entry
+                        .panel
+                        .header_content(window, cx)
+                        .map(|content| content.into_any_element())
+                });
                 render_tool_window_header(
                     position,
                     entry.panel.clone(),
@@ -1436,6 +1443,7 @@ impl Render for Dock {
                     self.toggle_action(),
                     header_settings.always_show_actions
                         || self.focus_handle.contains_focused(window, cx),
+                    header_content,
                     window,
                     cx,
                 )
@@ -1483,9 +1491,7 @@ impl Render for Dock {
                                 if glass {
                                     // The window frame paints the Editor and Tools image behind
                                     // the layout, so the glass blurs it.
-                                    this.bg(panel_background
-                                        .opacity(GLASS_MATERIAL.native_surface_opacity))
-                                        .backdrop_blur(GLASS_MATERIAL.blur_radius)
+                                    glass_material(this, cx)
                                 } else {
                                     this.bg(panel_background).child(background_image_layer(
                                         BackgroundImageTarget::EditorAndTools,
@@ -1719,6 +1725,9 @@ pub mod test {
         pub header_actions: Vec<PanelHeaderAction>,
         pub header_content: Option<AnyView>,
         pub icon_tooltip: &'static str,
+        pub glass_background: bool,
+        /// Whether the panel last rendered on a glass surface.
+        pub rendered_on_glass: Option<bool>,
     }
     actions!(test_only, [ToggleTestPanel]);
 
@@ -1740,6 +1749,8 @@ pub mod test {
                 header_actions: Vec::new(),
                 header_content: None,
                 icon_tooltip: "Test Panel",
+                glass_background: true,
+                rendered_on_glass: None,
             }
         }
 
@@ -1791,7 +1802,8 @@ pub mod test {
     }
 
     impl Render for TestPanel {
-        fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            self.rendered_on_glass = Some(window.on_glass_surface());
             div()
                 .id("test")
                 .track_focus(&self.focus_handle(cx))
@@ -1804,6 +1816,10 @@ pub mod test {
     impl Panel for TestPanel {
         fn pane(&self) -> Option<Entity<Pane>> {
             self.pane.clone()
+        }
+
+        fn glass_background(&self, _: &App) -> bool {
+            self.glass_background
         }
 
         fn activation_focus_handle(&self, cx: &App) -> FocusHandle {

@@ -1,4 +1,4 @@
-use gpui::{App, BoxShadow, Styled, Window, hsla, px};
+use gpui::{App, BoxShadow, Hsla, Styled, Window, hsla, px};
 
 use crate::prelude::*;
 use crate::{
@@ -15,6 +15,32 @@ pub fn surface_is_glass(kind: SurfaceKind, cx: &App) -> bool {
     kind.standard().material == SurfaceMaterial::Glass && !cx.should_reduce_transparency()
 }
 
+/// Fills `this` with the Liquid Glass material: a translucent surface over its blurred backdrop.
+/// Popups and tool windows both take it from here, so their glass looks the same.
+pub fn glass_material<E: Styled>(this: E, cx: &App) -> E {
+    let surface_opacity = if cx.supports_native_glass() {
+        GLASS_MATERIAL.native_surface_opacity
+    } else {
+        GLASS_MATERIAL.surface_opacity
+    };
+    this.bg(cx
+        .theme()
+        .colors()
+        .elevated_surface_background
+        .opacity(surface_opacity))
+        .backdrop_blur(GLASS_MATERIAL.blur_radius)
+}
+
+/// The fill of an area inside a panel or a popup: none on a glass surface
+/// ([`Window::on_glass_surface`]), so its empty areas show the glass instead of covering it.
+pub fn content_background(color: Hsla, window: &Window) -> Hsla {
+    if window.on_glass_surface() {
+        gpui::transparent_black()
+    } else {
+        color
+    }
+}
+
 fn surface<E: Styled + InteractiveElement>(this: E, kind: SurfaceKind, cx: &App) -> E {
     let standard = kind.standard();
     let colors = cx.theme().colors();
@@ -25,16 +51,11 @@ fn surface<E: Styled + InteractiveElement>(this: E, kind: SurfaceKind, cx: &App)
         .border_color(colors.border_variant);
     if surface_is_glass(kind, cx) {
         let mut shadows = standard.elevation.shadow(cx);
-        let surface_opacity = if cx.supports_native_glass() {
-            GLASS_MATERIAL.native_surface_opacity
-        } else {
+        if !cx.supports_native_glass() {
             // The specular rim along the top edge of Liquid Glass, which native glass draws.
             shadows.push(BoxShadow::new(px(0.), px(1.), hsla(0., 0., 1., 0.06)).inset());
-            GLASS_MATERIAL.surface_opacity
-        };
-        this.bg(colors.elevated_surface_background.opacity(surface_opacity))
-            .backdrop_blur(GLASS_MATERIAL.blur_radius)
-            .shadow(shadows)
+        }
+        glass_material(this, cx).shadow(shadows)
     } else {
         this.bg(colors.elevated_surface_background)
             .shadow(standard.elevation.shadow(cx))

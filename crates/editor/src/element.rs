@@ -4713,13 +4713,14 @@ impl EditorElement {
     }
 
     fn paint_background(&self, layout: &EditorLayout, window: &mut Window, cx: &mut App) {
-        let gutter_bg = cx.theme().colors().editor_gutter_background;
+        let gutter_bg =
+            ui::content_background(cx.theme().colors().editor_gutter_background, window);
+        // The style keeps the theme's background, which text and selection colors are blended
+        // against even where the editor lies on glass.
+        let text_bg = ui::content_background(self.style.background, window);
         window.paint_layer(layout.hitbox.bounds, |window| {
             window.paint_quad(fill(layout.gutter_hitbox.bounds, gutter_bg));
-            window.paint_quad(fill(
-                layout.position_map.text_hitbox.bounds,
-                self.style.background,
-            ));
+            window.paint_quad(fill(layout.position_map.text_hitbox.bounds, text_bg));
         });
 
         if !matches!(layout.mode, EditorMode::SingleLine) {
@@ -4738,7 +4739,7 @@ impl EditorElement {
                 layout.position_map.text_hitbox.bounds,
                 image_area,
                 ui::BackgroundImageTarget::EditorAndTools,
-                self.style.background,
+                text_bg,
                 true,
                 gpui::Corners::default(),
                 window,
