@@ -14900,7 +14900,7 @@ mod tests {
         open_dock_with_center_focus(&workspace, DockPosition::Bottom, cx);
         open_dock_with_center_focus(&workspace, DockPosition::Left, cx);
 
-        let (popup_material, island_fill) = cx.update(|_, cx| {
+        let (popup_tint, island_fill) = cx.update(|_, cx| {
             let colors = cx.theme().colors();
             (
                 colors
@@ -14958,11 +14958,23 @@ mod tests {
             cx.run_until_parked();
         };
 
-        let material = island_quad(cx);
+        let backdrop =
+            backdrop_at(bottom_point, cx).expect("the glass island blurs the background behind it");
         assert_eq!(
-            material.background.as_solid(),
-            Some(popup_material),
-            "a glass island fills with the popup glass material"
+            backdrop.tint, popup_tint,
+            "the island hands the popup tint to the system's glass"
+        );
+        assert!(
+            !cx.update(|window, _| {
+                window.painted_quads().into_iter().any(|quad| {
+                    quad.bounds == island_bounds
+                        && quad
+                            .background
+                            .as_solid()
+                            .is_some_and(|color| color.a == 1.)
+                })
+            }),
+            "a glass island paints no fill under its glass, which would flatten the material"
         );
         assert_eq!(
             rendered_on_glass(&bottom_panel, cx),
@@ -14975,20 +14987,14 @@ mod tests {
             "a panel that opts out of glass, like the Project panel, stays opaque"
         );
 
-        let backdrop =
-            backdrop_at(bottom_point, cx).expect("the glass island blurs the background behind it");
-        assert!(
-            material.order > backdrop.order,
-            "the island's material is drawn above the glass it fills"
-        );
-        let image = image_at(bottom_point, cx)
+        let island_image = image_at(bottom_point, cx)
             .expect("the window paints the background image behind the island");
-        assert_eq!(
-            image.content_mask.bounds, island_bounds,
-            "the island paints the background image inside itself, under its glass"
+        assert_ne!(
+            island_image.content_mask.bounds, island_bounds,
+            "the glass island leaves the image to the frame, so the glass samples what the rest of the window shows"
         );
         assert!(
-            image.order < backdrop.order,
+            island_image.order < backdrop.order,
             "the island's glass blurs the background image, it does not cover it"
         );
 

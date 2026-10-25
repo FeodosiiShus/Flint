@@ -15,6 +15,9 @@ const ISLAND_TAB_FIRST_TAB_OFFSET: Pixels = px(3.);
 const ISLAND_TAB_CLOSE_SLOT_SIZE: Pixels = px(16.);
 const ISLAND_TAB_MINIMUM_TAB_WIDTH: Pixels = px(50.);
 const ISLAND_TAB_FILE_COLOR_ALPHA: f32 = 0.4;
+/// IntelliJ's island tab pill is opaque because it sits on an opaque island; on glass it keeps
+/// the material visible, like the pills macOS draws over its own glass.
+const ISLAND_TAB_PILL_ON_GLASS_OPACITY: f32 = 0.5;
 const ISLAND_TAB_FILE_COLOR_ARC_SHRINK: Pixels = px(2.);
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -400,7 +403,7 @@ impl ParentElement for Tab {
 
 impl RenderOnce for Tab {
     #[allow(refining_impl_trait)]
-    fn render(self, _: &mut Window, cx: &mut App) -> Stateful<Div> {
+    fn render(self, window: &mut Window, cx: &mut App) -> Stateful<Div> {
         let (text_color, tab_bg, _tab_hover_bg, _tab_active_bg) = match self.selected {
             false => (
                 cx.theme().colors().text_muted,
@@ -422,7 +425,17 @@ impl RenderOnce for Tab {
             let colors = cx.theme().colors();
             let metrics = IslandTabMetrics::for_density(current_ui_density(cx));
             let pill = island_tab_pill_colors(self.focused, colors);
-            let fills = island_tab_fills(self.selected, self.focused, self.file_color, colors);
+            let mut fills = island_tab_fills(self.selected, self.focused, self.file_color, colors);
+            if window.on_glass_surface() {
+                // A pill on glass keeps its colour but not its opacity: an opaque pill would
+                // punch a flat hole through the material.
+                fills.pill = fills
+                    .pill
+                    .map(|pill| pill.opacity(ISLAND_TAB_PILL_ON_GLASS_OPACITY));
+                fills.hover = fills
+                    .hover
+                    .map(|hover| hover.opacity(ISLAND_TAB_PILL_ON_GLASS_OPACITY));
+            }
             let transparent_border = colors.border_transparent;
             let border = if self.selected {
                 pill.border

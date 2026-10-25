@@ -216,14 +216,22 @@ impl RenderOnce for TabBar {
                 )
             })
             .when(islands && !in_header, |this| {
-                this.child(
-                    div()
-                        .absolute()
-                        .bottom_0()
-                        .left_0()
-                        .w_full()
-                        .h(bottom_border_width)
-                        .bg(cx.theme().colors().background),
+                // The line under the strip masks the content that scrolls beneath it. On a glass
+                // surface an opaque line would read as a bar across the material, so the tabs and
+                // the glass edge separate the strip instead.
+                this.when_some(
+                    (!window.on_glass_surface()).then_some(cx.theme().colors().background),
+                    |this, line_color| {
+                        this.child(
+                            div()
+                                .absolute()
+                                .bottom_0()
+                                .left_0()
+                                .w_full()
+                                .h(bottom_border_width)
+                                .bg(line_color),
+                        )
+                    },
                 )
             })
     }

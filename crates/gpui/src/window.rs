@@ -4627,12 +4627,16 @@ impl Window {
     /// Paints a blur of everything already painted behind `bounds`, clipped to its rounded
     /// corners. Elements paint it under a translucent background to look like glass.
     ///
+    /// `tint` is handed to the system's own glass where the platform draws it, and painted by the
+    /// element's background in the renderer's emulation.
+    ///
     /// This method should only be called as part of the paint phase of element drawing.
     pub fn paint_backdrop(
         &mut self,
         bounds: Bounds<Pixels>,
         corner_radii: Corners<Pixels>,
         blur_radius: Pixels,
+        tint: Hsla,
     ) {
         self.invalidator.debug_assert_paint();
 
@@ -4643,6 +4647,7 @@ impl Window {
             bounds: self.snap_bounds(bounds),
             content_mask: self.snapped_content_mask(),
             corner_radii: corner_radii.scale(scale_factor),
+            tint,
         };
         self.next_frame.scene.insert_primitive(backdrop);
     }

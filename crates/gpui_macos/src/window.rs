@@ -26,7 +26,7 @@ use dispatch2::DispatchQueue;
 use gpui::{
     AnyWindowHandle, BackgroundExecutor, Bounds, Capslock, CursorStyle, DrawOrder,
     ExternalDragPayload, ExternalPaths, FileDropEvent, ForegroundExecutor, FrameRequestSource,
-    KeyDownEvent, Keystroke, Modifiers, ModifiersChangedEvent, MouseButton, MouseDownEvent,
+    Hsla, KeyDownEvent, Keystroke, Modifiers, ModifiersChangedEvent, MouseButton, MouseDownEvent,
     MouseMoveEvent, MouseUpEvent, Pixels, PlatformAtlas, PlatformDisplay, PlatformFrameSignal,
     PlatformInput, PlatformInputHandler, PlatformWindow, Point, PromptButton, PromptLevel,
     RequestFrameOptions, SharedString, Size, SystemWindowTab, WindowAppearance,
@@ -808,14 +808,21 @@ struct MacWindowState {
 /// it, so rebuilding them whenever a submenu closed or another opened made the glass flash.
 struct GlassLevel {
     glass_views: Vec<id>,
+    /// The tint last set on each glass view, so a frame only sends `setTintColor:` when it
+    /// changes.
+    tints: Vec<Hsla>,
     overlay_view: id,
     overlay_layer: id,
 }
 
+/// One glass view of a level: its frame in the content view's points, its corner radius, and the
+/// colour the system's glass tints itself with.
+type GlassFrame = (NSRect, f64, Hsla);
+
 impl GlassLevel {
     /// Shows a glass view at each of `frames` and hides the rest; with no frames the level is
     /// hidden. Returns whether anything on screen changed.
-    fn show(&mut self, frames: &[(NSRect, f64)], content_view: id) -> bool {
+    fn show(&mut self, frames: &[GlassFrame], content_view: id) -> bool {
         let mut changed = false;
         // SAFETY: the views are live subviews of `content_view`, retained by this level, and
         // frames are drawn on the main thread.
@@ -830,7 +837,7 @@ impl GlassLevel {
                 }
             }
             while self.glass_views.len() < frames.len() {
-                let (frame, _) = frames[self.glass_views.len()];
+                let (frame, _, _) = frames[self.glass_views.len()];
                 let view: id = msg_send![window_classes().glass_view, alloc];
                 let view: id = msg_send![view, initWithFrame: frame];
                 let () = msg_send![
@@ -840,27 +847,53 @@ impl GlassLevel {
                     relativeTo: self.overlay_view
                 ];
                 self.glass_views.push(view);
+                self.tints.push(Hsla::transparent_black());
                 changed = true;
             }
             for (index, view) in self.glass_views.iter().enumerate() {
-                let Some((frame, corner_radius)) = frames.get(index) else {
+                let Some((frame, corner_radius, tint)) = frames.get(index).copied() else {
                     changed |= set_view_hidden(*view, true);
                     continue;
                 };
                 changed |= set_view_hidden(*view, false);
                 let current: NSRect = msg_send![*view, frame];
-                if !rects_equal(current, *frame) {
-                    let () = msg_send![*view, setFrame: *frame];
+                if !rects_equal(current, frame) {
+                    let () = msg_send![*view, setFrame: frame];
                     changed = true;
                 }
                 let current_radius: f64 = msg_send![*view, cornerRadius];
-                if current_radius != *corner_radius {
-                    let () = msg_send![*view, setCornerRadius: *corner_radius];
+                if current_radius != corner_radius {
+                    let () = msg_send![*view, setCornerRadius: corner_radius];
+                    changed = true;
+                }
+                if self.tints[index] != tint {
+                    let color = glass_tint_color(tint);
+                    let () = msg_send![*view, setTintColor: color];
+                    self.tints[index] = tint;
                     changed = true;
                 }
             }
         }
         changed
+    }
+}
+
+/// The `NSColor` a glass view tints itself with, or nil when the material has no tint.
+fn glass_tint_color(tint: Hsla) -> id {
+    if tint.a <= 0. {
+        return nil;
+    }
+    let rgba = gpui::Rgba::from(tint);
+    // SAFETY: the colour is built from plain numbers and `NSColor` is autoreleased into the
+    // caller's pool, which a draw on the main thread has.
+    unsafe {
+        NSColor::colorWithSRGBRed_green_blue_alpha_(
+            nil,
+            f64::from(rgba.r),
+            f64::from(rgba.g),
+            f64::from(rgba.b),
+            f64::from(rgba.a),
+        )
     }
 }
 
@@ -967,6 +1000,7 @@ impl MacWindowState {
                 ];
                 self.glass_levels.push(GlassLevel {
                     glass_views: Vec::new(),
+                    tints: Vec::new(),
                     overlay_view,
                     overlay_layer,
                 });
@@ -4123,7 +4157,7 @@ fn glass_frame(
     backdrop: &gpui::Backdrop,
     scale_factor: f64,
     content_height: f64,
-) -> Option<(NSRect, f64)> {
+) -> Option<GlassFrame> {
     let bounds = backdrop.bounds.intersect(&backdrop.content_mask.bounds);
     if bounds.size.width.0 <= 0. || bounds.size.height.0 <= 0. {
         return None;
@@ -4138,6 +4172,7 @@ fn glass_frame(
             NSSize::new(width, height),
         ),
         f64::from(backdrop.corner_radii.top_left.0) / scale_factor,
+        backdrop.tint,
     ))
 }
 
@@ -4484,12 +4519,13 @@ mod native_glass_tests {
                 corner_radii: Corners::default(),
             },
             corner_radii: Corners::all(ScaledPixels(24.)),
+            tint: gpui::transparent_black(),
         }
     }
 
     #[test]
     fn a_glass_view_covers_its_backdrop_in_points_from_the_bottom_left() {
-        let (frame, corner_radius) =
+        let (frame, corner_radius, _) =
             glass_frame(&backdrop(3, (200., 100.), (400., 300.)), 2., 1000.)
                 .expect("a visible backdrop gets a glass view");
         assert_eq!(
@@ -4502,6 +4538,26 @@ mod native_glass_tests {
             (100., 1000. - 50. - 150., 200., 150.)
         );
         assert_eq!(corner_radius, 12.);
+    }
+
+    #[test]
+    fn the_glass_takes_its_tint_and_leaves_a_transparent_one_to_the_system() {
+        assert!(
+            glass_tint_color(gpui::transparent_black()).is_null(),
+            "a material without a tint does not tint the system's glass"
+        );
+
+        // SAFETY: the colour is autoreleased, so the test releases it in its own pool.
+        objc2::rc::autoreleasepool(|_| {
+            let tint = gpui::hsla(0.6, 0.07, 0.16, 0.28);
+            let color = glass_tint_color(tint);
+            assert!(!color.is_null(), "a tinted material colours the glass");
+            let alpha: f64 = unsafe { msg_send![color, alphaComponent] };
+            assert!(
+                (alpha - 0.28).abs() < 0.001,
+                "the glass tint keeps the material's alpha, got {alpha}"
+            );
+        });
     }
 
     #[test]

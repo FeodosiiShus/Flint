@@ -1476,11 +1476,6 @@ impl Render for Dock {
                 let glass = entry.panel.glass_background(cx)
                     && cx.supports_native_glass()
                     && !cx.should_reduce_transparency();
-                let island_background = if glass {
-                    cx.theme().colors().background
-                } else {
-                    panel_background
-                };
                 return dock_panel
                     .p(islands.half_gap())
                     .child(
@@ -1492,14 +1487,19 @@ impl Render for Dock {
                             .size_full()
                             .rounded(islands.corner_radius)
                             .overflow_hidden()
-                            .bg(island_background)
-                            .child(background_image_layer(
-                                BackgroundImageTarget::EditorAndTools,
-                                BackgroundImageArea::Window,
-                                island_background,
-                                true,
-                                gpui::Corners::all(islands.corner_radius),
-                            ))
+                            // Glass samples what the window has already painted under the
+                            // island, which the frame's own background and image are. A fill
+                            // or image here would put flat colour under the glass and flatten
+                            // the material.
+                            .when(!glass, |this| {
+                                this.bg(panel_background).child(background_image_layer(
+                                    BackgroundImageTarget::EditorAndTools,
+                                    BackgroundImageArea::Window,
+                                    panel_background,
+                                    true,
+                                    gpui::Corners::all(islands.corner_radius),
+                                ))
+                            })
                             .child({
                                 let surface = div()
                                     .flex()

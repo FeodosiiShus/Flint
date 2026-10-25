@@ -129,15 +129,16 @@ pub struct GlassMaterial {
     pub blur_radius: Pixels,
     /// How much of the theme's surface colour covers the emulated blur.
     pub surface_opacity: f32,
-    /// How much of the theme's surface colour tints native glass, enough to keep the theme's
-    /// text readable whatever the system's own light or dark appearance.
+    /// How much of the theme's surface colour tints native glass. Native glass draws its own
+    /// blur and lighting, so the tint only keeps the theme's text readable over bright content;
+    /// a heavier tint hides the material behind a flat panel.
     pub native_surface_opacity: f32,
 }
 
 pub const GLASS_MATERIAL: GlassMaterial = GlassMaterial {
     blur_radius: px(20.),
-    surface_opacity: 0.82,
-    native_surface_opacity: 0.5,
+    surface_opacity: 0.62,
+    native_surface_opacity: 0.28,
 };
 
 /// The widest a content-sized popup (a menu, the branches popup) may grow before its rows elide.

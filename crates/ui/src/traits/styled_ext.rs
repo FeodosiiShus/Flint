@@ -17,18 +17,26 @@ pub fn surface_is_glass(kind: SurfaceKind, cx: &App) -> bool {
 
 /// Fills `this` with the Liquid Glass material: a translucent surface over its blurred backdrop.
 /// Popups and tool windows both take it from here, so their glass looks the same.
+///
+/// On macOS 26 the system's `NSGlassEffectView` draws both the blur and the lighting, so the
+/// element only hands it the theme tint and paints no fill of its own; a fill would sit above the
+/// material and flatten it. The renderer's emulation blurs behind the element, so there the tint
+/// is the element's background.
 pub fn glass_material<E: Styled>(this: E, cx: &App) -> E {
-    let surface_opacity = if cx.supports_native_glass() {
-        GLASS_MATERIAL.native_surface_opacity
+    let colors = cx.theme().colors();
+    if cx.supports_native_glass() {
+        this.backdrop_glass(
+            GLASS_MATERIAL.blur_radius,
+            colors
+                .elevated_surface_background
+                .opacity(GLASS_MATERIAL.native_surface_opacity),
+        )
     } else {
-        GLASS_MATERIAL.surface_opacity
-    };
-    this.bg(cx
-        .theme()
-        .colors()
-        .elevated_surface_background
-        .opacity(surface_opacity))
-        .backdrop_blur(GLASS_MATERIAL.blur_radius)
+        this.bg(colors
+            .elevated_surface_background
+            .opacity(GLASS_MATERIAL.surface_opacity))
+            .backdrop_blur(GLASS_MATERIAL.blur_radius)
+    }
 }
 
 /// The fill of an area inside a panel or a popup: none on a glass surface

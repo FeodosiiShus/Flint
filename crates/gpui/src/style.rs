@@ -295,6 +295,9 @@ pub struct Style {
     /// translucent background reads as frosted glass.
     pub backdrop_blur: Option<Pixels>,
 
+    /// The colour the system's own glass tints itself with, when [`Self::backdrop_blur`] is set.
+    pub backdrop_tint: Hsla,
+
     /// The text style of this element
     #[refineable]
     pub text: TextStyleRefinement,
@@ -752,7 +755,7 @@ impl Style {
 
         // The backdrop samples what lies behind the element, which its own shadow is not.
         if let Some(blur_radius) = self.backdrop_blur {
-            window.paint_backdrop(bounds, corner_radii, blur_radius);
+            window.paint_backdrop(bounds, corner_radii, blur_radius, self.backdrop_tint);
         }
 
         if self.backdrop_blur.is_some() {
@@ -858,6 +861,7 @@ impl Default for Style {
             corner_radii: Corners::default(),
             box_shadow: Default::default(),
             backdrop_blur: None,
+            backdrop_tint: Hsla::transparent_black(),
             text: TextStyleRefinement::default(),
             mouse_cursor: None,
             opacity: None,

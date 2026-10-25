@@ -755,6 +755,14 @@ pub trait Styled: Sized {
         self
     }
 
+    /// Blurs everything painted behind this element and tints the system's glass with `tint`, for
+    /// elements whose material the platform draws itself.
+    fn backdrop_glass(mut self, radius: Pixels, tint: Hsla) -> Self {
+        self.style().backdrop_blur = Some(radius);
+        self.style().backdrop_tint = Some(tint);
+        self
+    }
+
     /// Sets the grid columns of this element.
     fn grid_cols(mut self, cols: u16) -> Self {
         self.style().grid_cols = Some(GridTemplate {

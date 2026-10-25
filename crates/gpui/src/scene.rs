@@ -626,6 +626,10 @@ pub struct Backdrop {
     pub bounds: Bounds<ScaledPixels>,
     pub content_mask: ContentMask<ScaledPixels>,
     pub corner_radii: Corners<ScaledPixels>,
+    /// The colour the system's own glass tints itself with. Its alpha is the strength, so a
+    /// transparent tint leaves the glass to the system. The renderer's emulation paints the tint
+    /// itself instead, under the element's background.
+    pub tint: Hsla,
 }
 
 impl From<Backdrop> for Primitive {
