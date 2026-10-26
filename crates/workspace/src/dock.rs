@@ -141,10 +141,12 @@ pub trait Panel: Focusable + EventEmitter<PanelEvent> + Render + Sized {
         None
     }
     /// Whether the tool window's island is Liquid Glass that blurs the window background behind
-    /// it, where macOS draws glass natively. A panel that reads like the editor, such as the
-    /// Project panel, stays opaque instead.
+    /// it, where macOS draws glass natively. A tiled island has no real content behind it —
+    /// only the frame's own background — so glass there reads as flat grey and islands stay
+    /// opaque panels by default. A panel that reads like the editor, such as the Project
+    /// panel, stays opaque instead.
     fn glass_background(&self, _cx: &App) -> bool {
-        true
+        false
     }
 }
 

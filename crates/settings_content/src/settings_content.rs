@@ -826,8 +826,10 @@ pub struct WhichKeySettingsContent {
 pub struct GlassSettingsContent {
     /// How much of the theme's surface colour covers the glass, in percent: 0 leaves the
     /// material untouched, 100 hides the blurred backdrop completely behind the colour.
+    /// Popup text stays readable over bright code from around 60 up; lower values let
+    /// bright syntax colours bleed through and wash the rows out.
     ///
-    /// Default: 20
+    /// Default: 60
     pub tint: Option<u32>,
     /// How far the blurred backdrop spreads where the renderer draws the glass itself, in
     /// pixels. macOS 26 draws its own material with the system's blur, which this does not

@@ -218,7 +218,8 @@ fn pixels_popup_surface_stays_opaque_when_the_theme_override_is_translucent() {
 #[test]
 fn pixels_context_menu_rows_and_separators_follow_the_intellij_popup_metrics() {
     let mut cx = headless_app_with_popup_overrides();
-    // The menu is Liquid Glass: the surface color over the blurred red backdrop.
+    // The menu is Liquid Glass: the surface color over the blurred red backdrop, at the
+    // configured tint.
     let (surface, selection, separator) = cx.update(|cx| {
         let colors = cx.theme().colors();
         let opacity = theme_settings::GlassSettings::default().tint;

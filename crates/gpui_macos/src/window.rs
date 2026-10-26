@@ -812,7 +812,6 @@ struct GlassLevel {
     /// changes.
     tints: Vec<Hsla>,
     overlay_view: id,
-    overlay_layer: id,
 }
 
 /// One glass view of a level: its frame in the content view's points, its corner radius, and the
@@ -821,57 +820,51 @@ type GlassFrame = (NSRect, f64, Hsla);
 
 impl GlassLevel {
     /// Shows a glass view at each of `frames` and hides the rest; with no frames the level is
-    /// hidden. Returns whether anything on screen changed.
-    fn show(&mut self, frames: &[GlassFrame], content_view: id) -> bool {
-        let mut changed = false;
+    /// hidden.
+    fn show(&mut self, frames: &[GlassFrame], content_view: id, overlay_layer: id) {
         // SAFETY: the views are live subviews of `content_view`, retained by this level, and
         // frames are drawn on the main thread.
         unsafe {
-            changed |= set_view_hidden(self.overlay_view, frames.is_empty());
+            set_view_hidden(self.overlay_view, frames.is_empty());
             if frames.is_empty() {
-                // A hidden overlay layer would keep its window-sized drawables; the renderer
-                // sizes it back up the next time the level draws.
-                let drawable_size: NSSize = msg_send![self.overlay_layer, drawableSize];
+                // A hidden overlay layer would keep its window-sized drawables until the
+                // level draws again; the renderer sizes it back up on that frame.
+                let drawable_size: NSSize = msg_send![overlay_layer, drawableSize];
                 if drawable_size.width > 1. || drawable_size.height > 1. {
-                    let () = msg_send![self.overlay_layer, setDrawableSize: NSSize::new(1., 1.)];
+                    let () = msg_send![overlay_layer, setDrawableSize: NSSize::new(1., 1.)];
                 }
             }
-            changed |= self.add_views(frames.len(), content_view);
+            self.add_views(frames.len(), content_view);
             for (index, view) in self.glass_views.iter().enumerate() {
                 let Some((frame, corner_radius, tint)) = frames.get(index).copied() else {
-                    changed |= set_view_hidden(*view, true);
+                    set_view_hidden(*view, true);
                     continue;
                 };
-                changed |= set_view_hidden(*view, false);
+                set_view_hidden(*view, false);
                 let current: NSRect = msg_send![*view, frame];
                 if !rects_equal(current, frame) {
                     let () = msg_send![*view, setFrame: frame];
-                    changed = true;
                 }
                 let current_radius: f64 = msg_send![*view, cornerRadius];
                 if current_radius != corner_radius {
                     let () = msg_send![*view, setCornerRadius: corner_radius];
-                    changed = true;
                 }
                 if self.tints[index] != tint {
                     let color = glass_tint_color(tint);
                     let () = msg_send![*view, setTintColor: color];
                     self.tints[index] = tint;
-                    changed = true;
                 }
             }
         }
-        changed
     }
 
     /// Adds hidden glass views until the level has `count` of them, each below the level's overlay
-    /// view. Returns whether any view was created.
+    /// view.
     ///
     /// Views are created once and then only moved, retinted and hidden: a new `NSGlassEffectView`
     /// reaches the screen before the window server has sampled what lies behind it, which shows as
     /// a flash of its material, so a window creates them before anything needs them.
-    fn add_views(&mut self, count: usize, content_view: id) -> bool {
-        let mut changed = false;
+    fn add_views(&mut self, count: usize, content_view: id) {
         // SAFETY: the views are live subviews of `content_view`, retained by this level, and
         // frames are drawn on the main thread.
         unsafe {
@@ -899,10 +892,8 @@ impl GlassLevel {
                 set_view_hidden(view, true);
                 self.glass_views.push(view);
                 self.tints.push(Hsla::transparent_black());
-                changed = true;
             }
         }
-        changed
     }
 }
 
@@ -925,28 +916,25 @@ fn glass_tint_color(tint: Hsla) -> id {
     }
 }
 
-/// Returns whether the view's visibility changed.
+/// Hides or shows `view`.
 ///
 /// # Safety
 ///
 /// `view` must be a live `NSView`, used on the main thread.
-unsafe fn set_view_hidden(view: id, hidden: bool) -> bool {
+unsafe fn set_view_hidden(view: id, hidden: bool) {
     // SAFETY: the caller passes a live view on the main thread.
     unsafe {
         let is_hidden: BOOL = msg_send![view, isHidden];
-        if (is_hidden == YES) == hidden {
-            return false;
+        if (is_hidden == YES) != hidden {
+            let () = msg_send![view, setHidden: if hidden { YES } else { NO }];
         }
-        let () = msg_send![view, setHidden: if hidden { YES } else { NO }];
-        true
     }
 }
 
 impl MacWindowState {
     /// Lays out a glass view per backdrop between the window's layer and the renderer's overlay
-    /// layers, one level per draw order. Returns whether any glass view appeared, moved or was
-    /// hidden.
-    fn update_glass_levels(&mut self, scene: &gpui::Scene, glass_orders: &[DrawOrder]) -> bool {
+    /// layers, one level per draw order.
+    fn update_glass_levels(&mut self, scene: &gpui::Scene, glass_orders: &[DrawOrder]) {
         let scale_factor = f64::from(self.scale_factor());
         // SAFETY: the content view belongs to this window, and frames are drawn on the main thread.
         let (content_view, content_bounds) = unsafe {
@@ -967,25 +955,35 @@ impl MacWindowState {
             })
             .collect::<Vec<_>>();
 
-        let mut changed = false;
         if self.glass_levels.len() < frames.len() {
             self.add_glass_levels(frames.len(), content_view, content_bounds);
-            changed = true;
         }
+        let overlay_ptrs = self
+            .renderer
+            .overlay_layer_ptrs(self.glass_levels.len())
+            .into_iter()
+            .map(|ptr| ptr as id)
+            .collect::<Vec<_>>();
         // No explicit transaction here: committing one while the window state is locked runs
         // AppKit's display cycle, which calls back into the window and deadlocks. The changes
-        // go out in the run loop's transaction together with the frame.
+        // go out in the run loop's transaction together with the frame, which itself
+        // presents in a transaction, so glass and content reach the screen atomically.
         for (index, level) in self.glass_levels.iter_mut().enumerate() {
             let level_frames = frames.get(index).map_or(&[][..], Vec::as_slice);
-            changed |= level.show(level_frames, content_view);
+            level.show(level_frames, content_view, overlay_ptrs[index]);
         }
-        changed
     }
 
     /// Creates every level of glass a frame may need, with its first glass view, before the
     /// window shows anything. A level that appeared first would otherwise create its
     /// `NSGlassEffectView` in the frame that needs it, which flashes: the new view reaches the
     /// screen before the window server has sampled what lies behind it.
+    ///
+    /// Prewarming also sets the window's standing present mode: every layer presents in the
+    /// current Core Animation transaction from here on, so glass view changes commit with
+    /// the frame that needs them and no frame toggles the mode or waits on the GPU. The
+    /// first glass frame pays no entry cost on screen because the layers already present
+    /// this way while the window is still hidden.
     fn prewarm_glass_levels(&mut self) {
         if !native_glass_available() || !self.glass_levels.is_empty() {
             return;
@@ -996,26 +994,28 @@ impl MacWindowState {
             let content_view = self.native_window.contentView();
             (content_view, NSView::bounds(content_view))
         };
+        // Set the standing mode before the overlay layers exist so they inherit it at
+        // creation; reassert after, in case the main layer was replaced underneath.
+        self.renderer.set_presents_with_transaction(true);
         self.add_glass_levels(MAX_GLASS_LEVELS, content_view, content_bounds);
-        for level in &mut self.glass_levels {
+        let overlay_ptrs = self
+            .renderer
+            .overlay_layer_ptrs(self.glass_levels.len())
+            .into_iter()
+            .map(|ptr| ptr as id)
+            .collect::<Vec<_>>();
+        for (index, level) in self.glass_levels.iter_mut().enumerate() {
             level.add_views(1, content_view);
-            level.show(&[], content_view);
+            level.show(&[], content_view, overlay_ptrs[index]);
         }
+        self.renderer.set_presents_with_transaction(true);
     }
 
-    /// Hides every level of glass, keeping it for the next frame that has glass. Returns whether
-    /// any was visible.
-    fn hide_glass_levels(&mut self) -> bool {
-        if self.glass_levels.is_empty() {
-            return false;
-        }
-        // SAFETY: the content view belongs to this window, and frames are drawn on the main thread.
-        let content_view = unsafe { self.native_window.contentView() };
-        let mut changed = false;
-        for level in &mut self.glass_levels {
-            changed |= level.show(&[], content_view);
-        }
-        changed
+    /// Whether the window draws through native glass layers. Once prewarmed the window keeps
+    /// its levels (hidden while unused), so the present mode stays put for the window's
+    /// lifetime instead of flapping with popups.
+    fn has_native_glass_levels(&self) -> bool {
+        native_glass_available() && !self.glass_levels.is_empty()
     }
 
     /// Adds levels above the existing ones until there are `count`, each with the overlay view
@@ -1051,7 +1051,6 @@ impl MacWindowState {
                     glass_views: Vec::new(),
                     tints: Vec::new(),
                     overlay_view,
-                    overlay_layer,
                 });
             }
         }
@@ -2530,20 +2529,27 @@ impl PlatformWindow for MacWindow {
 
     fn draw(&self, scene: &gpui::Scene) {
         let mut this = self.0.lock();
-        let glass_orders = native_glass_orders(scene);
-        if glass_orders.is_empty() {
-            let glass_hidden = this.hide_glass_levels();
-            // The frame that hides the glass goes out in the same transaction as the hiding,
-            // unless its backdrops need the renderer's emulation instead.
-            if glass_hidden && scene.backdrops.is_empty() {
-                this.renderer.draw_with_overlays(scene, &[]);
-            } else {
-                this.renderer.end_glass_transactions();
+        if this.has_native_glass_levels() {
+            // The window's standing present mode is transactional while it has native
+            // glass: prewarming sets the layers' flags once, and every frame below
+            // keeps them, so opening, switching or closing popups toggles no Core
+            // Animation mode on screen and blocks no steady frame on the GPU. The
+            // transaction each frame commits into already carries the glass views'
+            // changes, so they reach the screen together with the frame that needs
+            // them.
+            let glass_orders = native_glass_orders(scene);
+            this.update_glass_levels(scene, &glass_orders);
+            if glass_orders.is_empty() && !scene.backdrops.is_empty() {
+                // Too many levels for the overlay layers: this frame emulates the
+                // glass in the renderer while the hidden levels stay put for the
+                // next one. It still presents in the standing transaction, so the
+                // mode does not flap either.
                 this.renderer.draw(scene);
+            } else {
+                this.renderer.draw_with_overlays(scene, &glass_orders);
             }
         } else {
-            this.update_glass_levels(scene, &glass_orders);
-            this.renderer.draw_with_overlays(scene, &glass_orders);
+            this.renderer.draw(scene);
         }
     }
 
@@ -3576,7 +3582,8 @@ extern "C" fn window_did_change_key_status(this: &Object, selector: Sel, _: id) 
 
                 let mut lock = window_state.lock();
                 lock.request_frame_callback = Some(callback);
-                lock.renderer.set_presents_with_transaction(false);
+                let has_glass = lock.has_native_glass_levels();
+                lock.renderer.set_presents_with_transaction(has_glass);
                 lock.start_display_link();
             }
         } else {
@@ -3702,7 +3709,8 @@ extern "C" fn display_layer(this: &Object, _: Sel, _: id) {
 
         let mut lock = window_state.lock();
         lock.request_frame_callback = Some(callback);
-        lock.renderer.set_presents_with_transaction(false);
+        let has_glass = lock.has_native_glass_levels();
+        lock.renderer.set_presents_with_transaction(has_glass);
         lock.start_display_link();
     }
 }
@@ -4658,6 +4666,25 @@ mod native_glass_tests {
         assert!(
             glass_levels(&stacked).is_empty(),
             "the renderer emulates glass when more levels than overlay layers are open"
+        );
+    }
+
+    #[test]
+    fn a_frame_with_glass_stays_glass_through_empty_order_gaps() {
+        // A popup closing leaves an order with no visible backdrop while a menu above it
+        // stays open: the frame keeps its glass orders open, so the present mode and the
+        // overlay split below stay put instead of flapping with every open and close.
+        assert_eq!(glass_levels(&[backdrop(9, (5., 5.), (10., 10.))]), vec![9]);
+    }
+
+    #[test]
+    fn closing_all_glass_falls_back_to_the_renderer_without_a_special_hide_frame() {
+        // With no backdrops the frame draws plainly in the renderer, so hiding the last
+        // popup commits its glass hide with its own transactional frame rather than
+        // toggling the present mode around a separate one.
+        assert!(
+            glass_levels(&[]).is_empty(),
+            "a frame with no backdrops draws without native glass"
         );
     }
 }

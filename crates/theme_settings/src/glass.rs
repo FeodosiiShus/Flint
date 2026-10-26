@@ -2,14 +2,17 @@ use gpui::{Pixels, px};
 use settings::{RegisterSetting, Settings, SettingsContent};
 
 /// How much of the theme's surface colour covers the glass when nothing is set, in percent.
-pub const DEFAULT_GLASS_TINT_PERCENT: u32 = 20;
+/// Strong enough that popup text stays readable over bright code, light enough that the
+/// blurred backdrop still shows through as muted shapes.
+pub const DEFAULT_GLASS_TINT_PERCENT: u32 = 60;
 /// How far the emulated blur spreads when nothing is set.
 pub const DEFAULT_GLASS_BLUR_RADIUS: Pixels = px(20.);
 const MAX_BLUR_RADIUS: f32 = 64.;
 
-/// The Liquid Glass material shared by popups, dialogs and glass tool windows: the theme's surface
-/// colour laid over a blurred backdrop. On macOS 26 the system draws the blur, so only the tint
-/// reaches it; elsewhere the renderer draws both.
+/// The Liquid Glass material shared by popups, dialogs, balloons and the tool windows that opt
+/// into a glass background: the theme's surface colour laid over a blurred backdrop. On
+/// macOS 26 the system draws the blur, so only the tint reaches it; elsewhere the renderer
+/// draws both.
 #[derive(Clone, Copy, Debug, PartialEq, RegisterSetting)]
 pub struct GlassSettings {
     /// How much of the theme's surface colour covers the glass, from 0 to 1.
@@ -55,9 +58,9 @@ mod tests {
     }
 
     #[test]
-    fn the_glass_defaults_to_a_light_tint_over_the_system_material() {
+    fn the_glass_defaults_to_a_readable_tint_over_the_system_material() {
         let glass = GlassSettings::default();
-        assert_eq!(glass.tint, 0.2);
+        assert_eq!(glass.tint, 0.6);
         assert_eq!(glass.blur_radius, px(20.));
     }
 

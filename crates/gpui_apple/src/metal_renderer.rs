@@ -482,6 +482,9 @@ impl MetalRenderer {
         if let Some(layer) = &self.layer {
             layer.set_presents_with_transaction(presents_with_transaction);
         }
+        for overlay in &self.overlay_layers {
+            overlay.set_presents_with_transaction(presents_with_transaction);
+        }
     }
 
     pub fn update_drawable_size(&mut self, size: Size<DevicePixels>) {
@@ -603,8 +606,31 @@ impl MetalRenderer {
         if let Some(main_layer) = &self.layer {
             layer.set_contents_scale(main_layer.contents_scale());
             layer.set_drawable_size(main_layer.drawable_size());
+            // Overlay layers always present in the window's standing transaction while it
+            // has native glass, set from here on so no per-frame flag touch can flap.
+            layer.set_presents_with_transaction(main_layer.presents_with_transaction());
+        } else {
+            layer.set_presents_with_transaction(true);
         }
         layer
+    }
+
+    /// Which draw orders a frame with `glass_orders` paints into each layer, lowest first:
+    /// the window's own layer, then one overlay layer per level of native glass. Pure so
+    /// tests can cover the frame split without a GPU.
+    fn target_orders_for_glass(&self, glass_orders: &[DrawOrder]) -> Vec<Range<DrawOrder>> {
+        let mut orders = Vec::with_capacity(glass_orders.len() + 1);
+        orders.push(0..glass_orders.first().copied().unwrap_or(DrawOrder::MAX));
+        for (index, order) in glass_orders.iter().enumerate() {
+            orders.push(
+                *order
+                    ..glass_orders
+                        .get(index + 1)
+                        .copied()
+                        .unwrap_or(DrawOrder::MAX),
+            );
+        }
+        orders
     }
 
     /// Draws a frame split around native glass: the window's own layer gets the primitives
@@ -612,20 +638,20 @@ impl MetalRenderer {
     /// the next glass order, so the window can put each level of glass views between the layers.
     /// Backdrops draw nothing, since the glass views blur what lies behind them.
     ///
-    /// The frame is presented in the current Core Animation transaction, which also carries the
-    /// glass views' changes, so both reach the screen together. Every such frame is: one
-    /// presented as soon as the GPU finishes could reach the screen after a later one presented
-    /// in a transaction, showing the older frame again for a moment.
+    /// The frame presents in the current Core Animation transaction, which also carries the
+    /// glass views' changes, so both reach the screen together. The window keeps this present
+    /// mode standing while it has native glass (set once before the window shows), so opening
+    /// and closing popups toggles nothing and blocks no steady frame on the GPU.
     pub fn draw_with_overlays(&mut self, scene: &Scene, glass_orders: &[DrawOrder]) {
+        let Some(layer) = self.layer.clone() else {
+            log::error!("draw_with_overlays() called on headless renderer");
+            return;
+        };
         if self.overlay_layers.len() < glass_orders.len() {
             log::error!("draw_with_overlays() called without an overlay layer per glass level");
             return;
         }
         let overlays = self.overlay_layers[..glass_orders.len()].to_vec();
-        let Some(layer) = self.layer.clone() else {
-            log::error!("draw_with_overlays() called on headless renderer");
-            return;
-        };
         let drawable_size = layer.drawable_size();
         let viewport_size: Size<DevicePixels> = size(
             (drawable_size.width.ceil() as i32).into(),
@@ -650,20 +676,17 @@ impl MetalRenderer {
             overlay_drawables.push(overlay_drawable.to_owned());
         }
 
+        let target_orders = self.target_orders_for_glass(glass_orders);
         let mut targets = Vec::with_capacity(overlays.len() + 1);
         targets.push(RenderTarget {
             texture: drawable.texture(),
-            orders: 0..glass_orders.first().copied().unwrap_or(DrawOrder::MAX),
+            orders: target_orders[0].clone(),
             clear_alpha: if self.opaque { 1. } else { 0. },
         });
         for (index, overlay_drawable) in overlay_drawables.iter().enumerate() {
             targets.push(RenderTarget {
                 texture: overlay_drawable.texture(),
-                orders: glass_orders[index]
-                    ..glass_orders
-                        .get(index + 1)
-                        .copied()
-                        .unwrap_or(DrawOrder::MAX),
+                orders: target_orders[index + 1].clone(),
                 clear_alpha: 0.,
             });
         }
@@ -677,31 +700,18 @@ impl MetalRenderer {
                 }
             };
 
-        let entering_transactions = !layer.presents_with_transaction();
-        layer.set_presents_with_transaction(true);
-        for overlay in &overlays {
-            overlay.set_presents_with_transaction(true);
-        }
+        // The window's standing present mode is transactional while it has native glass:
+        // prewarming sets the flags once, and glass frames never touch them again. No
+        // per-frame flap, no main-thread GPU wait on the steady path — the transaction
+        // the frame commits into already carries the glass views' changes, and every
+        // glass frame presents the same way, so no older immediate frame can land after
+        // a newer one. The layers already present this way from prewarm on, so entering
+        // and leaving glass toggles nothing.
         command_buffer.commit();
-        if entering_transactions {
-            // The previous frame was presented when its GPU work finished; the queue runs in
-            // order, so once this one has completed that present has happened and cannot land
-            // after this frame's.
-            command_buffer.wait_until_completed();
-        } else {
-            command_buffer.wait_until_scheduled();
-        }
+        command_buffer.wait_until_scheduled();
         drawable.present();
         for overlay_drawable in &overlay_drawables {
             overlay_drawable.present();
-        }
-    }
-
-    /// Ends presenting in Core Animation transactions after frames drawn around native glass, so
-    /// later frames reach the screen as soon as they are drawn again.
-    pub fn end_glass_transactions(&mut self) {
-        if let Some(layer) = &self.layer {
-            layer.set_presents_with_transaction(self.presents_with_transaction);
         }
     }
 
@@ -2098,5 +2108,25 @@ impl gpui::PlatformHeadlessRenderer for MetalHeadlessRenderer {
 
     fn sprite_atlas(&self) -> Arc<dyn gpui::PlatformAtlas> {
         self.renderer.sprite_atlas().clone()
+    }
+}
+
+#[cfg(test)]
+mod glass_present_tests {
+    use super::*;
+
+    fn orders(glass_orders: &[DrawOrder]) -> Vec<Range<DrawOrder>> {
+        let renderer =
+            MetalRenderer::new_headless(Arc::new(Mutex::new(InstanceBufferPool::default())));
+        renderer.target_orders_for_glass(glass_orders)
+    }
+
+    #[test]
+    fn glass_orders_split_layers_without_gaps_or_overlaps() {
+        // Every layer's range tiles the draw orders without gaps or overlaps, or
+        // primitives would vanish or draw twice when popups open and close.
+        assert_eq!(orders(&[]), vec![0..DrawOrder::MAX]);
+        assert_eq!(orders(&[5]), vec![0..5, 5..DrawOrder::MAX]);
+        assert_eq!(orders(&[5, 9]), vec![0..5, 5..9, 9..DrawOrder::MAX]);
     }
 }

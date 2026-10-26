@@ -1,10 +1,11 @@
 #![cfg(target_os = "macos")]
 
-//! Renders the standard surfaces with the Metal renderer over sharp stripes to check the
-//! Liquid Glass material: popups blur what lies behind them, tooltips stay opaque.
+//! Renders the standard surfaces with the Metal renderer over a code-like backdrop — a dark
+//! editor background with bright syntax-coloured runs — to check the Liquid Glass material:
+//! popup text stays readable over bright code while the backdrop shows through muted.
 
 use gpui::{
-    AppContext as _, Context, HeadlessAppContext, IntoElement, NoopTextSystem, ParentElement,
+    AppContext as _, Context, Div, HeadlessAppContext, IntoElement, NoopTextSystem, ParentElement,
     Render, Rgba, Styled, Window, div, px, size,
 };
 use image::RgbaImage;
@@ -17,9 +18,20 @@ use ui::{ActiveTheme, DialogWidth, StyledSurface};
 const WINDOW_SIZE: f32 = 300.;
 const SURFACE_ORIGIN: f32 = 60.;
 const SURFACE_SIZE: f32 = 160.;
-const STRIPE_WIDTH: f32 = 4.;
-const RED: u32 = 0xff0000;
-const BLUE: u32 = 0x0000ff;
+const ROW_STEP: f32 = 16.;
+const ROW_TOP: f32 = 10.;
+const BAR_HEIGHT: f32 = 8.;
+const RUN_GAP: f32 = 16.;
+
+/// One-Dark-like syntax colours for the text-like runs behind the surface.
+const RUN_COLORS: [u32; 6] = [0xe5c07b, 0x61afef, 0x98c379, 0xc678dd, 0xe06c75, 0x56b6c2];
+const RUN_WIDTHS: [f32; 4] = [96., 56., 120., 40.];
+
+/// A simulated popup row: theme foreground painted over the glass, like glyphs would be.
+const TEXT_BAR_TOP: f32 = 70.;
+const TEXT_BAR_LEFT: f32 = 30.;
+const TEXT_BAR_WIDTH: f32 = 100.;
+const TEXT_BAR_HEIGHT: f32 = 8.;
 
 #[derive(Clone, Copy, Debug)]
 enum Surface {
@@ -29,35 +41,72 @@ enum Surface {
     Tooltip,
 }
 
-struct SurfaceOverStripes(Surface);
+struct SurfaceOverCode(Option<Surface>);
 
-impl Render for SurfaceOverStripes {
+fn code_runs() -> Vec<Div> {
+    let mut runs = Vec::new();
+    let mut row = 0;
+    let mut y = ROW_TOP;
+    while y + BAR_HEIGHT <= WINDOW_SIZE {
+        let mut x = if row % 2 == 0 { 12. } else { 28. };
+        let mut run = 0;
+        while x < WINDOW_SIZE {
+            let width = RUN_WIDTHS[(row + run) % RUN_WIDTHS.len()].min(WINDOW_SIZE - x);
+            let color = RUN_COLORS[(row + run) % RUN_COLORS.len()];
+            runs.push(
+                div()
+                    .absolute()
+                    .top(px(y))
+                    .left(px(x))
+                    .w(px(width))
+                    .h(px(BAR_HEIGHT))
+                    .bg(gpui::rgb(color)),
+            );
+            x += width + RUN_GAP;
+            run += 1;
+        }
+        y += ROW_STEP;
+        row += 1;
+    }
+    runs
+}
+
+impl Render for SurfaceOverCode {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let stripes = (0..(WINDOW_SIZE / STRIPE_WIDTH) as usize).map(|index| {
-            div()
-                .w(px(STRIPE_WIDTH))
-                .h_full()
-                .bg(gpui::rgb(if index % 2 == 0 { RED } else { BLUE }))
-        });
-        let surface = div()
-            .absolute()
-            .top(px(SURFACE_ORIGIN))
-            .left(px(SURFACE_ORIGIN))
-            .size(px(SURFACE_SIZE));
-        let surface = match self.0 {
-            Surface::Popup => surface.popup_surface(cx),
-            Surface::Dialog => surface
-                .dialog_surface(DialogWidth::Small, window, cx)
-                .w(px(SURFACE_SIZE)),
-            Surface::Balloon => surface.balloon_surface(cx),
-            Surface::Tooltip => surface.tooltip_surface(cx),
-        };
+        let editor_background = cx.theme().colors().editor_background;
+        let mut children = code_runs();
+        if let Some(surface) = self.0 {
+            let foreground = cx.theme().colors().text;
+            let element = div()
+                .absolute()
+                .top(px(SURFACE_ORIGIN))
+                .left(px(SURFACE_ORIGIN))
+                .size(px(SURFACE_SIZE));
+            let element = match surface {
+                Surface::Popup => element.popup_surface(cx),
+                Surface::Dialog => element
+                    .dialog_surface(DialogWidth::Small, window, cx)
+                    .w(px(SURFACE_SIZE)),
+                Surface::Balloon => element.balloon_surface(cx),
+                Surface::Tooltip => element.tooltip_surface(cx),
+            };
+            children.push(
+                element.child(
+                    div()
+                        .absolute()
+                        .top(px(TEXT_BAR_TOP))
+                        .left(px(TEXT_BAR_LEFT))
+                        .w(px(TEXT_BAR_WIDTH))
+                        .h(px(TEXT_BAR_HEIGHT))
+                        .bg(foreground),
+                ),
+            );
+        }
         div()
             .size_full()
-            .flex()
-            .flex_row()
-            .children(stripes)
-            .child(surface)
+            .relative()
+            .bg(editor_background)
+            .children(children)
     }
 }
 
@@ -76,15 +125,17 @@ fn headless_app() -> HeadlessAppContext {
     cx
 }
 
-fn render(surface: Surface) -> (RgbaImage, f32, [f32; 3]) {
+fn render(surface: Option<Surface>) -> (RgbaImage, f32, [f32; 3], [f32; 3]) {
     let mut cx = headless_app();
-    let surface_color = cx.update(|cx| {
-        let color = Rgba::from(cx.theme().colors().elevated_surface_background);
-        [color.r, color.g, color.b]
+    let (surface_color, foreground) = cx.update(|cx| {
+        let colors = cx.theme().colors();
+        let surface = Rgba::from(colors.elevated_surface_background);
+        let text = Rgba::from(colors.text);
+        ([surface.r, surface.g, surface.b], [text.r, text.g, text.b])
     });
     let window = cx
         .open_window(size(px(WINDOW_SIZE), px(WINDOW_SIZE)), |_, cx| {
-            cx.new(|_| SurfaceOverStripes(surface))
+            cx.new(|_| SurfaceOverCode(surface))
         })
         .expect("headless window should open");
     cx.run_until_parked();
@@ -95,17 +146,21 @@ fn render(surface: Surface) -> (RgbaImage, f32, [f32; 3]) {
         .expect("headless renderer should capture the window");
     save_for_inspection(&image, surface);
     let scale = image.height() as f32 / WINDOW_SIZE;
-    (image, scale, surface_color)
+    (image, scale, surface_color, foreground)
 }
 
 /// Writes the rendered surface as a PNG when `FLINT_UI_SCREENSHOTS` names a directory, so the
 /// glass can be inspected on a Mac without opening the app.
-fn save_for_inspection(image: &RgbaImage, surface: Surface) {
+fn save_for_inspection(image: &RgbaImage, surface: Option<Surface>) {
     let Ok(directory) = std::env::var("FLINT_UI_SCREENSHOTS") else {
         return;
     };
     std::fs::create_dir_all(&directory).expect("the screenshot directory should be writable");
-    let path = std::path::Path::new(&directory).join(format!("glass-{surface:?}.png"));
+    let name = match surface {
+        Some(surface) => format!("glass-{surface:?}.png"),
+        None => "glass-code-backdrop.png".to_string(),
+    };
+    let path = std::path::Path::new(&directory).join(name);
     image
         .save(&path)
         .expect("the rendered surface should be saved as a PNG");
@@ -123,48 +178,89 @@ fn distance(a: [f32; 3], b: [f32; 3]) -> f32 {
         .fold(0., f32::max)
 }
 
+fn luminance(rgb: [f32; 3]) -> f32 {
+    let linear = rgb.map(|channel| {
+        if channel <= 0.04045 {
+            channel / 12.92
+        } else {
+            ((channel + 0.055) / 1.055).powf(2.4)
+        }
+    });
+    0.2126 * linear[0] + 0.7152 * linear[1] + 0.0722 * linear[2]
+}
+
+fn contrast(a: [f32; 3], b: [f32; 3]) -> f32 {
+    let (lighter, darker) = if luminance(a) >= luminance(b) {
+        (a, b)
+    } else {
+        (b, a)
+    };
+    (luminance(lighter) + 0.05) / (luminance(darker) + 0.05)
+}
+
+/// A point inside the surface over a bright syntax run, next to the simulated text row.
+fn bleed_point() -> (f32, f32) {
+    // Row 8 starts at y 138 with bars 12..108, 124..180, 196..300: (152, 142) sits in the
+    // middle of its second run, below the text bar (which ends at y 138).
+    (152., 142.)
+}
+
+fn text_point() -> (f32, f32) {
+    (
+        SURFACE_ORIGIN + TEXT_BAR_LEFT + TEXT_BAR_WIDTH / 2.,
+        SURFACE_ORIGIN + TEXT_BAR_TOP + TEXT_BAR_HEIGHT / 2.,
+    )
+}
+
 #[test]
-fn pixels_glass_surfaces_blur_the_content_behind_them() {
+fn pixels_glass_surfaces_keep_text_readable_and_mute_the_code_behind_them() {
+    assert!(
+        GlassSettings::default().tint >= 0.5,
+        "the default tint must cover bright code, or popup rows wash out"
+    );
+    let (bare, bare_scale, _, _) = render(None);
+    let (bleed_x, bleed_y) = bleed_point();
+    let (text_x, text_y) = text_point();
+    let bright = pixel(&bare, bleed_x, bleed_y, bare_scale);
+    assert!(
+        bright.iter().fold(0f32, |max, channel| max.max(*channel)) > 0.6,
+        "the bleed point hits a bright syntax run outside the glass: {bright:?}"
+    );
+
     for surface in [Surface::Popup, Surface::Dialog, Surface::Balloon] {
-        let (image, scale, surface_color) = render(surface);
-        let center = SURFACE_ORIGIN + SURFACE_SIZE / 2.;
+        let (image, scale, surface_color, foreground) = render(Some(surface));
 
-        let outside_red = pixel(&image, 1., center, scale);
-        let outside_blue = pixel(&image, 1. + STRIPE_WIDTH, center, scale);
+        let text = pixel(&image, text_x, text_y, scale);
         assert!(
-            distance(outside_red, [1., 0., 0.]) < 0.02
-                && distance(outside_blue, [0., 0., 1.]) < 0.02,
-            "the stripes outside the {surface:?} stay sharp: {outside_red:?} {outside_blue:?}"
+            distance(text, foreground) < 0.05,
+            "the {surface:?} row paints its text in the theme foreground over the glass: {text:?} vs {foreground:?}"
         );
 
-        let first = pixel(&image, center, center, scale);
-        let next = pixel(&image, center + STRIPE_WIDTH, center, scale);
+        let muted = pixel(&image, bleed_x, bleed_y, scale);
         assert!(
-            distance(first, next) < 0.03,
-            "neighbouring stripes blur into one color under the {surface:?}: {first:?} {next:?}"
+            distance(muted, bright) > 0.25,
+            "the {surface:?} mutes the bright run behind it: {muted:?} vs {bright:?}"
         );
-
-        let opacity = GlassSettings::default().tint;
-        let behind = [0.5, 0., 0.5];
-        let expected: [f32; 3] = std::array::from_fn(|index| {
-            surface_color[index] * opacity + behind[index] * (1. - opacity)
-        });
         assert!(
-            distance(first, expected) < 0.02,
-            "the {surface:?} glass lays the surface color over the blurred content: got {first:?}, expected {expected:?}"
+            distance(muted, surface_color) < 0.3,
+            "the {surface:?} pulls the backdrop toward the surface colour: {muted:?} vs {surface_color:?}"
+        );
+        assert!(
+            contrast(foreground, muted) >= 4.,
+            "the {surface:?} keeps popup text readable over bright code: {foreground:?} on {muted:?}"
         );
     }
 }
 
 #[test]
 fn pixels_tooltips_stay_opaque_like_the_macos_tooltip_material() {
-    let (image, scale, surface_color) = render(Surface::Tooltip);
+    let (image, scale, surface_color, _) = render(Some(Surface::Tooltip));
     let center = SURFACE_ORIGIN + SURFACE_SIZE / 2.;
-    for offset in [0., STRIPE_WIDTH] {
+    for offset in [0., ROW_STEP] {
         let inside = pixel(&image, center + offset, center, scale);
         assert!(
             distance(inside, surface_color) < 0.02,
-            "the tooltip covers the stripes completely: {inside:?} vs {surface_color:?}"
+            "the tooltip covers the code completely: {inside:?} vs {surface_color:?}"
         );
     }
 }
