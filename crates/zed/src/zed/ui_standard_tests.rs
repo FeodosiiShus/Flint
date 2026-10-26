@@ -570,3 +570,54 @@ async fn the_editor_and_the_project_panel_are_never_glass(cx: &mut TestAppContex
         );
     }
 }
+
+#[gpui::test]
+async fn the_empty_breadcrumb_strip_is_solid_and_does_not_show_the_wallpaper(
+    cx: &mut TestAppContext,
+) {
+    let mut project = open_project(cx).await;
+    project.cx.update(|window, cx| {
+        let images = ui::WindowBackgroundImages {
+            editor_and_tools: Some(ui::BackgroundImagePaintLayer {
+                image: std::sync::Arc::new(gpui::RenderImage::new(vec![image::Frame::new(
+                    image::RgbaImage::new(4, 4),
+                )])),
+                mode: ui::BackgroundImageMode::Scale,
+                alignment: ui::BackgroundImageAlignment::Center,
+            }),
+            empty_frame: None,
+        };
+        ui::BackgroundImageLayers::set_window(window.window_handle().window_id(), images, cx);
+        window.refresh();
+    });
+    project.cx.run_until_parked();
+    project.cx.update(|window, cx| window.draw(cx).clear(cx));
+
+    let strip = bounds_of(&mut project, "breadcrumb_strip");
+    let (scale, quads, images) = project.cx.update(|window, _| {
+        (
+            window.scale_factor(),
+            window.painted_quads(),
+            window.painted_polychrome_sprites(),
+        )
+    });
+    let strip = strip.scale(scale);
+    let editor_background = project
+        .cx
+        .update(|_, cx| ui::ActiveTheme::theme(cx).colors().editor_background);
+    let fill_order = quads
+        .iter()
+        .filter(|quad| quad.bounds == strip)
+        .filter(|quad| quad.background.as_solid() == Some(editor_background))
+        .map(|quad| quad.order)
+        .max()
+        .expect("the strip fills itself with the editor background");
+    let images_over_the_fill = images
+        .iter()
+        .filter(|image| image.order > fill_order && image.bounds.intersects(&strip))
+        .count();
+    assert_eq!(
+        images_over_the_fill, 0,
+        "an empty strip that shows the wallpaper like the editor reads as a gap between the editor and the tool window"
+    );
+}

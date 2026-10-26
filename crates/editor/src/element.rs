@@ -6828,19 +6828,16 @@ fn render_bottom_breadcrumb_strip(
 
     v_flex()
         .id("breadcrumb_strip_container")
+        .debug_selector(|| "breadcrumb_strip".into())
         .relative()
         .w_full()
         .flex_none()
         .border_t_1()
         .border_color(colors.editor_indent_guide)
+        // Solid, without the editor image: the strip is empty whenever the cursor is outside
+        // every symbol, and an empty band that shows the wallpaper like the editor above it
+        // reads as a gap between the editor and the tool window below.
         .bg(colors.editor_background)
-        .child(ui::background_image_layer(
-            ui::BackgroundImageTarget::EditorAndTools,
-            ui::BackgroundImageArea::Window,
-            colors.editor_background,
-            true,
-            Corners::default(),
-        ))
         .font_ui(cx)
         .text_ui(cx)
         .child(crumb_row)
