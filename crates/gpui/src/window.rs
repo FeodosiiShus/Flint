@@ -4690,8 +4690,9 @@ impl Window {
     /// Paints a blur of everything already painted behind `bounds`, clipped to its rounded
     /// corners. Elements paint it under a translucent background to look like glass.
     ///
-    /// `tint` is handed to the system's own glass where the platform draws it, and painted by the
-    /// element's background in the renderer's emulation. The blur takes the element's opacity, so
+    /// `lens` is how far the rim bends the blurred backdrop, 0 for none. `tint` is handed to the
+    /// system's own glass where the platform draws it, and painted by the element's background in
+    /// the renderer's emulation. The blur takes the element's opacity, so
     /// an element that fades in or out, or is held back with an opacity of 0, does so with its
     /// glass; the system's own glass cannot fade and is shown while the opacity is above 0.
     ///
@@ -4701,6 +4702,7 @@ impl Window {
         bounds: Bounds<Pixels>,
         corner_radii: Corners<Pixels>,
         blur_radius: Pixels,
+        lens: Pixels,
         tint: Hsla,
     ) {
         self.invalidator.debug_assert_paint();
@@ -4713,6 +4715,7 @@ impl Window {
         let backdrop = Backdrop {
             order: 0,
             blur_radius: blur_radius.scale(scale_factor),
+            lens: lens.scale(scale_factor),
             bounds: self.snap_bounds(bounds),
             content_mask: self.snapped_content_mask(),
             corner_radii: corner_radii.scale(scale_factor),

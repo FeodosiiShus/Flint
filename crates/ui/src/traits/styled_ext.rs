@@ -42,7 +42,9 @@ fn glass_material<E: Styled>(this: E, cx: &App) -> E {
     if native {
         this.backdrop_glass(glass.blur_radius, tint)
     } else {
-        this.bg(tint).backdrop_blur(glass.blur_radius)
+        this.bg(tint)
+            .backdrop_blur(glass.blur_radius)
+            .backdrop_lens(glass.refraction)
     }
 }
 

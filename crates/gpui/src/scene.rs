@@ -624,6 +624,10 @@ pub struct Backdrop {
     pub order: DrawOrder,
     /// How far the blur reaches: twice the standard deviation of the Gaussian it approximates.
     pub blur_radius: ScaledPixels,
+    /// How far the rim of the glass bends the backdrop: at the edge the blur is sampled this far
+    /// outside the element, and the shift fades out over a band a few times as wide. 0 leaves the
+    /// backdrop where it is. The system's own glass bends light itself.
+    pub lens: ScaledPixels,
     pub bounds: Bounds<ScaledPixels>,
     pub content_mask: ContentMask<ScaledPixels>,
     pub corner_radii: Corners<ScaledPixels>,

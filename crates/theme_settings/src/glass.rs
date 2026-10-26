@@ -12,7 +12,10 @@ pub const DEFAULT_EMULATED_GLASS_TINT_PERCENT: u32 = 50;
 /// How far the blur Flint draws spreads when nothing is set, as a Gaussian's extent: its standard
 /// deviation is half of it.
 pub const DEFAULT_GLASS_BLUR_RADIUS: Pixels = px(20.);
+/// How far the rim of the glass Flint draws bends the backdrop when nothing is set.
+pub const DEFAULT_GLASS_REFRACTION: Pixels = px(0.);
 const MAX_BLUR_RADIUS: f32 = 64.;
+const MAX_REFRACTION: f32 = 40.;
 
 /// The Liquid Glass material shared by popups, dialogs, balloons and tool windows: the theme's
 /// surface colour laid over a blurred backdrop. Flint's renderer draws both, so every Mac shows
@@ -26,6 +29,9 @@ pub struct GlassSettings {
     pub emulated_tint: f32,
     /// How far the blur Flint draws spreads; the system's glass blurs with its own.
     pub blur_radius: Pixels,
+    /// How far the rim of the glass Flint draws bends the backdrop, like the lensing of Liquid
+    /// Glass; the system's glass bends light itself.
+    pub refraction: Pixels,
 }
 
 impl GlassSettings {
@@ -46,6 +52,7 @@ impl Default for GlassSettings {
             native_tint: DEFAULT_NATIVE_GLASS_TINT_PERCENT as f32 / 100.,
             emulated_tint: DEFAULT_EMULATED_GLASS_TINT_PERCENT as f32 / 100.,
             blur_radius: DEFAULT_GLASS_BLUR_RADIUS,
+            refraction: DEFAULT_GLASS_REFRACTION,
         }
     }
 }
@@ -64,6 +71,11 @@ impl Settings for GlassSettings {
                 .and_then(|glass| glass.blur_radius)
                 .map_or(defaults.blur_radius, |radius| {
                     px(radius.clamp(0., MAX_BLUR_RADIUS))
+                }),
+            refraction: content
+                .and_then(|glass| glass.refraction)
+                .map_or(defaults.refraction, |depth| {
+                    px(depth.clamp(0., MAX_REFRACTION))
                 }),
         }
     }
@@ -112,6 +124,29 @@ mod tests {
             );
         }
         assert_eq!(glass.blur_radius, px(0.));
+    }
+
+    #[test]
+    fn the_rim_bends_nothing_until_asked_to_and_the_bend_is_clamped() {
+        assert_eq!(GlassSettings::default().refraction, px(0.));
+        assert_eq!(
+            from_json(r#"{"glass": {"refraction": 12}}"#).refraction,
+            px(12.)
+        );
+        assert_eq!(
+            from_json(r#"{"glass": {"refraction": 900}}"#).refraction,
+            px(MAX_REFRACTION),
+            "a bend wider than the glass can show is clamped"
+        );
+        assert_eq!(
+            from_json(r#"{"glass": {"refraction": -3}}"#).refraction,
+            px(0.)
+        );
+        assert_eq!(
+            from_json(r#"{"glass": {"tint": 40}}"#).refraction,
+            px(0.),
+            "setting another key leaves the rim flat"
+        );
     }
 
     #[test]

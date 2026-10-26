@@ -128,13 +128,46 @@ float interleaved_gradient_noise(float2 position) {
   return fract(52.9829189 * fract(dot(position, float2(0.06711056, 0.00583715))));
 }
 
+// The direction away from the backdrop's edge, from the gradient of its signed distance field.
+float2 backdrop_outward(float2 position, constant Backdrop *backdrop) {
+  float2 gradient = float2(
+      quad_sdf(position + float2(1.0, 0.0), backdrop->bounds, backdrop->corner_radii) -
+          quad_sdf(position - float2(1.0, 0.0), backdrop->bounds, backdrop->corner_radii),
+      quad_sdf(position + float2(0.0, 1.0), backdrop->bounds, backdrop->corner_radii) -
+          quad_sdf(position - float2(0.0, 1.0), backdrop->bounds, backdrop->corner_radii));
+  float length_squared = dot(gradient, gradient);
+  return length_squared > 0.0 ? gradient * rsqrt(length_squared) : float2(0.0);
+}
+
 fragment float4 backdrop_fragment(BackdropFragmentInput input [[stage_in]],
                                   constant Backdrop *backdrop [[buffer(1)]],
-                                  texture2d<float> blurred [[texture(0)]]) {
+                                  texture2d<float> blurred [[texture(0)]],
+                                  texture2d<float> sharp [[texture(1)]]) {
   constexpr sampler linear_sampler(mag_filter::linear, min_filter::linear,
                                    address::clamp_to_edge);
   float2 blurred_size = float2(blurred.get_width(), blurred.get_height());
-  float4 color = blurred.sample(linear_sampler, input.position.xy * 0.5 / blurred_size);
+  float2 sample_position = input.position.xy;
+  float sharpness = 0.0;
+  // Liquid Glass bends light at its rim: what the glass shows there comes from further out, by up
+  // to `lens` at the edge, fading to nothing over a band a few times as wide, and it is the
+  // backdrop with its detail, not the frosted blur of the rest of the glass. The band stops short
+  // of the middle of a narrow element, where the direction away from the edge flips.
+  if (backdrop->lens > 0.0) {
+    float depth = -quad_sdf(input.position.xy, backdrop->bounds, backdrop->corner_radii);
+    float band = min(backdrop->lens * 2.5,
+                     0.5 * min(backdrop->bounds.size.width, backdrop->bounds.size.height));
+    if (depth < band) {
+      float remaining = 1.0 - saturate(depth / band);
+      sample_position += backdrop_outward(input.position.xy, backdrop) * backdrop->lens *
+                         remaining * remaining;
+      sharpness = remaining;
+    }
+  }
+  float2 sample_uv = sample_position * 0.5 / blurred_size;
+  float4 color = blurred.sample(linear_sampler, sample_uv);
+  if (sharpness > 0.0) {
+    color = mix(color, sharp.sample(linear_sampler, sample_uv), sharpness);
+  }
   // A blur of a smooth, dark image has fewer distinct values than it has pixels, which shows as
   // bands. Dithering by one level either way, fixed to the screen so that it never moves,
   // breaks them up.

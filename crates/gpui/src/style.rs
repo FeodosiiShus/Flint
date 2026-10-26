@@ -299,6 +299,10 @@ pub struct Style {
     /// The colour the system's own glass tints itself with, when [`Self::backdrop_blur`] is set.
     pub backdrop_tint: Hsla,
 
+    /// How far the rim of the element bends what it blurs, when [`Self::backdrop_blur`] is set:
+    /// the lensing of Liquid Glass.
+    pub backdrop_lens: Pixels,
+
     /// The solid fills that every quad painted inside this element leaves transparent, so the
     /// glass of the element shows through the areas its content would fill with them. A glass
     /// surface lists the theme's surface colours here: content is written to fill its area with
@@ -767,7 +771,13 @@ impl Style {
 
         // The backdrop samples what lies behind the element, which its own shadow is not.
         if let Some(blur_radius) = self.backdrop_blur {
-            window.paint_backdrop(bounds, corner_radii, blur_radius, self.backdrop_tint);
+            window.paint_backdrop(
+                bounds,
+                corner_radii,
+                blur_radius,
+                self.backdrop_lens,
+                self.backdrop_tint,
+            );
         }
 
         if self.backdrop_blur.is_some() {
@@ -879,6 +889,7 @@ impl Default for Style {
             box_shadow: Default::default(),
             backdrop_blur: None,
             backdrop_tint: Hsla::transparent_black(),
+            backdrop_lens: px(0.),
             glass_fills: None,
             keeps_glass_fill: false,
             text: TextStyleRefinement::default(),

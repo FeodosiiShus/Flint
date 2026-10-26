@@ -5,8 +5,8 @@
 //! popup text stays readable over bright code while the backdrop shows through muted.
 
 use gpui::{
-    AppContext as _, Context, Div, HeadlessAppContext, IntoElement, NoopTextSystem, ParentElement,
-    Render, Rgba, Styled, Window, div, px, size,
+    AppContext as _, BorrowAppContext as _, Context, Div, HeadlessAppContext, IntoElement,
+    NoopTextSystem, ParentElement, Render, Rgba, Styled, Window, div, px, size,
 };
 use image::RgbaImage;
 use settings::SettingsStore;
@@ -340,6 +340,44 @@ fn pixels_tooltips_stay_opaque_like_the_macos_tooltip_material() {
         assert!(
             distance(inside, surface_color) < 0.02,
             "the tooltip covers the code completely: {inside:?} vs {surface_color:?}"
+        );
+    }
+}
+
+#[test]
+fn pixels_glass_surfaces_hand_the_refraction_setting_to_the_renderer() {
+    for refraction in [None, Some(10.)] {
+        let mut cx = headless_app();
+        cx.update(|cx| {
+            cx.update_global::<SettingsStore, _>(|store, cx| {
+                store.update_user_settings(cx, |settings| {
+                    settings.glass = Some(settings::GlassSettingsContent {
+                        refraction,
+                        ..Default::default()
+                    });
+                });
+            });
+        });
+        let window = cx
+            .open_window(size(px(WINDOW_SIZE), px(WINDOW_SIZE)), |_, cx| {
+                cx.new(|_| SurfaceOverCode(Some(Surface::Popup)))
+            })
+            .expect("headless window should open");
+        cx.run_until_parked();
+        cx.update_window(window.into(), |_, window, cx| window.draw(cx).clear(cx))
+            .expect("window should draw");
+        let (scale, backdrops) = cx
+            .update_window(window.into(), |_, window, _| {
+                (window.scale_factor(), window.painted_backdrops())
+            })
+            .expect("window should be alive");
+        let [backdrop] = backdrops.as_slice() else {
+            panic!("a popup blurs what lies behind it once: {backdrops:?}");
+        };
+        assert_eq!(
+            backdrop.lens.0,
+            refraction.unwrap_or(0.) * scale,
+            "the popup's glass bends its rim by the setting"
         );
     }
 }

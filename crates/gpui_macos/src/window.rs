@@ -4590,6 +4590,7 @@ mod native_glass_tests {
         Backdrop {
             order,
             blur_radius: ScaledPixels(40.),
+            lens: ScaledPixels(0.),
             bounds,
             content_mask: ContentMask {
                 bounds,

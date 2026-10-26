@@ -765,6 +765,13 @@ pub trait Styled: Sized {
         self
     }
 
+    /// Bends what this element's backdrop blur shows along its rim by up to `depth`, like the
+    /// lensing of Liquid Glass: at the edge the blur is sampled `depth` outside the element.
+    fn backdrop_lens(mut self, depth: Pixels) -> Self {
+        self.style().backdrop_lens = Some(depth);
+        self
+    }
+
     /// Makes every quad painted inside this element leave the solid fills of `fills` transparent,
     /// so the glass of this element shows through the areas its content fills with them.
     fn glass_fills(mut self, fills: impl Into<Arc<[Hsla]>>) -> Self {

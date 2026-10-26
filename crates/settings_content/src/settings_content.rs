@@ -837,6 +837,13 @@ pub struct GlassSettingsContent {
     ///
     /// Default: 20
     pub blur_radius: Option<f32>,
+    /// How far the rim of the glass bends what lies behind it, in pixels, like the lensing of
+    /// Liquid Glass: at the edge the blurred backdrop is shown from this far outside the surface,
+    /// and the shift fades out over a band a few times as wide. 0 draws a flat frosted pane. The
+    /// system's own glass, when `FLINT_NATIVE_GLASS` turns it on, bends light itself.
+    ///
+    /// Default: 0
+    pub refraction: Option<f32>,
 }
 
 // An ExtendingVec in the settings can only accumulate new values.

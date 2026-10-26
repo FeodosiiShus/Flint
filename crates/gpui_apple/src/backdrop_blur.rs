@@ -54,6 +54,7 @@ const COMPOSITE_VERTICES_INDEX: u64 = 0;
 const COMPOSITE_BACKDROP_INDEX: u64 = 1;
 const COMPOSITE_VIEWPORT_SIZE_INDEX: u64 = 2;
 const COMPOSITE_TEXTURE_INDEX: u64 = 0;
+const COMPOSITE_SHARP_TEXTURE_INDEX: u64 = 1;
 
 /// How deep a pyramid is and how wide its upsampling filter is for a blur radius.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -200,15 +201,16 @@ impl BlurRegions {
     fn new(
         visible: Bounds<ScaledPixels>,
         levels: usize,
+        composite_reach: i32,
         viewport: Size<DevicePixels>,
     ) -> Option<Self> {
         let first_level = TexelRect {
-            left: (visible.origin.x.0 / 2.).floor() as i32 - COMPOSITE_REACH,
-            top: (visible.origin.y.0 / 2.).floor() as i32 - COMPOSITE_REACH,
+            left: (visible.origin.x.0 / 2.).floor() as i32 - composite_reach,
+            top: (visible.origin.y.0 / 2.).floor() as i32 - composite_reach,
             right: ((visible.origin.x.0 + visible.size.width.0) / 2.).ceil() as i32
-                + COMPOSITE_REACH,
+                + composite_reach,
             bottom: ((visible.origin.y.0 + visible.size.height.0) / 2.).ceil() as i32
-                + COMPOSITE_REACH,
+                + composite_reach,
         }
         .clamped_to(level_size(viewport, 1))?;
 
@@ -305,8 +307,12 @@ pub(crate) struct PreparedBlur {
 
 struct Pyramid {
     viewport: Size<DevicePixels>,
-    /// `levels[i]` is level `i + 1`: half the frame for `i == 0`, a quarter for the next.
+    /// `levels[i]` is level `i + 1`: half the frame for `i == 0`, a quarter for the next. Level 1
+    /// keeps its downsampled texels, which are barely blurred.
     levels: Vec<metal::Texture>,
+    /// The blur itself at half the frame, written by the last upsampling pass so that level 1
+    /// stays sharp for the rim of the glass to bend.
+    blurred: metal::Texture,
 }
 
 pub(crate) struct BackdropBlur {
@@ -340,6 +346,12 @@ impl BackdropBlur {
         viewport: Size<DevicePixels>,
     ) -> Option<PreparedBlur> {
         let plan = BlurPlan::for_radius(group.first()?.blur_radius);
+        // The rim samples the blur outside the backdrop by up to its lens depth.
+        let widest_lens = group
+            .iter()
+            .map(|backdrop| backdrop.lens.0)
+            .fold(0., f32::max);
+        let composite_reach = COMPOSITE_REACH + (widest_lens / 2.).ceil() as i32;
         let regions = group
             .iter()
             .filter(|backdrop| backdrop.blur_radius.0 > 0. && backdrop.opacity > 0.)
@@ -348,7 +360,7 @@ impl BackdropBlur {
                 if visible.is_empty() {
                     return None;
                 }
-                BlurRegions::new(visible, plan.levels, viewport)
+                BlurRegions::new(visible, plan.levels, composite_reach, viewport)
             })
             .collect::<Vec<_>>();
         if regions.is_empty() {
@@ -362,7 +374,11 @@ impl BackdropBlur {
             let levels = (1..=plan.levels.max(MIN_LEVELS))
                 .map(|level| new_level_texture(device, level_size(viewport, level)))
                 .collect();
-            self.pyramid = Some(Pyramid { viewport, levels });
+            self.pyramid = Some(Pyramid {
+                viewport,
+                levels,
+                blurred: new_level_texture(device, level_size(viewport, 1)),
+            });
         }
 
         let down = (0..plan.levels)
@@ -399,6 +415,13 @@ impl BackdropBlur {
         };
         #[cfg(test)]
         poison_levels(pyramid, command_buffer);
+        let blurred_level = |pass: usize| {
+            if pass == 0 {
+                Some(&*pyramid.blurred)
+            } else {
+                pyramid.levels.get(pass).map(|level| &**level)
+            }
+        };
         for (pass, rectangles) in prepared.down.iter().enumerate() {
             let source = match pass.checked_sub(1) {
                 Some(above) => pyramid.levels.get(above).map(|level| &**level),
@@ -418,7 +441,7 @@ impl BackdropBlur {
         }
         for (pass, rectangles) in prepared.up.iter().enumerate().rev() {
             let (Some(source), Some(destination)) =
-                (pyramid.levels.get(pass + 1), pyramid.levels.get(pass))
+                (pyramid.levels.get(pass + 1), blurred_level(pass))
             else {
                 return false;
             };
@@ -442,10 +465,10 @@ impl BackdropBlur {
         viewport_size: Size<DevicePixels>,
         command_encoder: &metal::RenderCommandEncoderRef,
     ) {
-        let Some(blurred) = self
+        let Some((blurred, sharp)) = self
             .pyramid
             .as_ref()
-            .and_then(|pyramid| pyramid.levels.first())
+            .and_then(|pyramid| Some((&pyramid.blurred, pyramid.levels.first()?)))
         else {
             return;
         };
@@ -467,6 +490,7 @@ impl BackdropBlur {
             backdrop as *const Backdrop as *const _,
         );
         command_encoder.set_fragment_texture(COMPOSITE_TEXTURE_INDEX, Some(blurred));
+        command_encoder.set_fragment_texture(COMPOSITE_SHARP_TEXTURE_INDEX, Some(sharp));
         command_encoder.draw_primitives(metal::MTLPrimitiveType::Triangle, 0, 6);
     }
 }
@@ -486,7 +510,7 @@ fn new_level_texture(device: &metal::DeviceRef, (width, height): (i32, i32)) -> 
 /// pass for the right colour.
 #[cfg(test)]
 fn poison_levels(pyramid: &Pyramid, command_buffer: &metal::CommandBufferRef) {
-    for level in &pyramid.levels {
+    for level in pyramid.levels.iter().chain([&pyramid.blurred]) {
         let descriptor = metal::RenderPassDescriptor::new();
         if let Some(attachment) = descriptor.color_attachments().object_at(0) {
             attachment.set_texture(Some(level));
@@ -562,6 +586,7 @@ mod tests {
         Backdrop {
             order,
             blur_radius: scaled(40.),
+            lens: scaled(0.),
             bounds,
             content_mask: ContentMask {
                 bounds: Bounds {
@@ -642,7 +667,7 @@ mod tests {
             size: size(scaled(3200.), scaled(600.)),
         };
         for levels in MIN_LEVELS..=MAX_LEVELS {
-            let regions = BlurRegions::new(visible, levels, viewport)
+            let regions = BlurRegions::new(visible, levels, COMPOSITE_REACH, viewport)
                 .expect("a visible backdrop has regions");
             assert_eq!(regions.down.len(), levels);
             assert_eq!(regions.up.len(), levels - 1);
@@ -684,7 +709,8 @@ mod tests {
             origin: point(scaled(900.), scaled(700.)),
             size: size(scaled(500.), scaled(500.)),
         };
-        let regions = BlurRegions::new(corner, 4, viewport).expect("the corner is on the frame");
+        let regions = BlurRegions::new(corner, 4, COMPOSITE_REACH, viewport)
+            .expect("the corner is on the frame");
         for (index, rectangle) in regions.down.iter().chain(&regions.up).enumerate() {
             assert!(
                 rectangle.left >= 0 && rectangle.top >= 0,
@@ -702,7 +728,7 @@ mod tests {
             origin: point(scaled(5000.), scaled(5000.)),
             size: size(scaled(10.), scaled(10.)),
         };
-        assert_eq!(BlurRegions::new(away, 4, viewport), None);
+        assert_eq!(BlurRegions::new(away, 4, COMPOSITE_REACH, viewport), None);
     }
 
     #[test]
@@ -910,10 +936,16 @@ mod tests {
         scene
     }
 
-    fn glass(scene: &mut Scene, bounds: Bounds<ScaledPixels>, mask_bounds: Bounds<ScaledPixels>) {
+    fn glass(
+        scene: &mut Scene,
+        bounds: Bounds<ScaledPixels>,
+        mask_bounds: Bounds<ScaledPixels>,
+        lens: f32,
+    ) {
         scene.insert_primitive(Backdrop {
             order: 0,
             blur_radius: scaled(40.),
+            lens: scaled(lens),
             bounds,
             content_mask: ContentMask {
                 bounds: mask_bounds,
@@ -983,7 +1015,7 @@ mod tests {
         // A layer gives the glass one draw order, as the islands of the docks have.
         scene.push_layer(rectangle(0., 0., w, h));
         for bounds in glasses {
-            glass(&mut scene, *bounds, rectangle(0., 0., w, h));
+            glass(&mut scene, *bounds, rectangle(0., 0., w, h), 0.);
         }
         scene.pop_layer();
         let image = render(&mut scene, width, height);
@@ -1040,7 +1072,7 @@ mod tests {
         let upper = rectangle(200., 140., 360., 280.);
 
         let mut under = content_scene(w, h);
-        glass(&mut under, lower, rectangle(0., 0., w, h));
+        glass(&mut under, lower, rectangle(0., 0., w, h), 0.);
         let under = render(&mut under, width, height);
         let expected = blurred_frame(
             &Plane::from_image(&under),
@@ -1048,7 +1080,7 @@ mod tests {
         );
 
         let mut scene = content_scene(w, h);
-        glass(&mut scene, lower, rectangle(0., 0., w, h));
+        glass(&mut scene, lower, rectangle(0., 0., w, h), 0.);
         // A quad over the lower glass puts the upper one on a later draw order.
         scene.insert_primitive(Quad {
             bounds: upper,
@@ -1059,7 +1091,7 @@ mod tests {
             background: hsla(0., 0., 0., 0.).into(),
             ..Default::default()
         });
-        glass(&mut scene, upper, rectangle(0., 0., w, h));
+        glass(&mut scene, upper, rectangle(0., 0., w, h), 0.);
         let image = render(&mut scene, width, height);
         let (largest, mean) = difference_inside(&image, &expected, upper);
         assert!(
@@ -1108,5 +1140,74 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn the_rim_of_a_backdrop_shows_the_sharp_backdrop_from_outside_it() {
+        let (width, height) = (640, 480);
+        let (w, h) = (width as f32, height as f32);
+        let bounds = rectangle(120., 90., 400., 300.);
+        let lens = 16.;
+        // The shift fades out over a band 2.5 times as wide as the lens.
+        let band = lens * 2.5;
+
+        let frame = render(&mut content_scene(w, h), width, height);
+        let frame_plane = Plane::from_image(&frame);
+        let first_level = blurred_first_level(&frame_plane, BlurPlan::for_radius(scaled(40.)));
+        let sharp_level = frame_plane.downsampled(DOWN_OFFSET);
+
+        let mut flat = content_scene(w, h);
+        glass(&mut flat, bounds, rectangle(0., 0., w, h), 0.);
+        let flat = render(&mut flat, width, height);
+        let mut bent = content_scene(w, h);
+        glass(&mut bent, bounds, rectangle(0., 0., w, h), lens);
+        let bent = render(&mut bent, width, height);
+
+        let (left, top) = (bounds.origin.x.0, bounds.origin.y.0);
+        let (right, bottom) = (left + bounds.size.width.0, top + bounds.size.height.0);
+        let (mut largest_error, mut largest_bend) = (0f32, 0f32);
+        for y in top as u32 + 2..bottom as u32 - 2 {
+            for x in left as u32 + 2..right as u32 - 2 {
+                let (cx, cy) = (x as f32 + 0.5, y as f32 + 0.5);
+                let mut distances = [
+                    (cx - left, (-1., 0.)),
+                    (right - cx, (1., 0.)),
+                    (cy - top, (0., -1.)),
+                    (bottom - cy, (0., 1.)),
+                ];
+                distances.sort_by(|a, b| a.0.total_cmp(&b.0));
+                let [(depth, (normal_x, normal_y)), (next, _), ..] = distances;
+                // Near a corner the direction away from the edge turns; the shader follows the
+                // rounded distance field there, and this reference only knows straight edges.
+                if next < band + 2. {
+                    continue;
+                }
+                let remaining = if depth < band { 1. - depth / band } else { 0. };
+                let shift = lens * remaining * remaining;
+                let (sample_x, sample_y) =
+                    ((cx + normal_x * shift) * 0.5, (cy + normal_y * shift) * 0.5);
+                let blurred = first_level.sample(sample_x, sample_y);
+                let sharp = sharp_level.sample(sample_x, sample_y);
+                let expected = [0, 1, 2].map(|channel| {
+                    blurred[channel] + (sharp[channel] - blurred[channel]) * remaining
+                });
+                let actual = bent.get_pixel(x, y).0;
+                let unbent = flat.get_pixel(x, y).0;
+                for channel in 0..3 {
+                    largest_error = largest_error
+                        .max((actual[channel] as f32 - expected[channel] * 255.).abs());
+                    largest_bend =
+                        largest_bend.max((actual[channel] as f32 - unbent[channel] as f32).abs());
+                }
+            }
+        }
+        assert!(
+            largest_error <= 4.,
+            "the rim shows the sharp backdrop from outside the glass as the filters say: {largest_error}"
+        );
+        assert!(
+            largest_bend >= 12.,
+            "the lens changes what the rim shows: {largest_bend} levels"
+        );
     }
 }
