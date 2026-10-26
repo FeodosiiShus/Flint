@@ -228,6 +228,13 @@ jobs:
           set -o pipefail
           cargo test --locked --no-fail-fast --package gpui 2>&1 | tee "${RUNNER_TEMP}/ui-heavy.log"
 
+      - name: Run renderer and glass pixel tests
+        run: |
+          set -o pipefail
+          # gpui_apple and ui hold the Metal renderer's tests and the pixel tests of the glass,
+          # which compile only for macOS, so no other job runs them.
+          cargo test --locked --no-fail-fast --tests --package gpui_apple --package ui 2>&1 | tee -a "${RUNNER_TEMP}/ui-heavy.log"
+
       - name: Run app tests
         run: |
           set -o pipefail

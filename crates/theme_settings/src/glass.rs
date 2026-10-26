@@ -6,10 +6,11 @@ use settings::{RegisterSetting, Settings, SettingsContent};
 /// light tint is enough and the backdrop's colours still reach the surface.
 pub const DEFAULT_NATIVE_GLASS_TINT_PERCENT: u32 = 30;
 /// How much of the theme's surface colour covers the glass Flint draws when nothing is set, in
-/// percent. Its blur is a plain gaussian that leaves bright code recognisable, so the tint has to
-/// be heavy enough to keep popup text readable over it.
+/// percent. Its blur is a plain one that leaves bright code recognisable, so the tint has to be
+/// heavy enough to keep popup text readable over it.
 pub const DEFAULT_EMULATED_GLASS_TINT_PERCENT: u32 = 50;
-/// How far the emulated blur spreads when nothing is set.
+/// How far the blur Flint draws spreads when nothing is set, as a Gaussian's extent: its standard
+/// deviation is half of it.
 pub const DEFAULT_GLASS_BLUR_RADIUS: Pixels = px(20.);
 const MAX_BLUR_RADIUS: f32 = 64.;
 

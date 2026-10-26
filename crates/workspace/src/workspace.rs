@@ -20889,12 +20889,14 @@ mod tests {
         });
     }
 
-    #[gpui::test]
-    async fn the_glass_islands_of_all_three_docks_share_one_draw_order(cx: &mut TestAppContext) {
-        // The macOS window makes one level of glass per draw order and creates a fixed number of
-        // glass views for each level before it shows anything, so opening another tool window
-        // must not need a level, or a view, that the window has to create in that frame.
-        cx.set_native_glass(true);
+    // The renderer blurs the backdrops of one draw order together, and the macOS window makes one
+    // level of native glass per draw order with a fixed number of glass views, so opening another
+    // tool window must not need a pass, a level or a view that is made in that frame.
+    async fn assert_the_islands_of_all_three_docks_share_one_draw_order(
+        cx: &mut TestAppContext,
+        native_glass: bool,
+    ) {
+        cx.set_native_glass(native_glass);
         let (workspace, _panels, cx) = tool_window_bar_test_workspace(cx).await;
         for position in [
             DockPosition::Bottom,
@@ -20922,6 +20924,18 @@ mod tests {
             orders.iter().all(|order| *order == orders[0]),
             "the islands of the three docks belong to one glass level: {orders:?}"
         );
+    }
+
+    #[gpui::test]
+    async fn the_glass_islands_of_all_three_docks_share_one_draw_order(cx: &mut TestAppContext) {
+        assert_the_islands_of_all_three_docks_share_one_draw_order(cx, false).await;
+    }
+
+    #[gpui::test]
+    async fn the_native_glass_islands_of_all_three_docks_share_one_draw_order(
+        cx: &mut TestAppContext,
+    ) {
+        assert_the_islands_of_all_three_docks_share_one_draw_order(cx, true).await;
     }
 
     #[gpui::test]

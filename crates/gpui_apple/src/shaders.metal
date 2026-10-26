@@ -49,47 +49,53 @@ struct BackdropPassOutput {
   float4 position [[position]];
 };
 
-struct BackdropBlurParams {
-  float2 direction;
-  float sigma;
-  float padding;
-};
-
 // A triangle that covers the whole target; the scissor rect limits the pass to the backdrop.
 vertex BackdropPassOutput backdrop_pass_vertex(uint vertex_id [[vertex_id]]) {
   float2 corner = float2((vertex_id << 1) & 2, vertex_id & 2);
   return BackdropPassOutput{float4(corner * 2.0 - 1.0, 0.0, 1.0)};
 }
 
-// Each half-resolution pixel sits between four source pixels, so one bilinear sample
-// averages them.
-fragment float4 backdrop_downsample_fragment(BackdropPassOutput input [[stage_in]],
-                                             texture2d<float> source [[texture(0)]]) {
-  constexpr sampler linear_sampler(mag_filter::linear, min_filter::linear,
-                                   address::clamp_to_edge);
-  float2 source_size = float2(source.get_width(), source.get_height());
-  return source.sample(linear_sampler, input.position.xy * 2.0 / source_size);
-}
-
-fragment float4 backdrop_blur_fragment(BackdropPassOutput input [[stage_in]],
+// The dual filter of Bjorge's "Bandwidth-efficient rendering". Coordinates are in texel-edge
+// units, so the centre of an output pixel at `position` is `position * 2` in the larger source
+// and `position / 2` in the smaller one, whatever their sizes round to.
+//
+// Downsampling halves the size. The centre sample sits on the corner of four source pixels, and
+// the four diagonal samples on the corners of their neighbours, so the pass averages a 4x4
+// footprint with its weight toward the middle. A footprint that wide is what keeps content that
+// moves under the glass from aliasing.
+fragment float4 backdrop_down_fragment(BackdropPassOutput input [[stage_in]],
                                        texture2d<float> source [[texture(0)]],
-                                       constant BackdropBlurParams *params [[buffer(0)]]) {
+                                       constant float &offset [[buffer(0)]]) {
   constexpr sampler linear_sampler(mag_filter::linear, min_filter::linear,
                                    address::clamp_to_edge);
   float2 size = float2(source.get_width(), source.get_height());
-  float2 uv = input.position.xy / size;
-  float sigma = max(params->sigma, 0.5);
-  int radius = min(int(ceil(sigma * 3.0)), 64);
-  float4 sum = source.sample(linear_sampler, uv);
-  float weight_sum = 1.0;
-  for (int i = 1; i <= radius; i++) {
-    float weight = exp(-0.5 * float(i * i) / (sigma * sigma));
-    float2 offset = params->direction * float(i) / size;
-    sum += (source.sample(linear_sampler, uv + offset) +
-            source.sample(linear_sampler, uv - offset)) * weight;
-    weight_sum += 2.0 * weight;
-  }
-  return sum / weight_sum;
+  float2 center = input.position.xy * 2.0;
+  float4 sum = source.sample(linear_sampler, center / size) * 4.0;
+  sum += source.sample(linear_sampler, (center + float2(-offset, -offset)) / size);
+  sum += source.sample(linear_sampler, (center + float2(offset, -offset)) / size);
+  sum += source.sample(linear_sampler, (center + float2(offset, offset)) / size);
+  sum += source.sample(linear_sampler, (center + float2(-offset, offset)) / size);
+  return sum / 8.0;
+}
+
+// Upsampling doubles the size with a tent of eight samples around the output pixel.
+fragment float4 backdrop_up_fragment(BackdropPassOutput input [[stage_in]],
+                                     texture2d<float> source [[texture(0)]],
+                                     constant float &offset [[buffer(0)]]) {
+  constexpr sampler linear_sampler(mag_filter::linear, min_filter::linear,
+                                   address::clamp_to_edge);
+  float2 size = float2(source.get_width(), source.get_height());
+  float2 center = input.position.xy * 0.5;
+  float spacing = 0.5 * offset;
+  float4 sum = source.sample(linear_sampler, (center + float2(-2.0 * spacing, 0.0)) / size);
+  sum += source.sample(linear_sampler, (center + float2(-spacing, spacing)) / size) * 2.0;
+  sum += source.sample(linear_sampler, (center + float2(0.0, 2.0 * spacing)) / size);
+  sum += source.sample(linear_sampler, (center + float2(spacing, spacing)) / size) * 2.0;
+  sum += source.sample(linear_sampler, (center + float2(2.0 * spacing, 0.0)) / size);
+  sum += source.sample(linear_sampler, (center + float2(spacing, -spacing)) / size) * 2.0;
+  sum += source.sample(linear_sampler, (center + float2(0.0, -2.0 * spacing)) / size);
+  sum += source.sample(linear_sampler, (center + float2(-spacing, -spacing)) / size) * 2.0;
+  return sum / 12.0;
 }
 
 struct BackdropVertexOutput {
@@ -116,6 +122,12 @@ vertex BackdropVertexOutput backdrop_vertex(uint unit_vertex_id [[vertex_id]],
       {clip_distance.x, clip_distance.y, clip_distance.z, clip_distance.w}};
 }
 
+// Interleaved gradient noise (Jimenez, 2014): a fixed pattern of values spread evenly over [0, 1),
+// so dithering with it leaves no structure the eye can pick out.
+float interleaved_gradient_noise(float2 position) {
+  return fract(52.9829189 * fract(dot(position, float2(0.06711056, 0.00583715))));
+}
+
 fragment float4 backdrop_fragment(BackdropFragmentInput input [[stage_in]],
                                   constant Backdrop *backdrop [[buffer(1)]],
                                   texture2d<float> blurred [[texture(0)]]) {
@@ -123,6 +135,12 @@ fragment float4 backdrop_fragment(BackdropFragmentInput input [[stage_in]],
                                    address::clamp_to_edge);
   float2 blurred_size = float2(blurred.get_width(), blurred.get_height());
   float4 color = blurred.sample(linear_sampler, input.position.xy * 0.5 / blurred_size);
+  // A blur of a smooth, dark image has fewer distinct values than it has pixels, which shows as
+  // bands. Dithering by one level either way, fixed to the screen so that it never moves,
+  // breaks them up.
+  float noise = interleaved_gradient_noise(input.position.xy) +
+                interleaved_gradient_noise(input.position.xy + float2(5.588238, 5.588238)) - 1.0;
+  color.rgb += noise / 255.0;
   float distance = quad_sdf(input.position.xy, backdrop->bounds, backdrop->corner_radii);
   float coverage = saturate(0.5 - distance) *
                    content_mask_alpha(input.position.xy, backdrop->content_mask) *

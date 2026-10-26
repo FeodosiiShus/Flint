@@ -622,6 +622,7 @@ impl From<Underline> for Primitive {
 #[expect(missing_docs)]
 pub struct Backdrop {
     pub order: DrawOrder,
+    /// How far the blur reaches: twice the standard deviation of the Gaussian it approximates.
     pub blur_radius: ScaledPixels,
     pub bounds: Bounds<ScaledPixels>,
     pub content_mask: ContentMask<ScaledPixels>,

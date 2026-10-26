@@ -528,3 +528,45 @@ async fn no_tool_window_covers_its_glass_with_an_opaque_fill(cx: &mut TestAppCon
         offenders.join("\n")
     );
 }
+
+#[gpui::test]
+async fn the_editor_and_the_project_panel_are_never_glass(cx: &mut TestAppContext) {
+    let mut project = open_project(cx).await;
+    project
+        .workspace
+        .update_in(&mut project.cx, |workspace, window, cx| {
+            workspace.focus_panel::<project_panel::ProjectPanel>(window, cx);
+            workspace.focus_panel::<git_ui::git_panel::GitPanel>(window, cx);
+        });
+    project.cx.run_until_parked();
+    project.cx.update(|window, cx| window.draw(cx).clear(cx));
+
+    let project_panel = bounds_of(&mut project, "tool_window_left");
+    let editor = project
+        .workspace
+        .read_with(&project.cx, |workspace, cx| {
+            workspace
+                .active_item_as::<editor::Editor>(cx)
+                .and_then(|editor| editor.read(cx).last_bounds().copied())
+        })
+        .expect("the open editor was painted");
+    let (scale, backdrops) = project
+        .cx
+        .update(|window, _| (window.scale_factor(), window.painted_backdrops()));
+    assert!(
+        !backdrops.is_empty(),
+        "the Git tool window next to them is glass, or this test checks nothing"
+    );
+    for backdrop in backdrops {
+        assert!(
+            !backdrop.bounds.intersects(&project_panel.scale(scale)),
+            "glass over the Project panel: {:?}",
+            backdrop.bounds
+        );
+        assert!(
+            !backdrop.bounds.intersects(&editor.scale(scale)),
+            "glass over the editor: {:?}",
+            backdrop.bounds
+        );
+    }
+}

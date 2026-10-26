@@ -28,6 +28,16 @@
     {"keystrokes": {"keys": "escape", "frames": 0}},
     {"wait": {"milliseconds": 400}},
 
+    {"action": {"name": "editor::OpenContextMenu", "frames": 0}},
+    {"film": {"name": "editor-context-menu", "frames": 20}},
+    {"keystrokes": {"keys": "escape", "frames": 0}},
+    {"wait": {"milliseconds": 400}},
+
+    {"click": {"x": 257, "y": 17, "frames": 0}},
+    {"film": {"name": "search-everywhere", "frames": 24}},
+    {"keystrokes": {"keys": "escape", "frames": 0}},
+    {"wait": {"milliseconds": 400}},
+
     {"action": {"name": "terminal_panel::Toggle", "frames": 0}},
     {"film": {"name": "terminal-tool-window", "frames": 24}},
     {"action": {"name": "git_panel::ToggleFocus", "frames": 0}},
