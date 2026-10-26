@@ -14,9 +14,11 @@
 //! cannot sample what it draws into, and the next pass loads the whole frame back, so the number
 //! of passes is what the glass costs.
 
-use gpui::{Backdrop, Bounds, DevicePixels, ScaledPixels, Size};
+use anyhow::{Context as _, Result, bail};
+use gpui::{Backdrop, Bounds, DevicePixels, ScaledPixels, Size, size};
 use metal::MTLPixelFormat;
-use std::{mem, ops::Range};
+use std::mem;
+use std::ops::Range;
 
 /// Levels below the frame, which is level 0. Each level doubles how far the blur reaches; six
 /// reach a standard deviation of about 97 device pixels, beyond the largest `glass.blur_radius`.
@@ -59,7 +61,9 @@ const COMPOSITE_SHARP_TEXTURE_INDEX: u64 = 1;
 /// How deep a pyramid is and how wide its upsampling filter is for a blur radius.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct BlurPlan {
+    /// How many levels the pyramid has below the frame.
     pub levels: usize,
+    /// How far from its centre the upsampling filter samples, in texels of the smaller level.
     pub up_offset: f32,
 }
 
@@ -74,7 +78,8 @@ impl BlurPlan {
             levels: MAX_LEVELS,
             up_offset: UP_OFFSET_MIN + UP_OFFSET_STEP * (UP_OFFSET_STEPS - 1) as f32,
         };
-        for (row, levels) in SIGMA_TABLE.iter().zip(MIN_LEVELS..) {
+        let rows = SIGMA_TABLE.iter().zip(MIN_LEVELS..);
+        for (row, levels) in rows {
             let reaches = row.last().is_some_and(|widest| sigma <= *widest);
             if reaches {
                 plan = Self {
@@ -140,12 +145,12 @@ impl TexelRect {
         }
     }
 
-    fn clamped_to(self, (width, height): (i32, i32)) -> Option<Self> {
+    fn clamped_to(self, level_size: Size<i32>) -> Option<Self> {
         let clamped = Self {
             left: self.left.max(0),
             top: self.top.max(0),
-            right: self.right.min(width),
-            bottom: self.bottom.min(height),
+            right: self.right.min(level_size.width),
+            bottom: self.bottom.min(level_size.height),
         };
         (clamped.left < clamped.right && clamped.top < clamped.bottom).then_some(clamped)
     }
@@ -177,9 +182,9 @@ impl TexelRect {
 }
 
 /// The size of level `level` (1 is half the frame) for a frame of `viewport`.
-fn level_size(viewport: Size<DevicePixels>, level: usize) -> (i32, i32) {
+fn level_size(viewport: Size<DevicePixels>, level: usize) -> Size<i32> {
     let divisor = 1 << level;
-    (
+    size(
         (viewport.width.0 + divisor - 1) / divisor,
         (viewport.height.0 + divisor - 1) / divisor,
     )
@@ -232,7 +237,8 @@ impl BlurRegions {
         }
 
         let mut down = vec![needed];
-        for level in (1..levels).rev() {
+        let shallower_levels = (1..levels).rev();
+        for level in shallower_levels {
             needed = needed
                 .doubled()
                 .expanded(DOWN_REACH)
@@ -279,7 +285,8 @@ fn visible_bounds(backdrop: &Backdrop) -> Bounds<ScaledPixels> {
 pub(crate) fn groups(backdrops: &[Backdrop]) -> Vec<Range<usize>> {
     let mut groups = Vec::new();
     let mut start = 0;
-    for (index, backdrop) in backdrops.iter().enumerate() {
+    let candidates = backdrops.iter().enumerate();
+    for (index, backdrop) in candidates {
         let group = backdrops.get(start..index).unwrap_or_default();
         let joins = group.iter().all(|member| {
             member.order == backdrop.order
@@ -402,17 +409,18 @@ impl BackdropBlur {
         Some(PreparedBlur { plan, down, up })
     }
 
-    /// Encodes the passes that blur `frame` into the pyramid. Returns `false`, having encoded
-    /// nothing useful, if the pyramid is missing a level.
+    /// Encodes the passes that blur `frame` into the pyramid. Fails, having encoded only some of
+    /// the passes, if the pyramid is missing a level, which [`Self::prepare`] makes sure it is not.
     pub fn encode(
         &self,
         prepared: &PreparedBlur,
         frame: &metal::TextureRef,
         command_buffer: &metal::CommandBufferRef,
-    ) -> bool {
-        let Some(pyramid) = self.pyramid.as_ref() else {
-            return false;
-        };
+    ) -> Result<()> {
+        let pyramid = self
+            .pyramid
+            .as_ref()
+            .context("the backdrop blur has no pyramid")?;
         #[cfg(test)]
         poison_levels(pyramid, command_buffer);
         let blurred_level = |pass: usize| {
@@ -422,13 +430,14 @@ impl BackdropBlur {
                 pyramid.levels.get(pass).map(|level| &**level)
             }
         };
-        for (pass, rectangles) in prepared.down.iter().enumerate() {
+        let downsampling_passes = prepared.down.iter().enumerate();
+        for (pass, rectangles) in downsampling_passes {
             let source = match pass.checked_sub(1) {
                 Some(above) => pyramid.levels.get(above).map(|level| &**level),
                 None => Some(frame),
             };
             let (Some(source), Some(destination)) = (source, pyramid.levels.get(pass)) else {
-                return false;
+                bail!("the backdrop blur has no level {} to downsample", pass + 1);
             };
             encode_pass(
                 &self.down_pipeline_state,
@@ -439,11 +448,12 @@ impl BackdropBlur {
                 command_buffer,
             );
         }
-        for (pass, rectangles) in prepared.up.iter().enumerate().rev() {
+        let upsampling_passes = prepared.up.iter().enumerate().rev();
+        for (pass, rectangles) in upsampling_passes {
             let (Some(source), Some(destination)) =
                 (pyramid.levels.get(pass + 1), blurred_level(pass))
             else {
-                return false;
+                bail!("the backdrop blur has no level {} to upsample", pass + 1);
             };
             encode_pass(
                 &self.up_pipeline_state,
@@ -454,7 +464,7 @@ impl BackdropBlur {
                 command_buffer,
             );
         }
-        true
+        Ok(())
     }
 
     /// Draws the blurred frame inside `backdrop`'s rounded bounds.
@@ -495,10 +505,10 @@ impl BackdropBlur {
     }
 }
 
-fn new_level_texture(device: &metal::DeviceRef, (width, height): (i32, i32)) -> metal::Texture {
+fn new_level_texture(device: &metal::DeviceRef, level_size: Size<i32>) -> metal::Texture {
     let descriptor = metal::TextureDescriptor::new();
-    descriptor.set_width(width.max(1) as u64);
-    descriptor.set_height(height.max(1) as u64);
+    descriptor.set_width(level_size.width.max(1) as u64);
+    descriptor.set_height(level_size.height.max(1) as u64);
     descriptor.set_pixel_format(MTLPixelFormat::BGRA8Unorm);
     descriptor.set_storage_mode(metal::MTLStorageMode::Private);
     descriptor.set_usage(metal::MTLTextureUsage::RenderTarget | metal::MTLTextureUsage::ShaderRead);
@@ -510,7 +520,8 @@ fn new_level_texture(device: &metal::DeviceRef, (width, height): (i32, i32)) -> 
 /// pass for the right colour.
 #[cfg(test)]
 fn poison_levels(pyramid: &Pyramid, command_buffer: &metal::CommandBufferRef) {
-    for level in pyramid.levels.iter().chain([&pyramid.blurred]) {
+    let every_level = pyramid.levels.iter().chain([&pyramid.blurred]);
+    for level in every_level {
         let descriptor = metal::RenderPassDescriptor::new();
         if let Some(attachment) = descriptor.color_attachments().object_at(0) {
             attachment.set_texture(Some(level));
@@ -608,7 +619,11 @@ mod tests {
             backdrop(2, 120., 300., 600., 100.),
             backdrop(2, 740., 0., 100., 400.),
         ];
-        assert_eq!(groups(&islands), vec![0..3]);
+        assert_eq!(
+            groups(&islands),
+            vec![0..3],
+            "side by side at one draw order and radius, they share a blur"
+        );
     }
 
     #[test]
@@ -631,8 +646,16 @@ mod tests {
         let mut other = backdrop(2, 500., 0., 100., 100.);
         other.blur_radius = scaled(80.);
         let backdrops = [backdrop(2, 0., 0., 100., 100.), other];
-        assert_eq!(groups(&backdrops), vec![0..1, 1..2]);
-        assert_eq!(groups(&[]), Vec::<Range<usize>>::new());
+        assert_eq!(
+            groups(&backdrops),
+            vec![0..1, 1..2],
+            "another radius needs a pyramid of its own"
+        );
+        assert_eq!(
+            groups(&[]),
+            Vec::<Range<usize>>::new(),
+            "no backdrops, no groups"
+        );
     }
 
     #[test]
@@ -653,10 +676,21 @@ mod tests {
     fn the_default_glass_radius_uses_a_pyramid_of_four_levels() {
         // 20 points on a 2x screen.
         let plan = BlurPlan::for_radius(scaled(40.));
-        assert_eq!(plan.levels, 4);
+        assert_eq!(
+            plan.levels, 4,
+            "a standard deviation of 20 pixels needs four levels"
+        );
         assert!((1.5..=1.75).contains(&plan.up_offset), "{plan:?}");
-        assert_eq!(BlurPlan::for_radius(scaled(0.)).levels, MIN_LEVELS);
-        assert_eq!(BlurPlan::for_radius(scaled(10_000.)).levels, MAX_LEVELS);
+        assert_eq!(
+            BlurPlan::for_radius(scaled(0.)).levels,
+            MIN_LEVELS,
+            "the shallowest pyramid is the floor"
+        );
+        assert_eq!(
+            BlurPlan::for_radius(scaled(10_000.)).levels,
+            MAX_LEVELS,
+            "the deepest pyramid is the ceiling"
+        );
     }
 
     #[test]
@@ -669,32 +703,39 @@ mod tests {
         for levels in MIN_LEVELS..=MAX_LEVELS {
             let regions = BlurRegions::new(visible, levels, COMPOSITE_REACH, viewport)
                 .expect("a visible backdrop has regions");
-            assert_eq!(regions.down.len(), levels);
-            assert_eq!(regions.up.len(), levels - 1);
-            for (pass, down) in regions.down.iter().enumerate().skip(1) {
+            assert_eq!(regions.down.len(), levels, "every level is downsampled");
+            assert_eq!(
+                regions.up.len(),
+                levels - 1,
+                "every level but the deepest is upsampled"
+            );
+            let passes_with_a_pass_above = regions.down.iter().enumerate().skip(1);
+            for (pass, down) in passes_with_a_pass_above {
                 let above = regions.down.get(pass - 1).expect("a pass above");
                 let reads = down.doubled().expanded(DOWN_REACH);
+                let above_level = level_size(viewport, pass);
                 assert!(
                     above.left <= reads.left.max(0)
                         && above.top <= reads.top.max(0)
-                        && above.right >= reads.right.min(level_size(viewport, pass).0)
-                        && above.bottom >= reads.bottom.min(level_size(viewport, pass).1),
+                        && above.right >= reads.right.min(above_level.width)
+                        && above.bottom >= reads.bottom.min(above_level.height),
                     "levels {levels}, down pass {pass} reads {reads:?} but level {pass} holds {above:?}"
                 );
             }
-            for (pass, up) in regions.up.iter().enumerate() {
+            let upsampling_passes = regions.up.iter().enumerate();
+            for (pass, up) in upsampling_passes {
                 let reads = up.halved().expanded(UP_REACH);
                 let below = regions
                     .up
                     .get(pass + 1)
                     .or(regions.down.last())
                     .expect("a level below");
-                let (width, height) = level_size(viewport, pass + 2);
+                let below_level = level_size(viewport, pass + 2);
                 assert!(
                     below.left <= reads.left.max(0)
                         && below.top <= reads.top.max(0)
-                        && below.right >= reads.right.min(width)
-                        && below.bottom >= reads.bottom.min(height),
+                        && below.right >= reads.right.min(below_level.width)
+                        && below.bottom >= reads.bottom.min(below_level.height),
                     "levels {levels}, up pass {pass} reads {reads:?} but level {} holds {below:?}",
                     pass + 2
                 );
@@ -711,24 +752,30 @@ mod tests {
         };
         let regions = BlurRegions::new(corner, 4, COMPOSITE_REACH, viewport)
             .expect("the corner is on the frame");
-        for (index, rectangle) in regions.down.iter().chain(&regions.up).enumerate() {
+        let every_pass = regions.down.iter().chain(&regions.up).enumerate();
+        for (index, rectangle) in every_pass {
             assert!(
                 rectangle.left >= 0 && rectangle.top >= 0,
                 "{index}: {rectangle:?}"
             );
         }
-        for (pass, rectangle) in regions.down.iter().enumerate() {
-            let (width, height) = level_size(viewport, pass + 1);
+        let downsampling_passes = regions.down.iter().enumerate();
+        for (pass, rectangle) in downsampling_passes {
+            let level = level_size(viewport, pass + 1);
             assert!(
-                rectangle.right <= width && rectangle.bottom <= height,
-                "down pass {pass}: {rectangle:?} outside {width}x{height}"
+                rectangle.right <= level.width && rectangle.bottom <= level.height,
+                "down pass {pass}: {rectangle:?} outside {level:?}"
             );
         }
         let away = Bounds {
             origin: point(scaled(5000.), scaled(5000.)),
             size: size(scaled(10.), scaled(10.)),
         };
-        assert_eq!(BlurRegions::new(away, 4, COMPOSITE_REACH, viewport), None);
+        assert_eq!(
+            BlurRegions::new(away, 4, COMPOSITE_REACH, viewport),
+            None,
+            "a backdrop off the frame blurs nothing"
+        );
     }
 
     #[test]
@@ -745,10 +792,18 @@ mod tests {
             rectangle(10, 5, 20, 15),
             rectangle(18, 14, 41, 16),
         ]);
-        assert_eq!(chained, vec![rectangle(0, 0, 50, 16)]);
+        assert_eq!(
+            chained,
+            vec![rectangle(0, 0, 50, 16)],
+            "rectangles that touch through each other merge into one"
+        );
 
         let apart = merged([rectangle(0, 0, 10, 10), rectangle(11, 0, 20, 10)]);
-        assert_eq!(apart.len(), 2);
+        assert_eq!(
+            apart.len(),
+            2,
+            "rectangles with a gap between them stay apart"
+        );
     }
 
     /// A plane of colour that the dual filter's passes run on, mirroring `shaders.metal` in
@@ -819,7 +874,8 @@ mod tests {
             let mut sum = [0.; 3];
             for (x, y, weight) in taps {
                 let texel = self.sample(center.0 + x, center.1 + y);
-                for (total, channel) in sum.iter_mut().zip(texel) {
+                let channels = sum.iter_mut().zip(texel);
+                for (total, channel) in channels {
                     *total += channel * weight;
                 }
             }
@@ -1004,18 +1060,23 @@ mod tests {
     }
 
     fn assert_blurs_like_the_filters(width: i32, height: i32, glasses: &[Bounds<ScaledPixels>]) {
-        let (w, h) = (width as f32, height as f32);
-        let frame = render(&mut content_scene(w, h), width, height);
+        let (frame_width, frame_height) = (width as f32, height as f32);
+        let frame = render(&mut content_scene(frame_width, frame_height), width, height);
         let expected = blurred_frame(
             &Plane::from_image(&frame),
             BlurPlan::for_radius(scaled(40.)),
         );
 
-        let mut scene = content_scene(w, h);
+        let mut scene = content_scene(frame_width, frame_height);
         // A layer gives the glass one draw order, as the islands of the docks have.
-        scene.push_layer(rectangle(0., 0., w, h));
+        scene.push_layer(rectangle(0., 0., frame_width, frame_height));
         for bounds in glasses {
-            glass(&mut scene, *bounds, rectangle(0., 0., w, h), 0.);
+            glass(
+                &mut scene,
+                *bounds,
+                rectangle(0., 0., frame_width, frame_height),
+                0.,
+            );
         }
         scene.pop_layer();
         let image = render(&mut scene, width, height);
@@ -1067,31 +1128,46 @@ mod tests {
     #[test]
     fn a_backdrop_blurs_the_glass_behind_it() {
         let (width, height) = (640, 480);
-        let (w, h) = (width as f32, height as f32);
+        let (frame_width, frame_height) = (width as f32, height as f32);
         let lower = rectangle(60., 60., 360., 300.);
         let upper = rectangle(200., 140., 360., 280.);
 
-        let mut under = content_scene(w, h);
-        glass(&mut under, lower, rectangle(0., 0., w, h), 0.);
+        let mut under = content_scene(frame_width, frame_height);
+        glass(
+            &mut under,
+            lower,
+            rectangle(0., 0., frame_width, frame_height),
+            0.,
+        );
         let under = render(&mut under, width, height);
         let expected = blurred_frame(
             &Plane::from_image(&under),
             BlurPlan::for_radius(scaled(40.)),
         );
 
-        let mut scene = content_scene(w, h);
-        glass(&mut scene, lower, rectangle(0., 0., w, h), 0.);
+        let mut scene = content_scene(frame_width, frame_height);
+        glass(
+            &mut scene,
+            lower,
+            rectangle(0., 0., frame_width, frame_height),
+            0.,
+        );
         // A quad over the lower glass puts the upper one on a later draw order.
         scene.insert_primitive(Quad {
             bounds: upper,
             content_mask: ContentMask {
-                bounds: rectangle(0., 0., w, h),
+                bounds: rectangle(0., 0., frame_width, frame_height),
                 corner_radii: Corners::default(),
             },
             background: hsla(0., 0., 0., 0.).into(),
             ..Default::default()
         });
-        glass(&mut scene, upper, rectangle(0., 0., w, h), 0.);
+        glass(
+            &mut scene,
+            upper,
+            rectangle(0., 0., frame_width, frame_height),
+            0.,
+        );
         let image = render(&mut scene, width, height);
         let (largest, mean) = difference_inside(&image, &expected, upper);
         assert!(
@@ -1103,7 +1179,8 @@ mod tests {
     #[test]
     fn the_sigma_table_matches_the_filters() {
         // A point spread through the filters: its standard deviation is how far they blur.
-        for (row, levels) in SIGMA_TABLE.iter().zip(MIN_LEVELS..) {
+        let rows = SIGMA_TABLE.iter().zip(MIN_LEVELS..);
+        for (row, levels) in rows {
             let side = 2 * (6. * row.last().copied().unwrap_or(1.)) as usize;
             let side = side.next_power_of_two().max(64);
             // The deepest pyramid is big enough to be slow, and doubles the one above it.
@@ -1145,22 +1222,32 @@ mod tests {
     #[test]
     fn the_rim_of_a_backdrop_shows_the_sharp_backdrop_from_outside_it() {
         let (width, height) = (640, 480);
-        let (w, h) = (width as f32, height as f32);
+        let (frame_width, frame_height) = (width as f32, height as f32);
         let bounds = rectangle(120., 90., 400., 300.);
         let lens = 16.;
         // The shift fades out over a band 2.5 times as wide as the lens.
         let band = lens * 2.5;
 
-        let frame = render(&mut content_scene(w, h), width, height);
+        let frame = render(&mut content_scene(frame_width, frame_height), width, height);
         let frame_plane = Plane::from_image(&frame);
         let first_level = blurred_first_level(&frame_plane, BlurPlan::for_radius(scaled(40.)));
         let sharp_level = frame_plane.downsampled(DOWN_OFFSET);
 
-        let mut flat = content_scene(w, h);
-        glass(&mut flat, bounds, rectangle(0., 0., w, h), 0.);
+        let mut flat = content_scene(frame_width, frame_height);
+        glass(
+            &mut flat,
+            bounds,
+            rectangle(0., 0., frame_width, frame_height),
+            0.,
+        );
         let flat = render(&mut flat, width, height);
-        let mut bent = content_scene(w, h);
-        glass(&mut bent, bounds, rectangle(0., 0., w, h), lens);
+        let mut bent = content_scene(frame_width, frame_height);
+        glass(
+            &mut bent,
+            bounds,
+            rectangle(0., 0., frame_width, frame_height),
+            lens,
+        );
         let bent = render(&mut bent, width, height);
 
         let (left, top) = (bounds.origin.x.0, bounds.origin.y.0);
@@ -1168,14 +1255,14 @@ mod tests {
         let (mut largest_error, mut largest_bend) = (0f32, 0f32);
         for y in top as u32 + 2..bottom as u32 - 2 {
             for x in left as u32 + 2..right as u32 - 2 {
-                let (cx, cy) = (x as f32 + 0.5, y as f32 + 0.5);
+                let (center_x, center_y) = (x as f32 + 0.5, y as f32 + 0.5);
                 let mut distances = [
-                    (cx - left, (-1., 0.)),
-                    (right - cx, (1., 0.)),
-                    (cy - top, (0., -1.)),
-                    (bottom - cy, (0., 1.)),
+                    (center_x - left, (-1., 0.)),
+                    (right - center_x, (1., 0.)),
+                    (center_y - top, (0., -1.)),
+                    (bottom - center_y, (0., 1.)),
                 ];
-                distances.sort_by(|a, b| a.0.total_cmp(&b.0));
+                distances.sort_by(|first, second| first.0.total_cmp(&second.0));
                 let [(depth, (normal_x, normal_y)), (next, _), ..] = distances;
                 // Near a corner the direction away from the edge turns; the shader follows the
                 // rounded distance field there, and this reference only knows straight edges.
@@ -1184,8 +1271,10 @@ mod tests {
                 }
                 let remaining = if depth < band { 1. - depth / band } else { 0. };
                 let shift = lens * remaining * remaining;
-                let (sample_x, sample_y) =
-                    ((cx + normal_x * shift) * 0.5, (cy + normal_y * shift) * 0.5);
+                let (sample_x, sample_y) = (
+                    (center_x + normal_x * shift) * 0.5,
+                    (center_y + normal_y * shift) * 0.5,
+                );
                 let blurred = first_level.sample(sample_x, sample_y);
                 let sharp = sharp_level.sample(sample_x, sample_y);
                 let expected = [0, 1, 2].map(|channel| {

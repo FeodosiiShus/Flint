@@ -1165,12 +1165,12 @@ impl Focusable for ChangesBrowser {
 }
 
 impl Render for ChangesBrowser {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = cx.theme().colors();
         v_flex()
             .key_context(KEY_CONTEXT)
             .size_full()
-            .bg(ui::content_background(colors.panel_background, window))
+            .bg(colors.panel_background)
             .on_action(cx.listener(|this, _: &ShowDiff, window, cx| this.show_diff(window, cx)))
             .on_action(
                 cx.listener(|this, _: &ShowHistory, window, cx| this.show_history(window, cx)),

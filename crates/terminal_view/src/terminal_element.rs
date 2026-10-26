@@ -1541,7 +1541,7 @@ impl Element for TerminalElement {
                 let terminal_view = self.terminal_view.read(cx);
                 let scroll_top = terminal_view.scroll_top;
                 let mouse_input_mode = terminal_view.mouse_input_mode();
-                let background_color = ui::content_background(layout.background_color, window);
+                let background_color = layout.background_color;
                 window.paint_quad(fill(bounds, background_color));
                 ui::paint_background_image(
                     bounds,

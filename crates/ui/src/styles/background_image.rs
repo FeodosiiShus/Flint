@@ -234,7 +234,9 @@ pub fn paint_background_image(
     window: &mut Window,
     cx: &App,
 ) {
-    if require_opaque && !surface_background.is_opaque() {
+    // An image painted over glass would cover the blur the glass is made of, whatever colour the
+    // surface under it has, so no panel has to know that it lies on glass.
+    if window.on_glass_surface() || (require_opaque && !surface_background.is_opaque()) {
         return;
     }
     let window_id = window.window_handle().window_id();

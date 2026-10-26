@@ -122,14 +122,11 @@ impl RenderOnce for TabBar {
         let islands = self.islands;
         let in_header = self.in_header;
         let classic_borders = !islands && !in_header;
-        let background = crate::content_background(
-            if islands {
-                cx.theme().colors().editor_background
-            } else {
-                cx.theme().colors().tab_bar_background
-            },
-            window,
-        );
+        let background = if islands {
+            cx.theme().colors().editor_background
+        } else {
+            cx.theme().colors().tab_bar_background
+        };
         let bottom_border_width = island_tab_metrics(cx).bottom_border_width;
         div()
             .id(self.id)

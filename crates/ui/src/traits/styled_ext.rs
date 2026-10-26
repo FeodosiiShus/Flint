@@ -59,6 +59,7 @@ fn surface_fills(cx: &App) -> Arc<[Hsla]> {
         colors.elevated_surface_background,
         colors.panel_background,
         colors.editor_background,
+        colors.editor_gutter_background,
         colors.editor_subheader_background,
         colors.tab_bar_background,
         colors.toolbar_background,
@@ -82,16 +83,6 @@ fn glass_surface<E: Styled>(this: E, mut shadows: Vec<BoxShadow>, cx: &App) -> E
     glass_material(this, cx)
         .shadow(shadows)
         .glass_fills(surface_fills(cx))
-}
-
-/// The fill of an area inside a panel or a popup: none on a glass surface
-/// ([`Window::on_glass_surface`]), so its empty areas show the glass instead of covering it.
-pub fn content_background(color: Hsla, window: &Window) -> Hsla {
-    if window.on_glass_surface() {
-        gpui::transparent_black()
-    } else {
-        color
-    }
 }
 
 fn surface<E: Styled + InteractiveElement>(this: E, kind: SurfaceKind, cx: &App) -> E {

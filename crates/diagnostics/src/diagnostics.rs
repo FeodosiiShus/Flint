@@ -107,8 +107,8 @@ const DIAGNOSTICS_UPDATE_DEBOUNCE: Duration = Duration::from_millis(50);
 const DIAGNOSTICS_SUMMARY_UPDATE_DEBOUNCE: Duration = Duration::from_millis(30);
 
 impl Render for ProjectDiagnosticsEditor {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let background = ui::content_background(cx.theme().colors().editor_background, window);
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let background = cx.theme().colors().editor_background;
         let warning_count = if self.include_warnings {
             self.summary.warning_count
         } else {

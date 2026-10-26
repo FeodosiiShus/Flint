@@ -337,3 +337,47 @@ fn every_button_is_built_from_the_standard_components() {
         offenders.join("\n")
     );
 }
+
+/// The few places that choose other colours on glass, which a surface's transparent fills cannot
+/// express; every other component is written as if its panel were opaque.
+const GLASS_AWARE_COMPONENT_ALLOWLIST: &[(&str, &str)] = &[
+    (
+        "crates/git_ui/src/git_log/commit_table.rs",
+        "a highlighted row keeps its colour at a lower opacity on glass instead of vanishing",
+    ),
+    (
+        "crates/workspace/src/dock.rs",
+        "a test panel records whether it was drawn on glass",
+    ),
+];
+
+#[test]
+fn components_do_not_branch_on_glass_themselves() {
+    let mut offenders = Vec::new();
+    for source in workspace_sources() {
+        if is_standard_component_source(&source.relative)
+            || source.relative.starts_with("crates/gpui/")
+            || GLASS_AWARE_COMPONENT_ALLOWLIST
+                .iter()
+                .any(|(path, _)| *path == source.relative)
+        {
+            continue;
+        }
+        for helper in ["on_glass_surface(", "content_background("] {
+            for (offset, _) in source.text.match_indices(helper) {
+                offenders.push(format!(
+                    "{}:{} asks whether it lies on glass with {helper}..); a surface makes the \
+                     fills of its content transparent and image layers skip glass, so write the \
+                     component as if its panel were opaque",
+                    source.relative,
+                    line_of(&source.text, offset)
+                ));
+            }
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "components that handle glass themselves:\n{}",
+        offenders.join("\n")
+    );
+}

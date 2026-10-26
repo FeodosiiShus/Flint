@@ -4713,11 +4713,11 @@ impl EditorElement {
     }
 
     fn paint_background(&self, layout: &EditorLayout, window: &mut Window, cx: &mut App) {
-        let gutter_bg =
-            ui::content_background(cx.theme().colors().editor_gutter_background, window);
-        // The style keeps the theme's background, which text and selection colors are blended
-        // against even where the editor lies on glass.
-        let text_bg = ui::content_background(self.style.background, window);
+        // On glass these fills are left transparent by the surface (`Styled::glass_fills`), while
+        // the style keeps the theme's background that text and selection colors are blended
+        // against.
+        let gutter_bg = cx.theme().colors().editor_gutter_background;
+        let text_bg = self.style.background;
         window.paint_layer(layout.hitbox.bounds, |window| {
             window.paint_quad(fill(layout.gutter_hitbox.bounds, gutter_bg));
             window.paint_quad(fill(layout.position_map.text_hitbox.bounds, text_bg));

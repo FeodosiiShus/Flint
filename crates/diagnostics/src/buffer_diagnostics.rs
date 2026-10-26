@@ -885,8 +885,8 @@ impl Item for BufferDiagnosticsEditor {
 }
 
 impl Render for BufferDiagnosticsEditor {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let background = ui::content_background(cx.theme().colors().editor_background, window);
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let background = cx.theme().colors().editor_background;
         let path_style = self.project.read(cx).path_style(cx);
         let filename = self.project_path.path.display(path_style).to_string();
         let error_count = self.summary.error_count;

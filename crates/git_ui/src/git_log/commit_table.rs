@@ -2430,7 +2430,7 @@ impl Render for CommitTable {
             });
         }
         let frame = self.compute_frame(window, cx);
-        let background = ui::content_background(frame.colors.background, window);
+        let background = frame.colors.background;
         let font = frame.font.clone();
         let font_size = frame.font_size;
         self.frame = Some(frame);

@@ -934,11 +934,11 @@ impl MetalRenderer {
                             continue;
                         };
                         command_encoder.end_encoding();
-                        if !self
-                            .backdrop_blur
-                            .encode(&prepared, texture, command_buffer)
+                        if let Err(error) =
+                            self.backdrop_blur
+                                .encode(&prepared, texture, command_buffer)
                         {
-                            log::error!("the backdrop blur has no texture for one of its levels");
+                            log::error!("failed to blur a backdrop: {error:#}");
                         }
                         command_encoder = new_command_encoder_for_texture(
                             command_buffer,

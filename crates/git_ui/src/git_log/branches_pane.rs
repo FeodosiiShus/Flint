@@ -2117,7 +2117,7 @@ impl Render for BranchesPane {
             return self.render_stripe(window, cx);
         }
         let colors = cx.theme().colors();
-        let panel_background = ui::content_background(colors.panel_background, window);
+        let panel_background = colors.panel_background;
         let border = colors.border;
         h_flex()
             .key_context(KEY_CONTEXT)

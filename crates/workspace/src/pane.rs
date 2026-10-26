@@ -50,8 +50,8 @@ use ui::{
     BackgroundImageArea, BackgroundImageTarget, CloseButton, CloseButtonSize, ContextMenu,
     DecoratedIcon, Divider, DividerColor, IconButtonShape, IconDecoration, IconDecorationKind,
     Indicator, PopoverMenu, PopoverMenuHandle, Tab, TabBar, TabPosition, Tooltip,
-    background_image_layer, content_background, has_any_background_image, has_background_image,
-    prelude::*, right_click_menu,
+    background_image_layer, has_any_background_image, has_background_image, prelude::*,
+    right_click_menu,
 };
 use util::{
     ResultExt, debug_panic, markdown::MarkdownInlineCode, maybe, paths::PathStyle,
@@ -4624,8 +4624,6 @@ impl Render for Pane {
                                 )
                         } else {
                             let editor_background = cx.theme().colors().editor_background;
-                            let placeholder_background =
-                                content_background(editor_background, window);
                             let empty_frame_layer = background_image_layer(
                                 BackgroundImageTarget::EmptyFrame,
                                 BackgroundImageArea::Window,
@@ -4639,7 +4637,7 @@ impl Render for Pane {
                                 .size_full()
                                 .justify_center()
                                 .when(covers_editor_image, |placeholder| {
-                                    placeholder.bg(placeholder_background)
+                                    placeholder.bg(editor_background)
                                 })
                                 .when(has_empty_frame_image, |placeholder| {
                                     placeholder.child(empty_frame_layer)

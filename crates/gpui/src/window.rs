@@ -3099,7 +3099,9 @@ impl Window {
     }
 
     /// Whether the element being drawn lies on a surface that blurs its backdrop (Liquid Glass).
-    /// Content there leaves its empty areas unfilled, so the glass shows through them.
+    /// Content there leaves its empty areas unfilled, so the glass shows through them: the surface
+    /// makes the fills of its content transparent ([`Self::with_glass_fills`]) and background images
+    /// are not painted, so only content that picks other colours on glass has to ask.
     pub fn on_glass_surface(&self) -> bool {
         self.glass_surface_depth > 0
     }
