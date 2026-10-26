@@ -834,6 +834,14 @@ impl GlassLevel {
                     let () = msg_send![overlay_layer, setDrawableSize: NSSize::new(1., 1.)];
                 }
             }
+            if frames.len() > self.glass_views.len() {
+                log::warn!(
+                    "a frame needs {} glass views in one level but the window created {} up front; \
+                     creating the rest now can flash",
+                    frames.len(),
+                    self.glass_views.len(),
+                );
+            }
             self.add_views(frames.len(), content_view);
             for (index, view) in self.glass_views.iter().enumerate() {
                 let Some((frame, corner_radius, tint)) = frames.get(index).copied() else {
@@ -947,6 +955,12 @@ impl MacWindowState {
             .collect::<Vec<_>>();
 
         if self.glass_levels.len() < frames.len() {
+            log::warn!(
+                "a frame needs {} glass levels but the window created {} up front; creating the \
+                 rest now can flash",
+                frames.len(),
+                self.glass_levels.len(),
+            );
             self.add_glass_levels(frames.len(), content_view, content_bounds);
         }
         let overlay_ptrs = self
@@ -4643,6 +4657,33 @@ mod native_glass_tests {
             glass_levels(&stacked).is_empty(),
             "the renderer emulates glass when more levels than overlay layers are open"
         );
+    }
+
+    #[test]
+    fn the_glass_of_three_docks_and_stacked_menus_needs_nothing_the_window_has_not_created() {
+        // Opening a tool window or a popup must only show glass the window made up front: the
+        // islands of the three docks share one draw order, and a menu with its submenu takes a
+        // level each over them. A view created in the frame that needs it flashes.
+        let backdrops = [
+            backdrop(2, (0., 40.), (300., 800.)),
+            backdrop(2, (320., 700.), (1200., 300.)),
+            backdrop(2, (1540., 40.), (300., 800.)),
+            backdrop(7, (40., 60.), (400., 600.)),
+            backdrop(9, (440., 120.), (300., 300.)),
+        ];
+        let orders = glass_levels(&backdrops);
+        assert_eq!(orders, vec![2, 7, 9], "every backdrop frame stays native");
+        assert!(orders.len() <= MAX_GLASS_LEVELS);
+        for order in orders {
+            let views = backdrops
+                .iter()
+                .filter(|backdrop| backdrop.order == order)
+                .count();
+            assert!(
+                views <= PREWARMED_GLASS_VIEWS_PER_LEVEL,
+                "level {order} shows {views} glass views, more than the window creates up front"
+            );
+        }
     }
 
     #[test]

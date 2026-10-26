@@ -20848,6 +20848,41 @@ mod tests {
     }
 
     #[gpui::test]
+    async fn the_glass_islands_of_all_three_docks_share_one_draw_order(cx: &mut TestAppContext) {
+        // The macOS window makes one level of glass per draw order and creates a fixed number of
+        // glass views for each level before it shows anything, so opening another tool window
+        // must not need a level, or a view, that the window has to create in that frame.
+        cx.set_native_glass(true);
+        let (workspace, _panels, cx) = tool_window_bar_test_workspace(cx).await;
+        for position in [
+            DockPosition::Bottom,
+            DockPosition::Left,
+            DockPosition::Right,
+        ] {
+            open_dock_with_center_focus(&workspace, position, cx);
+        }
+        cx.update(|window, _| window.refresh());
+        cx.run_until_parked();
+
+        let orders = cx.update(|window, _| {
+            window
+                .painted_backdrops()
+                .into_iter()
+                .map(|backdrop| backdrop.order)
+                .collect::<Vec<_>>()
+        });
+        assert_eq!(
+            orders.len(),
+            3,
+            "each of the three islands blurs what lies behind it"
+        );
+        assert!(
+            orders.iter().all(|order| *order == orders[0]),
+            "the islands of the three docks belong to one glass level: {orders:?}"
+        );
+    }
+
+    #[gpui::test]
     async fn a_tool_window_is_glass_unless_its_panel_opts_out(cx: &mut TestAppContext) {
         init_test(cx);
         let panel = cx.update(|cx| {
