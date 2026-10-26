@@ -600,7 +600,7 @@ web-time = "1.1.0"
 webpki-roots = "1.0.8"
 which = "8"
 zeroize = "1.8"
-zstd = "0.11"
+zstd = "0.14"
 
 [patch.crates-io]
 async-process = { git = "https://github.com/zed-industries/async-process.git", rev = "0b6d6713570af61806e1e5cb40e0f757cb93fd9d" }
