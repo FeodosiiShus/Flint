@@ -14,17 +14,23 @@ pub fn surface_is_glass(kind: SurfaceKind, cx: &App) -> bool {
     kind.standard().material == SurfaceMaterial::Glass && !cx.should_reduce_transparency()
 }
 
+/// Whether the island of a tool window is drawn as Liquid Glass right now: its panel has to ask
+/// for glass, and the user can ask macOS for opaque surfaces with Reduce Transparency.
+pub fn tool_window_is_glass(panel_wants_glass: bool, cx: &App) -> bool {
+    panel_wants_glass && !cx.should_reduce_transparency()
+}
+
 /// Fills `this` with the Liquid Glass material: a translucent surface over its blurred backdrop.
-/// Popups, dialogs, balloons and tool window islands all take it from here, so their glass looks
-/// the same.
+/// Popups, dialogs, balloons and tool window islands all take it through [`glass_surface`], so
+/// their glass looks the same.
 ///
-/// On macOS 26 the system's `NSGlassEffectView` draws both the blur and the lighting, so the
-/// element only hands it the theme tint and paints no fill of its own; a fill would sit above the
-/// material and flatten it. The renderer's emulation blurs behind the element, so there the tint
-/// is the element's background.
+/// Flint draws the blur and the tint itself, so every Mac shows the same glass. With
+/// `FLINT_NATIVE_GLASS` on macOS 26 the system's `NSGlassEffectView` draws both the blur and the
+/// lighting, so the element only hands it the theme tint and paints no fill of its own; a fill
+/// would sit above the material and flatten it.
 ///
 /// [`GlassSettings`] sets how much of the theme's colour covers the glass.
-pub fn glass_material<E: Styled>(this: E, cx: &App) -> E {
+fn glass_material<E: Styled>(this: E, cx: &App) -> E {
     let glass = GlassSettings::get_global(cx);
     let native = cx.supports_native_glass();
     let tint = cx
@@ -37,6 +43,15 @@ pub fn glass_material<E: Styled>(this: E, cx: &App) -> E {
     } else {
         this.bg(tint).backdrop_blur(glass.blur_radius)
     }
+}
+
+/// The glass every glass surface shares: [`glass_material`] with the shadows of the surface and
+/// the specular rim along the top edge of Liquid Glass, which the system's own glass draws itself.
+fn glass_surface<E: Styled>(this: E, mut shadows: Vec<BoxShadow>, cx: &App) -> E {
+    if !cx.supports_native_glass() {
+        shadows.push(BoxShadow::new(px(0.), px(1.), hsla(0., 0., 1., 0.06)).inset());
+    }
+    glass_material(this, cx).shadow(shadows)
 }
 
 /// The fill of an area inside a panel or a popup: none on a glass surface
@@ -58,12 +73,7 @@ fn surface<E: Styled + InteractiveElement>(this: E, kind: SurfaceKind, cx: &App)
         .border(standard.border_width)
         .border_color(colors.border_variant);
     if surface_is_glass(kind, cx) {
-        let mut shadows = standard.elevation.shadow(cx);
-        if !cx.supports_native_glass() {
-            // The specular rim along the top edge of Liquid Glass, which native glass draws.
-            shadows.push(BoxShadow::new(px(0.), px(1.), hsla(0., 0., 1., 0.06)).inset());
-        }
-        glass_material(this, cx).shadow(shadows)
+        glass_surface(this, standard.elevation.shadow(cx), cx)
     } else {
         this.bg(colors.elevated_surface_background)
             .shadow(standard.elevation.shadow(cx))
@@ -118,6 +128,18 @@ pub trait StyledSurface: Styled + InteractiveElement + Sized {
     /// [`SurfaceKind::Tooltip`].
     fn tooltip_surface(self, cx: &App) -> Self {
         surface(self, SurfaceKind::Tooltip, cx)
+    }
+
+    /// The island of a tool window with `corner_radius`, as Liquid Glass with the popups' material
+    /// and rim, and an inner hairline where popups have their border. The hairline is a shadow,
+    /// so it takes no room from the IntelliJ metrics of the content. The island sits in the
+    /// window's frame rather than floating over it, so it casts no shadow. Call it only where
+    /// [`tool_window_is_glass`].
+    fn tool_window_surface(self, corner_radius: Pixels, cx: &App) -> Self {
+        let hairline = BoxShadow::new(px(0.), px(0.), cx.theme().colors().border_variant)
+            .spread_radius(SurfaceKind::Popup.standard().border_width)
+            .inset();
+        glass_surface(self.rounded(corner_radius), vec![hairline], cx)
     }
 }
 

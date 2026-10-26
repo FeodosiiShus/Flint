@@ -197,6 +197,33 @@ fn every_floating_surface_uses_the_standard_chrome() {
 }
 
 #[test]
+fn every_glass_surface_uses_the_standard_glass() {
+    let mut offenders = Vec::new();
+    for source in workspace_sources() {
+        if is_standard_component_source(&source.relative)
+            || source.relative.starts_with("crates/gpui/")
+        {
+            continue;
+        }
+        for helper in [".backdrop_blur(", ".backdrop_glass(", "glass_material("] {
+            for (offset, _) in source.text.match_indices(helper) {
+                offenders.push(format!(
+                    "{}:{} builds its own glass with {helper}..); use popup_surface, \
+                     dialog_surface, balloon_surface or tool_window_surface",
+                    source.relative,
+                    line_of(&source.text, offset)
+                ));
+            }
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "glass surfaces outside the standard:\n{}",
+        offenders.join("\n")
+    );
+}
+
+#[test]
 fn every_dialog_footer_lays_out_its_buttons_through_the_standard_row() {
     let mut offenders = Vec::new();
     for source in workspace_sources() {

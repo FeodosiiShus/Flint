@@ -4195,11 +4195,14 @@ const MAX_GLASS_LEVELS: usize = 6;
 const PREWARMED_GLASS_VIEWS_PER_LEVEL: usize = 4;
 
 /// Whether glass surfaces use AppKit's `NSGlassEffectView` (macOS 26) rather than the
-/// renderer's emulation. `FLINT_EMULATED_GLASS` keeps the emulation, to compare the two.
+/// renderer's own glass. The system's material looks different from one Mac to the next, with the
+/// macOS version and the Liquid Glass setting, and its views and layers reach the screen apart
+/// from the window's frame, so Flint draws the glass itself unless `FLINT_NATIVE_GLASS` asks for
+/// the system's.
 pub(crate) fn native_glass_available() -> bool {
     static AVAILABLE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *AVAILABLE.get_or_init(|| {
-        !window_classes().glass_view.is_null() && std::env::var_os("FLINT_EMULATED_GLASS").is_none()
+        !window_classes().glass_view.is_null() && std::env::var_os("FLINT_NATIVE_GLASS").is_some()
     })
 }
 

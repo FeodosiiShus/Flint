@@ -18,8 +18,8 @@ use settings::{
 };
 use std::sync::Arc;
 use ui::{
-    BackgroundImageArea, BackgroundImageTarget, ContextMenu, background_image_layer,
-    glass_material, prelude::*,
+    BackgroundImageArea, BackgroundImageTarget, ContextMenu, StyledSurface as _,
+    background_image_layer, prelude::*, tool_window_is_glass,
 };
 use util::ResultExt as _;
 
@@ -141,8 +141,7 @@ pub trait Panel: Focusable + EventEmitter<PanelEvent> + Render + Sized {
         None
     }
     /// Whether the tool window's island is Liquid Glass that blurs the window background behind
-    /// it, where macOS draws glass natively. A panel that reads like the editor, such as the
-    /// Project panel, stays opaque instead.
+    /// it. A panel that reads like the editor, such as the Project panel, stays opaque instead.
     fn glass_background(&self, _cx: &App) -> bool {
         true
     }
@@ -1471,11 +1470,7 @@ impl Render for Dock {
             if islands.enabled {
                 let content_inset =
                     (ISLAND_TOOL_WINDOW_INSET - islands.half_gap()).max(Pixels::ZERO);
-                // Emulating the blur of a whole tool window would cost every frame, so only
-                // native glass makes the island transparent.
-                let glass = entry.panel.glass_background(cx)
-                    && cx.supports_native_glass()
-                    && !cx.should_reduce_transparency();
+                let glass = tool_window_is_glass(entry.panel.glass_background(cx), cx);
                 return dock_panel
                     .p(islands.half_gap())
                     .child(
@@ -1501,15 +1496,11 @@ impl Render for Dock {
                                 ))
                             })
                             .child({
-                                let surface = div()
-                                    .flex()
-                                    .flex_col()
-                                    .size_full()
-                                    .rounded(islands.corner_radius);
+                                let surface = div().flex().flex_col().size_full();
                                 let surface = if glass {
-                                    glass_material(surface, cx)
+                                    surface.tool_window_surface(islands.corner_radius, cx)
                                 } else {
-                                    surface
+                                    surface.rounded(islands.corner_radius)
                                 };
                                 surface.child(
                                     div()

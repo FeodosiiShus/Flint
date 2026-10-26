@@ -824,16 +824,16 @@ pub struct WhichKeySettingsContent {
 /// The Liquid Glass material that popups, dialogs and glass tool windows are drawn from.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema, MergeFrom)]
 pub struct GlassSettingsContent {
-    /// How much of the theme's surface colour covers the glass, in percent: 0 leaves the
-    /// material untouched, 100 hides the blurred backdrop completely behind the colour. This is
-    /// the level of the glass on macOS 26 too, where the system draws the blur itself.
+    /// How much of the theme's surface colour covers the glass, in percent: 0 leaves the glass
+    /// clear, 100 hides the blurred backdrop completely behind the colour. Lower values show more
+    /// of the backdrop but also let bright code behind a popup through, so its text gets harder
+    /// to read.
     ///
-    /// Default: 30 where the system draws the glass (macOS 26), 60 where Flint draws it, whose
-    /// blur leaves bright code recognisable and needs the heavier tint for readable text.
+    /// Default: 50 for the glass Flint draws, which is the same on every Mac; 30 for the system's
+    /// own glass, which only `FLINT_NATIVE_GLASS` turns on.
     pub tint: Option<u32>,
-    /// How far the blurred backdrop spreads where the renderer draws the glass itself, in
-    /// pixels. macOS 26 draws its own material with the system's blur, which this does not
-    /// change.
+    /// How far the blurred backdrop spreads, in pixels. The system's own glass, when
+    /// `FLINT_NATIVE_GLASS` turns it on, blurs with its own radius, which this does not change.
     ///
     /// Default: 20
     pub blur_radius: Option<f32>,

@@ -50,8 +50,8 @@ use ui::{
     BackgroundImageArea, BackgroundImageTarget, CloseButton, CloseButtonSize, ContextMenu,
     DecoratedIcon, Divider, DividerColor, IconButtonShape, IconDecoration, IconDecorationKind,
     Indicator, PopoverMenu, PopoverMenuHandle, Tab, TabBar, TabPosition, Tooltip,
-    background_image_layer, has_any_background_image, has_background_image, prelude::*,
-    right_click_menu,
+    background_image_layer, content_background, has_any_background_image, has_background_image,
+    prelude::*, right_click_menu,
 };
 use util::{
     ResultExt, debug_panic, markdown::MarkdownInlineCode, maybe, paths::PathStyle,
@@ -4624,6 +4624,8 @@ impl Render for Pane {
                                 )
                         } else {
                             let editor_background = cx.theme().colors().editor_background;
+                            let placeholder_background =
+                                content_background(editor_background, window);
                             let empty_frame_layer = background_image_layer(
                                 BackgroundImageTarget::EmptyFrame,
                                 BackgroundImageArea::Window,
@@ -4637,7 +4639,7 @@ impl Render for Pane {
                                 .size_full()
                                 .justify_center()
                                 .when(covers_editor_image, |placeholder| {
-                                    placeholder.bg(editor_background)
+                                    placeholder.bg(placeholder_background)
                                 })
                                 .when(has_empty_frame_image, |placeholder| {
                                     placeholder.child(empty_frame_layer)
@@ -6061,6 +6063,86 @@ mod tests {
             fills_without_image + 1,
             "with only an editor image set, the empty pane gets the plain editor background, \
              because WebStorm paints an empty editor area with the frame image only"
+        );
+    }
+
+    struct PaneHost {
+        pane: Entity<Pane>,
+        on_glass: bool,
+    }
+
+    impl Render for PaneHost {
+        fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            let host = div().size_full();
+            if self.on_glass {
+                host.tool_window_surface(px(8.), cx)
+                    .child(self.pane.clone())
+            } else {
+                host.child(self.pane.clone())
+            }
+        }
+    }
+
+    #[gpui::test]
+    async fn test_empty_pane_on_glass_leaves_the_glass_uncovered(cx: &mut TestAppContext) {
+        init_test(cx);
+        let fs = FakeFs::new(cx.executor());
+        let project = Project::test(fs, None, cx).await;
+        let (workspace, cx) =
+            cx.add_window_view(|window, cx| Workspace::test_new(project.clone(), window, cx));
+        let editor_fill =
+            cx.update(|_, cx| gpui::Background::from(cx.theme().colors().editor_background));
+
+        let mut editor_fills = Vec::new();
+        for on_glass in [false, true] {
+            let pane = workspace.update_in(cx, |workspace, window, cx| {
+                cx.new(|cx| {
+                    Pane::new(
+                        workspace.weak_handle(),
+                        project.clone(),
+                        Default::default(),
+                        None,
+                        NewFile.boxed_clone(),
+                        true,
+                        window,
+                        cx,
+                    )
+                })
+            });
+            let (_host, host_cx) = cx.add_window_view(|_, _| PaneHost { pane, on_glass });
+            host_cx.update(|window, cx| {
+                let images = ui::WindowBackgroundImages {
+                    editor_and_tools: Some(ui::BackgroundImagePaintLayer {
+                        image: std::sync::Arc::new(gpui::RenderImage::new(vec![
+                            image::Frame::new(image::RgbaImage::new(1, 1)),
+                        ])),
+                        mode: ui::BackgroundImageMode::Scale,
+                        alignment: ui::BackgroundImageAlignment::Center,
+                    }),
+                    empty_frame: None,
+                };
+                ui::BackgroundImageLayers::set_window(
+                    window.window_handle().window_id(),
+                    images,
+                    cx,
+                );
+                window.refresh();
+            });
+            host_cx.run_until_parked();
+            editor_fills.push(host_cx.update(|window, _| {
+                window
+                    .painted_quads()
+                    .iter()
+                    .filter(|quad| quad.background == editor_fill)
+                    .count()
+            }));
+        }
+
+        assert_eq!(
+            editor_fills,
+            [1, 0],
+            "an empty pane covers the editor image with the editor background, except on glass, \
+             where an opaque placeholder would flash over a tool window until its first item"
         );
     }
 

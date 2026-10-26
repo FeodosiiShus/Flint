@@ -5,24 +5,25 @@ use settings::{RegisterSetting, Settings, SettingsContent};
 /// percent. The system's blur already keeps the text behind a surface from showing through, so a
 /// light tint is enough and the backdrop's colours still reach the surface.
 pub const DEFAULT_NATIVE_GLASS_TINT_PERCENT: u32 = 30;
-/// How much of the theme's surface colour covers the renderer's emulated glass when nothing is
-/// set, in percent. Its blur is a plain gaussian that leaves bright code recognisable, so the
-/// tint has to be heavy enough to keep popup text readable over it.
-pub const DEFAULT_EMULATED_GLASS_TINT_PERCENT: u32 = 60;
+/// How much of the theme's surface colour covers the glass Flint draws when nothing is set, in
+/// percent. Its blur is a plain gaussian that leaves bright code recognisable, so the tint has to
+/// be heavy enough to keep popup text readable over it.
+pub const DEFAULT_EMULATED_GLASS_TINT_PERCENT: u32 = 50;
 /// How far the emulated blur spreads when nothing is set.
 pub const DEFAULT_GLASS_BLUR_RADIUS: Pixels = px(20.);
 const MAX_BLUR_RADIUS: f32 = 64.;
 
 /// The Liquid Glass material shared by popups, dialogs, balloons and tool windows: the theme's
-/// surface colour laid over a blurred backdrop. On macOS 26 the system draws the blur, so only
-/// the tint reaches it; elsewhere the renderer draws both.
+/// surface colour laid over a blurred backdrop. Flint's renderer draws both, so every Mac shows
+/// the same glass; with `FLINT_NATIVE_GLASS` the system draws the blur on macOS 26 and only the
+/// tint reaches it.
 #[derive(Clone, Copy, Debug, PartialEq, RegisterSetting)]
 pub struct GlassSettings {
     /// How much of the theme's surface colour covers the system's glass, from 0 to 1.
     pub native_tint: f32,
-    /// How much of the theme's surface colour covers the renderer's emulated glass, from 0 to 1.
+    /// How much of the theme's surface colour covers the glass Flint draws, from 0 to 1.
     pub emulated_tint: f32,
-    /// How far the renderer's emulated blur spreads; macOS 26 blurs with the system's own.
+    /// How far the blur Flint draws spreads; the system's glass blurs with its own.
     pub blur_radius: Pixels,
 }
 
@@ -81,7 +82,7 @@ mod tests {
     fn each_material_defaults_to_the_tint_that_keeps_its_text_readable() {
         let glass = GlassSettings::default();
         assert_eq!(glass.tint(true), 0.3);
-        assert_eq!(glass.tint(false), 0.6);
+        assert_eq!(glass.tint(false), 0.5);
         assert_eq!(glass.blur_radius, px(20.));
         assert!(
             glass.tint(false) > glass.tint(true),

@@ -39,6 +39,7 @@ enum Surface {
     Dialog,
     Balloon,
     Tooltip,
+    ToolWindow,
 }
 
 struct SurfaceOverCode(Option<Surface>);
@@ -89,6 +90,7 @@ impl Render for SurfaceOverCode {
                     .w(px(SURFACE_SIZE)),
                 Surface::Balloon => element.balloon_surface(cx),
                 Surface::Tooltip => element.tooltip_surface(cx),
+                Surface::ToolWindow => element.tool_window_surface(px(12.), cx),
             };
             children.push(
                 element.child(
@@ -227,7 +229,12 @@ fn pixels_glass_surfaces_keep_text_readable_and_mute_the_code_behind_them() {
         "the bleed point hits a bright syntax run outside the glass: {bright:?}"
     );
 
-    for surface in [Surface::Popup, Surface::Dialog, Surface::Balloon] {
+    for surface in [
+        Surface::Popup,
+        Surface::Dialog,
+        Surface::Balloon,
+        Surface::ToolWindow,
+    ] {
         let (image, scale, surface_color, foreground) = render(Some(surface));
 
         let text = pixel(&image, text_x, text_y, scale);

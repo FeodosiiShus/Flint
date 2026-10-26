@@ -4307,6 +4307,7 @@ impl Workspace {
 
         let dock = self.dock_at_position(dock_side);
         dock.update(cx, |dock, cx| {
+            let dock_focus_handle = dock.focus_handle(cx);
             dock.set_open(!was_visible, window, cx);
 
             if dock.active_panel().is_none() {
@@ -4321,10 +4322,7 @@ impl Workspace {
 
             if let Some(active_panel) = dock.active_panel() {
                 if was_visible {
-                    if active_panel
-                        .panel_focus_handle(cx)
-                        .contains_focused(window, cx)
-                    {
+                    if dock_focus_handle.contains_focused(window, cx) {
                         focus_center = true;
                     }
                 } else {
@@ -14537,7 +14535,9 @@ mod tests {
     async fn test_open_tool_window_shows_the_background_image_over_the_panel_colour(
         cx: &mut TestAppContext,
     ) {
-        let (workspace, _panels, cx) = tool_window_bar_test_workspace(cx).await;
+        let (workspace, [left_panel, _bottom_panel, _right_panel], cx) =
+            tool_window_bar_test_workspace(cx).await;
+        left_panel.update(cx, |panel, _| panel.glass_background = false);
         workspace.update_in(cx, |workspace, window, cx| {
             workspace.toggle_dock(DockPosition::Left, window, cx);
         });
@@ -14879,7 +14879,6 @@ mod tests {
     async fn glass_tool_windows_use_the_popup_material_and_put_their_content_on_glass(
         cx: &mut TestAppContext,
     ) {
-        cx.set_native_glass(true);
         let (workspace, [left_panel, bottom_panel, _right_panel], cx) =
             tool_window_bar_test_workspace(cx).await;
         left_panel.update(cx, |panel, _| panel.glass_background = false);
@@ -14905,7 +14904,7 @@ mod tests {
             (
                 colors
                     .elevated_surface_background
-                    .opacity(theme_settings::GlassSettings::default().tint(true)),
+                    .opacity(theme_settings::GlassSettings::default().tint(false)),
                 colors.panel_background,
             )
         });
@@ -14961,8 +14960,9 @@ mod tests {
         let backdrop =
             backdrop_at(bottom_point, cx).expect("the glass island blurs the background behind it");
         assert_eq!(
-            backdrop.tint, popup_tint,
-            "the island hands the popup tint to the system's glass"
+            island_quad(cx).background.as_solid(),
+            Some(popup_tint),
+            "the island lies under the popup tint, as every glass surface does"
         );
         assert!(
             !cx.update(|window, _| {
@@ -14974,7 +14974,16 @@ mod tests {
                             .is_some_and(|color| color.a == 1.)
                 })
             }),
-            "a glass island paints no fill under its glass, which would flatten the material"
+            "a glass island paints no opaque fill under its glass, which would flatten the material"
+        );
+        assert!(
+            cx.update(|window, _| {
+                window
+                    .painted_shadows()
+                    .into_iter()
+                    .any(|shadow| shadow.inset != 0 && shadow.element_bounds == island_bounds)
+            }),
+            "the island has an inner hairline like the border popups have, so its glass has an edge"
         );
         assert_eq!(
             rendered_on_glass(&bottom_panel, cx),
@@ -15052,9 +15061,20 @@ mod tests {
         assert_opaque_island("with Reduce Transparency", cx);
 
         cx.set_reduce_transparency(false);
-        cx.set_native_glass(false);
+        cx.set_native_glass(true);
         redraw(cx);
-        assert_opaque_island("without native glass", cx);
+        let native_backdrop = backdrop_at(bottom_point, cx)
+            .expect("the island still blurs the background when the system draws the glass");
+        assert_eq!(
+            native_backdrop.tint,
+            cx.update(|_, cx| {
+                cx.theme()
+                    .colors()
+                    .elevated_surface_background
+                    .opacity(theme_settings::GlassSettings::default().tint(true))
+            }),
+            "the island hands the tint to the system's glass instead of painting it"
+        );
     }
 
     #[test]
@@ -20845,6 +20865,28 @@ mod tests {
         fn set_zoomed(&mut self, zoomed: bool, _: &mut Window, _: &mut Context<Self>) {
             self.zoomed = zoomed;
         }
+    }
+
+    #[gpui::test]
+    async fn hiding_a_dock_from_its_tool_window_button_returns_focus_to_the_editor_at_once(
+        cx: &mut TestAppContext,
+    ) {
+        let (workspace, _panels, cx) = tool_window_bar_test_workspace(cx).await;
+        open_dock_with_center_focus(&workspace, DockPosition::Bottom, cx);
+
+        workspace.update_in(cx, |workspace, window, cx| {
+            // The button focuses its dock before it toggles it, so the editor has lost focus
+            // when the dock hides, and a frame drawn before it gets focus back shows it unfocused.
+            let dock_focus_handle = workspace.bottom_dock().read(cx).focus_handle(cx);
+            window.focus(&dock_focus_handle, cx);
+            workspace.toggle_dock(DockPosition::Bottom, window, cx);
+
+            let editor_focus_handle = workspace.active_pane().focus_handle(cx);
+            assert!(
+                editor_focus_handle.contains_focused(window, cx),
+                "the editor has focus again in the same update that hid the dock"
+            );
+        });
     }
 
     #[gpui::test]

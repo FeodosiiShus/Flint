@@ -2366,14 +2366,14 @@
     "delay_ms": 1000,
   },
   // The Liquid Glass of popups, dialogs, balloons and tool windows (the Project panel and the
-  // editor stay opaque). Both keys are left unset so each material keeps its own default.
+  // editor stay opaque). Flint draws it itself, so it is the same on every Mac. Both keys are
+  // left unset so each material keeps its own default.
   "glass": {
     // How much of the theme's surface colour covers the glass, in percent: 0 leaves the glass
-    // clear, 100 hides the blurred backdrop behind the colour. Unset: 30 where macOS 26 draws
-    // the glass, 60 where Flint does.
-    // "tint": 30,
-    // How far the blurred backdrop spreads, in pixels, where Flint draws the glass itself;
-    // macOS 26 blurs with the system's own. Unset: 20.
+    // clear, 100 hides the blurred backdrop behind the colour. Lower values show more of the
+    // backdrop but also let bright code behind a popup through. Unset: 50.
+    // "tint": 50,
+    // How far the blurred backdrop spreads, in pixels. Unset: 20.
     // "blur_radius": 20,
   },
   // Settings overrides to use when using Zed Preview.
