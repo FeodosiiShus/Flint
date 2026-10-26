@@ -30,7 +30,7 @@ use project::git_store::{CommitDataState, GitGraphEvent, Repository, RepositoryE
 use settings::Settings as _;
 use theme::Appearance;
 use theme_settings::ThemeSettings;
-use ui::{Button, ContextMenu, Tooltip, WithScrollbar, prelude::*};
+use ui::{Button, ContextMenu, GatedSurface as _, ReadyGate, Tooltip, WithScrollbar, prelude::*};
 use util::ResultExt as _;
 use workspace::Workspace;
 
@@ -234,6 +234,10 @@ pub(crate) struct CommitTable {
     labels_height: Cell<Pixels>,
     data_widths: HashMap<LogColumn, Pixels>,
     initialized_columns: HashSet<LogColumn>,
+    /// Keeps the rows unseen until the columns that size themselves from the commits have been
+    /// sized, so the table does not open with them squeezed and then jump. Made when the table is
+    /// first drawn, since its deadline counts from then.
+    rows_gate: Option<ReadyGate>,
     column_resize: Option<ColumnResize>,
     live_widths: Option<Vec<(LogColumn, f32)>>,
     context_menu: Option<(Entity<ContextMenu>, Point<Pixels>, Subscription)>,
@@ -300,6 +304,7 @@ impl CommitTable {
             labels_height: Cell::new(Pixels::ZERO),
             data_widths: HashMap::default(),
             initialized_columns: HashSet::default(),
+            rows_gate: None,
             column_resize: None,
             live_widths: None,
             context_menu: None,
@@ -1712,7 +1717,11 @@ impl CommitTable {
             ));
         }
         for (column, width, initialized) in results {
-            self.data_widths.insert(column, width);
+            // A width measured on no text is only the gaps around it, which would squeeze the
+            // column until its commits load; until then it keeps the default width.
+            if initialized || self.data_widths.contains_key(&column) {
+                self.data_widths.insert(column, width);
+            }
             if initialized {
                 self.initialized_columns.insert(column);
             }
@@ -2448,12 +2457,20 @@ impl Render for CommitTable {
         )
         .absolute()
         .size_full();
+        let dynamic_columns_are_sized = visible_columns(&self.app_properties.column_order)
+            .into_iter()
+            .filter(|column| is_dynamic(*column))
+            .all(|column| self.initialized_columns.contains(&column));
+        let rows_gate = self.rows_gate.get_or_insert_with(|| ReadyGate::new(cx));
+        rows_gate.reveal_when(row_count > 0 && dynamic_columns_are_sized);
+        let rows_are_revealed = rows_gate.is_revealed();
         let body = if row_count == 0 {
             self.render_status(cx)
         } else {
             div()
                 .relative()
                 .size_full()
+                .hidden_until(rows_are_revealed)
                 .child(
                     uniform_list(
                         "git-log-commits",

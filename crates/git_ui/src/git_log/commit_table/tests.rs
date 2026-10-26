@@ -341,3 +341,46 @@ async fn cherry_pick_is_enabled_only_for_selections_not_already_being_picked(
     table.update(cx, |table, cx| table.set_repository(None, cx));
     table.read_with(&*cx, |table, _| assert!(!table.can_cherry_pick()));
 }
+
+#[gpui::test]
+async fn the_rows_stay_unseen_until_the_columns_that_size_themselves_are_sized(
+    cx: &mut TestAppContext,
+) {
+    init_test(cx);
+    let project = project_with_commits(cx).await;
+    let cx = &mut VisualTestContext::from_window(cx.add_empty_window().window_handle(), cx);
+    let table = create_table(&project, cx);
+    let rows_are_revealed = |table: &Entity<CommitTable>, cx: &mut VisualTestContext| {
+        table.read_with(&*cx, |table, _| {
+            table.rows_gate.as_ref().is_some_and(ReadyGate::is_revealed)
+        })
+    };
+
+    // Drawing starts the history, which has no rows yet to size any column.
+    draw_table(&table, cx);
+    cx.run_until_parked();
+    assert!(
+        table.read_with(&*cx, |table, _| table.row_count() > 0),
+        "the history has loaded"
+    );
+
+    // The author and date columns size themselves from the commits' metadata, which loads as the
+    // rows are drawn: until then they would be squeezed, and then jump.
+    draw_table(&table, cx);
+    assert!(
+        !rows_are_revealed(&table, cx),
+        "rows whose columns are not sized yet are drawn unseen"
+    );
+
+    // Each frame sees the metadata the one before it loaded.
+    let mut frames = 0;
+    while !rows_are_revealed(&table, cx) && frames < 5 {
+        cx.run_until_parked();
+        draw_table(&table, cx);
+        frames += 1;
+    }
+    assert!(
+        rows_are_revealed(&table, cx),
+        "the rows are shown once their columns are sized, within a few frames"
+    );
+}
