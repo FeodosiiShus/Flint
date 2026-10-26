@@ -10,6 +10,8 @@ pub use gpui_macros::{
     overflow_style_methods, padding_style_methods, position_style_methods,
     visibility_style_methods,
 };
+use std::sync::Arc;
+
 const ELLIPSIS: SharedString = SharedString::new_static("…");
 
 /// A trait for elements that can be styled.
@@ -760,6 +762,21 @@ pub trait Styled: Sized {
     fn backdrop_glass(mut self, radius: Pixels, tint: Hsla) -> Self {
         self.style().backdrop_blur = Some(radius);
         self.style().backdrop_tint = Some(tint);
+        self
+    }
+
+    /// Makes every quad painted inside this element leave the solid fills of `fills` transparent,
+    /// so the glass of this element shows through the areas its content fills with them.
+    fn glass_fills(mut self, fills: impl Into<Arc<[Hsla]>>) -> Self {
+        self.style().glass_fills = Some(fills.into());
+        self
+    }
+
+    /// Keeps this element's own background as it is on a glass surface even when it is one of the
+    /// glass's fills: for a fill that hides what lies behind it, such as a header that stays over
+    /// scrolling content.
+    fn keep_glass_fill(mut self) -> Self {
+        self.style().keeps_glass_fill = Some(true);
         self
     }
 

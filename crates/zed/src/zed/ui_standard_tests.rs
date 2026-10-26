@@ -392,3 +392,139 @@ async fn every_tool_window_is_glass_but_the_project_panel(cx: &mut TestAppContex
         }
     });
 }
+
+/// The opaque fills painted inside the island of the tool window of panel type `T` that cover a
+/// large part of it: on glass, those hide the blurred background the island is made of, which is
+/// how a placeholder written for an opaque panel flashes over the glass. The window is measured in
+/// the first frame after the tool window opens, when its content is still starting, and again
+/// once everything has loaded.
+fn opaque_fills_covering_the_island<T: workspace::Panel>(project: &mut Project) -> Vec<String> {
+    use workspace::dock::DockPosition;
+
+    project
+        .workspace
+        .update_in(&mut project.cx, |workspace, window, cx| {
+            workspace.focus_panel::<T>(window, cx);
+        });
+    let selector = project
+        .workspace
+        .read_with(&project.cx, |workspace, cx| {
+            [
+                (DockPosition::Left, "tool_window_left"),
+                (DockPosition::Bottom, "tool_window_bottom"),
+                (DockPosition::Right, "tool_window_right"),
+            ]
+            .into_iter()
+            .find(|(position, _)| {
+                workspace
+                    .dock_at_position(*position)
+                    .read(cx)
+                    .panel::<T>()
+                    .is_some()
+            })
+            .map(|(_, selector)| selector)
+        })
+        .expect("the panel lives in one of the docks");
+
+    let mut offenders = Vec::new();
+    for stage in ["while starting", "once loaded"] {
+        if stage == "while starting" {
+            project.cx.update(|window, cx| window.draw(cx).clear(cx));
+        } else {
+            project.cx.run_until_parked();
+        }
+        let island = bounds_of(project, selector);
+        let (scale, quads, backdrops) = project.cx.update(|window, _| {
+            (
+                window.scale_factor(),
+                window.painted_quads(),
+                window.painted_backdrops(),
+            )
+        });
+        let island = island.scale(scale);
+        let island_area = island.size.width.0 * island.size.height.0;
+        let glass_order = backdrops
+            .iter()
+            .filter(|backdrop| backdrop.bounds.contains(&island.center()))
+            .map(|backdrop| backdrop.order)
+            .max()
+            .expect("the island blurs its background");
+        offenders.extend(
+            quads
+                .into_iter()
+                .filter(|quad| quad.order > glass_order)
+                .filter(|quad| {
+                    quad.background
+                        .as_solid()
+                        .is_some_and(|color| color.a >= 0.9)
+                })
+                .filter_map(|quad| {
+                    let covered = quad.bounds.intersect(&island);
+                    let area = covered.size.width.0.max(0.) * covered.size.height.0.max(0.);
+                    (area >= island_area * 0.15).then(|| {
+                        format!(
+                            "{stage}: {:?} covers {:.0}% of the island",
+                            quad.background.as_solid(),
+                            area * 100. / island_area
+                        )
+                    })
+                }),
+        );
+    }
+    offenders
+}
+
+#[gpui::test]
+async fn no_tool_window_covers_its_glass_with_an_opaque_fill(cx: &mut TestAppContext) {
+    // Opening the Terminal tool window starts a real shell, whose reader runs on its own thread.
+    cx.executor().allow_parking();
+    let mut project = open_project(cx).await;
+    // A background image is what makes an empty pane paint the editor background over it.
+    project.cx.update(|window, cx| {
+        let images = ui::WindowBackgroundImages {
+            editor_and_tools: Some(ui::BackgroundImagePaintLayer {
+                image: std::sync::Arc::new(gpui::RenderImage::new(vec![image::Frame::new(
+                    image::RgbaImage::new(4, 4),
+                )])),
+                mode: ui::BackgroundImageMode::Scale,
+                alignment: ui::BackgroundImageAlignment::Center,
+            }),
+            empty_frame: None,
+        };
+        ui::BackgroundImageLayers::set_window(window.window_handle().window_id(), images, cx);
+        window.refresh();
+    });
+    project.cx.run_until_parked();
+    let mut offenders = Vec::new();
+    for (name, fills) in [
+        (
+            "Terminal",
+            opaque_fills_covering_the_island::<terminal_view::terminal_panel::TerminalPanel>(
+                &mut project,
+            ),
+        ),
+        (
+            "Git",
+            opaque_fills_covering_the_island::<git_ui::git_panel::GitPanel>(&mut project),
+        ),
+        (
+            "Problems",
+            opaque_fills_covering_the_island::<diagnostics::ProjectDiagnosticsPanel>(&mut project),
+        ),
+        (
+            "Search",
+            opaque_fills_covering_the_island::<search_everywhere::SearchPanel>(&mut project),
+        ),
+        (
+            "Language Services",
+            opaque_fills_covering_the_island::<language_tools::LanguageServicesPanel>(&mut project),
+        ),
+    ] {
+        offenders.extend(fills.into_iter().map(|fill| format!("{name}: {fill}")));
+    }
+    assert!(
+        offenders.is_empty(),
+        "tool windows paint opaque fills over their glass:\n{}",
+        offenders.join("\n")
+    );
+}

@@ -1,0 +1,37 @@
+{
+  "steps": [
+    {"wait": {"milliseconds": 4500}},
+    {"open": {"path": "dense.rs"}},
+    {"wait": {"milliseconds": 2500}},
+
+    {"click": {"x": 105, "y": 17, "frames": 0}},
+    {"film": {"name": "branches-popup", "frames": 24}},
+    {"keystrokes": {"keys": "escape", "frames": 0}},
+    {"wait": {"milliseconds": 600}},
+    {"click": {"x": 105, "y": 17, "frames": 0}},
+    {"film": {"name": "branches-popup-again", "frames": 24}},
+    {"keystrokes": {"keys": "escape", "frames": 0}},
+    {"wait": {"milliseconds": 600}},
+
+    {"action": {"name": "command_palette::Toggle", "frames": 0}},
+    {"film": {"name": "command-palette", "frames": 20}},
+    {"keystrokes": {"keys": "escape", "frames": 0}},
+    {"wait": {"milliseconds": 400}},
+
+    {"action": {"name": "file_finder::Toggle", "frames": 0}},
+    {"film": {"name": "file-finder", "frames": 20}},
+    {"keystrokes": {"keys": "escape", "frames": 0}},
+    {"wait": {"milliseconds": 400}},
+
+    {"action": {"name": "git::PushDialog", "frames": 0}},
+    {"film": {"name": "push-dialog", "frames": 30}},
+    {"keystrokes": {"keys": "escape", "frames": 0}},
+    {"wait": {"milliseconds": 400}},
+
+    {"action": {"name": "terminal_panel::Toggle", "frames": 0}},
+    {"film": {"name": "terminal-tool-window", "frames": 24}},
+    {"action": {"name": "git_panel::ToggleFocus", "frames": 0}},
+    {"film": {"name": "git-tool-window", "frames": 24}},
+    "quit"
+  ]
+}

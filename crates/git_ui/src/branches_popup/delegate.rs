@@ -375,6 +375,7 @@ pub struct BranchesDelegate {
     pub(super) preferred_selection_pending: bool,
     pub(super) query: String,
     pub(super) previous_branch: Option<String>,
+    previous_branch_loaded: bool,
     pub(super) section_repository_name: Option<SharedString>,
     pub(super) pack_requested: bool,
     pub(super) packed_size: Option<gpui::Size<Pixels>>,
@@ -420,6 +421,7 @@ impl BranchesDelegate {
             preferred_selection_pending: true,
             query: String::new(),
             previous_branch: None,
+            previous_branch_loaded: false,
             section_repository_name: None,
             pack_requested: true,
             packed_size: None,
@@ -492,6 +494,7 @@ impl BranchesDelegate {
         self.state_loaded = false;
         self.data_loaded = false;
         self.previous_branch = None;
+        self.previous_branch_loaded = false;
         self.revealed.clear();
         self.edits_before_load.clear();
         self.update_project_shows_options = integrate::should_show_update_options(cx);
@@ -501,6 +504,7 @@ impl BranchesDelegate {
             self.state_key = None;
             self.state_loaded = true;
             self.data_loaded = true;
+            self.previous_branch_loaded = true;
             return;
         };
 
@@ -538,20 +542,26 @@ impl BranchesDelegate {
         let previous_branch_key =
             state::previous_branch_key(&repository.read(cx).work_directory_abs_path);
         match state::remembered_previous_branch(&previous_branch_key, cx) {
-            Some(previous_branch) => self.previous_branch = Some(previous_branch),
+            Some(previous_branch) => {
+                self.previous_branch = Some(previous_branch);
+                self.previous_branch_loaded = true;
+            }
             None => {
                 let load = state::load_previous_branch(previous_branch_key, cx);
                 self._previous_branch_load_task = cx.spawn_in(window, async move |picker, cx| {
-                    let Some(previous_branch) = load.await else {
-                        return;
-                    };
+                    let previous_branch = load.await;
                     picker
                         .update_in(cx, |picker, window, cx| {
-                            picker.delegate.previous_branch = Some(previous_branch);
-                            if picker.delegate.preferred_selection_pending {
-                                picker.delegate.reveal_pending = true;
-                                picker.refresh(window, cx);
+                            picker.delegate.previous_branch_loaded = true;
+                            if let Some(previous_branch) = previous_branch {
+                                picker.delegate.previous_branch = Some(previous_branch);
+                                if picker.delegate.preferred_selection_pending {
+                                    picker.delegate.reveal_pending = true;
+                                    picker.refresh(window, cx);
+                                    return;
+                                }
                             }
+                            cx.notify();
                         })
                         .ok();
                 });
@@ -1140,6 +1150,12 @@ impl BranchesDelegate {
     /// IntelliJ's `pack` at show time.
     pub fn is_ready_to_pack(&self) -> bool {
         self.state_loaded && self.data_loaded
+    }
+
+    /// Whether the popup has laid out its rows and sized itself from the saved state, the refs it
+    /// shows and the branch HEAD was on before, which is how it looks from then on.
+    pub fn has_first_layout(&self) -> bool {
+        self.is_ready_to_pack() && !self.pack_requested && self.previous_branch_loaded
     }
 
     pub fn user_size(&self) -> Option<PopupSize> {

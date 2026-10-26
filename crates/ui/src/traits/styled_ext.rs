@@ -1,4 +1,5 @@
 use gpui::{App, BoxShadow, Hsla, Styled, Window, hsla, px};
+use std::sync::Arc;
 
 use crate::prelude::*;
 use crate::{DialogWidth, ElevationIndex, POPUP_SURFACE_METRICS, SurfaceKind, SurfaceMaterial};
@@ -45,13 +46,40 @@ fn glass_material<E: Styled>(this: E, cx: &App) -> E {
     }
 }
 
+/// The colours content fills its areas with: a component is written to paint its panel, its
+/// editor or its tab strip with one of the theme's surface colours, which on glass would cover
+/// what the glass blurs with a flat panel.
+fn surface_fills(cx: &App) -> Arc<[Hsla]> {
+    let colors = cx.theme().colors();
+    Arc::from([
+        colors.background,
+        colors.surface_background,
+        colors.elevated_surface_background,
+        colors.panel_background,
+        colors.editor_background,
+        colors.editor_subheader_background,
+        colors.tab_bar_background,
+        colors.toolbar_background,
+        colors.terminal_background,
+        colors.terminal_ansi_background,
+        colors.title_bar_background,
+        colors.status_bar_background,
+    ])
+}
+
 /// The glass every glass surface shares: [`glass_material`] with the shadows of the surface and
 /// the specular rim along the top edge of Liquid Glass, which the system's own glass draws itself.
+///
+/// Everything painted inside leaves the theme's surface colours transparent
+/// ([`Styled::glass_fills`]), so no panel, placeholder or editor has to know it lies on glass; a
+/// fill that has to hide what lies behind it says so with [`Styled::keep_glass_fill`].
 fn glass_surface<E: Styled>(this: E, mut shadows: Vec<BoxShadow>, cx: &App) -> E {
     if !cx.supports_native_glass() {
         shadows.push(BoxShadow::new(px(0.), px(1.), hsla(0., 0., 1., 0.06)).inset());
     }
-    glass_material(this, cx).shadow(shadows)
+    glass_material(this, cx)
+        .shadow(shadows)
+        .glass_fills(surface_fills(cx))
 }
 
 /// The fill of an area inside a panel or a popup: none on a glass surface

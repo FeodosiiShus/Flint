@@ -2,6 +2,7 @@ use std::{
     hash::{Hash, Hasher},
     iter, mem,
     ops::Range,
+    sync::Arc,
 };
 
 use crate::{
@@ -297,6 +298,17 @@ pub struct Style {
 
     /// The colour the system's own glass tints itself with, when [`Self::backdrop_blur`] is set.
     pub backdrop_tint: Hsla,
+
+    /// The solid fills that every quad painted inside this element leaves transparent, so the
+    /// glass of the element shows through the areas its content would fill with them. A glass
+    /// surface lists the theme's surface colours here: content is written to fill its area with
+    /// one of those, and would otherwise cover the glass with a flat panel.
+    pub glass_fills: Option<Arc<[Hsla]>>,
+
+    /// Whether this element's own background stays as it is on a glass surface even when it is
+    /// one of the [`Self::glass_fills`]: a fill meant to hide what lies behind it, such as a
+    /// header that stays over scrolling content.
+    pub keeps_glass_fill: bool,
 
     /// The text style of this element
     #[refineable]
@@ -781,14 +793,19 @@ impl Style {
                 None => Hsla::default(),
             };
             border_color.a = 0.;
-            window.paint_quad(quad(
+            let background = quad(
                 bounds,
                 corner_radii,
                 background_color.unwrap_or_default(),
                 Edges::default(),
                 border_color,
                 self.border_style,
-            ));
+            );
+            if self.keeps_glass_fill {
+                window.with_kept_glass_fills(|window| window.paint_quad(background));
+            } else {
+                window.paint_quad(background);
+            }
         }
 
         window.paint_inset_shadows(bounds, corner_radii, &self.box_shadow);
@@ -862,6 +879,8 @@ impl Default for Style {
             box_shadow: Default::default(),
             backdrop_blur: None,
             backdrop_tint: Hsla::transparent_black(),
+            glass_fills: None,
+            keeps_glass_fill: false,
             text: TextStyleRefinement::default(),
             mouse_cursor: None,
             opacity: None,

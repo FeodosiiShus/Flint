@@ -93,6 +93,15 @@ enum Step {
         #[serde(default)]
         frames: Option<u32>,
     },
+    /// Records `frames` consecutive frames of the active window without saving any of them in
+    /// between, then saves them as `<name>-<n>.png` and logs how many pixels changed from each
+    /// frame to the next. Saving a PNG takes seconds, in which the work a surface waits for
+    /// finishes, so only a film shows a surface settling frame by frame: a flicker is a frame
+    /// that changes a lot after the surface has appeared.
+    Film {
+        name: String,
+        frames: u32,
+    },
     /// Runs steps repeatedly, for leak and performance checks.
     Repeat {
         times: usize,
@@ -304,6 +313,7 @@ async fn run_step(step: &Step, run: &mut Run, cx: &mut AsyncApp) -> Result<()> {
         Step::Capture { name, frames } => {
             capture_windows(name, frames.unwrap_or(FRAMES_AFTER_INPUT), &run.output, cx).await?
         }
+        Step::Film { name, frames } => film_active_window(name, *frames, &run.output, cx).await?,
         Step::Repeat { times, steps } => {
             for _ in 0..*times {
                 Box::pin(run_steps(steps, run, cx)).await?;
@@ -395,6 +405,103 @@ async fn capture_windows(name: &str, frames: u32, output: &Path, cx: &mut AsyncA
         log::info!("UI script captured {}", path.display());
     }
     Ok(())
+}
+
+/// A channel difference below this is the glass's own noise and does not count as a change.
+const FILM_CHANGE_THRESHOLD: u8 = 6;
+/// A frame that changes this much of the window, in percent, is where a surface appears.
+const FILM_APPEARANCE_PERCENT: f64 = 0.5;
+/// A frame after the surface appeared that changes this much, in percent, is a flicker: the
+/// surface was shown before it was final.
+const FILM_FLICKER_PERCENT: f64 = 0.3;
+
+async fn film_active_window(
+    name: &str,
+    frames: u32,
+    output: &Path,
+    cx: &mut AsyncApp,
+) -> Result<()> {
+    let window = active_window(cx)?;
+    let mut film = Vec::with_capacity(frames as usize);
+    for _ in 0..frames {
+        draw_frames_after_input(1, cx).await?;
+        // The frame reaches the window server when Core Animation commits it at the end of this
+        // run loop pass, so the capture waits for the next one.
+        cx.background_executor().timer(FRAME_INTERVAL).await;
+        film.push(window.update(cx, |_, window, _| window.capture_composited_image())??);
+    }
+    let mut changes = Vec::with_capacity(film.len());
+    for (index, image) in film.iter().enumerate() {
+        let path = output.join(format!("{name}-{:03}.png", index + 1));
+        image
+            .save(&path)
+            .with_context(|| format!("saving {}", path.display()))?;
+        let percent = index
+            .checked_sub(1)
+            .and_then(|previous| film.get(previous))
+            .map(|previous| {
+                changed_pixels(previous, image) as f64 * 100.
+                    / (image.width() as f64 * image.height() as f64)
+            });
+        match percent {
+            Some(percent) => log::info!(
+                "UI script film {name} frame {}: {percent:.2}% of the window changed",
+                index + 1
+            ),
+            None => log::info!("UI script film {name} frame {}: first frame", index + 1),
+        }
+        changes.push(percent.unwrap_or(0.));
+    }
+    report_film(name, &changes);
+    Ok(())
+}
+
+/// Logs whether the surface of a film settled in the frame it appeared in. Anything that changes
+/// after that is reported as a flicker, since a surface that appears in its final form never does.
+fn report_film(name: &str, changes: &[f64]) {
+    let Some(appeared) = changes
+        .iter()
+        .position(|percent| *percent >= FILM_APPEARANCE_PERCENT)
+    else {
+        log::info!("UI script film {name}: nothing appeared");
+        return;
+    };
+    let late = changes
+        .iter()
+        .enumerate()
+        .skip(appeared + 1)
+        .filter(|(_, percent)| **percent >= FILM_FLICKER_PERCENT)
+        .map(|(index, percent)| format!("frame {} ({percent:.2}%)", index + 1))
+        .collect::<Vec<_>>();
+    if late.is_empty() {
+        log::info!(
+            "UI script film {name}: settled in frame {}, no flicker",
+            appeared + 1
+        );
+    } else {
+        log::warn!(
+            "UI script film {name}: appeared in frame {} and flickers in {}",
+            appeared + 1,
+            late.join(", ")
+        );
+    }
+}
+
+fn changed_pixels(previous: &image::RgbaImage, image: &image::RgbaImage) -> usize {
+    if previous.dimensions() != image.dimensions() {
+        return image.width() as usize * image.height() as usize;
+    }
+    previous
+        .pixels()
+        .zip(image.pixels())
+        .filter(|(before, after)| {
+            before
+                .0
+                .iter()
+                .zip(after.0)
+                .any(|(before, after)| before.abs_diff(after) > FILM_CHANGE_THRESHOLD)
+        })
+        .count()
 }
 
 fn physical_footprint() -> Result<u64> {

@@ -630,6 +630,9 @@ pub struct Backdrop {
     /// transparent tint leaves the glass to the system. The renderer's emulation paints the tint
     /// itself instead, under the element's background.
     pub tint: Hsla,
+    /// How much of the blurred backdrop shows, from 0 to 1: the opacity of the element, so a
+    /// fading element fades its glass with its content. The system's own glass cannot fade.
+    pub opacity: f32,
 }
 
 impl From<Backdrop> for Primitive {

@@ -4597,6 +4597,7 @@ mod native_glass_tests {
             },
             corner_radii: Corners::all(ScaledPixels(24.)),
             tint: gpui::transparent_black(),
+            opacity: 1.,
         }
     }
 

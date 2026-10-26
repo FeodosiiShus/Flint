@@ -15,7 +15,7 @@ use gpui::{
 };
 use picker::{Picker, PickerDelegate};
 use project::git_store::Repository;
-use ui::{SurfaceKind, prelude::*};
+use ui::{GatedSurface as _, ReadyGate, SurfaceKind, prelude::*};
 use workspace::{ModalView, Workspace};
 
 use self::delegate::{
@@ -139,6 +139,9 @@ pub struct BranchesPopup {
     resize_start: Option<(Point<Pixels>, Size<Pixels>)>,
     move_offset: Point<Pixels>,
     move_start: Option<(Point<Pixels>, Point<Pixels>)>,
+    /// Its rows and size depend on the saved state and the refs, which load after it is created,
+    /// so it stays unseen until it has its final layout.
+    gate: ReadyGate,
     _picker_subscription: Subscription,
     _picker_observation: Subscription,
 }
@@ -168,8 +171,16 @@ impl BranchesPopup {
         });
         let picker_subscription =
             cx.subscribe(&picker, |_, _, _: &DismissEvent, cx| cx.emit(DismissEvent));
-        // The frame follows the delegate's packed and user sizes.
-        let picker_observation = cx.observe(&picker, |_, _, cx| cx.notify());
+        // The frame follows the delegate's packed and user sizes, and the popup is shown once it
+        // has them.
+        let picker_observation = cx.observe(&picker, |popup, picker, cx| {
+            popup
+                .gate
+                .reveal_when(picker.read(cx).delegate.has_first_layout());
+            cx.notify();
+        });
+        let mut gate = ReadyGate::new(cx);
+        gate.reveal_when(picker.read(cx).delegate.has_first_layout());
 
         Self {
             picker,
@@ -178,9 +189,14 @@ impl BranchesPopup {
             resize_start: None,
             move_offset: Point::default(),
             move_start: None,
+            gate,
             _picker_subscription: picker_subscription,
             _picker_observation: picker_observation,
         }
+    }
+
+    pub fn is_revealed(&self) -> bool {
+        self.gate.is_revealed()
     }
 
     /// The size the popup renders at: while resizing the live size, then the user's size, then
@@ -430,6 +446,7 @@ impl Render for BranchesPopup {
             .w(popup_size.width)
             .h(popup_size.height)
             .popup_surface(cx)
+            .hidden_until(self.gate.is_revealed())
             .overflow_hidden()
             .key_context(KEY_CONTEXT)
             .when(self.style == BranchesPopupStyle::Popover, |this| {

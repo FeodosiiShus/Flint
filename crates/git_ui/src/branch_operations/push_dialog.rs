@@ -9,8 +9,8 @@ use gpui::{
 };
 use menu::{Cancel, Confirm};
 use ui::{
-    Checkbox, DialogButton, DialogWidth, Modal, ModalFooter, ModalHeader, Section, Tooltip,
-    prelude::*,
+    Checkbox, DialogButton, DialogWidth, GatedSurface as _, Modal, ModalFooter, ModalHeader,
+    ReadyGate, Section, Tooltip, prelude::*,
 };
 use util::ResultExt as _;
 use workspace::ModalView;
@@ -154,6 +154,8 @@ pub struct PushDialog {
     refresh_generation: usize,
     force_confirmation: Option<ForcePushConfirmation>,
     confirmation_focus_handle: FocusHandle,
+    /// The outgoing commits load after the dialog opens and change its height.
+    gate: ReadyGate,
     _editor_subscription: Subscription,
 }
 
@@ -192,7 +194,7 @@ impl PushDialog {
             window,
             |this, _editor, event: &EditorEvent, _window, cx| {
                 if matches!(event, EditorEvent::BufferEdited) {
-                    this.refresh_outgoing(cx);
+                    this.refresh_outgoing(REFRESH_DEBOUNCE, cx);
                 }
             },
         );
@@ -227,6 +229,7 @@ impl PushDialog {
             refresh_generation: 0,
             force_confirmation: None,
             confirmation_focus_handle: cx.focus_handle(),
+            gate: ReadyGate::new(cx),
             _editor_subscription: editor_subscription,
         }
     }
@@ -242,7 +245,7 @@ impl PushDialog {
             self.remote =
                 choose_default_remote(&preferred_names, &all_names).map(SharedString::from);
         }
-        self.refresh_outgoing(cx);
+        self.refresh_outgoing(Duration::ZERO, cx);
     }
 
     fn remote_branch(&self, cx: &App) -> String {
@@ -255,10 +258,12 @@ impl PushDialog {
 
     fn select_remote(&mut self, remote: SharedString, cx: &mut Context<Self>) {
         self.remote = Some(remote);
-        self.refresh_outgoing(cx);
+        self.refresh_outgoing(Duration::ZERO, cx);
     }
 
-    fn refresh_outgoing(&mut self, cx: &mut Context<Self>) {
+    /// Reloads the outgoing commits after `debounce`, which a dialog that has just opened has no
+    /// use for: its commits are what it is waiting to show.
+    fn refresh_outgoing(&mut self, debounce: Duration, cx: &mut Context<Self>) {
         self.refresh_generation += 1;
         let generation = self.refresh_generation;
         let Some(remote) = self.remote.clone() else {
@@ -283,7 +288,9 @@ impl PushDialog {
             .collect();
 
         cx.spawn(async move |this, cx| {
-            cx.background_executor().timer(REFRESH_DEBOUNCE).await;
+            if !debounce.is_zero() {
+                cx.background_executor().timer(debounce).await;
+            }
             let is_current = this
                 .update(cx, |this, _| this.refresh_generation == generation)
                 .unwrap_or(false);
@@ -673,6 +680,8 @@ impl Render for PushDialog {
         if let Some(confirmation) = self.force_confirmation.as_ref() {
             return self.render_force_confirmation(confirmation, window, cx);
         }
+        self.gate
+            .reveal_when(!matches!(self.outgoing, OutgoingCommits::Loading));
         let can_push = self.can_push(cx);
         let force_prohibited = can_push && self.force_push_prohibited(cx);
         let force_target = self.force_push_target(cx).unwrap_or_default();
@@ -685,6 +694,7 @@ impl Render for PushDialog {
             .on_action(cx.listener(Self::cancel))
             .on_action(cx.listener(Self::confirm))
             .dialog_surface(DialogWidth::Large, window, cx)
+            .hidden_until(self.gate.is_revealed())
             .child(
                 Modal::new("push-dialog", None)
                     .header(

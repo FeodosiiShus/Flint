@@ -2091,10 +2091,12 @@ impl Element for Div {
                         return;
                     }
 
-                    window.with_glass_surface(style.backdrop_blur.is_some(), |window| {
-                        for child in &mut self.children {
-                            child.paint(window, cx);
-                        }
+                    window.with_glass_fills(style.glass_fills.as_ref(), |window| {
+                        window.with_glass_surface(style.backdrop_blur.is_some(), |window| {
+                            for child in &mut self.children {
+                                child.paint(window, cx);
+                            }
+                        });
                     });
                 },
             )

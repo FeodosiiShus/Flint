@@ -40,6 +40,9 @@ enum Surface {
     Balloon,
     Tooltip,
     ToolWindow,
+    ToolWindowFilledWithPanelColour,
+    ToolWindowKeepingItsFill,
+    FadedPopup(f32),
 }
 
 struct SurfaceOverCode(Option<Surface>);
@@ -91,6 +94,24 @@ impl Render for SurfaceOverCode {
                 Surface::Balloon => element.balloon_surface(cx),
                 Surface::Tooltip => element.tooltip_surface(cx),
                 Surface::ToolWindow => element.tool_window_surface(px(12.), cx),
+                Surface::ToolWindowFilledWithPanelColour => {
+                    element.tool_window_surface(px(12.), cx).child(
+                        div()
+                            .absolute()
+                            .size_full()
+                            .bg(cx.theme().colors().panel_background),
+                    )
+                }
+                Surface::ToolWindowKeepingItsFill => {
+                    element.tool_window_surface(px(12.), cx).child(
+                        div()
+                            .absolute()
+                            .size_full()
+                            .bg(cx.theme().colors().panel_background)
+                            .keep_glass_fill(),
+                    )
+                }
+                Surface::FadedPopup(opacity) => element.popup_surface(cx).opacity(opacity),
             };
             children.push(
                 element.child(
@@ -257,6 +278,57 @@ fn pixels_glass_surfaces_keep_text_readable_and_mute_the_code_behind_them() {
             "the {surface:?} keeps popup text readable over bright code: {foreground:?} on {muted:?}"
         );
     }
+}
+
+#[test]
+fn pixels_a_glass_surface_leaves_the_fills_of_its_content_transparent() {
+    let (plain, plain_scale, _, _) = render(Some(Surface::ToolWindow));
+    let (filled, filled_scale, _, _) = render(Some(Surface::ToolWindowFilledWithPanelColour));
+    let (kept, kept_scale, _, _) = render(Some(Surface::ToolWindowKeepingItsFill));
+    let panel = {
+        let mut cx = headless_app();
+        cx.update(|cx| {
+            let panel = Rgba::from(cx.theme().colors().panel_background);
+            [panel.r, panel.g, panel.b]
+        })
+    };
+    let (x, y) = bleed_point();
+
+    assert!(
+        distance(
+            pixel(&filled, x, y, filled_scale),
+            pixel(&plain, x, y, plain_scale)
+        ) < 0.02,
+        "a component that fills its area with the panel colour does not cover the glass, \
+         without knowing it lies on glass"
+    );
+    assert!(
+        distance(pixel(&kept, x, y, kept_scale), panel) < 0.03,
+        "a fill that hides what lies behind it keeps its colour when it says so"
+    );
+}
+
+#[test]
+fn pixels_a_glass_surface_fades_with_its_content() {
+    let (bare, bare_scale, _, _) = render(None);
+    let (bleed_x, bleed_y) = bleed_point();
+    let behind = pixel(&bare, bleed_x, bleed_y, bare_scale);
+
+    let (hidden, hidden_scale, _, _) = render(Some(Surface::FadedPopup(0.)));
+    assert!(
+        distance(pixel(&hidden, bleed_x, bleed_y, hidden_scale), behind) < 0.02,
+        "a surface held back with an opacity of 0 leaves the backdrop as it was, without a \
+         blurred patch where its glass would be"
+    );
+
+    let (half, half_scale, _, _) = render(Some(Surface::FadedPopup(0.5)));
+    let (shown, shown_scale, _, _) = render(Some(Surface::Popup));
+    let half_way = distance(pixel(&half, bleed_x, bleed_y, half_scale), behind);
+    let full = distance(pixel(&shown, bleed_x, bleed_y, shown_scale), behind);
+    assert!(
+        half_way > 0.05 && half_way < full,
+        "a surface at half opacity shows part of its glass: {half_way} against {full}"
+    );
 }
 
 #[test]

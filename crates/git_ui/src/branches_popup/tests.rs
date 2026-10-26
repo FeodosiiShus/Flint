@@ -820,6 +820,29 @@ async fn multiple_repositories_add_repository_rows_and_switching_changes_the_tre
 }
 
 #[gpui::test]
+async fn a_new_popup_stays_unseen_until_its_saved_state_and_refs_have_loaded(
+    cx: &mut TestAppContext,
+) {
+    let mut fixture = Fixture::open(cx, path!("/branches-popup-reveal"), standard_repository).await;
+    let popup = Fixture::create_popup(
+        fixture.window,
+        &fixture.workspace,
+        &fixture.repository,
+        &mut fixture.cx,
+    );
+    assert!(
+        !popup.read_with(&fixture.cx, |popup, _| popup.is_revealed()),
+        "a popup that shows its placeholder size and then jumps to its packed one flickers"
+    );
+
+    fixture.cx.run_until_parked();
+    assert!(
+        popup.read_with(&fixture.cx, |popup, _| popup.is_revealed()),
+        "the popup is shown once it has laid itself out"
+    );
+}
+
+#[gpui::test]
 async fn without_a_repository_the_popup_has_no_rows_and_says_so(cx: &mut TestAppContext) {
     let mut fixture = Fixture::open(cx, path!("/branches-popup-none"), standard_repository).await;
     let workspace = fixture.workspace.downgrade();
@@ -829,6 +852,12 @@ async fn without_a_repository_the_popup_has_no_rows_and_says_so(cx: &mut TestApp
             cx.new(|cx| BranchesPopup::new(workspace, None, BranchesPopupStyle::Modal, window, cx))
         })
         .expect("window is alive");
+    assert!(
+        fixture
+            .popup
+            .read_with(&fixture.cx, |popup, _| popup.is_revealed()),
+        "a popup with no repository has nothing to wait for"
+    );
     fixture.cx.run_until_parked();
 
     assert!(fixture.rows().is_empty());

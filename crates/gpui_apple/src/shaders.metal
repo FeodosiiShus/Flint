@@ -125,7 +125,8 @@ fragment float4 backdrop_fragment(BackdropFragmentInput input [[stage_in]],
   float4 color = blurred.sample(linear_sampler, input.position.xy * 0.5 / blurred_size);
   float distance = quad_sdf(input.position.xy, backdrop->bounds, backdrop->corner_radii);
   float coverage = saturate(0.5 - distance) *
-                   content_mask_alpha(input.position.xy, backdrop->content_mask);
+                   content_mask_alpha(input.position.xy, backdrop->content_mask) *
+                   backdrop->opacity;
   return float4(color.rgb, color.a * coverage);
 }
 

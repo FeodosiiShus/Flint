@@ -1183,6 +1183,8 @@ pub struct Window {
     rem_size_override_stack: SmallVec<[Pixels; 8]>,
     /// How many elements that blur their backdrop enclose the element being drawn.
     glass_surface_depth: usize,
+    glass_fills: Arc<[Hsla]>,
+    keeps_glass_fills: bool,
     pub(crate) viewport_size: Size<Pixels>,
     layout_engine: Option<TaffyLayoutEngine>,
     pub(crate) root: Option<AnyView>,
@@ -1521,6 +1523,9 @@ fn default_bounds(display_id: Option<DisplayId>, cx: &mut App) -> WindowBounds {
     };
     window_bounds_ctor(Bounds::new(final_origin, base_size))
 }
+
+/// The thickness up to which a quad on a glass surface is a rule rather than a fill of an area.
+const GLASS_RULE_THICKNESS: Pixels = px(2.);
 
 impl Window {
     pub(crate) fn new(
@@ -2079,6 +2084,8 @@ impl Window {
             rem_size: px(16.),
             rem_size_override_stack: SmallVec::new(),
             glass_surface_depth: 0,
+            glass_fills: Arc::from([]),
+            keeps_glass_fills: false,
             viewport_size: content_size,
             layout_engine: Some(TaffyLayoutEngine::new()),
             root: None,
@@ -3095,6 +3102,56 @@ impl Window {
     /// Content there leaves its empty areas unfilled, so the glass shows through them.
     pub fn on_glass_surface(&self) -> bool {
         self.glass_surface_depth > 0
+    }
+
+    /// Runs `f` with the solid fills of `fills` left transparent in every quad it paints, so what
+    /// a glass surface blurs shows through the areas its content fills with them. Nothing changes
+    /// when `fills` is `None`.
+    ///
+    /// This method must only be called as part of element drawing.
+    #[inline]
+    pub fn with_glass_fills<R>(
+        &mut self,
+        fills: Option<&Arc<[Hsla]>>,
+        f: impl FnOnce(&mut Self) -> R,
+    ) -> R {
+        let Some(fills) = fills else {
+            return f(self);
+        };
+        let previous = mem::replace(&mut self.glass_fills, fills.clone());
+        let result = f(self);
+        self.glass_fills = previous;
+        result
+    }
+
+    /// Runs `f` with the quads it paints keeping their solid fills on a glass surface: for a fill
+    /// that hides what lies behind it, such as a header that stays over scrolling content.
+    ///
+    /// This method must only be called as part of element drawing.
+    #[inline]
+    pub fn with_kept_glass_fills<R>(&mut self, f: impl FnOnce(&mut Self) -> R) -> R {
+        let previous = mem::replace(&mut self.keeps_glass_fills, true);
+        let result = f(self);
+        self.keeps_glass_fills = previous;
+        result
+    }
+
+    /// The background of a quad on a glass surface: transparent when it fills an area with one of
+    /// the surface's fills. A rule thinner than [`GLASS_RULE_THICKNESS`], such as the line under
+    /// a header that is drawn in the same colour, is not a fill and stays.
+    fn leave_glass_uncovered(&self, background: Background, bounds: Bounds<Pixels>) -> Background {
+        if self.keeps_glass_fills || !self.on_glass_surface() {
+            return background;
+        }
+        if bounds.size.width <= GLASS_RULE_THICKNESS || bounds.size.height <= GLASS_RULE_THICKNESS {
+            return background;
+        }
+        match background.as_solid() {
+            Some(color) if self.glass_fills.contains(&color) => {
+                Background::from(Hsla::transparent_black())
+            }
+            _ => background,
+        }
     }
 
     /// Runs `f` with the elements it draws on a glass surface when `glass` is true.
@@ -4634,7 +4691,9 @@ impl Window {
     /// corners. Elements paint it under a translucent background to look like glass.
     ///
     /// `tint` is handed to the system's own glass where the platform draws it, and painted by the
-    /// element's background in the renderer's emulation.
+    /// element's background in the renderer's emulation. The blur takes the element's opacity, so
+    /// an element that fades in or out, or is held back with an opacity of 0, does so with its
+    /// glass; the system's own glass cannot fade and is shown while the opacity is above 0.
     ///
     /// This method should only be called as part of the paint phase of element drawing.
     pub fn paint_backdrop(
@@ -4646,6 +4705,10 @@ impl Window {
     ) {
         self.invalidator.debug_assert_paint();
 
+        let opacity = self.element_opacity();
+        if opacity <= 0. {
+            return;
+        }
         let scale_factor = self.scale_factor();
         let backdrop = Backdrop {
             order: 0,
@@ -4654,6 +4717,7 @@ impl Window {
             content_mask: self.snapped_content_mask(),
             corner_radii: corner_radii.scale(scale_factor),
             tint,
+            opacity,
         };
         self.next_frame.scene.insert_primitive(backdrop);
     }
@@ -4677,7 +4741,9 @@ impl Window {
             order: 0,
             bounds: snapped_bounds,
             content_mask: self.snapped_content_mask(),
-            background: quad.background.opacity(opacity),
+            background: self
+                .leave_glass_uncovered(quad.background, quad.bounds)
+                .opacity(opacity),
             border_color: quad.border_color.opacity(opacity),
             corner_radii: quad.corner_radii.scale(self.scale_factor()),
             border_widths: snapped_border_widths,
