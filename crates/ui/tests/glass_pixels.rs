@@ -215,7 +215,7 @@ fn text_point() -> (f32, f32) {
 #[test]
 fn pixels_glass_surfaces_keep_text_readable_and_mute_the_code_behind_them() {
     assert!(
-        GlassSettings::default().tint >= 0.5,
+        GlassSettings::default().tint(false) >= 0.5,
         "the default tint must cover bright code, or popup rows wash out"
     );
     let (bare, bare_scale, _, _) = render(None);

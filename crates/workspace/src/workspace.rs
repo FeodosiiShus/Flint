@@ -14905,7 +14905,7 @@ mod tests {
             (
                 colors
                     .elevated_surface_background
-                    .opacity(theme_settings::GlassSettings::default().tint),
+                    .opacity(theme_settings::GlassSettings::default().tint(true)),
                 colors.panel_background,
             )
         });
@@ -20845,5 +20845,22 @@ mod tests {
         fn set_zoomed(&mut self, zoomed: bool, _: &mut Window, _: &mut Context<Self>) {
             self.zoomed = zoomed;
         }
+    }
+
+    #[gpui::test]
+    async fn a_tool_window_is_glass_unless_its_panel_opts_out(cx: &mut TestAppContext) {
+        init_test(cx);
+        let panel = cx.update(|cx| {
+            cx.new(|cx| SecondTestPanel {
+                focus_handle: cx.focus_handle(),
+                zoomed: false,
+            })
+        });
+        cx.read(|cx| {
+            assert!(
+                panel.read(cx).glass_background(cx),
+                "a panel that says nothing about its background gets the tool window glass"
+            );
+        });
     }
 }

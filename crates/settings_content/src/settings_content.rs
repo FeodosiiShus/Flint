@@ -825,11 +825,11 @@ pub struct WhichKeySettingsContent {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema, MergeFrom)]
 pub struct GlassSettingsContent {
     /// How much of the theme's surface colour covers the glass, in percent: 0 leaves the
-    /// material untouched, 100 hides the blurred backdrop completely behind the colour.
-    /// Popup text stays readable over bright code from around 60 up; lower values let
-    /// bright syntax colours bleed through and wash the rows out.
+    /// material untouched, 100 hides the blurred backdrop completely behind the colour. This is
+    /// the level of the glass on macOS 26 too, where the system draws the blur itself.
     ///
-    /// Default: 60
+    /// Default: 30 where the system draws the glass (macOS 26), 60 where Flint draws it, whose
+    /// blur leaves bright code recognisable and needs the heavier tint for readable text.
     pub tint: Option<u32>,
     /// How far the blurred backdrop spreads where the renderer draws the glass itself, in
     /// pixels. macOS 26 draws its own material with the system's blur, which this does not

@@ -222,7 +222,7 @@ fn pixels_context_menu_rows_and_separators_follow_the_intellij_popup_metrics() {
     // configured tint.
     let (surface, selection, separator) = cx.update(|cx| {
         let colors = cx.theme().colors();
-        let opacity = theme_settings::GlassSettings::default().tint;
+        let opacity = theme_settings::GlassSettings::default().tint(false);
         let surface = rgb_channels(colors.elevated_surface_background);
         let backdrop = rgb_channels(gpui::rgb(BACKDROP).into());
         (

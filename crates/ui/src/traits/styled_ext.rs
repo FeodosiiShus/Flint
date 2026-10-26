@@ -15,9 +15,8 @@ pub fn surface_is_glass(kind: SurfaceKind, cx: &App) -> bool {
 }
 
 /// Fills `this` with the Liquid Glass material: a translucent surface over its blurred backdrop.
-/// Popups, dialogs and balloons all take it from here, so their glass looks the same. Tool
-/// window islands are opaque panels instead — they have no real content behind them to blur —
-/// and only take this when a panel explicitly opts into a glass background.
+/// Popups, dialogs, balloons and tool window islands all take it from here, so their glass looks
+/// the same.
 ///
 /// On macOS 26 the system's `NSGlassEffectView` draws both the blur and the lighting, so the
 /// element only hands it the theme tint and paints no fill of its own; a fill would sit above the
@@ -27,12 +26,13 @@ pub fn surface_is_glass(kind: SurfaceKind, cx: &App) -> bool {
 /// [`GlassSettings`] sets how much of the theme's colour covers the glass.
 pub fn glass_material<E: Styled>(this: E, cx: &App) -> E {
     let glass = GlassSettings::get_global(cx);
+    let native = cx.supports_native_glass();
     let tint = cx
         .theme()
         .colors()
         .elevated_surface_background
-        .opacity(glass.tint);
-    if cx.supports_native_glass() {
+        .opacity(glass.tint(native));
+    if native {
         this.backdrop_glass(glass.blur_radius, tint)
     } else {
         this.bg(tint).backdrop_blur(glass.blur_radius)

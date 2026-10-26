@@ -15,7 +15,7 @@ use ui::standard_conformance::assert_follows_the_ui_standard;
 use ui::{BALLOON_METRICS, DialogWidth, POPUP_MAX_CONTENT_WIDTH, SurfaceKind};
 use util::path;
 use workspace::notifications::{NotificationId, simple_message_notification::MessageNotification};
-use workspace::{MultiWorkspace, OpenOptions, Workspace, open_paths};
+use workspace::{MultiWorkspace, OpenOptions, Panel as _, Workspace, open_paths};
 
 use super::tests::init_test;
 
@@ -337,4 +337,58 @@ async fn every_surface_of_the_app_follows_the_ui_standard(cx: &mut TestAppContex
             .simulate_mouse_move(gpui::point(px(1.), px(1.)), None, Modifiers::none());
         project.cx.run_until_parked();
     }
+}
+
+#[gpui::test]
+async fn every_tool_window_is_glass_but_the_project_panel(cx: &mut TestAppContext) {
+    let project = open_project(cx).await;
+    project.workspace.read_with(&project.cx, |workspace, cx| {
+        let project_panel = workspace
+            .panel::<project_panel::ProjectPanel>(cx)
+            .expect("the Project panel is part of the window");
+        assert!(
+            !project_panel.read(cx).glass_background(cx),
+            "the Project panel reads like the editor, so it stays opaque"
+        );
+
+        let glass_panels = [
+            (
+                "Terminal",
+                workspace
+                    .panel::<terminal_view::terminal_panel::TerminalPanel>(cx)
+                    .map(|panel| panel.read(cx).glass_background(cx)),
+            ),
+            (
+                "Git",
+                workspace
+                    .panel::<git_ui::git_panel::GitPanel>(cx)
+                    .map(|panel| panel.read(cx).glass_background(cx)),
+            ),
+            (
+                "Problems",
+                workspace
+                    .panel::<diagnostics::ProjectDiagnosticsPanel>(cx)
+                    .map(|panel| panel.read(cx).glass_background(cx)),
+            ),
+            (
+                "Search",
+                workspace
+                    .panel::<search_everywhere::SearchPanel>(cx)
+                    .map(|panel| panel.read(cx).glass_background(cx)),
+            ),
+            (
+                "Language Services",
+                workspace
+                    .panel::<language_tools::LanguageServicesPanel>(cx)
+                    .map(|panel| panel.read(cx).glass_background(cx)),
+            ),
+        ];
+        for (name, glass_background) in glass_panels {
+            assert_eq!(
+                glass_background,
+                Some(true),
+                "the {name} tool window is part of the window and is glass"
+            );
+        }
+    });
 }

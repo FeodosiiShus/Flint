@@ -840,7 +840,6 @@ impl GlassLevel {
                     set_view_hidden(*view, true);
                     continue;
                 };
-                set_view_hidden(*view, false);
                 let current: NSRect = msg_send![*view, frame];
                 if !rects_equal(current, frame) {
                     let () = msg_send![*view, setFrame: frame];
@@ -854,6 +853,7 @@ impl GlassLevel {
                     let () = msg_send![*view, setTintColor: color];
                     self.tints[index] = tint;
                 }
+                set_view_hidden(*view, false);
             }
         }
     }
@@ -874,15 +874,6 @@ impl GlassLevel {
                     NSPoint::new(0., 0.),
                     NSSize::new(0., 0.),
                 )];
-                // The system's "regular" material diffuses a backdrop into almost flat colour, so
-                // a popup over code shows none of it. Its "clear" style keeps about a quarter more
-                // of the backdrop's light and half again its detail, which is what a translucent
-                // panel wants; the material's tint stays the theme's.
-                let style_selector = sel!(setStyle:);
-                let responds: BOOL = msg_send![view, respondsToSelector: style_selector];
-                if responds == YES {
-                    let () = msg_send![view, setStyle: GLASS_STYLE_CLEAR];
-                }
                 let () = msg_send![
                     content_view,
                     addSubview: view
@@ -974,7 +965,7 @@ impl MacWindowState {
         }
     }
 
-    /// Creates every level of glass a frame may need, with its first glass view, before the
+    /// Creates every level of glass a frame may need, with its first glass views, before the
     /// window shows anything. A level that appeared first would otherwise create its
     /// `NSGlassEffectView` in the frame that needs it, which flashes: the new view reaches the
     /// screen before the window server has sampled what lies behind it.
@@ -1005,7 +996,7 @@ impl MacWindowState {
             .map(|ptr| ptr as id)
             .collect::<Vec<_>>();
         for (index, level) in self.glass_levels.iter_mut().enumerate() {
-            level.add_views(1, content_view);
+            level.add_views(PREWARMED_GLASS_VIEWS_PER_LEVEL, content_view);
             level.show(&[], content_view, overlay_ptrs[index]);
         }
         self.renderer.set_presents_with_transaction(true);
@@ -4184,10 +4175,10 @@ fn display_id_for_screen(screen: id) -> Option<CGDirectDisplayID> {
 /// over them one per menu; a level only costs an overlay layer once it appears.
 const MAX_GLASS_LEVELS: usize = 6;
 
-/// The raw value of `NSGlassEffectView.Style.clear` in the macOS 26 SDK: the system's more
-/// transparent material, which lets more of the backdrop's light and detail through than
-/// `regular`.
-const GLASS_STYLE_CLEAR: NSInteger = 1;
+/// The glass views every level gets before the window shows anything: the islands of three docks,
+/// or a few notification balloons, share one level. A level that needs more creates the rest when
+/// a frame asks for them, which flashes.
+const PREWARMED_GLASS_VIEWS_PER_LEVEL: usize = 4;
 
 /// Whether glass surfaces use AppKit's `NSGlassEffectView` (macOS 26) rather than the
 /// renderer's emulation. `FLINT_EMULATED_GLASS` keeps the emulation, to compare the two.
@@ -4607,21 +4598,6 @@ mod native_glass_tests {
             (100., 1000. - 50. - 150., 200., 150.)
         );
         assert_eq!(corner_radius, 12.);
-    }
-
-    #[test]
-    fn the_system_glass_offers_the_clear_style_this_app_draws_with() {
-        let glass_view = window_classes().glass_view;
-        if glass_view.is_null() {
-            return;
-        }
-        // SAFETY: the glass class is a live Objective-C class on macOS 26.
-        let responds: BOOL =
-            unsafe { msg_send![glass_view, instancesRespondToSelector: sel!(setStyle:)] };
-        assert_eq!(
-            responds, YES,
-            "a system glass view can take the clear style, or the window would send it a selector it does not know"
-        );
     }
 
     #[test]
