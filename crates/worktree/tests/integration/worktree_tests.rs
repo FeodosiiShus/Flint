@@ -1994,6 +1994,57 @@ async fn test_open_gitignored_files(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+async fn test_a_batch_of_events_checks_each_ancestor_for_a_git_directory_once(
+    cx: &mut TestAppContext,
+) {
+    init_test(cx);
+    let fs = FakeFs::new(cx.background_executor.clone());
+    fs.insert_tree(
+        "/root",
+        json!({
+            ".gitignore": "target\n",
+            "src": { "main.rs": "" },
+            "target": { "debug": { "deps": {} } },
+        }),
+    )
+    .await;
+    let tree = Worktree::local(
+        Path::new("/root"),
+        true,
+        fs.clone(),
+        Default::default(),
+        true,
+        WorktreeId::from_proto(0),
+        &mut cx.to_async(),
+    )
+    .await
+    .unwrap();
+    cx.read(|cx| tree.read(cx).as_local().unwrap().scan_complete())
+        .await;
+
+    const FILE_COUNT: usize = 50;
+    fs.pause_events();
+    for index in 0..FILE_COUNT {
+        fs.create_file(
+            &PathBuf::from(format!("/root/target/debug/deps/{index}.o")),
+            Default::default(),
+        )
+        .await
+        .unwrap();
+    }
+    let metadata_calls_before = fs.metadata_call_count();
+    fs.unpause_events_and_flush();
+    cx.executor().run_until_parked();
+
+    let metadata_calls = fs.metadata_call_count() - metadata_calls_before;
+    assert!(
+        metadata_calls < 2 * FILE_COUNT,
+        "a build writing {FILE_COUNT} files into one directory must not check every ancestor of \
+        every file for a git directory, but made {metadata_calls} metadata calls"
+    );
+}
+
+#[gpui::test]
 async fn test_dirs_no_longer_ignored(cx: &mut TestAppContext) {
     init_test(cx);
     stop_excluding_node_modules(cx);

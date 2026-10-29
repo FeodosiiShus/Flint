@@ -3175,6 +3175,199 @@ async fn test_client_file_watchers_report_changes_the_server_never_registered_fo
     );
 }
 
+async fn register_file_watchers(
+    server: &lsp::FakeLanguageServer,
+    watchers: Vec<lsp::FileSystemWatcher>,
+) -> Arc<Mutex<Vec<lsp::FileEvent>>> {
+    server
+        .request::<lsp::request::RegisterCapability>(
+            lsp::RegistrationParams {
+                registrations: vec![lsp::Registration {
+                    id: Default::default(),
+                    method: "workspace/didChangeWatchedFiles".to_string(),
+                    register_options: serde_json::to_value(
+                        lsp::DidChangeWatchedFilesRegistrationOptions { watchers },
+                    )
+                    .ok(),
+                }],
+            },
+            DEFAULT_LSP_REQUEST_TIMEOUT,
+        )
+        .await
+        .into_response()
+        .unwrap();
+    let file_changes = Arc::new(Mutex::new(Vec::new()));
+    server.handle_notification::<lsp::notification::DidChangeWatchedFiles, _>({
+        let file_changes = file_changes.clone();
+        move |params, _| {
+            let mut file_changes = file_changes.lock();
+            file_changes.extend(params.changes);
+            file_changes.sort_by(|a: &lsp::FileEvent, b| a.uri.cmp(&b.uri));
+        }
+    });
+    file_changes
+}
+
+#[gpui::test]
+async fn test_relative_pattern_watchers_match_paths_under_their_base(
+    cx: &mut gpui::TestAppContext,
+) {
+    init_test(cx);
+    let fs = FakeFs::new(cx.executor());
+    fs.insert_tree(
+        path!("/the-root"),
+        json!({
+            "packages": {
+                "a": { "src": { "a.rs": "" }, "lib": {} },
+                "b": {},
+            },
+            "other": { "src": {} },
+        }),
+    )
+    .await;
+    let project = Project::test(fs.clone(), [path!("/the-root").as_ref()], cx).await;
+    let language_registry = project.read_with(cx, |project, _| project.languages().clone());
+    language_registry.add(rust_lang());
+    let mut fake_servers = language_registry.register_fake_lsp(
+        "Rust",
+        FakeLspAdapter {
+            name: "the-language-server",
+            ..FakeLspAdapter::default()
+        },
+    );
+    cx.executor().run_until_parked();
+    let (_buffer, _handle) = project
+        .update(cx, |project, cx| {
+            project.open_local_buffer_with_lsp(path!("/the-root/packages/a/src/a.rs"), cx)
+        })
+        .await
+        .unwrap();
+    let fake_server = fake_servers.next().await.unwrap();
+    cx.executor().run_until_parked();
+
+    let relative_watcher = |base: &str, pattern: &str| lsp::FileSystemWatcher {
+        glob_pattern: lsp::GlobPattern::Relative(lsp::RelativePattern {
+            base_uri: lsp::OneOf::Right(lsp::Uri::from_file_path(base).unwrap()),
+            pattern: pattern.to_string(),
+        }),
+        kind: None,
+    };
+    let file_changes = register_file_watchers(
+        &fake_server,
+        vec![
+            relative_watcher(path!("/the-root/packages/a"), "src/**/*.rs"),
+            relative_watcher(path!("/the-root/packages/b"), "**/*.toml"),
+        ],
+    )
+    .await;
+    cx.executor().run_until_parked();
+
+    for path in [
+        path!("/the-root/packages/a/src/new.rs"),
+        path!("/the-root/packages/a/lib/new.rs"),
+        path!("/the-root/packages/b/Cargo.toml"),
+        path!("/the-root/other/Cargo.toml"),
+        path!("/the-root/other/src/new.rs"),
+    ] {
+        fs.create_file(path.as_ref(), Default::default())
+            .await
+            .unwrap();
+    }
+    cx.executor().run_until_parked();
+
+    assert_eq!(
+        &*file_changes.lock(),
+        &[
+            lsp::FileEvent {
+                uri: lsp::Uri::from_file_path(path!("/the-root/packages/a/src/new.rs")).unwrap(),
+                typ: lsp::FileChangeType::CREATED,
+            },
+            lsp::FileEvent {
+                uri: lsp::Uri::from_file_path(path!("/the-root/packages/b/Cargo.toml")).unwrap(),
+                typ: lsp::FileChangeType::CREATED,
+            },
+        ],
+        "a relative pattern matches paths relative to its base folder, not to the worktree root"
+    );
+}
+
+#[gpui::test]
+async fn test_watchers_outside_worktrees_match_exact_files_and_globs_below_their_folder(
+    cx: &mut gpui::TestAppContext,
+) {
+    init_test(cx);
+    let fs = FakeFs::new(cx.executor());
+    fs.insert_tree(path!("/the-root"), json!({ "src": { "a.rs": "" } }))
+        .await;
+    fs.insert_tree(
+        path!("/the-parent"),
+        json!({
+            "base.toml": "",
+            "conf": { "tsconfig.app.json": "", "other.json": "" },
+        }),
+    )
+    .await;
+    let project = Project::test(fs.clone(), [path!("/the-root").as_ref()], cx).await;
+    let language_registry = project.read_with(cx, |project, _| project.languages().clone());
+    language_registry.add(rust_lang());
+    let mut fake_servers = language_registry.register_fake_lsp(
+        "Rust",
+        FakeLspAdapter {
+            name: "the-language-server",
+            ..FakeLspAdapter::default()
+        },
+    );
+    cx.executor().run_until_parked();
+    let (_buffer, _handle) = project
+        .update(cx, |project, cx| {
+            project.open_local_buffer_with_lsp(path!("/the-root/src/a.rs"), cx)
+        })
+        .await
+        .unwrap();
+    let fake_server = fake_servers.next().await.unwrap();
+    cx.executor().run_until_parked();
+
+    let watcher = |pattern: &str| lsp::FileSystemWatcher {
+        glob_pattern: lsp::GlobPattern::String(pattern.to_string()),
+        kind: None,
+    };
+    let file_changes = register_file_watchers(
+        &fake_server,
+        vec![
+            watcher(path!("/the-parent/base.toml")),
+            watcher(path!("/the-parent/conf/tsconfig.*.json")),
+        ],
+    )
+    .await;
+    cx.executor().run_until_parked();
+
+    for path in [
+        path!("/the-parent/base.toml"),
+        path!("/the-parent/conf/tsconfig.app.json"),
+        path!("/the-parent/conf/other.json"),
+    ] {
+        fs.save(path.as_ref(), &"{}".into(), Default::default())
+            .await
+            .unwrap();
+    }
+    cx.executor().run_until_parked();
+
+    assert_eq!(
+        &*file_changes.lock(),
+        &[
+            lsp::FileEvent {
+                uri: lsp::Uri::from_file_path(path!("/the-parent/base.toml")).unwrap(),
+                typ: lsp::FileChangeType::CHANGED,
+            },
+            lsp::FileEvent {
+                uri: lsp::Uri::from_file_path(path!("/the-parent/conf/tsconfig.app.json")).unwrap(),
+                typ: lsp::FileChangeType::CHANGED,
+            },
+        ],
+        "a watcher outside the worktrees matches the event path relative to the folder it watches"
+    );
+}
+
 #[gpui::test]
 async fn test_server_with_a_pull_delay_is_pulled_once_per_pause_in_typing(
     cx: &mut gpui::TestAppContext,
@@ -5774,6 +5967,110 @@ async fn test_registering_a_buffer_with_some_servers_still_opens_it_in_all_later
 }
 
 #[gpui::test]
+async fn test_edits_reach_every_server_a_buffer_is_open_in_when_another_server_is_not(
+    cx: &mut gpui::TestAppContext,
+) {
+    init_test(cx);
+    let fs = FakeFs::new(cx.executor());
+    fs.insert_tree(
+        path!("/dir"),
+        json!({ "a.rs": "fn a() {}", "b.rs": "fn b() {}", "c.rs": "fn c() {}" }),
+    )
+    .await;
+    let project = Project::test(fs, [path!("/dir").as_ref()], cx).await;
+    let language_registry = project.read_with(cx, |project, _| project.languages().clone());
+    language_registry.add(rust_lang());
+    let mut checker_servers = language_registry.register_fake_lsp(
+        "Rust",
+        FakeLspAdapter {
+            name: "the-checker",
+            ..FakeLspAdapter::default()
+        },
+    );
+    let mut linter_servers = language_registry.register_fake_lsp(
+        "Rust",
+        FakeLspAdapter {
+            name: "the-linter",
+            ..FakeLspAdapter::default()
+        },
+    );
+
+    let (_buffer_a, _handle_a) = project
+        .update(cx, |project, cx| {
+            project.open_local_buffer_with_lsp(path!("/dir/a.rs"), cx)
+        })
+        .await
+        .unwrap();
+    let checker = checker_servers.next().await.unwrap();
+    let linter = linter_servers.next().await.unwrap();
+    cx.executor().run_until_parked();
+
+    let changed_uris = |server: &lsp::FakeLanguageServer| {
+        let changed_uris = Arc::new(Mutex::new(Vec::new()));
+        server.handle_notification::<lsp::notification::DidChangeTextDocument, _>({
+            let changed_uris = changed_uris.clone();
+            move |params, _| changed_uris.lock().push(params.text_document.uri)
+        });
+        changed_uris
+    };
+    let checker_changes = changed_uris(&checker);
+    let linter_changes = changed_uris(&linter);
+
+    let mut partially_registered_buffers = Vec::new();
+    for (path, server) in [
+        (path!("/dir/b.rs"), &checker),
+        (path!("/dir/c.rs"), &linter),
+    ] {
+        let buffer = project
+            .update(cx, |project, cx| project.open_local_buffer(path, cx))
+            .await
+            .unwrap();
+        cx.executor().run_until_parked();
+        let handle = project.update(cx, |project, cx| {
+            project.register_buffer_with_language_servers_for(
+                &buffer,
+                HashSet::from_iter([
+                    lsp::LanguageServerSelector::Id(server.server.server_id()),
+                    lsp::LanguageServerSelector::Name(server.server.name()),
+                ]),
+                cx,
+            )
+        });
+        partially_registered_buffers.push((buffer, handle));
+    }
+    cx.executor().run_until_parked();
+    project.read_with(cx, |project, cx| {
+        for (buffer, _) in &partially_registered_buffers {
+            assert_eq!(
+                project
+                    .lsp_store()
+                    .read(cx)
+                    .language_server_ids_for_opened_buffer(buffer.read(cx).remote_id())
+                    .map(|server_ids| server_ids.len()),
+                Some(1),
+                "each buffer is open in exactly one of the two servers"
+            );
+        }
+    });
+
+    for (buffer, _) in &partially_registered_buffers {
+        buffer.update(cx, |buffer, cx| buffer.edit([(0..0, "// ")], None, cx));
+    }
+    cx.executor().run_until_parked();
+
+    assert_eq!(
+        &*checker_changes.lock(),
+        &[lsp::Uri::from_file_path(path!("/dir/b.rs")).unwrap()],
+        "a server the edited buffer is open in hears about the edit even when another server of the buffer has not opened it"
+    );
+    assert_eq!(
+        &*linter_changes.lock(),
+        &[lsp::Uri::from_file_path(path!("/dir/c.rs")).unwrap()],
+        "a server the edited buffer is open in hears about the edit even when another server of the buffer has not opened it"
+    );
+}
+
+#[gpui::test]
 async fn test_diagnostic_summaries_cleared_on_buffer_close_without_workspace_diagnostics(
     cx: &mut gpui::TestAppContext,
 ) {
@@ -6431,6 +6728,277 @@ async fn test_cross_buffer_pull_respects_inter_file_dependencies(cx: &mut gpui::
             );
         }
     }
+}
+
+#[gpui::test]
+async fn test_queueing_a_cross_buffer_pull_keeps_the_pull_in_flight(cx: &mut gpui::TestAppContext) {
+    let release_pull_of_b: Arc<Mutex<Option<oneshot::Receiver<()>>>> = Arc::default();
+    let (project, mut fake_servers) = diagnostics_pull_project(
+        cx,
+        json!({ "a.rs": "one two three", "b.rs": "four five six", "c.rs": "seven" }),
+        DiagnosticsPullServer {
+            identifier: "test-in-flight-pull",
+            inter_file_dependencies: true,
+            workspace_diagnostics: false,
+            initializer: Some(Box::new({
+                let release_pull_of_b = release_pull_of_b.clone();
+                move |fake_server| {
+                    fake_server
+                        .set_request_handler::<lsp::request::DocumentDiagnosticRequest, _, _>({
+                            let release_pull_of_b = release_pull_of_b.clone();
+                            move |params, _| {
+                                let release = (params.text_document.uri
+                                    == lsp::Uri::from_file_path(path!("/dir/b.rs")).unwrap())
+                                .then(|| release_pull_of_b.lock().take())
+                                .flatten();
+                                async move {
+                                    let mut items = Vec::new();
+                                    if let Some(release) = release {
+                                        release.await.ok();
+                                        items.push(lsp::Diagnostic {
+                                            range: lsp::Range::new(
+                                                lsp::Position::new(0, 0),
+                                                lsp::Position::new(0, 4),
+                                            ),
+                                            severity: Some(lsp::DiagnosticSeverity::ERROR),
+                                            message: lsp::DiagnosticMessage::from("error in b"),
+                                            ..lsp::Diagnostic::default()
+                                        });
+                                    }
+                                    Ok(lsp::DocumentDiagnosticReportResult::Report(
+                                        lsp::DocumentDiagnosticReport::Full(
+                                            lsp::RelatedFullDocumentDiagnosticReport {
+                                                related_documents: None,
+                                                full_document_diagnostic_report:
+                                                    lsp::FullDocumentDiagnosticReport {
+                                                        result_id: None,
+                                                        items,
+                                                    },
+                                            },
+                                        ),
+                                    ))
+                                }
+                            }
+                        });
+                }
+            })),
+        },
+    )
+    .await;
+
+    let mut buffers = Vec::new();
+    for path in [path!("/dir/a.rs"), path!("/dir/b.rs"), path!("/dir/c.rs")] {
+        buffers.push(
+            project
+                .update(cx, |project, cx| {
+                    project.open_local_buffer_with_lsp(path, cx)
+                })
+                .await
+                .unwrap(),
+        );
+    }
+    let _fake_server = fake_servers.next().await.unwrap();
+    cx.executor().advance_clock(Duration::from_secs(1));
+    cx.executor().run_until_parked();
+
+    let (release_tx, release_rx) = oneshot::channel();
+    *release_pull_of_b.lock() = Some(release_rx);
+    let buffer_ids = buffers
+        .iter()
+        .map(|(buffer, _)| buffer.read_with(cx, |buffer, _| buffer.remote_id()))
+        .collect::<Vec<_>>();
+    let lsp_store = project.read_with(cx, |project, _| project.lsp_store());
+    drop(lsp_store.update(cx, |lsp_store, cx| {
+        lsp_store
+            .refresh_background_diagnostics_for_buffers(HashSet::from_iter([buffer_ids[1]]), cx)
+    }));
+    cx.executor().advance_clock(Duration::from_secs(1));
+    cx.executor().run_until_parked();
+    assert!(
+        release_pull_of_b.lock().is_none(),
+        "the pull of b.rs is waiting for its response"
+    );
+
+    drop(lsp_store.update(cx, |lsp_store, cx| {
+        lsp_store
+            .refresh_background_diagnostics_for_buffers(HashSet::from_iter([buffer_ids[2]]), cx)
+    }));
+    release_tx.send(()).ok();
+    cx.executor().advance_clock(Duration::from_secs(1));
+    cx.executor().run_until_parked();
+
+    project.update(cx, |project, cx| {
+        assert_eq!(
+            project.diagnostic_summary(false, cx),
+            DiagnosticSummary {
+                error_count: 1,
+                warning_count: 0,
+            },
+            "queueing another buffer must not drop the response of a pull already sent"
+        );
+    });
+}
+
+#[gpui::test]
+async fn test_open_buffers_are_pulled_again_once_after_watched_files_change_on_disk(
+    cx: &mut gpui::TestAppContext,
+) {
+    let pulled_uris = Arc::new(Mutex::new(Vec::new()));
+    let (project, mut fake_servers) = diagnostics_pull_project(
+        cx,
+        json!({ "a.rs": "use dep;", "dep.rs": "pub fn one() {}", "other.rs": "" }),
+        DiagnosticsPullServer {
+            identifier: "test-watched-files-repull",
+            inter_file_dependencies: true,
+            workspace_diagnostics: false,
+            initializer: Some(Box::new({
+                let pulled_uris = pulled_uris.clone();
+                move |fake_server| {
+                    fake_server
+                        .set_request_handler::<lsp::request::DocumentDiagnosticRequest, _, _>({
+                            let pulled_uris = pulled_uris.clone();
+                            move |params, _| {
+                                pulled_uris.lock().push(params.text_document.uri);
+                                async move {
+                                    Ok(lsp::DocumentDiagnosticReportResult::Report(
+                                        lsp::DocumentDiagnosticReport::Full(
+                                            lsp::RelatedFullDocumentDiagnosticReport {
+                                                related_documents: None,
+                                                full_document_diagnostic_report:
+                                                    lsp::FullDocumentDiagnosticReport {
+                                                        result_id: None,
+                                                        items: Vec::new(),
+                                                    },
+                                            },
+                                        ),
+                                    ))
+                                }
+                            }
+                        });
+                }
+            })),
+        },
+    )
+    .await;
+    let fs = project.read_with(cx, |project, _| project.fs().as_fake());
+
+    let (_buffer, _handle) = project
+        .update(cx, |project, cx| {
+            project.open_local_buffer_with_lsp(path!("/dir/a.rs"), cx)
+        })
+        .await
+        .unwrap();
+    let fake_server = fake_servers.next().await.unwrap();
+    cx.executor().run_until_parked();
+    let _file_changes = register_file_watchers(
+        &fake_server,
+        vec![lsp::FileSystemWatcher {
+            glob_pattern: lsp::GlobPattern::String(path!("/dir/**/*.rs").to_string()),
+            kind: None,
+        }],
+    )
+    .await;
+    cx.executor().advance_clock(Duration::from_secs(1));
+    cx.executor().run_until_parked();
+    pulled_uris.lock().clear();
+
+    for (path, text) in [
+        (path!("/dir/dep.rs"), "pub fn two() {}"),
+        (path!("/dir/other.rs"), "pub fn three() {}"),
+    ] {
+        fs.save(path.as_ref(), &text.into(), LineEnding::Unix)
+            .await
+            .unwrap();
+        cx.executor().run_until_parked();
+    }
+    cx.executor().advance_clock(Duration::from_secs(1));
+    cx.executor().run_until_parked();
+
+    assert_eq!(
+        &*pulled_uris.lock(),
+        &[lsp::Uri::from_file_path(path!("/dir/a.rs")).unwrap()],
+        "files a server watches changing on disk can change the diagnostics of its open buffers, \
+        which are pulled again once the changes settle"
+    );
+}
+
+#[gpui::test]
+async fn test_other_open_buffers_are_pulled_again_after_a_buffer_reloads_from_disk(
+    cx: &mut gpui::TestAppContext,
+) {
+    let pulled_uris = Arc::new(Mutex::new(Vec::new()));
+    let (project, mut fake_servers) = diagnostics_pull_project(
+        cx,
+        json!({ "a.rs": "use dep;", "dep.rs": "pub fn one() {}" }),
+        DiagnosticsPullServer {
+            identifier: "test-reload-repull",
+            inter_file_dependencies: true,
+            workspace_diagnostics: false,
+            initializer: Some(Box::new({
+                let pulled_uris = pulled_uris.clone();
+                move |fake_server| {
+                    fake_server
+                        .set_request_handler::<lsp::request::DocumentDiagnosticRequest, _, _>({
+                            let pulled_uris = pulled_uris.clone();
+                            move |params, _| {
+                                pulled_uris.lock().push(params.text_document.uri);
+                                async move {
+                                    Ok(lsp::DocumentDiagnosticReportResult::Report(
+                                        lsp::DocumentDiagnosticReport::Full(
+                                            lsp::RelatedFullDocumentDiagnosticReport {
+                                                related_documents: None,
+                                                full_document_diagnostic_report:
+                                                    lsp::FullDocumentDiagnosticReport {
+                                                        result_id: None,
+                                                        items: Vec::new(),
+                                                    },
+                                            },
+                                        ),
+                                    ))
+                                }
+                            }
+                        });
+                }
+            })),
+        },
+    )
+    .await;
+    let fs = project.read_with(cx, |project, _| project.fs().as_fake());
+
+    let mut buffers = Vec::new();
+    for path in [path!("/dir/a.rs"), path!("/dir/dep.rs")] {
+        buffers.push(
+            project
+                .update(cx, |project, cx| {
+                    project.open_local_buffer_with_lsp(path, cx)
+                })
+                .await
+                .unwrap(),
+        );
+    }
+    let _fake_server = fake_servers.next().await.unwrap();
+    cx.executor().advance_clock(Duration::from_secs(1));
+    cx.executor().run_until_parked();
+    pulled_uris.lock().clear();
+
+    fs.save(
+        path!("/dir/dep.rs").as_ref(),
+        &"pub fn two() {}".into(),
+        LineEnding::Unix,
+    )
+    .await
+    .unwrap();
+    cx.executor().advance_clock(Duration::from_secs(1));
+    cx.executor().run_until_parked();
+
+    assert!(
+        pulled_uris
+            .lock()
+            .contains(&lsp::Uri::from_file_path(path!("/dir/a.rs")).unwrap()),
+        "a file reloaded from disk can change the diagnostics of the other open files of a server \
+        with inter file dependencies, got pulls of {:?}",
+        pulled_uris.lock()
+    );
 }
 
 #[gpui::test]

@@ -178,6 +178,10 @@ pub const SERVER_PROGRESS_THROTTLE_TIMEOUT: Duration = Duration::from_millis(100
 const WORKSPACE_DIAGNOSTICS_TOKEN_START: &str = "id:";
 const WORKSPACE_DIAGNOSTICS_REPULL_DELAY: Duration = Duration::from_secs(2);
 const CROSS_BUFFER_DIAGNOSTICS_PULL_DELAY: Duration = Duration::from_millis(100);
+const CROSS_BUFFER_DIAGNOSTICS_PULL_TIMEOUT: Duration = Duration::from_secs(10);
+/// A checkout or a package install changes files in many event batches, which this coalesces
+/// into one pull.
+const DIAGNOSTICS_PULL_AFTER_DISK_CHANGES_DELAY: Duration = Duration::from_millis(300);
 const DOCUMENT_DIAGNOSTICS_RETRIGGER_LIMIT: usize = 3;
 const DOCUMENT_DIAGNOSTICS_RETRIGGER_DELAY: Duration = Duration::from_millis(100);
 const SERVER_DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(10);
@@ -372,7 +376,12 @@ pub struct LocalLspStore {
 
     buffers_to_refresh_hash_set: HashSet<BufferId>,
     buffers_to_refresh_queue: VecDeque<BufferId>,
+    /// The queue empties as soon as the worker takes the last buffer off it, so the queue's
+    /// length cannot tell whether a pull is still in flight; replacing the worker then would
+    /// cancel that pull and lose its diagnostics.
+    background_diagnostics_worker_running: bool,
     _background_diagnostics_worker: Shared<Task<()>>,
+    diagnostics_pulls_after_disk_changes: HashMap<LanguageServerId, Task<()>>,
 }
 
 impl LocalLspStore {
@@ -4129,6 +4138,8 @@ impl LocalLspStore {
         for server_id_to_remove in &servers_to_remove {
             self.language_server_watched_paths
                 .remove(server_id_to_remove);
+            self.diagnostics_pulls_after_disk_changes
+                .remove(server_id_to_remove);
             self.language_server_paths_watched_for_rename
                 .remove(server_id_to_remove);
             self.last_workspace_edits_by_language_server
@@ -4297,10 +4308,21 @@ impl LocalLspStore {
                     let relative = base_uri.strip_prefix(&worktree_root_path).ok()?;
                     let mut literal_prefix = relative.to_owned();
                     literal_prefix.push(glob_literal_prefix(Path::new(&rp.pattern)));
+                    // The glob is matched against worktree-relative paths, so it must start at
+                    // the base folder; the base is a literal path, which may contain glob
+                    // characters such as the `[slug]` of a Next.js route.
+                    let pattern = if relative.as_os_str().is_empty() {
+                        rp.pattern.clone()
+                    } else {
+                        Path::new(&globset::escape(&relative.to_string_lossy()))
+                            .join(&rp.pattern)
+                            .to_string_lossy()
+                            .into_owned()
+                    };
                     Some((
                         worktree.clone(),
                         RelPath::new(&literal_prefix, path_style).ok()?.into_arc(),
-                        rp.pattern.clone(),
+                        pattern,
                     ))
                 }
             }
@@ -4969,7 +4991,9 @@ impl LspStore {
                 buffers_being_formatted: Default::default(),
                 buffers_to_refresh_hash_set: HashSet::default(),
                 buffers_to_refresh_queue: VecDeque::new(),
+                background_diagnostics_worker_running: false,
                 _background_diagnostics_worker: Task::ready(()).shared(),
+                diagnostics_pulls_after_disk_changes: HashMap::default(),
                 buffer_snapshots: Default::default(),
                 prettier_store,
                 environment,
@@ -5292,11 +5316,13 @@ impl LspStore {
         for buffer in buffers {
             if local.buffers_to_refresh_hash_set.insert(buffer) {
                 local.buffers_to_refresh_queue.push_back(buffer);
-                if local.buffers_to_refresh_queue.len() == 1 {
-                    local._background_diagnostics_worker =
-                        Self::background_diagnostics_worker(cx).shared();
-                }
             }
+        }
+        if !local.buffers_to_refresh_queue.is_empty()
+            && !local.background_diagnostics_worker_running
+        {
+            local.background_diagnostics_worker_running = true;
+            local._background_diagnostics_worker = Self::background_diagnostics_worker(cx).shared();
         }
 
         local._background_diagnostics_worker.clone()
@@ -5311,6 +5337,7 @@ impl LspStore {
                 return Some(self.pull_diagnostics_for_buffer(buffer, cx));
             }
         }
+        local.background_diagnostics_worker_running = false;
         None
     }
 
@@ -5324,7 +5351,22 @@ impl LspStore {
                 else {
                     return;
                 };
-                task.await.log_err();
+                // A pull in flight is not dropped for a newer request any more, so one that a busy
+                // server does not answer must not hold back the buffers queued behind it until the
+                // request times out.
+                let mut task = task.fuse();
+                let mut timeout = cx
+                    .background_executor()
+                    .timer(CROSS_BUFFER_DIAGNOSTICS_PULL_TIMEOUT)
+                    .fuse();
+                select_biased! {
+                    result = task => {
+                        result.log_err();
+                    }
+                    _ = timeout => {
+                        log::warn!("Pulling diagnostics of a buffer took longer than {CROSS_BUFFER_DIAGNOSTICS_PULL_TIMEOUT:?}, moving on");
+                    }
+                }
             }
         })
     }
@@ -5335,6 +5377,9 @@ impl LspStore {
         }
 
         let buffer_id = buffer.read(cx).remote_id();
+        for server_id in self.servers_with_inter_file_diagnostics(&buffer, cx) {
+            self.pull_diagnostics_after_disk_changes(server_id, cx);
+        }
         let task = self.pull_diagnostics_for_buffer(buffer, cx);
         self.buffer_reload_tasks.insert(buffer_id, task);
     }
@@ -9655,12 +9700,19 @@ impl LspStore {
         for language_server in language_servers {
             let language_server = language_server.clone();
 
-            let buffer_snapshots = self
+            // A buffer registered with only some of its servers is not open in the others, which
+            // must not keep the edit from the servers that did open it.
+            let Some(buffer_snapshots) = self
                 .as_local_mut()?
                 .buffer_snapshots
                 .get_mut(&buffer.remote_id())
-                .and_then(|m| m.get_mut(&language_server.server_id()))?;
-            let previous_snapshot = buffer_snapshots.last()?;
+                .and_then(|m| m.get_mut(&language_server.server_id()))
+            else {
+                continue;
+            };
+            let Some(previous_snapshot) = buffer_snapshots.last() else {
+                continue;
+            };
 
             // If the line ending differs from what this server was last sent, the LF-normalized
             // rope is byte-identical so `edits_since` yields no diffs. We must resync the whole
@@ -11944,34 +11996,33 @@ impl LspStore {
         &mut self,
         server_id: LanguageServerId,
         changes: Vec<PathEvent>,
+        cx: &mut Context<Self>,
     ) {
-        maybe!({
-            let server = self.language_server_for_id(server_id)?;
-            let changes = changes
-                .into_iter()
-                .filter_map(|event| {
-                    let typ = match event.kind? {
-                        PathEventKind::Created => lsp::FileChangeType::CREATED,
-                        PathEventKind::Removed => lsp::FileChangeType::DELETED,
-                        PathEventKind::Changed | PathEventKind::Rescan => {
-                            lsp::FileChangeType::CHANGED
-                        }
-                    };
-                    Some(lsp::FileEvent {
-                        uri: file_path_to_lsp_url(&event.path).log_err()?,
-                        typ,
-                    })
+        let Some(server) = self.language_server_for_id(server_id) else {
+            return;
+        };
+        let changes = changes
+            .into_iter()
+            .filter_map(|event| {
+                let typ = match event.kind? {
+                    PathEventKind::Created => lsp::FileChangeType::CREATED,
+                    PathEventKind::Removed => lsp::FileChangeType::DELETED,
+                    PathEventKind::Changed | PathEventKind::Rescan => lsp::FileChangeType::CHANGED,
+                };
+                Some(lsp::FileEvent {
+                    uri: file_path_to_lsp_url(&event.path).log_err()?,
+                    typ,
                 })
-                .collect::<Vec<_>>();
-            if !changes.is_empty() {
-                server
-                    .notify::<lsp::notification::DidChangeWatchedFiles>(
-                        lsp::DidChangeWatchedFilesParams { changes },
-                    )
-                    .ok();
-            }
-            Some(())
-        });
+            })
+            .collect::<Vec<_>>();
+        if !changes.is_empty() {
+            server
+                .notify::<lsp::notification::DidChangeWatchedFiles>(
+                    lsp::DidChangeWatchedFilesParams { changes },
+                )
+                .ok();
+            self.pull_diagnostics_after_disk_changes(server_id, cx);
+        }
     }
 
     pub fn language_server_for_id(&self, id: LanguageServerId) -> Option<Arc<LanguageServer>> {
@@ -12948,6 +12999,9 @@ impl LspStore {
             });
         }
         local.language_server_watched_paths.remove(&server_id);
+        local
+            .diagnostics_pulls_after_disk_changes
+            .remove(&server_id);
         local
             .language_server_paths_watched_for_rename
             .remove(&server_id);
@@ -13947,15 +14001,17 @@ impl LspStore {
         worktree_handle: &Entity<Worktree>,
         recipients: WatchedChangesRecipients,
         changes: impl Fn() -> Changes,
-        cx: &App,
+        cx: &mut Context<Self>,
     ) where
         Changes: Iterator<Item = (&'a RelPath, PathChange)>,
     {
+        let buffer_store = self.buffer_store.clone();
         let Some(local) = self.as_local_mut() else {
             return;
         };
         let worktree = worktree_handle.read(cx);
         let worktree_id = worktree.id();
+        let buffer_store = buffer_store.read(cx);
         let mut language_server_ids = local
             .language_server_ids
             .iter()
@@ -13964,6 +14020,7 @@ impl LspStore {
         language_server_ids.sort_unstable();
         language_server_ids.dedup();
 
+        let mut servers_to_pull_diagnostics = Vec::new();
         for server_id in &language_server_ids {
             if let Some(LanguageServerState::Running {
                 adapter, server, ..
@@ -13975,6 +14032,9 @@ impl LspStore {
                     .get_mut(server_id)
                     .and_then(|paths| paths.worktree_paths.get_mut(&worktree_id))
             {
+                // The edits of a file open in the server reach it as didChange, and the pulls
+                // they need are made for them, so only changes to other files call for a pull.
+                let mut changes_files_not_open_in_server = false;
                 let params = lsp::DidChangeWatchedFilesParams {
                     changes: changes()
                         .filter_map(|(path, change)| {
@@ -13989,6 +14049,17 @@ impl LspStore {
                                 return None;
                             }
                             let uri = lsp::Uri::from_file_path(worktree.absolutize(path)).ok()?;
+                            if !changes_files_not_open_in_server {
+                                changes_files_not_open_in_server = !buffer_store
+                                    .buffer_id_for_project_path(&ProjectPath {
+                                        worktree_id,
+                                        path: Arc::from(path),
+                                    })
+                                    .and_then(|buffer_id| {
+                                        local.buffers_opened_in_servers.get(buffer_id)
+                                    })
+                                    .is_some_and(|server_ids| server_ids.contains(server_id));
+                            }
                             Some(lsp::FileEvent { uri, typ })
                         })
                         .collect(),
@@ -13998,8 +14069,57 @@ impl LspStore {
                         .notify::<lsp::notification::DidChangeWatchedFiles>(params)
                         .ok();
                 }
+                if changes_files_not_open_in_server {
+                    servers_to_pull_diagnostics.push(*server_id);
+                }
             }
         }
+
+        for server_id in servers_to_pull_diagnostics {
+            self.pull_diagnostics_after_disk_changes(server_id, cx);
+        }
+    }
+
+    /// Files a server watches changing on disk (a checkout, codegen, a package install) can
+    /// change the diagnostics of the files it has open, and a server that leaves pulling to the
+    /// client may never ask for a refresh, so its diagnostics are pulled again once the
+    /// changes settle.
+    fn pull_diagnostics_after_disk_changes(
+        &mut self,
+        server_id: LanguageServerId,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(local) = self.as_local_mut() else {
+            return;
+        };
+        let provides_pull_diagnostics = local
+            .initial_server_capabilities
+            .get(&server_id)
+            .is_some_and(|capabilities| capabilities.diagnostic_provider.is_some())
+            || local
+                .language_server_dynamic_registrations
+                .get(&server_id)
+                .and_then(|registrations| {
+                    registrations.text_documents.get("textDocument/diagnostic")
+                })
+                .is_some_and(|registrations| !registrations.is_empty());
+        if !provides_pull_diagnostics {
+            return;
+        }
+        local.diagnostics_pulls_after_disk_changes.insert(
+            server_id,
+            cx.spawn(async move |lsp_store, cx| {
+                cx.background_executor()
+                    .timer(DIAGNOSTICS_PULL_AFTER_DISK_CHANGES_DELAY)
+                    .await;
+                lsp_store
+                    .update(cx, |lsp_store, cx| {
+                        lsp_store.pull_workspace_diagnostics(server_id);
+                        drop(lsp_store.pull_document_diagnostics_for_server(server_id, None, cx));
+                    })
+                    .ok();
+            }),
+        );
     }
 
     pub fn wait_for_remote_buffer(
@@ -14437,30 +14557,41 @@ impl LspStore {
         let Some(buffer) = self.buffer_store.read(cx).get(buffer_id) else {
             return;
         };
+        for server_id in self.servers_with_inter_file_diagnostics(&buffer, cx) {
+            drop(self.pull_document_diagnostics_for_server(server_id, Some(buffer_id), cx));
+        }
+    }
+
+    /// The servers the buffer is open in whose diagnostics of other files depend on it.
+    fn servers_with_inter_file_diagnostics(
+        &self,
+        buffer: &Entity<Buffer>,
+        cx: &mut App,
+    ) -> Vec<LanguageServerId> {
         let Some(language_servers) = self
-            .language_server_ids_for_opened_buffer(buffer_id)
+            .language_server_ids_for_opened_buffer(buffer.read(cx).remote_id())
             .cloned()
         else {
-            return;
+            return Vec::new();
         };
-        for server_id in language_servers {
-            let inter_file_dependencies = self.text_document_capability_matches_for_server(
-                &buffer,
-                server_id,
-                "textDocument/diagnostic",
-                |capabilities| {
-                    capabilities
-                        .server_capabilities
-                        .diagnostic_provider
-                        .as_ref()
-                        .is_some_and(diagnostics_inter_file_dependencies)
-                },
-                cx,
-            );
-            if inter_file_dependencies {
-                let _ = self.pull_document_diagnostics_for_server(server_id, Some(buffer_id), cx);
-            }
-        }
+        language_servers
+            .into_iter()
+            .filter(|server_id| {
+                self.text_document_capability_matches_for_server(
+                    buffer,
+                    *server_id,
+                    "textDocument/diagnostic",
+                    |capabilities| {
+                        capabilities
+                            .server_capabilities
+                            .diagnostic_provider
+                            .as_ref()
+                            .is_some_and(diagnostics_inter_file_dependencies)
+                    },
+                    cx,
+                )
+            })
+            .collect()
     }
 
     fn apply_workspace_diagnostic_report(
@@ -16010,7 +16141,7 @@ impl LanguageServerWatchedPaths {
                         .await;
                     while let Some(update) = push_updates.0.next().await {
                         let action = lsp_store
-                            .update(cx, |this, _| {
+                            .update(cx, |this, cx| {
                                 let Some(local) = this.as_local_mut() else {
                                     return ControlFlow::Break(());
                                 };
@@ -16023,13 +16154,21 @@ impl LanguageServerWatchedPaths {
                                 let Some((globs, _)) = watcher.abs_paths.get_mut(&abs_path) else {
                                     return ControlFlow::Break(());
                                 };
+                                // The globs had the watched path stripped off their front, so
+                                // they match below it, and an empty one is the watched file.
                                 let matching_entries = update
                                     .into_iter()
-                                    .filter(|event| globs.is_match(&event.path))
+                                    .filter(|event| match event.path.strip_prefix(&abs_path) {
+                                        Ok(relative_path) => globs.is_match(relative_path),
+                                        // Events under a symlinked watched path arrive at the
+                                        // link's target.
+                                        Err(_) => globs.is_match(&event.path),
+                                    })
                                     .collect::<Vec<_>>();
                                 this.lsp_notify_abs_paths_changed(
                                     language_server_id,
                                     matching_entries,
+                                    cx,
                                 );
                                 ControlFlow::Continue(())
                             })

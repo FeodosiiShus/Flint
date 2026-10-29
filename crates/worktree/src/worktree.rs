@@ -4995,6 +4995,10 @@ impl BackgroundScanner {
             // standalone bare event (macOS coalescing) still triggers a rescan.
             let mut bare_dot_git_abs_paths = Vec::new();
             let mut dot_git_dirs_with_ignored_events = Vec::new();
+            // A build or a package install reports thousands of files in a few directories,
+            // and checking every ancestor of each of them for a git directory, with the
+            // scanner locked, holds back the events that follow.
+            let mut is_dot_git_by_ancestor = HashMap::<PathBuf, bool>::default();
 
             for (ix, event) in events.iter().enumerate() {
                 let abs_path = SanitizedPath::new(&event.path);
@@ -5003,7 +5007,17 @@ impl BackgroundScanner {
 
                 if self.track_git_repositories {
                     for ancestor in abs_path.as_path().ancestors() {
-                        if is_dot_git(ancestor, self.fs.as_ref()).await {
+                        let ancestor_is_dot_git = match is_dot_git_by_ancestor.get(ancestor) {
+                            Some(ancestor_is_dot_git) => *ancestor_is_dot_git,
+                            None => {
+                                let ancestor_is_dot_git =
+                                    is_dot_git(ancestor, self.fs.as_ref()).await;
+                                is_dot_git_by_ancestor
+                                    .insert(ancestor.to_path_buf(), ancestor_is_dot_git);
+                                ancestor_is_dot_git
+                            }
+                        };
+                        if ancestor_is_dot_git {
                             let path_in_git_dir = abs_path
                                 .as_path()
                                 .strip_prefix(ancestor)
