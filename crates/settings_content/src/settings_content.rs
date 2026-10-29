@@ -156,10 +156,12 @@ pub enum HideMouseMode {
 )]
 #[serde(rename_all = "snake_case")]
 pub enum ReduceMotionMode {
+    /// Follow the system's Reduce Motion accessibility setting
+    #[default]
+    System,
     /// Always reduce motion
     On,
     /// Never reduce motion
-    #[default]
     Off,
 }
 

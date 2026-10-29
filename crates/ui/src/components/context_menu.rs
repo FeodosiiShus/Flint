@@ -1,6 +1,7 @@
 use crate::{
     ButtonCommon, ButtonStyle, IconButtonShape, KeyBinding, ListItem, ListItemSpacing,
-    POPUP_MENU_METRICS, PopupRowMetrics, PopupRowStyle, Tooltip, prelude::*, utils::WithRemSize,
+    POPUP_MENU_METRICS, PopupRowMetrics, PopupRowStyle, SurfaceMotion, Tooltip, prelude::*,
+    utils::WithRemSize,
 };
 use gpui::{
     Action, Anchor, AnyElement, App, Bounds, DismissEvent, Entity, EventEmitter, FocusHandle,
@@ -2521,9 +2522,10 @@ impl Render for ContextMenu {
                 _ => None,
             };
 
+            let menu = render_menu(cx, window);
             div()
                 .relative()
-                .child(render_menu(cx, window))
+                .child(SurfaceMotion::MENU.present(("context-menu", cx.entity_id()), menu, cx))
                 // Only render the aside once we have trigger bounds to avoid flicker.
                 .when_some(trigger_position, |this, (top, height)| {
                     this.children(aside.map(|(_, aside)| {
@@ -2549,13 +2551,15 @@ impl Render for ContextMenu {
                     },
                 )
         } else {
+            let aside = aside.map(|(_, aside)| render_aside(aside, cx));
+            let menu = render_menu(cx, window);
             v_flex()
                 .w_full()
                 .relative()
                 .gap_1()
                 .justify_end()
-                .children(aside.map(|(_, aside)| render_aside(aside, cx)))
-                .child(render_menu(cx, window))
+                .children(aside)
+                .child(SurfaceMotion::MENU.present(("context-menu", cx.entity_id()), menu, cx))
                 .when_some(
                     submenu_container,
                     |this, (ix, submenu, offset, flip_left)| {

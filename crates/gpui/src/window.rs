@@ -1183,6 +1183,8 @@ pub struct Window {
     rem_size_override_stack: SmallVec<[Pixels; 8]>,
     /// How many elements that blur their backdrop enclose the element being drawn.
     glass_surface_depth: usize,
+    /// How many inert elements ([`Window::with_inert`]) enclose the element being drawn.
+    inert_depth: usize,
     glass_fills: Arc<[Hsla]>,
     keeps_glass_fills: bool,
     pub(crate) viewport_size: Size<Pixels>,
@@ -2084,6 +2086,7 @@ impl Window {
             rem_size: px(16.),
             rem_size_override_stack: SmallVec::new(),
             glass_surface_depth: 0,
+            inert_depth: 0,
             glass_fills: Arc::from([]),
             keeps_glass_fills: false,
             viewport_size: content_size,
@@ -5378,8 +5381,28 @@ impl Window {
             content_mask,
             behavior,
         };
-        self.next_frame.hitboxes.push(hitbox.clone());
+        // A hitbox the hit test never sees is never hovered, so nothing inside an inert element
+        // receives the mouse or sets the cursor, and it blocks nothing beneath it.
+        if self.inert_depth == 0 {
+            self.next_frame.hitboxes.push(hitbox.clone());
+        }
         hitbox
+    }
+
+    /// Runs `f` with the elements it lays out inert when `inert` is true: they still paint, but
+    /// the mouse passes through them to whatever lies beneath, like HTML's `inert`. A surface that
+    /// fades out after it was dismissed is drawn this way, so a click during its exit reaches the
+    /// window instead of the surface that is going away.
+    ///
+    /// This method should only be called as part of the prepaint phase of element drawing.
+    pub fn with_inert<R>(&mut self, inert: bool, f: impl FnOnce(&mut Self) -> R) -> R {
+        if !inert {
+            return f(self);
+        }
+        self.inert_depth += 1;
+        let result = f(self);
+        self.inert_depth -= 1;
+        result
     }
 
     /// Set a hitbox which will act as a control area of the platform window.

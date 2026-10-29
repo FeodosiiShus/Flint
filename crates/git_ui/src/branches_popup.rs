@@ -425,7 +425,11 @@ impl BranchesPopup {
 
 impl EventEmitter<DismissEvent> for BranchesPopup {}
 
-impl ModalView for BranchesPopup {}
+impl ModalView for BranchesPopup {
+    fn surface_ready(&self) -> bool {
+        self.gate.is_revealed()
+    }
+}
 
 impl Focusable for BranchesPopup {
     fn focus_handle(&self, cx: &App) -> FocusHandle {

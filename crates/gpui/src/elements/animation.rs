@@ -2,9 +2,9 @@ use scheduler::Instant;
 use std::{cell::Cell, rc::Rc, time::Duration};
 
 use crate::{
-    AnyElement, App, Element, ElementId, GlobalElementId, InspectorElementId, IntoElement,
-    ParentElement, SpringAnimation, SpringConfig, SpringPlayback, SpringState, SpringTarget,
-    Window,
+    AnyElement, App, Element, ElementId, Empty, GlobalElementId, InspectorElementId, IntoElement,
+    ParentElement, Pixels, Point, SpringAnimation, SpringConfig, SpringPlayback, SpringState,
+    SpringTarget, Window,
 };
 
 pub use easing::*;
@@ -496,6 +496,248 @@ impl<E: IntoElement + 'static> Element for AnimationElement<E> {
         cx: &mut App,
     ) {
         element.paint(window, cx);
+    }
+}
+
+/// How a surface comes and goes, owned by whatever presents it: it fades in while it travels from
+/// `offset` into place, starting at the first frame its content is ready, and fades out in place,
+/// inert, once the presenter says it is leaving. Only opacity and position change, so its layout
+/// and its glass stay the same throughout.
+///
+/// [`App::reduce_motion`](crate::App::reduce_motion) shows it settled at once.
+pub fn transition(id: impl Into<ElementId>, child: impl IntoElement) -> Transition {
+    Transition {
+        id: id.into(),
+        child: Some(child.into_any_element()),
+        enter: Duration::ZERO,
+        exit: Duration::ZERO,
+        easing: Rc::new(ease_out_quint()),
+        offset: Point::default(),
+        ready: true,
+        leaving_since: None,
+    }
+}
+
+/// See [`transition`].
+pub struct Transition {
+    id: ElementId,
+    child: Option<AnyElement>,
+    enter: Duration,
+    exit: Duration,
+    easing: Rc<dyn Fn(f32) -> f32>,
+    offset: Point<Pixels>,
+    ready: bool,
+    leaving_since: Option<Instant>,
+}
+
+impl Transition {
+    /// How long the surface takes to appear.
+    pub fn enter(mut self, duration: Duration) -> Self {
+        self.enter = duration;
+        self
+    }
+
+    /// How long the surface takes to fade out once it is leaving.
+    pub fn exit(mut self, duration: Duration) -> Self {
+        self.exit = duration;
+        self
+    }
+
+    /// Maps the share of the enter time that has passed to how far the surface has arrived.
+    pub fn easing(mut self, easing: impl Fn(f32) -> f32 + 'static) -> Self {
+        self.easing = Rc::new(easing);
+        self
+    }
+
+    /// Where the surface starts, relative to where it settles.
+    pub fn offset(mut self, offset: Point<Pixels>) -> Self {
+        self.offset = offset;
+        self
+    }
+
+    /// Whether the content is ready to be seen. Until it is, the surface is laid out and takes
+    /// input but draws nothing, and its enter time has not started, so content that loads after
+    /// the surface opens appears in its final form with the whole transition instead of popping
+    /// in halfway through it.
+    pub fn ready(mut self, ready: bool) -> Self {
+        self.ready = ready;
+        self
+    }
+
+    /// The moment the presenter dismissed the surface, on the executor's clock
+    /// ([`BackgroundExecutor::now`](crate::BackgroundExecutor::now)): from then on it fades out
+    /// and lets the mouse through to the window beneath it.
+    pub fn leaving_since(mut self, since: Option<Instant>) -> Self {
+        self.leaving_since = since;
+        self
+    }
+
+    /// Where the surface is in its motion, and whether that still changes.
+    fn moment(&self, shown_since: Option<Instant>, cx: &App) -> (TransitionMoment, bool) {
+        let Some(shown_since) = shown_since else {
+            return (
+                TransitionMoment {
+                    arrival: 0.,
+                    opacity: 0.,
+                },
+                false,
+            );
+        };
+        if cx.reduce_motion() {
+            let opacity = if self.leaving_since.is_some() { 0. } else { 1. };
+            return (
+                TransitionMoment {
+                    arrival: 1.,
+                    opacity,
+                },
+                false,
+            );
+        }
+        let now = cx.background_executor().now();
+        let arrived = progress(now, shown_since, self.enter);
+        let arrival = (self.easing)(arrived).clamp(0., 1.);
+        match self.leaving_since {
+            // It fades out from wherever it got to, without moving.
+            Some(leaving_since) => {
+                let left = progress(now, leaving_since, self.exit);
+                (
+                    TransitionMoment {
+                        arrival,
+                        opacity: arrival.min(1. - left),
+                    },
+                    left < 1.,
+                )
+            }
+            None => (
+                TransitionMoment {
+                    arrival,
+                    opacity: arrival,
+                },
+                arrived < 1.,
+            ),
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct TransitionMoment {
+    /// How far the surface has travelled from its offset, from 0 to 1.
+    arrival: f32,
+    opacity: f32,
+}
+
+fn progress(now: Instant, since: Instant, duration: Duration) -> f32 {
+    if duration.is_zero() {
+        return 1.;
+    }
+    (now.saturating_duration_since(since).as_secs_f32() / duration.as_secs_f32()).clamp(0., 1.)
+}
+
+#[derive(Default)]
+struct TransitionState {
+    /// The first frame the content was ready in.
+    shown_since: Option<Instant>,
+}
+
+#[doc(hidden)]
+pub struct TransitionFrame {
+    child: AnyElement,
+    moment: TransitionMoment,
+}
+
+impl IntoElement for Transition {
+    type Element = Self;
+
+    fn into_element(self) -> Self::Element {
+        self
+    }
+}
+
+impl Element for Transition {
+    type RequestLayoutState = TransitionFrame;
+    type PrepaintState = ();
+
+    fn id(&self) -> Option<ElementId> {
+        Some(self.id.clone())
+    }
+
+    fn source_location(&self) -> Option<&'static core::panic::Location<'static>> {
+        None
+    }
+
+    fn request_layout(
+        &mut self,
+        global_id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (crate::LayoutId, Self::RequestLayoutState) {
+        let Some(global_id) = global_id else {
+            let mut child = self
+                .child
+                .take()
+                .unwrap_or_else(|| Empty.into_any_element());
+            return (
+                child.request_layout(window, cx),
+                TransitionFrame {
+                    child,
+                    moment: TransitionMoment {
+                        arrival: 1.,
+                        opacity: 1.,
+                    },
+                },
+            );
+        };
+        window.with_element_state(global_id, |state: Option<TransitionState>, window| {
+            let mut state = state.unwrap_or_default();
+            if self.ready && state.shown_since.is_none() {
+                state.shown_since = Some(cx.background_executor().now());
+            }
+            let (moment, changing) = self.moment(state.shown_since, cx);
+            if changing {
+                window.request_animation_frame();
+            }
+            let mut child = self
+                .child
+                .take()
+                .unwrap_or_else(|| Empty.into_any_element());
+            let layout_id = child.request_layout(window, cx);
+            ((layout_id, TransitionFrame { child, moment }), state)
+        })
+    }
+
+    fn prepaint(
+        &mut self,
+        _id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        _bounds: crate::Bounds<Pixels>,
+        frame: &mut Self::RequestLayoutState,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Self::PrepaintState {
+        let travel = self.offset * (1. - frame.moment.arrival);
+        window.with_inert(self.leaving_since.is_some(), |window| {
+            window.with_element_offset(travel, |window| {
+                window.with_element_opacity(Some(frame.moment.opacity), |window| {
+                    frame.child.prepaint(window, cx)
+                })
+            })
+        });
+    }
+
+    fn paint(
+        &mut self,
+        _id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        _bounds: crate::Bounds<Pixels>,
+        frame: &mut Self::RequestLayoutState,
+        _: &mut Self::PrepaintState,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        window.with_element_opacity(Some(frame.moment.opacity), |window| {
+            frame.child.paint(window, cx)
+        });
     }
 }
 
@@ -1024,5 +1266,226 @@ mod tests {
 
         assert_eq!(simulate_next_frame(&window, cx), 0);
         assert_eq!(*rendered_deltas.borrow(), vec![0.0]);
+    }
+
+    struct TransitionTestView {
+        ready: bool,
+        leaving_since: Option<Instant>,
+        clicks_beneath: Rc<RefCell<usize>>,
+    }
+
+    impl Render for TransitionTestView {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            let clicks_beneath = self.clicks_beneath.clone();
+            div()
+                .relative()
+                .size_full()
+                .child(
+                    div()
+                        .id("beneath")
+                        .absolute()
+                        .top(px(0.))
+                        .left(px(0.))
+                        .size(px(80.))
+                        .on_click(move |_, _, _| *clicks_beneath.borrow_mut() += 1),
+                )
+                .child(
+                    div().absolute().top(px(20.)).left(px(20.)).child(
+                        transition(
+                            "surface",
+                            div().id("surface").occlude().size(px(40.)).bg(crate::red()),
+                        )
+                        .enter(Duration::from_millis(100))
+                        .exit(Duration::from_millis(100))
+                        .offset(crate::point(px(0.), px(-10.)))
+                        .ready(self.ready)
+                        .leaving_since(self.leaving_since),
+                    ),
+                )
+        }
+    }
+
+    /// The red surface as painted: its top edge and its opacity.
+    fn painted_surface(cx: &mut crate::VisualTestContext) -> Option<(f32, f32)> {
+        cx.update(|window, cx| {
+            window.refresh();
+            window.draw(cx).clear(cx);
+            window
+                .painted_quads()
+                .into_iter()
+                .find(|quad| {
+                    quad.background
+                        .as_solid()
+                        .is_some_and(|color| color.h == crate::red().h && color.s > 0.5)
+                })
+                .map(|quad| {
+                    let color = quad.background.as_solid().unwrap_or_default();
+                    (quad.bounds.origin.y.0 / window.scale_factor(), color.a)
+                })
+        })
+    }
+
+    fn open_transition(
+        cx: &mut TestAppContext,
+        ready: bool,
+    ) -> (
+        crate::Entity<TransitionTestView>,
+        &mut crate::VisualTestContext,
+        Rc<RefCell<usize>>,
+    ) {
+        let clicks_beneath = Rc::new(RefCell::new(0));
+        let (view, cx) = cx.add_window_view({
+            let clicks_beneath = clicks_beneath.clone();
+            move |_, _| TransitionTestView {
+                ready,
+                leaving_since: None,
+                clicks_beneath,
+            }
+        });
+        (view, cx, clicks_beneath)
+    }
+
+    #[gpui::test]
+    fn test_transition_fades_in_while_it_travels_into_place(cx: &mut TestAppContext) {
+        let (_, cx, _) = open_transition(cx, true);
+        assert!(
+            painted_surface(cx).is_none_or(|(_, opacity)| opacity < 0.05),
+            "the first frame starts transparent"
+        );
+
+        cx.executor().advance_clock(Duration::from_millis(30));
+        let (top, opacity) = painted_surface(cx).expect("the surface is on its way in");
+        assert!(
+            opacity > 0.3 && opacity < 1. && top > 10. && top < 20.,
+            "halfway it is partly there: top {top}, opacity {opacity}"
+        );
+
+        cx.executor().advance_clock(Duration::from_millis(100));
+        assert_eq!(
+            painted_surface(cx),
+            Some((20., 1.)),
+            "once the enter time has passed it is settled"
+        );
+    }
+
+    #[gpui::test]
+    fn test_transition_waits_until_its_content_is_ready(cx: &mut TestAppContext) {
+        let (view, cx, _) = open_transition(cx, false);
+        cx.executor().advance_clock(Duration::from_millis(500));
+        assert!(
+            painted_surface(cx).is_none_or(|(_, opacity)| opacity == 0.),
+            "content that is still loading is not drawn"
+        );
+
+        view.update(cx, |view, cx| {
+            view.ready = true;
+            cx.notify();
+        });
+        let (_, opacity) = painted_surface(cx).unwrap_or((0., 0.));
+        assert!(
+            opacity < 0.05,
+            "the time it waited does not count: it comes in from the start, not halfway: {opacity}"
+        );
+        cx.executor().advance_clock(Duration::from_millis(150));
+        assert_eq!(painted_surface(cx), Some((20., 1.)));
+    }
+
+    #[gpui::test]
+    fn test_a_leaving_transition_fades_out_and_lets_the_mouse_through(cx: &mut TestAppContext) {
+        let (view, cx, clicks_beneath) = open_transition(cx, true);
+        cx.executor().advance_clock(Duration::from_millis(200));
+        assert_eq!(painted_surface(cx), Some((20., 1.)));
+
+        cx.simulate_click(crate::point(px(30.), px(30.)), crate::Modifiers::none());
+        assert_eq!(
+            *clicks_beneath.borrow(),
+            0,
+            "a settled surface takes the clicks on it"
+        );
+
+        let now = cx.executor().now();
+        view.update(cx, |view, cx| {
+            view.leaving_since = Some(now);
+            cx.notify();
+        });
+        cx.executor().advance_clock(Duration::from_millis(50));
+        let (top, opacity) = painted_surface(cx).expect("the surface is fading out");
+        assert!(
+            opacity > 0. && opacity < 1. && top == 20.,
+            "it fades out where it is: top {top}, opacity {opacity}"
+        );
+        cx.simulate_click(crate::point(px(30.), px(30.)), crate::Modifiers::none());
+        assert_eq!(
+            *clicks_beneath.borrow(),
+            1,
+            "a click on a surface that is going away reaches what lies beneath it"
+        );
+
+        cx.executor().advance_clock(Duration::from_millis(100));
+        assert!(
+            painted_surface(cx).is_none_or(|(_, opacity)| opacity == 0.),
+            "once the exit time has passed nothing of it is drawn"
+        );
+    }
+
+    #[gpui::test]
+    fn test_transition_with_reduced_motion_appears_settled(cx: &mut TestAppContext) {
+        cx.update(|cx| cx.set_reduce_motion(true));
+        let (_, cx, _) = open_transition(cx, true);
+        assert_eq!(painted_surface(cx), Some((20., 1.)));
+    }
+
+    struct RedSquare;
+
+    impl Render for RedSquare {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div().size(px(40.)).bg(crate::red())
+        }
+    }
+
+    struct CachedContentView {
+        content: crate::Entity<RedSquare>,
+    }
+
+    impl Render for CachedContentView {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div().absolute().top(px(20.)).left(px(20.)).child(
+                transition(
+                    "surface",
+                    crate::AnyView::from(self.content.clone())
+                        .cached(crate::StyleRefinement::default().size(px(40.))),
+                )
+                .enter(Duration::from_millis(100)),
+            )
+        }
+    }
+
+    #[gpui::test]
+    fn test_a_cached_view_fades_in_with_its_surface(cx: &mut TestAppContext) {
+        let (_, cx) = cx.add_window_view(|_, cx| CachedContentView {
+            content: cx.new(|_| RedSquare),
+        });
+        let mut opacities = Vec::new();
+        for _ in 0..3 {
+            cx.executor().advance_clock(Duration::from_millis(25));
+            opacities.push(
+                cx.update(|window, cx| {
+                    window.draw(cx).clear(cx);
+                    window.painted_quads()
+                })
+                .into_iter()
+                .find_map(|quad| {
+                    quad.background
+                        .as_solid()
+                        .filter(|color| color.s > 0.5)
+                        .map(|color| color.a)
+                })
+                .unwrap_or(0.),
+            );
+        }
+        assert!(
+            opacities.windows(2).all(|pair| pair[0] < pair[1]),
+            "a view whose primitives were cached in an earlier frame still follows the fade: {opacities:?}"
+        );
     }
 }

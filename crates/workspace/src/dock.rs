@@ -18,7 +18,7 @@ use settings::{
 };
 use std::sync::Arc;
 use ui::{
-    BackgroundImageArea, BackgroundImageTarget, ContextMenu, StyledSurface as _,
+    BackgroundImageArea, BackgroundImageTarget, ContextMenu, StyledSurface as _, SurfaceMotion,
     background_image_layer, prelude::*, tool_window_is_glass,
 };
 use util::ResultExt as _;
@@ -345,6 +345,9 @@ pub struct Dock {
     restoration: DockRestoreState,
     zoom_layer_open: bool,
     modal_layer: Entity<ModalLayer>,
+    /// How many times the user opened the dock, which tells each opening's motion from the last.
+    /// A dock that a restored workspace opens has none and shows without motion.
+    openings: usize,
     _subscriptions: [Subscription; 2],
 }
 
@@ -530,6 +533,7 @@ impl Dock {
                 restoration: DockRestoreState::Restoring { pending: None },
                 zoom_layer_open: false,
                 modal_layer,
+                openings: 0,
             }
         });
 
@@ -645,9 +649,26 @@ impl Dock {
         self.active_panel_index
     }
 
+    /// The island of the open tool window, sliding in from the dock's edge when the user just
+    /// opened it.
+    fn present_tool_window(&self, island: impl IntoElement, cx: &App) -> AnyElement {
+        if self.openings == 0 {
+            return island.into_any_element();
+        }
+        let from = match self.position {
+            DockPosition::Left => AnimationDirection::FromLeft,
+            DockPosition::Right => AnimationDirection::FromRight,
+            DockPosition::Bottom => AnimationDirection::FromBottom,
+        };
+        SurfaceMotion::tool_window(from).present(("tool-window-opening", self.openings), island, cx)
+    }
+
     pub fn set_open(&mut self, open: bool, window: &mut Window, cx: &mut Context<Self>) {
         if open != self.is_open {
             self.restoration.discard_pending();
+            if open {
+                self.openings += 1;
+            }
         }
         self.set_open_internal(open, window, cx);
     }
@@ -1471,48 +1492,47 @@ impl Render for Dock {
                 let content_inset =
                     (ISLAND_TOOL_WINDOW_INSET - islands.half_gap()).max(Pixels::ZERO);
                 let glass = tool_window_is_glass(entry.panel.glass_background(cx), cx);
+                let island = div()
+                    .debug_selector(move || format!("tool_window_{position_key}"))
+                    .group(TOOL_WINDOW_GROUP)
+                    .flex()
+                    .flex_col()
+                    .size_full()
+                    .rounded(islands.corner_radius)
+                    .overflow_hidden()
+                    // Glass samples what the window has already painted under the
+                    // island, which the frame's own background and image are. A fill
+                    // or image here would put flat colour under the glass and flatten
+                    // the material.
+                    .when(!glass, |this| {
+                        this.bg(panel_background).child(background_image_layer(
+                            BackgroundImageTarget::EditorAndTools,
+                            BackgroundImageArea::Window,
+                            panel_background,
+                            true,
+                            gpui::Corners::all(islands.corner_radius),
+                        ))
+                    })
+                    .child({
+                        let surface = div().flex().flex_col().size_full();
+                        let surface = if glass {
+                            surface.tool_window_surface(islands.corner_radius, cx)
+                        } else {
+                            surface.rounded(islands.corner_radius)
+                        };
+                        surface.child(
+                            div()
+                                .flex()
+                                .flex_col()
+                                .size_full()
+                                .p(content_inset)
+                                .children(header)
+                                .child(panel_content),
+                        )
+                    });
                 return dock_panel
                     .p(islands.half_gap())
-                    .child(
-                        div()
-                            .debug_selector(move || format!("tool_window_{position_key}"))
-                            .group(TOOL_WINDOW_GROUP)
-                            .flex()
-                            .flex_col()
-                            .size_full()
-                            .rounded(islands.corner_radius)
-                            .overflow_hidden()
-                            // Glass samples what the window has already painted under the
-                            // island, which the frame's own background and image are. A fill
-                            // or image here would put flat colour under the glass and flatten
-                            // the material.
-                            .when(!glass, |this| {
-                                this.bg(panel_background).child(background_image_layer(
-                                    BackgroundImageTarget::EditorAndTools,
-                                    BackgroundImageArea::Window,
-                                    panel_background,
-                                    true,
-                                    gpui::Corners::all(islands.corner_radius),
-                                ))
-                            })
-                            .child({
-                                let surface = div().flex().flex_col().size_full();
-                                let surface = if glass {
-                                    surface.tool_window_surface(islands.corner_radius, cx)
-                                } else {
-                                    surface.rounded(islands.corner_radius)
-                                };
-                                surface.child(
-                                    div()
-                                        .flex()
-                                        .flex_col()
-                                        .size_full()
-                                        .p(content_inset)
-                                        .children(header)
-                                        .child(panel_content),
-                                )
-                            }),
-                    )
+                    .child(self.present_tool_window(island, cx))
                     .when(self.resizable(cx), |this| {
                         this.child(create_resize_handle())
                     });

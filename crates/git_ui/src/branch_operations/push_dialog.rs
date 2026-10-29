@@ -596,7 +596,11 @@ impl PushDialog {
 
 impl EventEmitter<DismissEvent> for PushDialog {}
 
-impl ModalView for PushDialog {}
+impl ModalView for PushDialog {
+    fn surface_ready(&self) -> bool {
+        self.gate.is_revealed()
+    }
+}
 
 impl Focusable for PushDialog {
     fn focus_handle(&self, cx: &App) -> FocusHandle {

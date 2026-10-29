@@ -530,6 +530,12 @@ pub trait Platform: 'static {
         false
     }
 
+    /// Whether the user asked the system to keep motion to a minimum
+    /// (macOS: Accessibility > Display > Reduce motion).
+    fn should_reduce_motion(&self) -> bool {
+        false
+    }
+
     /// Whether windows draw glass surfaces with the system's own material (macOS 26 Liquid
     /// Glass) instead of the renderer's emulation, so a surface can leave its material to it.
     fn supports_native_glass(&self) -> bool {

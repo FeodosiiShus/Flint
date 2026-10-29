@@ -304,6 +304,9 @@ struct ViewElementCacheKey {
     content_mask: ContentMask<Pixels>,
     text_style: TextStyle,
     on_glass_surface: bool,
+    /// The opacity the view was painted under: a surface fading in or out repaints it, or its
+    /// cached primitives would keep the opacity of the frame they were recorded in.
+    opacity: f32,
 }
 
 impl<V: View> Element for ViewElement<V> {
@@ -482,12 +485,14 @@ fn prepaint_view(
                 let content_mask = window.content_mask();
                 let text_style = window.text_style();
                 let on_glass_surface = window.on_glass_surface();
+                let opacity = window.element_opacity();
 
                 if let Some(mut element_state) = element_state
                     && element_state.cache_key.bounds == bounds
                     && element_state.cache_key.content_mask == content_mask
                     && element_state.cache_key.text_style == text_style
                     && element_state.cache_key.on_glass_surface == on_glass_surface
+                    && element_state.cache_key.opacity == opacity
                     && !window.dirty_views.contains(&entity_id)
                     && !window.refreshing
                 {
@@ -524,6 +529,7 @@ fn prepaint_view(
                             content_mask,
                             text_style,
                             on_glass_surface,
+                            opacity,
                         },
                     },
                 )

@@ -1257,6 +1257,14 @@ impl Platform for MacPlatform {
         }
     }
 
+    fn should_reduce_motion(&self) -> bool {
+        unsafe {
+            let workspace: id = msg_send![class!(NSWorkspace), sharedWorkspace];
+            let reduce: BOOL = msg_send![workspace, accessibilityDisplayShouldReduceMotion];
+            reduce == YES
+        }
+    }
+
     fn supports_native_glass(&self) -> bool {
         crate::window::native_glass_available()
     }

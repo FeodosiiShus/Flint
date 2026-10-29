@@ -1,8 +1,10 @@
+use std::time::Instant;
+
 use gpui::{
     AnyView, App, DismissEvent, Entity, EventEmitter, FocusHandle, Global, ManagedView,
-    MouseButton, Point, Subscription, WeakFocusHandle, anchored,
+    MouseButton, Point, Subscription, Task, WeakFocusHandle, anchored,
 };
-use ui::prelude::*;
+use ui::{SurfaceMotion, prelude::*, surfaces_move};
 
 #[derive(Debug)]
 pub enum DismissDecision {
@@ -66,6 +68,12 @@ pub trait ModalView: ManagedView {
     fn anchor_position(&self) -> Option<Point<Pixels>> {
         None
     }
+
+    /// Whether the content the modal loads after it opens is in place (see [`ui::ReadyGate`]):
+    /// the modal appears from the frame it is, so it never comes in half-loaded.
+    fn surface_ready(&self) -> bool {
+        true
+    }
 }
 
 trait ModalViewHandle {
@@ -76,6 +84,7 @@ trait ModalViewHandle {
     fn fade_out_background(&self, cx: &mut App) -> bool;
     fn render_bare(&self, cx: &mut App) -> bool;
     fn anchor_position(&self, cx: &App) -> Option<Point<Pixels>>;
+    fn surface_ready(&self, cx: &App) -> bool;
 }
 
 impl<V: ModalView> ModalViewHandle for Entity<V> {
@@ -108,6 +117,10 @@ impl<V: ModalView> ModalViewHandle for Entity<V> {
     fn anchor_position(&self, cx: &App) -> Option<Point<Pixels>> {
         self.read(cx).anchor_position()
     }
+
+    fn surface_ready(&self, cx: &App) -> bool {
+        self.read(cx).surface_ready()
+    }
 }
 
 pub struct ActiveModal {
@@ -115,10 +128,26 @@ pub struct ActiveModal {
     _subscriptions: [Subscription; 2],
     previous_focus_handle: Option<FocusHandle>,
     focus_handle: FocusHandle,
+    /// Tells this showing of the modal from earlier ones, so it comes in with its own motion
+    /// even when the same view is shown again.
+    presentation: usize,
+}
+
+/// How a dismissed modal was placed, kept while it fades out.
+struct ClosingModal {
+    view: AnyView,
+    presentation: usize,
+    render_bare: bool,
+    fade_out_background: bool,
+    anchor_position: Option<Point<Pixels>>,
+    since: Instant,
+    _removal: Task<()>,
 }
 
 pub struct ModalLayer {
     active_modal: Option<ActiveModal>,
+    closing_modal: Option<ClosingModal>,
+    presentations: usize,
     // Kept alive (hidden) rather than dropped on dismissal so `ReopenLastPicker`
     // can reveal it again with its exact prior state. Left intact across
     // non-reopenable modals (e.g. the command palette), which may trigger the reopen.
@@ -145,6 +174,8 @@ impl ModalLayer {
     pub fn new() -> Self {
         Self {
             active_modal: None,
+            closing_modal: None,
+            presentations: 0,
             stashed_modal: None,
             reveal_stash_when_free: false,
             dismiss_on_focus_lost: false,
@@ -192,6 +223,16 @@ impl ModalLayer {
         let focus_handle = cx.focus_handle();
         let modal_focus_handle = modal.focus_handle(cx);
         let dismiss_subscription = modal.subscribe_dismiss(window, cx);
+        // A view is drawn once per frame, so a modal shown again while it still fades out stops
+        // fading and comes back in.
+        if self
+            .closing_modal
+            .as_ref()
+            .is_some_and(|closing| closing.view.entity_id() == modal.view().entity_id())
+        {
+            self.closing_modal = None;
+        }
+        self.presentations += 1;
         self.active_modal = Some(ActiveModal {
             modal,
             _subscriptions: [
@@ -204,6 +245,7 @@ impl ModalLayer {
             ],
             previous_focus_handle,
             focus_handle,
+            presentation: self.presentations,
         });
         cx.defer_in(window, move |_, window, cx| {
             window.focus(&modal_focus_handle, cx);
@@ -260,6 +302,7 @@ impl ModalLayer {
 
         if let Some(active_modal) = self.active_modal.take() {
             let reopenable = focus_handle_is_reopenable(&active_modal.modal.focus_handle(cx), cx);
+            self.fade_out(&active_modal, cx);
             if let Some(previous_focus) = active_modal.previous_focus_handle
                 && active_modal.focus_handle.contains_focused(window, cx)
             {
@@ -280,6 +323,31 @@ impl ModalLayer {
         true
     }
 
+    /// Keeps a dismissed modal on screen, inert, while it fades out.
+    fn fade_out(&mut self, modal: &ActiveModal, cx: &mut Context<Self>) {
+        let exit = SurfaceMotion::DIALOG.exit;
+        if !surfaces_move(cx) || exit.is_zero() {
+            return;
+        }
+        let removal = cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(exit).await;
+            this.update(cx, |this, cx| {
+                this.closing_modal = None;
+                cx.notify();
+            })
+            .ok();
+        });
+        self.closing_modal = Some(ClosingModal {
+            view: modal.modal.view(),
+            presentation: modal.presentation,
+            render_bare: modal.modal.render_bare(cx),
+            fade_out_background: modal.modal.fade_out_background(cx),
+            anchor_position: modal.modal.anchor_position(cx),
+            since: cx.background_executor().now(),
+            _removal: removal,
+        });
+    }
+
     /// Returns the currently active modal if it is of type `V`.
     pub fn active_modal<V>(&self) -> Option<Entity<V>>
     where
@@ -296,59 +364,144 @@ impl ModalLayer {
 
 impl Render for ModalLayer {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let closing = self.closing_modal.as_ref().map(|closing| {
+            let placement = ModalPlacement {
+                view: closing.view.clone(),
+                presentation: closing.presentation,
+                render_bare: closing.render_bare,
+                fade_out_background: closing.fade_out_background,
+                anchor_position: closing.anchor_position,
+                ready: true,
+                leaving_since: Some(closing.since),
+            };
+            // A modal that is going away blocks nothing: the window beneath takes the clicks.
+            placement.render(div().absolute().size_full().inset_0(), None, cx)
+        });
+
         let Some(active_modal) = &self.active_modal else {
-            return div().into_any_element();
+            return closing.unwrap_or_else(|| div().into_any_element());
         };
 
-        if active_modal.modal.render_bare(cx) {
-            return active_modal.modal.view().into_any_element();
+        let placement = ModalPlacement {
+            view: active_modal.modal.view(),
+            presentation: active_modal.presentation,
+            render_bare: active_modal.modal.render_bare(cx),
+            fade_out_background: active_modal.modal.fade_out_background(cx),
+            anchor_position: active_modal.modal.anchor_position(cx),
+            ready: active_modal.modal.surface_ready(cx),
+            leaving_since: None,
+        };
+        let active = if placement.render_bare {
+            placement.render(div().absolute().size_full().inset_0(), None, cx)
+        } else {
+            placement.render(
+                div()
+                    .absolute()
+                    .size_full()
+                    .inset_0()
+                    .occlude()
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|this, _, window, cx| {
+                            this.hide_modal(window, cx);
+                        }),
+                    ),
+                Some(&active_modal.focus_handle),
+                cx,
+            )
+        };
+        match closing {
+            Some(closing) => div()
+                .absolute()
+                .size_full()
+                .inset_0()
+                .child(closing)
+                .child(active)
+                .into_any_element(),
+            None => active,
+        }
+    }
+}
+
+/// Where and how one showing of a modal is drawn, whether it is coming in or fading out.
+struct ModalPlacement {
+    view: AnyView,
+    presentation: usize,
+    render_bare: bool,
+    fade_out_background: bool,
+    anchor_position: Option<Point<Pixels>>,
+    ready: bool,
+    leaving_since: Option<Instant>,
+}
+
+impl ModalPlacement {
+    fn render(self, layer: Div, focus_handle: Option<&FocusHandle>, cx: &App) -> AnyElement {
+        let motion = SurfaceMotion::DIALOG;
+        let presentation = self.presentation;
+        if self.render_bare {
+            return layer
+                .child(motion.present_when_ready(
+                    ("modal", presentation),
+                    self.view,
+                    self.ready,
+                    self.leaving_since,
+                    cx,
+                ))
+                .into_any_element();
         }
 
-        let modal_content = h_flex()
-            .occlude()
-            .child(active_modal.modal.view())
-            .on_mouse_down(MouseButton::Left, |_, _, cx| {
-                cx.stop_propagation();
-            });
-
-        div()
-            .absolute()
-            .size_full()
-            .inset_0()
-            .occlude()
-            .when(active_modal.modal.fade_out_background(cx), |this| {
-                let mut background = cx.theme().colors().elevated_surface_background;
-                background.fade_out(0.2);
-                this.bg(background)
-            })
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(|this, _, window, cx| {
-                    this.hide_modal(window, cx);
+        let modal_content = motion.present_when_ready(
+            ("modal", presentation),
+            h_flex()
+                .occlude()
+                .child(self.view)
+                .on_mouse_down(MouseButton::Left, |_, _, cx| {
+                    cx.stop_propagation();
                 }),
+            self.ready,
+            self.leaving_since,
+            cx,
+        );
+        // The wash fades with the modal but stays where it is: it covers the whole window.
+        let wash = self.fade_out_background.then(|| {
+            let mut background = cx.theme().colors().elevated_surface_background;
+            background.fade_out(0.2);
+            SurfaceMotion {
+                offset: Point::default(),
+                ..motion
+            }
+            .present_when_ready(
+                ("modal-wash", presentation),
+                div().absolute().size_full().inset_0().bg(background),
+                self.ready,
+                self.leaving_since,
+                cx,
             )
-            .map(|this| match active_modal.modal.anchor_position(cx) {
-                Some(position) => this.child(
-                    anchored()
-                        .position(position)
-                        .anchor(gpui::Anchor::TopLeft)
-                        .snap_to_window_with_margin(px(8.))
-                        .child(
-                            div()
-                                .track_focus(&active_modal.focus_handle)
-                                .child(modal_content),
-                        ),
-                ),
-                None => this.child(
-                    v_flex()
-                        .h(px(0.0))
-                        .top_20()
-                        .items_center()
-                        .track_focus(&active_modal.focus_handle)
+        });
+        let placed = match self.anchor_position {
+            Some(position) => anchored()
+                .position(position)
+                .anchor(gpui::Anchor::TopLeft)
+                .snap_to_window_with_margin(px(8.))
+                .child(
+                    div()
+                        .when_some(focus_handle, |this, focus_handle| {
+                            this.track_focus(focus_handle)
+                        })
                         .child(modal_content),
-                ),
-            })
-            .into_any_element()
+                )
+                .into_any_element(),
+            None => v_flex()
+                .h(px(0.0))
+                .top_20()
+                .items_center()
+                .when_some(focus_handle, |this, focus_handle| {
+                    this.track_focus(focus_handle)
+                })
+                .child(modal_content)
+                .into_any_element(),
+        };
+        layer.children(wash).child(placed).into_any_element()
     }
 }
 

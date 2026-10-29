@@ -3,7 +3,8 @@ use std::rc::Rc;
 
 use crate::prelude::*;
 use crate::{
-    Color, KeyBinding, Label, LabelSize, TOOLTIP_CURSOR_OFFSET, TOOLTIP_METRICS, h_flex, v_flex,
+    Color, KeyBinding, Label, LabelSize, SurfaceMotion, TOOLTIP_CURSOR_OFFSET, TOOLTIP_METRICS,
+    h_flex, v_flex,
 };
 use gpui::{Action, AnyElement, AnyView, AppContext, FocusHandle, IntoElement, Render};
 
@@ -229,7 +230,7 @@ where
     let colors = app.theme().colors();
 
     // Keeps the tooltip clear of the pointer, so it never reads as part of the hovered control.
-    div().pl_2().pt(TOOLTIP_CURSOR_OFFSET).child(
+    let tooltip = div().pl_2().pt(TOOLTIP_CURSOR_OFFSET).child(
         v_flex()
             .tooltip_surface(app)
             .font(ui_font)
@@ -239,7 +240,9 @@ where
             .pb(TOOLTIP_METRICS.padding_bottom)
             .px(TOOLTIP_METRICS.padding_x)
             .map(|el| f(el, cx)),
-    )
+    );
+    // Every tooltip is a view of its own, so the motion runs once each time one shows.
+    SurfaceMotion::TOOLTIP.present("tooltip-motion", tooltip, (*cx).borrow())
 }
 
 pub struct LinkPreview {

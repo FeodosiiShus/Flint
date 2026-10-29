@@ -1809,6 +1809,12 @@ impl App {
         self.platform.should_reduce_transparency()
     }
 
+    /// Whether the user asked the system to keep motion to a minimum. [`Self::reduce_motion`] is
+    /// what animations follow; an application decides whether it takes the system's choice.
+    pub fn system_prefers_reduced_motion(&self) -> bool {
+        self.platform.should_reduce_motion()
+    }
+
     /// Whether windows draw glass surfaces with the system's own material instead of the
     /// renderer's emulation.
     pub fn supports_native_glass(&self) -> bool {

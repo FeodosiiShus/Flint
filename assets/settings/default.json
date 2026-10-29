@@ -401,14 +401,17 @@
   //    "on_typing_and_action"
   "hide_mouse": "on_typing_and_action",
   // Whether to reduce non-essential motion in the UI, such as loading
-  // spinners and pulsating labels, by rendering them in a static state.
+  // spinners, pulsating labels and the way popups, dialogs, notifications
+  // and tool windows come and go, by rendering them in a static state.
   //
-  // May take 2 values:
-  // 1. Always reduce motion:
+  // May take 3 values:
+  // 1. Follow macOS System Settings > Accessibility > Display > Reduce motion:
+  //    "system"
+  // 2. Always reduce motion:
   //    "on"
-  // 2. Never reduce motion:
+  // 3. Never reduce motion:
   //    "off"
-  "reduce_motion": "off",
+  "reduce_motion": "system",
   // Determines whether the focused panel follows the mouse location.
   "focus_follows_mouse": {
     "enabled": false,

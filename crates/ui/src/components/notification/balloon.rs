@@ -3,7 +3,7 @@ use smallvec::SmallVec;
 
 use crate::{
     BALLOON_CONTENT_INSETS, BALLOON_METRICS, BalloonLayoutMetrics, CloseButton, CloseButtonSize,
-    prelude::*,
+    SurfaceMotion, prelude::*,
 };
 
 const MAX_MESSAGE_HEIGHT_FRACTION: f32 = 0.4;
@@ -182,7 +182,7 @@ impl RenderOnce for Balloon {
                 )
             });
 
-        h_flex()
+        let balloon = h_flex()
             .id(self.id)
             .group(BALLOON_HOVER_GROUP)
             .occlude()
@@ -231,7 +231,10 @@ impl RenderOnce for Balloon {
                         )
                     }),
             )
-            .child(close_column)
+            .child(close_column);
+        // Each notification draws its balloon in a view of its own, so the motion runs once per
+        // notification.
+        SurfaceMotion::BALLOON.present("balloon-motion", balloon, cx)
     }
 }
 

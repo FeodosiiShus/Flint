@@ -694,3 +694,118 @@ async fn the_empty_breadcrumb_strip_is_solid_and_does_not_show_the_wallpaper(
         "an empty strip that shows the wallpaper like the editor reads as a gap between the editor and the tool window"
     );
 }
+
+/// The opacity of the glass of the surface tagged `selector`: 0 when it draws nothing yet.
+fn glass_opacity_of(project: &mut Project, selector: &'static str) -> f32 {
+    project.cx.update(|window, cx| window.draw(cx).clear(cx));
+    let Some(surface) = project.cx.debug_bounds(selector) else {
+        return 0.;
+    };
+    let (scale, backdrops) = project
+        .cx
+        .update(|window, _| (window.scale_factor(), window.painted_backdrops()));
+    let surface = surface.scale(scale);
+    backdrops
+        .iter()
+        .filter(|backdrop| {
+            (backdrop.bounds.origin.x.0 - surface.origin.x.0).abs() < 1.
+                && (backdrop.bounds.origin.y.0 - surface.origin.y.0).abs() < 1.
+                && (backdrop.bounds.size.width.0 - surface.size.width.0).abs() < 1.
+        })
+        .map(|backdrop| backdrop.opacity)
+        .fold(0., f32::max)
+}
+
+#[gpui::test]
+async fn surfaces_come_in_and_leave_with_their_motion(cx: &mut TestAppContext) {
+    let mut project = open_project(cx).await;
+    project
+        .cx
+        .update(|_, cx| ui::enable_surface_motion(true, cx));
+    let popup = SurfaceKind::Popup.debug_selector();
+
+    project
+        .workspace
+        .update_in(&mut project.cx, |workspace, window, cx| {
+            git_ui::branches_popup::open_modal(workspace, window, cx)
+        });
+    project.cx.run_until_parked();
+    let first_frame = glass_opacity_of(&mut project, popup);
+    assert!(
+        first_frame < 0.5,
+        "the branches popup starts to appear, it does not pop in: {first_frame}"
+    );
+    project
+        .cx
+        .executor()
+        .advance_clock(std::time::Duration::from_millis(60));
+    let on_its_way = glass_opacity_of(&mut project, popup);
+    assert!(
+        on_its_way > first_frame && on_its_way < 1.,
+        "the popup fades in over its enter time: {first_frame} then {on_its_way}"
+    );
+    project
+        .cx
+        .executor()
+        .advance_clock(std::time::Duration::from_millis(400));
+    assert_eq!(glass_opacity_of(&mut project, popup), 1., "then it settles");
+
+    project.cx.dispatch_action(menu::Cancel);
+    project.cx.run_until_parked();
+    project
+        .cx
+        .executor()
+        .advance_clock(std::time::Duration::from_millis(40));
+    let leaving = glass_opacity_of(&mut project, popup);
+    assert!(
+        leaving > 0. && leaving < 1.,
+        "a dismissed popup fades out instead of vanishing: {leaving}"
+    );
+    project
+        .cx
+        .executor()
+        .advance_clock(std::time::Duration::from_millis(400));
+    project.cx.run_until_parked();
+    assert_eq!(
+        glass_opacity_of(&mut project, popup),
+        0.,
+        "after its exit time nothing of it is left"
+    );
+
+    project
+        .workspace
+        .update_in(&mut project.cx, |workspace, window, cx| {
+            workspace.close_all_docks(window, cx);
+        });
+    project.cx.run_until_parked();
+    project
+        .workspace
+        .update_in(&mut project.cx, |workspace, window, cx| {
+            workspace.focus_panel::<git_ui::git_panel::GitPanel>(window, cx);
+        });
+    project.cx.run_until_parked();
+    let island = "tool_window_bottom";
+    let opening = glass_opacity_of(&mut project, island);
+    assert!(
+        opening < 0.5,
+        "an opened tool window slides in rather than appearing at once: {opening}"
+    );
+    project
+        .cx
+        .executor()
+        .advance_clock(std::time::Duration::from_millis(400));
+    assert_eq!(glass_opacity_of(&mut project, island), 1.);
+
+    project.cx.update(|_, cx| cx.set_reduce_motion(true));
+    project
+        .workspace
+        .update_in(&mut project.cx, |workspace, window, cx| {
+            git_ui::branches_popup::open_modal(workspace, window, cx)
+        });
+    project.cx.run_until_parked();
+    assert_eq!(
+        glass_opacity_of(&mut project, popup),
+        1.,
+        "with Reduce Motion the popup appears settled"
+    );
+}

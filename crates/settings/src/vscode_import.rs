@@ -211,6 +211,7 @@ impl VsCodeSettings {
             reduce_motion: self.read_enum("workbench.reduceMotion", |s| match s {
                 "on" => Some(ReduceMotionMode::On),
                 "off" => Some(ReduceMotionMode::Off),
+                "auto" => Some(ReduceMotionMode::System),
                 _ => None,
             }),
             search_panel: None,
@@ -1301,6 +1302,10 @@ mod tests {
         );
         assert_eq!(
             imported_reduce_motion(r#"{ "workbench.reduceMotion": "auto" }"#),
+            Some(ReduceMotionMode::System)
+        );
+        assert_eq!(
+            imported_reduce_motion(r#"{ "workbench.reduceMotion": "sometimes" }"#),
             None
         );
         assert_eq!(imported_reduce_motion("{}"), None);

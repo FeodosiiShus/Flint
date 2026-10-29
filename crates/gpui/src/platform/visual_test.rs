@@ -222,6 +222,10 @@ impl Platform for VisualTestPlatform {
         self.platform.should_reduce_transparency()
     }
 
+    fn should_reduce_motion(&self) -> bool {
+        self.platform.should_reduce_motion()
+    }
+
     fn supports_native_glass(&self) -> bool {
         self.platform.supports_native_glass()
     }

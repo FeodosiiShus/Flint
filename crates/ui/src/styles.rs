@@ -16,6 +16,7 @@ mod typography;
 mod ui_standard;
 mod units;
 
+pub use animation::{SurfaceMotion, enable_surface_motion, surfaces_move};
 pub use appearance::*;
 pub use background_image::*;
 pub use balloon_metrics::*;

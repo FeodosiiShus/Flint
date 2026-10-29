@@ -7,7 +7,7 @@ use gpui::{
     AnyView, DismissEvent, Entity, EntityId, FocusHandle, ManagedView, MouseButton, Subscription,
     Task,
 };
-use ui::{animation::DefaultAnimations, prelude::*};
+use ui::prelude::*;
 use zed_actions::toast;
 
 use crate::Workspace;
@@ -257,8 +257,7 @@ impl Render for ToastLayer {
                             }),
                         )
                         .child(active_toast.toast.view()),
-                )
-                .animate_in(AnimationDirection::FromBottom, true),
+                ),
         )
     }
 }

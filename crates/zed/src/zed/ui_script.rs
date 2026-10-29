@@ -452,38 +452,98 @@ async fn film_active_window(
         }
         changes.push(percent.unwrap_or(0.));
     }
-    report_film(name, &changes);
+    let distances_to_final = film
+        .last()
+        .map(|last| {
+            film.iter()
+                .map(|image| {
+                    changed_pixels(image, last) as f64 * 100.
+                        / (image.width() as f64 * image.height() as f64)
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let moving = cx.update(|cx| ui::surfaces_move(cx));
+    match film_verdict(&changes, &distances_to_final, moving) {
+        FilmVerdict::NothingAppeared => log::info!("UI script film {name}: nothing appeared"),
+        FilmVerdict::Settled { appeared, settled } => log::info!(
+            "UI script film {name}: appeared in frame {appeared}, settled in frame {settled}, no flicker"
+        ),
+        FilmVerdict::Flickers { appeared, frames } => log::warn!(
+            "UI script film {name}: appeared in frame {appeared} and flickers in {}",
+            frames
+                .iter()
+                .map(|(frame, percent)| format!("frame {frame} ({percent:.2}%)"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    }
     Ok(())
 }
 
-/// Logs whether the surface of a film settled in the frame it appeared in. Anything that changes
-/// after that is reported as a flicker, since a surface that appears in its final form never does.
-fn report_film(name: &str, changes: &[f64]) {
+#[derive(Debug, PartialEq)]
+enum FilmVerdict {
+    NothingAppeared,
+    /// Frames are counted from 1.
+    Settled {
+        appeared: usize,
+        settled: usize,
+    },
+    Flickers {
+        appeared: usize,
+        frames: Vec<(usize, f64)>,
+    },
+}
+
+/// Whether the surface a film shows reached its final form without a flicker, from how much of
+/// the window each frame changed from the one before (`changes`) and from the last frame
+/// (`distances_to_final`), in percent.
+///
+/// A surface that does not move has to appear in its final form, so anything that changes after
+/// it appeared is a flicker. A surface that moves in fades and travels for a few frames, but each
+/// of them is closer to its final form than the one before: a frame that is further from it — a
+/// blank frame, a placeholder, an opaque slab over glass — is a flicker.
+fn film_verdict(changes: &[f64], distances_to_final: &[f64], moving: bool) -> FilmVerdict {
     let Some(appeared) = changes
         .iter()
         .position(|percent| *percent >= FILM_APPEARANCE_PERCENT)
     else {
-        log::info!("UI script film {name}: nothing appeared");
-        return;
+        return FilmVerdict::NothingAppeared;
     };
-    let late = changes
-        .iter()
-        .enumerate()
-        .skip(appeared + 1)
-        .filter(|(_, percent)| **percent >= FILM_FLICKER_PERCENT)
-        .map(|(index, percent)| format!("frame {} ({percent:.2}%)", index + 1))
-        .collect::<Vec<_>>();
-    if late.is_empty() {
-        log::info!(
-            "UI script film {name}: settled in frame {}, no flicker",
-            appeared + 1
-        );
+    let frames = if moving {
+        distances_to_final
+            .windows(2)
+            .enumerate()
+            .skip(appeared)
+            .filter(|(_, pair)| pair[1] > pair[0] + FILM_FLICKER_PERCENT)
+            .map(|(index, pair)| (index + 2, pair[1]))
+            .collect::<Vec<_>>()
     } else {
-        log::warn!(
-            "UI script film {name}: appeared in frame {} and flickers in {}",
-            appeared + 1,
-            late.join(", ")
-        );
+        changes
+            .iter()
+            .enumerate()
+            .skip(appeared + 1)
+            .filter(|(_, percent)| **percent >= FILM_FLICKER_PERCENT)
+            .map(|(index, percent)| (index + 1, *percent))
+            .collect()
+    };
+    if !frames.is_empty() {
+        return FilmVerdict::Flickers {
+            appeared: appeared + 1,
+            frames,
+        };
+    }
+    let settled = if moving {
+        distances_to_final
+            .iter()
+            .position(|percent| *percent < FILM_FLICKER_PERCENT)
+            .unwrap_or(appeared)
+    } else {
+        appeared
+    };
+    FilmVerdict::Settled {
+        appeared: appeared + 1,
+        settled: settled.max(appeared) + 1,
     }
 }
 
@@ -517,4 +577,56 @@ fn physical_footprint() -> Result<u64> {
     anyhow::ensure!(status == 0, "proc_pid_rusage failed with {status}");
     // SAFETY: the call succeeded, so the struct is initialized.
     Ok(unsafe { usage.assume_init() }.ri_phys_footprint)
+}
+
+#[cfg(test)]
+mod film_tests {
+    use super::*;
+
+    #[test]
+    fn a_still_surface_has_to_appear_in_its_final_form() {
+        assert_eq!(
+            film_verdict(&[0., 4., 0., 0.], &[4., 0., 0., 0.], false),
+            FilmVerdict::Settled {
+                appeared: 2,
+                settled: 2
+            }
+        );
+        assert_eq!(
+            film_verdict(&[0., 4., 1., 0.], &[4., 1., 0., 0.], false),
+            FilmVerdict::Flickers {
+                appeared: 2,
+                frames: vec![(3, 1.)]
+            },
+            "a still surface that changes after it appeared was not final"
+        );
+    }
+
+    #[test]
+    fn a_moving_surface_may_take_frames_but_never_moves_away_from_its_final_form() {
+        assert_eq!(
+            film_verdict(&[0., 4., 2., 1., 0.], &[6., 3., 1., 0., 0.], true),
+            FilmVerdict::Settled {
+                appeared: 2,
+                settled: 4
+            },
+            "a fade comes closer to the final frame with every frame"
+        );
+        assert_eq!(
+            film_verdict(&[0., 4., 5., 6., 0.], &[6., 3., 5., 0., 0.], true),
+            FilmVerdict::Flickers {
+                appeared: 2,
+                frames: vec![(3, 5.)]
+            },
+            "a frame that is further from the final form than the one before is a flicker"
+        );
+    }
+
+    #[test]
+    fn a_film_where_nothing_changes_shows_nothing_appearing() {
+        assert_eq!(
+            film_verdict(&[0., 0.1, 0.], &[0., 0., 0.], true),
+            FilmVerdict::NothingAppeared
+        );
+    }
 }

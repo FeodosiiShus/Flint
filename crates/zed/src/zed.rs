@@ -1519,8 +1519,13 @@ impl Settings for ReduceMotionSetting {
 }
 
 fn init_reduce_motion(cx: &mut App) {
+    ui::enable_surface_motion(true, cx);
     let apply = |cx: &mut App| {
-        let reduce_motion = ReduceMotionSetting::get_global(cx).0 == settings::ReduceMotionMode::On;
+        let reduce_motion = match ReduceMotionSetting::get_global(cx).0 {
+            settings::ReduceMotionMode::System => cx.system_prefers_reduced_motion(),
+            settings::ReduceMotionMode::On => true,
+            settings::ReduceMotionMode::Off => false,
+        };
         cx.set_reduce_motion(reduce_motion);
     };
     apply(cx);
@@ -5358,6 +5363,9 @@ mod tests {
             );
             project::debugger::dap_store::DapStore::init(&app_state.client.clone().into(), cx);
             initialize_workspace(app_state.clone(), cx);
+            // These tests measure surfaces where they settle; the tests of surface motion turn it
+            // back on.
+            ui::enable_surface_motion(false, cx);
             search::init(cx);
             lsp_locations::init(cx);
             show_usages::init(cx);
