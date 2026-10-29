@@ -5343,6 +5343,9 @@ mod tests {
     ) -> Arc<AppState> {
         cx.update(move |cx| {
             env_logger::builder().is_test(true).try_init().ok();
+            // Without its own database a test falls back to the one every test of the process
+            // shares, and session restore tests running in parallel restore each other's windows.
+            cx.set_global(db::AppDatabase::test_new());
 
             let state = Arc::get_mut(&mut app_state).unwrap();
             state.build_window_options = build_window_options;
