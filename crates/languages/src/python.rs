@@ -1,27 +1,37 @@
-use anyhow::Context as _;
+use anyhow::{Context as _, Result};
 use async_trait::async_trait;
 use collections::HashMap;
 use futures::AsyncBufReadExt;
 use futures::future::BoxFuture;
-use gpui::{App, SharedString};
+use gpui::{App, AsyncApp, SharedString};
 use language::{LanguageName, ManifestName, ManifestProvider, ManifestQuery};
+use language::{LspAdapter, LspAdapterDelegate, LspInstaller, Symbol};
 use language::{Toolchain, ToolchainList, ToolchainLister, ToolchainMetadata};
+use lsp::{CompletionItemKind, LanguageServerBinary, LanguageServerName, Uri};
+use node_runtime::{NodeRuntime, VersionStrategy};
 use pet_core::Configuration;
 use pet_core::os_environment::Environment;
 use pet_core::python_environment::{PythonEnvironment, PythonEnvironmentKind};
 use pet_virtualenv::is_virtualenv_dir;
 use project::Fs;
+use project::lsp_store::language_server_settings;
+use rope::Rope;
+use semver::Version;
 use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
 use settings::{SemanticTokenRules, Settings};
 use terminal::terminal_settings::TerminalSettings;
 
 use parking_lot::Mutex;
 use std::cmp::{Ordering, Reverse};
 use std::{
+    ffi::OsString,
     fmt::Write,
+    future::Future,
     path::{Path, PathBuf},
     sync::Arc,
 };
+use util::ResultExt;
 use util::rel_path::RelPath;
 use util::shell::ShellKind;
 
@@ -80,6 +90,438 @@ impl ManifestProvider for PyprojectTomlManifestProvider {
         }
 
         outermost_workspace_root.or(innermost_pyproject)
+    }
+}
+
+/// Pyright assigns each completion item a `sortText` of the form `XX.YYYY.name`.
+/// Where `XX` is the sorting category, `YYYY` is based on most recent usage,
+/// and `name` is the symbol name itself.
+///
+/// The problem with it is that Pyright adjusts the sort text based on previous resolutions (items for which we've issued `completion/resolve` call have their sortText adjusted),
+/// which - long story short - makes completion items list non-stable. Pyright probably relies on VSCode's implementation detail.
+/// see https://github.com/microsoft/pyright/blob/95ef4e103b9b2f129c9320427e51b73ea7cf78bd/packages/pyright-internal/src/languageService/completionProvider.ts#LL2873
+///
+/// upd 02.12.25:
+/// Decided to ignore Pyright's sortText() completely and to manually sort all entries
+fn process_pyright_completions(items: &mut [lsp::CompletionItem]) {
+    for item in items {
+        let is_named_argument = item.label.ends_with('=');
+
+        let is_dunder = item.label.starts_with("__") && item.label.ends_with("__");
+
+        let visibility_priority = if is_dunder {
+            '3'
+        } else if item.label.starts_with("__") {
+            '2' // private non-dunder
+        } else if item.label.starts_with('_') {
+            '1' // protected
+        } else {
+            '0' // public
+        };
+
+        let is_external = item
+            .detail
+            .as_ref()
+            .is_some_and(|detail| detail == "Auto-import");
+
+        let source_priority = if is_external { '1' } else { '0' };
+
+        // Kind priority within same visibility level
+        let kind_priority = match item.kind {
+            Some(lsp::CompletionItemKind::KEYWORD) => '0',
+            Some(lsp::CompletionItemKind::ENUM_MEMBER) => '1',
+            Some(lsp::CompletionItemKind::FIELD) => '2',
+            Some(lsp::CompletionItemKind::PROPERTY) => '3',
+            Some(lsp::CompletionItemKind::VARIABLE) => '4',
+            Some(lsp::CompletionItemKind::CONSTANT) => '5',
+            Some(lsp::CompletionItemKind::METHOD) => '6',
+            Some(lsp::CompletionItemKind::FUNCTION) => '6',
+            Some(lsp::CompletionItemKind::CLASS) => '7',
+            Some(lsp::CompletionItemKind::MODULE) => '8',
+
+            _ => 'z',
+        };
+
+        // Named arguments get higher priority
+        let argument_priority = if is_named_argument { '0' } else { '1' };
+
+        item.sort_text = Some(format!(
+            "{}{}{}{}{}",
+            argument_priority, source_priority, visibility_priority, kind_priority, item.label
+        ));
+    }
+}
+
+fn label_for_pyright_completion(
+    item: &lsp::CompletionItem,
+    language: &Arc<language::Language>,
+) -> Option<language::CodeLabel> {
+    let label = &item.label;
+    let label_len = label.len();
+    let grammar = language.grammar()?;
+    let highlight_id = highlight_id_for_completion(item.kind?, grammar)?;
+
+    let mut text = label.clone();
+    if let Some(completion_details) = item
+        .label_details
+        .as_ref()
+        .and_then(|details| details.description.as_ref())
+    {
+        write!(&mut text, " {}", completion_details).ok();
+    }
+    Some(language::CodeLabel::filtered(
+        text,
+        label_len,
+        item.filter_text.as_deref(),
+        highlight_id
+            .map(|id| (0..label_len, id))
+            .into_iter()
+            .collect(),
+    ))
+}
+
+fn label_for_python_symbol(
+    symbol: &Symbol,
+    language: &Arc<language::Language>,
+) -> Option<language::CodeLabel> {
+    let name = &symbol.name;
+    let (text, filter_range, display_range) = match symbol.kind {
+        language::SymbolKind::Method | language::SymbolKind::Function => {
+            let text = format!("def {}():\n", name);
+            let filter_range = 4..4 + name.len();
+            let display_range = 0..filter_range.end;
+            (text, filter_range, display_range)
+        }
+        language::SymbolKind::Class => {
+            let text = format!("class {}:", name);
+            let filter_range = 6..6 + name.len();
+            let display_range = 0..filter_range.end;
+            (text, filter_range, display_range)
+        }
+        language::SymbolKind::Constant => {
+            let text = format!("{} = 0", name);
+            let filter_range = 0..name.len();
+            let display_range = 0..filter_range.end;
+            (text, filter_range, display_range)
+        }
+        _ => return None,
+    };
+    Some(language::CodeLabel::new(
+        text.get(display_range.clone())?.to_string(),
+        filter_range,
+        language.highlight_text(&Rope::from(text.as_str()), display_range),
+    ))
+}
+
+/// Returns the highlight ID for the given completion item kind, if it is supported.
+///
+/// The outer `Option` is `None` if the item kind returned by the language server is not covered.
+/// The inner `Option` is `None` if the item kind is covered, but the highlight name is not present in the grammar.
+fn highlight_id_for_completion(
+    item_kind: CompletionItemKind,
+    grammar: &Arc<language::Grammar>,
+) -> Option<Option<language::HighlightId>> {
+    match item_kind {
+        CompletionItemKind::METHOD => Some(grammar.highlight_id_for_name("function.method.call")),
+        CompletionItemKind::FUNCTION => Some(grammar.highlight_id_for_name("function.call")),
+        CompletionItemKind::CLASS => Some(grammar.highlight_id_for_name("type")),
+        CompletionItemKind::CONSTANT => Some(grammar.highlight_id_for_name("constant")),
+        CompletionItemKind::VARIABLE => Some(grammar.highlight_id_for_name("variable")),
+        _ => None,
+    }
+}
+
+/// Older pyright-derived servers request a literal `<configuration section>.analysis` section,
+/// while new versions request `<configuration section>` and read its nested `analysis` object.
+///
+/// Basedpyright changed this behavior in v1.39.10, context: https://github.com/DetachHead/basedpyright/pull/1847
+/// Pyright itself changed this behavior in v1.1.411 context: https://github.com/microsoft/pyright/pull/11480
+fn normalize_pyright_analysis_configuration(
+    workspace_configuration: &mut Value,
+    configuration_section: &str,
+) {
+    let Some(workspace_configuration) = workspace_configuration.as_object_mut() else {
+        return;
+    };
+
+    let flat_analysis_section = format!("{configuration_section}.analysis");
+
+    let nested_analysis = workspace_configuration
+        .get(configuration_section)
+        .and_then(Value::as_object)
+        .and_then(|server_configuration| server_configuration.get("analysis"))
+        .and_then(Value::as_object);
+    let flat_analysis = workspace_configuration
+        .get(&flat_analysis_section)
+        .and_then(Value::as_object);
+
+    let nested_analysis = match (nested_analysis, flat_analysis) {
+        (Some(nested_analysis), Some(flat_analysis)) => {
+            let mut merged_analysis = nested_analysis.clone();
+            for (key, value) in flat_analysis {
+                merged_analysis
+                    .entry(key.clone())
+                    .or_insert_with(|| value.clone());
+            }
+            Value::Object(merged_analysis)
+        }
+        (Some(nested_analysis), None) => Value::Object(nested_analysis.clone()),
+        (None, Some(flat_analysis)) => Value::Object(flat_analysis.clone()),
+        (None, None) => return,
+    };
+
+    let server_configuration = workspace_configuration
+        .entry(configuration_section)
+        .or_insert_with(|| Value::Object(serde_json::Map::default()));
+    let Some(server_configuration) = server_configuration.as_object_mut() else {
+        return;
+    };
+    server_configuration.insert("analysis".to_owned(), nested_analysis.clone());
+
+    workspace_configuration.insert(flat_analysis_section, nested_analysis);
+}
+
+fn basedpyright_workspace_configuration(
+    user_settings: Option<Value>,
+    toolchain: Option<&Toolchain>,
+) -> Value {
+    let mut configuration = match user_settings {
+        Some(Value::Object(settings)) => settings,
+        _ => serde_json::Map::default(),
+    };
+
+    // Basedpyright's own default (`recommended`) reports far more than pyright does, which would
+    // bury a project that never configured it.
+    if let Some(analysis) = configuration
+        .entry("basedpyright.analysis")
+        .or_insert_with(|| Value::Object(serde_json::Map::default()))
+        .as_object_mut()
+    {
+        analysis
+            .entry("typeCheckingMode")
+            .or_insert_with(|| Value::String("standard".to_owned()));
+    }
+
+    let user_chose_interpreter = configuration
+        .get("python")
+        .and_then(Value::as_object)
+        .is_some_and(|python| {
+            ["pythonPath", "venvPath"]
+                .into_iter()
+                .any(|known_key| python.contains_key(known_key))
+        });
+    if let Some(toolchain) = toolchain
+        && !user_chose_interpreter
+        && serde_json::from_value::<PythonEnvironment>(toolchain.as_json.clone()).is_ok()
+        && let Some(python) = configuration
+            .entry("python")
+            .or_insert_with(|| Value::Object(serde_json::Map::default()))
+            .as_object_mut()
+    {
+        python.insert(
+            "pythonPath".to_owned(),
+            Value::String(toolchain.path.to_string()),
+        );
+    }
+
+    let mut configuration = Value::Object(configuration);
+    normalize_pyright_analysis_configuration(&mut configuration, "basedpyright");
+    configuration
+}
+
+pub(crate) struct BasedPyrightLspAdapter {
+    node: NodeRuntime,
+}
+
+impl BasedPyrightLspAdapter {
+    const SERVER_NAME: LanguageServerName = LanguageServerName::new_static("basedpyright");
+    const PACKAGE_NAME: &'static str = "basedpyright";
+    const BINARY_NAME: &'static str = "basedpyright-langserver";
+    const SERVER_PATH: &'static str = "node_modules/basedpyright/langserver.index.js";
+    const NODE_MODULE_RELATIVE_SERVER_PATH: &'static str = "basedpyright/langserver.index.js";
+
+    pub(crate) fn new(node: NodeRuntime) -> Self {
+        BasedPyrightLspAdapter { node }
+    }
+}
+
+fn basedpyright_node_binary(node: PathBuf, server_path: &Path) -> LanguageServerBinary {
+    LanguageServerBinary {
+        path: node,
+        env: None,
+        arguments: vec![OsString::from(server_path), "--stdio".into()],
+    }
+}
+
+#[async_trait(?Send)]
+impl LspAdapter for BasedPyrightLspAdapter {
+    fn name(&self) -> LanguageServerName {
+        Self::SERVER_NAME
+    }
+
+    async fn initialization_options(
+        self: Arc<Self>,
+        _: &Arc<dyn LspAdapterDelegate>,
+        _: &mut AsyncApp,
+    ) -> Result<Option<Value>> {
+        // The interpreter comes later, from `workspace/configuration`.
+        Ok(Some(json!({
+            "python": {
+                "analysis": {
+                    "autoSearchPaths": true,
+                    "useLibraryCodeForTypes": true,
+                    "autoImportCompletions": true
+                }
+            }
+        })))
+    }
+
+    async fn process_completions(&self, items: &mut [lsp::CompletionItem]) {
+        process_pyright_completions(items);
+    }
+
+    async fn label_for_completion(
+        &self,
+        item: &lsp::CompletionItem,
+        language: &Arc<language::Language>,
+    ) -> Option<language::CodeLabel> {
+        label_for_pyright_completion(item, language)
+    }
+
+    async fn label_for_symbol(
+        &self,
+        symbol: &Symbol,
+        language: &Arc<language::Language>,
+    ) -> Option<language::CodeLabel> {
+        label_for_python_symbol(symbol, language)
+    }
+
+    async fn workspace_configuration(
+        self: Arc<Self>,
+        delegate: &Arc<dyn LspAdapterDelegate>,
+        toolchain: Option<Toolchain>,
+        _: Option<Uri>,
+        cx: &mut AsyncApp,
+    ) -> Result<Value> {
+        let user_settings = cx.update(|cx| {
+            language_server_settings(delegate.as_ref(), &Self::SERVER_NAME, cx)
+                .and_then(|settings| settings.settings.clone())
+        });
+        Ok(basedpyright_workspace_configuration(
+            user_settings,
+            toolchain.as_ref(),
+        ))
+    }
+}
+
+impl LspInstaller for BasedPyrightLspAdapter {
+    type BinaryVersion = Version;
+
+    async fn fetch_latest_server_version(
+        &self,
+        _: &Arc<dyn LspAdapterDelegate>,
+        _: bool,
+        _: &mut AsyncApp,
+    ) -> Result<Self::BinaryVersion> {
+        self.node
+            .npm_package_latest_version(Self::PACKAGE_NAME)
+            .await
+    }
+
+    async fn check_if_user_installed(
+        &self,
+        delegate: &Arc<dyn LspAdapterDelegate>,
+        _: Option<Toolchain>,
+        _: &AsyncApp,
+    ) -> Option<LanguageServerBinary> {
+        if let Some(path) = delegate.which(Self::BINARY_NAME.as_ref()).await {
+            return Some(LanguageServerBinary {
+                path,
+                env: None,
+                arguments: vec!["--stdio".into()],
+            });
+        }
+
+        let (node_modules_path, _) = delegate
+            .npm_package_installed_version(Self::PACKAGE_NAME)
+            .await
+            .log_err()??;
+        let node = self.node.binary_path().await.log_err()?;
+        Some(basedpyright_node_binary(
+            node,
+            &node_modules_path.join(Self::NODE_MODULE_RELATIVE_SERVER_PATH),
+        ))
+    }
+
+    fn fetch_server_binary(
+        &self,
+        _latest_version: Self::BinaryVersion,
+        container_dir: PathBuf,
+        _: &Arc<dyn LspAdapterDelegate>,
+    ) -> impl Send + Future<Output = Result<LanguageServerBinary>> + use<> {
+        let node = self.node.clone();
+
+        async move {
+            node.npm_install_latest_packages(&container_dir, &[Self::PACKAGE_NAME])
+                .await?;
+
+            let server_path = container_dir.join(Self::SERVER_PATH);
+            anyhow::ensure!(
+                server_path.exists(),
+                "basedpyright language server is missing at {server_path:?}"
+            );
+            Ok(basedpyright_node_binary(
+                node.binary_path().await?,
+                &server_path,
+            ))
+        }
+    }
+
+    fn check_if_version_installed(
+        &self,
+        version: &Self::BinaryVersion,
+        container_dir: &PathBuf,
+        _: &Arc<dyn LspAdapterDelegate>,
+    ) -> impl Send + Future<Output = Option<LanguageServerBinary>> + use<> {
+        let node = self.node.clone();
+        let version = version.clone();
+        let container_dir = container_dir.clone();
+
+        async move {
+            let server_path = container_dir.join(Self::SERVER_PATH);
+
+            if node
+                .should_install_npm_package(
+                    Self::PACKAGE_NAME,
+                    &server_path,
+                    &container_dir,
+                    VersionStrategy::Latest(&version),
+                )
+                .await
+            {
+                return None;
+            }
+
+            Some(basedpyright_node_binary(
+                node.binary_path().await.log_err()?,
+                &server_path,
+            ))
+        }
+    }
+
+    async fn cached_server_binary(
+        &self,
+        container_dir: PathBuf,
+        _: &dyn LspAdapterDelegate,
+    ) -> Option<LanguageServerBinary> {
+        let server_path = container_dir.join(Self::SERVER_PATH);
+        if !server_path.exists() {
+            return None;
+        }
+        Some(basedpyright_node_binary(
+            self.node.binary_path().await.log_err()?,
+            &server_path,
+        ))
     }
 }
 
@@ -683,6 +1125,173 @@ mod tests {
     use language::{AutoindentMode, Buffer};
     use settings::SettingsStore;
     use std::num::NonZeroU32;
+
+    use crate::python::{
+        basedpyright_workspace_configuration, normalize_pyright_analysis_configuration,
+    };
+
+    #[test]
+    fn test_normalize_legacy_basedpyright_analysis_configuration() {
+        let mut workspace_configuration = serde_json::json!({
+            "basedpyright.analysis": {
+                "diagnosticMode": "workspace",
+                "typeCheckingMode": "basic"
+            }
+        });
+
+        normalize_pyright_analysis_configuration(&mut workspace_configuration, "basedpyright");
+
+        assert_eq!(
+            workspace_configuration,
+            serde_json::json!({
+                "basedpyright": {
+                    "analysis": {
+                        "diagnosticMode": "workspace",
+                        "typeCheckingMode": "basic"
+                    }
+                },
+                "basedpyright.analysis": {
+                    "diagnosticMode": "workspace",
+                    "typeCheckingMode": "basic"
+                }
+            })
+        );
+    }
+
+    #[test]
+    fn test_normalize_nested_basedpyright_analysis_configuration() {
+        let mut workspace_configuration = serde_json::json!({
+            "basedpyright": {
+                "analysis": {
+                    "diagnosticMode": "workspace"
+                },
+                "unrelated": true
+            }
+        });
+
+        normalize_pyright_analysis_configuration(&mut workspace_configuration, "basedpyright");
+
+        assert_eq!(
+            workspace_configuration,
+            serde_json::json!({
+                "basedpyright": {
+                    "analysis": {
+                        "diagnosticMode": "workspace"
+                    },
+                    "unrelated": true
+                },
+                "basedpyright.analysis": {
+                    "diagnosticMode": "workspace"
+                }
+            })
+        );
+    }
+
+    #[test]
+    fn test_normalize_merges_both_analysis_configuration_with_conflicts() {
+        let mut workspace_configuration = serde_json::json!({
+            "basedpyright": {
+                "analysis": {
+                    "diagnosticMode": "workspace",
+                }
+            },
+            "basedpyright.analysis": {
+                "typeCheckingMode": "standard",
+                "diagnosticMode": "openFilesOnly"
+            }
+        });
+
+        normalize_pyright_analysis_configuration(&mut workspace_configuration, "basedpyright");
+
+        // Settings from both forms survive, with the nested form winning on conflicting keys.
+        assert_eq!(
+            workspace_configuration,
+            serde_json::json!({
+                "basedpyright": {
+                    "analysis": {
+                        "diagnosticMode": "workspace",
+                        "typeCheckingMode": "standard",
+                    }
+                },
+                "basedpyright.analysis": {
+                    "diagnosticMode": "workspace",
+                    "typeCheckingMode": "standard",
+                }
+            })
+        );
+    }
+
+    #[test]
+    fn test_normalize_pyright_analysis_configuration() {
+        let mut workspace_configuration = serde_json::json!({
+            "python.analysis": {
+                "diagnosticMode": "workspace",
+                "typeCheckingMode": "basic"
+            }
+        });
+
+        normalize_pyright_analysis_configuration(&mut workspace_configuration, "python");
+
+        assert_eq!(
+            workspace_configuration,
+            serde_json::json!({
+                "python": {
+                    "analysis": {
+                        "diagnosticMode": "workspace",
+                        "typeCheckingMode": "basic"
+                    }
+                },
+                "python.analysis": {
+                    "diagnosticMode": "workspace",
+                    "typeCheckingMode": "basic"
+                }
+            })
+        );
+    }
+
+    #[test]
+    fn test_basedpyright_workspace_configuration_uses_the_project_toolchain() {
+        let venv_toolchain = language::Toolchain {
+            name: "Python 3.12.4 (.venv; venv)".into(),
+            path: "/project/.venv/bin/python".into(),
+            language_name: language::LanguageName::new_static("Python"),
+            as_json: serde_json::json!({
+                "executable": "/project/.venv/bin/python",
+                "kind": "Venv",
+                "prefix": "/project/.venv",
+            }),
+        };
+
+        let configuration = basedpyright_workspace_configuration(None, Some(&venv_toolchain));
+        assert_eq!(
+            configuration["python"]["pythonPath"],
+            "/project/.venv/bin/python"
+        );
+        assert_eq!(
+            configuration["basedpyright"]["analysis"]["typeCheckingMode"],
+            "standard"
+        );
+
+        let configuration = basedpyright_workspace_configuration(
+            Some(serde_json::json!({
+                "python": { "venvPath": "/elsewhere" },
+                "basedpyright": { "analysis": { "typeCheckingMode": "strict" } },
+            })),
+            Some(&venv_toolchain),
+        );
+        assert_eq!(
+            configuration["python"],
+            serde_json::json!({ "venvPath": "/elsewhere" }),
+            "an interpreter the user picked wins over the detected toolchain"
+        );
+        assert_eq!(
+            configuration["basedpyright"]["analysis"]["typeCheckingMode"],
+            "strict"
+        );
+
+        let configuration = basedpyright_workspace_configuration(None, None);
+        assert_eq!(configuration.get("python"), None);
+    }
 
     #[gpui::test]
     async fn test_conda_activation_script_injection(cx: &mut TestAppContext) {

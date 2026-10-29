@@ -51,6 +51,7 @@ pub fn init(languages: Arc<LanguageRegistry>, fs: Arc<dyn Fs>, node: NodeRuntime
     #[cfg(feature = "load-grammars")]
     languages.register_native_grammars(grammars::native_grammars());
 
+    let basedpyright_adapter = Arc::new(python::BasedPyrightLspAdapter::new(node.clone()));
     let biome_adapter = Arc::new(biome::BiomeLspAdapter::new(node.clone(), fs.clone()));
     let eslint_adapter = Arc::new(eslint::EsLintLspAdapter::new(node.clone(), fs.clone()));
     let json_lsp_adapter = Arc::new(json::JsonLspAdapter::new(languages.clone(), node.clone()));
@@ -114,10 +115,10 @@ pub fn init(languages: Arc<LanguageRegistry>, fs: Arc<dyn Fs>, node: NodeRuntime
         },
         LanguageInfo {
             name: "python",
+            adapters: vec![basedpyright_adapter],
             toolchain: Some(python_toolchain_provider),
             manifest_name: Some(SharedString::new_static("pyproject.toml").into()),
             semantic_token_rules: Some(python::semantic_token_rules()),
-            ..Default::default()
         },
         LanguageInfo {
             name: "rust",

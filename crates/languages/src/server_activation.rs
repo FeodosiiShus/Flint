@@ -13,7 +13,20 @@ const JAVA_PROJECT_MARKERS: &[&str] = &[
 const GRADLE_PROJECT_MARKERS: &[&str] =
     &["**/{build.gradle,build.gradle.kts,settings.gradle,settings.gradle.kts}"];
 
+// Only the project root counts. The probe also walks ignored directories, where `.venv` packages
+// and `node_modules/node-gyp` carry their own `setup.py` and `pyproject.toml`, and a `*` here
+// matches across `/`, so a pattern reaching into subdirectories cannot leave those out.
+const PYTHON_PROJECT_MARKERS: &[&str] = &[
+    "{pyproject.toml,setup.py,setup.cfg,Pipfile,uv.lock,poetry.lock,.python-version}",
+    "requirements*.txt",
+];
+
 const SERVER_ACTIVATIONS: &[ServerActivation] = &[
+    ServerActivation {
+        server: "basedpyright",
+        workspace_files: PYTHON_PROJECT_MARKERS,
+        package_dependencies: &[],
+    },
     ServerActivation {
         server: "biome",
         workspace_files: &[
@@ -96,6 +109,18 @@ mod server_activation_tests {
         rule_for(server).matches_workspace_file(path)
     }
 
+    /// Like the project's probe, which checks every worktree entry, ignored ones and directories
+    /// included.
+    fn activates_for_worktree(server: &str, files: &[&str]) -> bool {
+        let rule = rule_for(server);
+        files.iter().any(|file| {
+            file.match_indices('/')
+                .map(|(separator, _)| &file[..separator])
+                .chain([*file])
+                .any(|entry| rule.matches_workspace_file(entry))
+        })
+    }
+
     #[test]
     fn server_activation_gates_exactly_the_project_specific_servers() {
         let mut gated: Vec<&str> = SERVER_ACTIVATIONS
@@ -106,6 +131,7 @@ mod server_activation_tests {
         assert_eq!(
             gated,
             [
+                "basedpyright",
                 "biome",
                 "eslint",
                 "gradle-language-server",
@@ -319,5 +345,101 @@ mod server_activation_tests {
                 "{path} should not activate marksman"
             );
         }
+    }
+
+    #[test]
+    fn server_activation_basedpyright_follows_root_python_project_markers() {
+        for path in [
+            "pyproject.toml",
+            "setup.py",
+            "setup.cfg",
+            "requirements.txt",
+            "requirements-dev.txt",
+            "requirements_test.txt",
+            "requirements/base.txt",
+            "Pipfile",
+            "uv.lock",
+            "poetry.lock",
+            ".python-version",
+        ] {
+            assert!(
+                matches("basedpyright", path),
+                "{path} should activate basedpyright"
+            );
+        }
+        for path in [
+            "main.py",
+            "src/app/__init__.py",
+            "pyproject.toml.bak",
+            "package.json",
+            "services/api/pyproject.toml",
+            ".venv/lib/python3.12/site-packages/six/setup.py",
+            "node_modules/node-gyp/gyp/pyproject.toml",
+            "target/debug/build/pyo3-build-config/out/setup.cfg",
+        ] {
+            assert!(
+                !matches("basedpyright", path),
+                "{path} should not activate basedpyright"
+            );
+        }
+        assert!(!rule_for("basedpyright").has_package_dependencies());
+    }
+
+    #[test]
+    fn server_activation_basedpyright_starts_for_a_python_project_root() {
+        assert!(activates_for_worktree(
+            "basedpyright",
+            &[
+                "pyproject.toml",
+                "src/app/__init__.py",
+                ".venv/pyvenv.cfg",
+                ".venv/lib/python3.12/site-packages/six.py",
+            ]
+        ));
+        assert!(activates_for_worktree(
+            "basedpyright",
+            &["requirements.txt", "manage.py", "app/views.py"]
+        ));
+    }
+
+    #[test]
+    fn server_activation_basedpyright_ignores_markers_inside_ignored_directories() {
+        assert!(
+            !activates_for_worktree(
+                "basedpyright",
+                &[
+                    "package.json",
+                    "src/index.ts",
+                    "node_modules/node-gyp/gyp/pyproject.toml",
+                    "node_modules/node-gyp/gyp/setup.py",
+                    "node_modules/node-gyp/gyp/gyp_main.py",
+                ]
+            ),
+            "node-gyp's bundled Python must not turn a Node project into a Python one"
+        );
+        assert!(
+            !activates_for_worktree(
+                "basedpyright",
+                &[
+                    "scripts/build.py",
+                    ".venv/pyvenv.cfg",
+                    ".venv/src/editable-package/setup.py",
+                    ".venv/src/editable-package/requirements.txt",
+                    ".venv/lib/python3.12/site-packages/six-1.16.0.dist-info/METADATA",
+                ]
+            ),
+            "packages inside a virtual environment are not the project"
+        );
+        assert!(
+            !activates_for_worktree(
+                "basedpyright",
+                &[
+                    "Cargo.toml",
+                    "src/lib.rs",
+                    "target/debug/build/pyo3-build-config/out/pyproject.toml",
+                ]
+            ),
+            "build output is not the project"
+        );
     }
 }
