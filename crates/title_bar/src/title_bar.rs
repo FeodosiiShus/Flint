@@ -429,7 +429,7 @@ impl Render for TitleBar {
                 .child(self.platform_titlebar.clone().into_any_element())
                 .child(
                     h_flex()
-                        .bg(title_bar_color)
+                        .bar_surface(title_bar_color, cx)
                         .child(ui::background_image_layer(
                             ui::BackgroundImageTarget::EditorAndTools,
                             ui::BackgroundImageArea::Window,

@@ -21196,21 +21196,40 @@ mod tests {
         cx.update(|window, _| window.refresh());
         cx.run_until_parked();
 
-        let orders = cx.update(|window, _| {
-            window
-                .painted_backdrops()
-                .into_iter()
-                .map(|backdrop| backdrop.order)
-                .collect::<Vec<_>>()
+        let islands = [
+            "tool_window_left",
+            "tool_window_bottom",
+            "tool_window_right",
+        ]
+        .map(|selector| {
+            cx.debug_bounds(selector)
+                .unwrap_or_else(|| panic!("{selector} is painted"))
         });
+        let (scale, backdrops) =
+            cx.update(|window, _| (window.scale_factor(), window.painted_backdrops()));
+        let (island_orders, bar_orders): (Vec<_>, Vec<_>) =
+            backdrops.into_iter().partition_map(|backdrop| {
+                let on_an_island = islands
+                    .iter()
+                    .any(|island| backdrop.bounds.contains(&island.center().scale(scale)));
+                if on_an_island {
+                    itertools::Either::Left(backdrop.order)
+                } else {
+                    itertools::Either::Right(backdrop.order)
+                }
+            });
         assert_eq!(
-            orders.len(),
+            island_orders.len(),
             3,
             "each of the three islands blurs what lies behind it"
         );
         assert!(
-            orders.iter().all(|order| *order == orders[0]),
-            "the islands of the three docks belong to one glass level: {orders:?}"
+            island_orders.iter().all(|order| *order == island_orders[0]),
+            "the islands of the three docks belong to one glass level: {island_orders:?}"
+        );
+        assert!(
+            bar_orders.iter().all(|order| *order == bar_orders[0]),
+            "the glass bars of the frame share a glass level of their own: {bar_orders:?}"
         );
     }
 

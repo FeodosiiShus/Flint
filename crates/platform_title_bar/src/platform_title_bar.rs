@@ -22,6 +22,8 @@ pub use system_window_tabs::{
 
 #[cfg(target_os = "macos")]
 const DEFAULT_TRAFFIC_LIGHT_POSITION: gpui::Point<Pixels> = gpui::point(px(9.), px(9.));
+
+pub const PLATFORM_TITLE_BAR_DEBUG_SELECTOR: &str = "platform_title_bar";
 #[cfg(target_os = "macos")]
 const DEFAULT_TITLE_BAR_HEIGHT: Pixels = px(34.);
 
@@ -300,7 +302,8 @@ impl Render for PlatformTitleBar {
                     .border(theme::CLIENT_SIDE_DECORATION_BORDER)
                     .border_color(titlebar_color),
             })
-            .bg(titlebar_color)
+            .bar_surface(titlebar_color, cx)
+            .debug_selector(|| PLATFORM_TITLE_BAR_DEBUG_SELECTOR.into())
             .content_stretch()
             .child(
                 div()

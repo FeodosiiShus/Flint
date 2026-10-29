@@ -249,6 +249,8 @@ Popups, dialogs and notification balloons are Liquid Glass: context menus, drop-
 
 `glass.tint` sets how much of the theme's surface colour covers the glass, in percent (default 50): 0 leaves the glass clear, 100 hides the blurred backdrop behind the colour. Lower values show more of the backdrop, and let bright code behind a popup through: the pixel tests keep popup text readable over bright code at the default. `glass.blur_radius` sets how far the blur spreads, in pixels (default 20). With `FLINT_NATIVE_GLASS` the system blurs with its own radius, which `glass.blur_radius` does not change, and the tint defaults to 30%.
 
+The bars of the frame are glass too: the title bar and the tool window bars blur the frame and its Editor and Tools image behind them (`ui::StyledSurface::bar_surface`). Apple keeps Liquid Glass for the layer of controls and navigation that floats over the content — toolbars, sidebars, tab bars — and never puts it on the content itself, so the editor, its tabs and breadcrumbs, and the Project panel stay opaque. A bar is tinted with the colour it would have painted, so without a background image it looks as it always did, and its controls keep their fills, such as the selected project tab. With Reduce Transparency the bars are opaque.
+
 Popups use the metrics of IntelliJ's New UI on macOS:
 
 | Element | Flint | IntelliJ key |

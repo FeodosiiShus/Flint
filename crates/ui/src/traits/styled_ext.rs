@@ -21,6 +21,12 @@ pub fn tool_window_is_glass(panel_wants_glass: bool, cx: &App) -> bool {
     panel_wants_glass && !cx.should_reduce_transparency()
 }
 
+/// Whether the bars of the window frame — the title bar and the tool window bars — are drawn as
+/// Liquid Glass right now: the user can ask macOS for opaque surfaces with Reduce Transparency.
+pub fn bar_is_glass(cx: &App) -> bool {
+    !cx.should_reduce_transparency()
+}
+
 /// Fills `this` with the Liquid Glass material: a translucent surface over its blurred backdrop.
 /// Popups, dialogs, balloons and tool window islands all take it through [`glass_surface`], so
 /// their glass looks the same.
@@ -161,6 +167,30 @@ pub trait StyledSurface: Styled + InteractiveElement + Sized {
             .spread_radius(SurfaceKind::Popup.standard().border_width)
             .inset();
         glass_surface(self.rounded(corner_radius), vec![hairline], cx)
+    }
+
+    /// A bar of the window frame — the title bar or a tool window bar — that `fill` would paint
+    /// opaque. Apple keeps Liquid Glass for the layer of controls and navigation that floats over
+    /// the content (toolbars, sidebars, tab bars) and never puts it on the content itself, so the
+    /// bars are glass while the editor and the Project panel stay opaque.
+    ///
+    /// The glass is tinted with `fill` and blurs the frame the window paints behind the whole
+    /// layout, so over a plain frame the bar keeps the colour it always had and only a background
+    /// image turns into frosted glass. A bar holds controls rather than panels, and a control's
+    /// fill is its state, so its content keeps every fill — the selected project tab stays
+    /// selected even in a theme that fills it with the bar's own colour. Without glass the bar
+    /// paints `fill` as before.
+    fn bar_surface(self, fill: Hsla, cx: &App) -> Self {
+        if !bar_is_glass(cx) {
+            return self.bg(fill);
+        }
+        let glass = GlassSettings::get_global(cx);
+        let tint = fill.opacity(glass.tint(cx.supports_native_glass()));
+        if cx.supports_native_glass() {
+            self.backdrop_glass(glass.blur_radius, tint)
+        } else {
+            self.bg(tint).backdrop_blur(glass.blur_radius)
+        }
     }
 }
 

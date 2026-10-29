@@ -789,7 +789,7 @@ impl Render for ToolWindowBar {
                 ToolWindowBarSide::Left => this.pr(BAR_BORDER_WIDTH),
                 ToolWindowBarSide::Right => this.pl(BAR_BORDER_WIDTH),
             })
-            .bg(background)
+            .bar_surface(background, cx)
             .child(background_image_layer(
                 BackgroundImageTarget::EditorAndTools,
                 BackgroundImageArea::Window,

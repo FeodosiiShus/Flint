@@ -435,3 +435,62 @@ fn tooltips_are_bordered_and_keep_clear_of_the_pointer(cx: &mut TestAppContext) 
         redraw(cx);
     }
 }
+
+#[gpui::test]
+fn a_bar_is_glass_tinted_with_its_own_fill_and_keeps_the_fills_of_its_controls(
+    cx: &mut TestAppContext,
+) {
+    init(cx);
+    let bar_fill = gpui::hsla(0.6, 0.12, 0.2, 1.);
+    let selected_fill = gpui::hsla(0.6, 0.12, 0.12, 1.);
+    let cx = open_probe(cx, 15., 2., move |_, cx| {
+        div()
+            .id("bar")
+            .debug_selector(|| "bar".into())
+            .flex()
+            .w(px(300.))
+            .h(px(40.))
+            .bar_surface(bar_fill, cx)
+            .child(
+                div()
+                    .debug_selector(|| "bar-row".into())
+                    .w(px(100.))
+                    .h_full()
+                    .bg(bar_fill),
+            )
+            .child(
+                div()
+                    .debug_selector(|| "selected-tab".into())
+                    .w(px(100.))
+                    .h_full()
+                    .bg(selected_fill),
+            )
+            .into_any_element()
+    });
+    let scale = cx.update(|window, _| window.scale_factor());
+    let bar = bounds_of(cx, "bar");
+    let backdrops = cx.update(|window, _| window.painted_backdrops());
+    assert!(
+        backdrops
+            .iter()
+            .any(|backdrop| same_bounds(&backdrop.bounds, &scaled(bar, scale))),
+        "the bar blurs what lies behind it"
+    );
+    let tint = quad_at(cx, bar, "the bar's tint")
+        .background
+        .as_solid()
+        .expect("the tint is a colour");
+    assert!(
+        tint.a < 1. && tint.h == bar_fill.h && tint.l == bar_fill.l,
+        "the bar is tinted with the colour it would have painted opaque: {tint:?}"
+    );
+    for (selector, fill) in [("bar-row", bar_fill), ("selected-tab", selected_fill)] {
+        let bounds = bounds_of(cx, selector);
+        assert_eq!(
+            quad_at(cx, bounds, selector).background.as_solid(),
+            Some(fill),
+            "{selector}: a bar holds controls, whose fill is their state, so they keep it on \
+             the glass even when it is the bar's own colour"
+        );
+    }
+}

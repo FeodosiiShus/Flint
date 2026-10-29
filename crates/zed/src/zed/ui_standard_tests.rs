@@ -572,6 +572,79 @@ async fn the_editor_and_the_project_panel_are_never_glass(cx: &mut TestAppContex
 }
 
 #[gpui::test]
+async fn the_bars_of_the_frame_are_glass_over_the_frame_image(cx: &mut TestAppContext) {
+    let mut project = open_project(cx).await;
+    project.cx.update(|window, cx| {
+        let images = ui::WindowBackgroundImages {
+            editor_and_tools: Some(ui::BackgroundImagePaintLayer {
+                image: std::sync::Arc::new(gpui::RenderImage::new(vec![image::Frame::new(
+                    image::RgbaImage::new(4, 4),
+                )])),
+                mode: ui::BackgroundImageMode::Scale,
+                alignment: ui::BackgroundImageAlignment::Center,
+            }),
+            empty_frame: None,
+        };
+        ui::BackgroundImageLayers::set_window(window.window_handle().window_id(), images, cx);
+        window.refresh();
+    });
+    project.cx.run_until_parked();
+    project.cx.update(|window, cx| window.draw(cx).clear(cx));
+
+    let bars = [
+        (
+            "title bar",
+            bounds_of(
+                &mut project,
+                title_bar::platform_title_bar::PLATFORM_TITLE_BAR_DEBUG_SELECTOR,
+            ),
+        ),
+        (
+            "left tool window bar",
+            bounds_of(&mut project, "tool_window_bar_left"),
+        ),
+    ];
+    let (scale, backdrops, quads, images) = project.cx.update(|window, _| {
+        (
+            window.scale_factor(),
+            window.painted_backdrops(),
+            window.painted_quads(),
+            window.painted_polychrome_sprites(),
+        )
+    });
+    for (name, bar) in bars {
+        let bar = bar.scale(scale);
+        let backdrop = backdrops
+            .iter()
+            .find(|backdrop| backdrop.bounds.contains(&bar.center()))
+            .unwrap_or_else(|| panic!("the {name} is glass, so it blurs what lies behind it"));
+        assert!(
+            images
+                .iter()
+                .any(|image| image.order < backdrop.order && image.bounds.intersects(&bar)),
+            "the {name} blurs the image the window paints behind the whole frame"
+        );
+        assert!(
+            !images
+                .iter()
+                .any(|image| image.order > backdrop.order && image.bounds.intersects(&bar)),
+            "a sharp image over the {name} would cover the glass it is made of"
+        );
+        assert!(
+            !quads.iter().any(|quad| {
+                quad.order >= backdrop.order
+                    && quad.bounds == bar
+                    && quad
+                        .background
+                        .as_solid()
+                        .is_some_and(|color| color.a >= 0.9)
+            }),
+            "the {name} lays a tint over its glass, not an opaque fill"
+        );
+    }
+}
+
+#[gpui::test]
 async fn the_empty_breadcrumb_strip_is_solid_and_does_not_show_the_wallpaper(
     cx: &mut TestAppContext,
 ) {
