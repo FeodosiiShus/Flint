@@ -304,6 +304,10 @@ Not covered here: floating surfaces, whose radii are in [Popups and menus](#popu
 
 ## Editor
 
+### Saving
+
+Files save themselves like in IntelliJ, with no Save before switching away: when Flint loses focus to another app, when the built-in terminal gets focus (so a build or a git command there sees your edits), before git commits and branch operations, when a tab closes, and after 15 seconds without key presses or clicks. `"autosave": "on_window_change"` is the first group (IntelliJ's "Save files when switching to a different application or a built-in terminal"; `"off"`, `"on_focus_change"` and `{"after_delay": {"milliseconds": 500}}` still work), and `"autosave_when_idle": {"enabled": true, "seconds": 15}` the idle save (1 to 300 seconds; works with autosave off too). Each of these saves every modified file of the project, also those in tool window tabs, and formats it like Cmd-S does; untitled, conflicted, deleted and read-only files are left alone, a file whose completion menu or snippet is still open is not saved while idle, and a file that cannot be saved shows an error notification. Saving while you type, as the old 500 ms default did, ran file watchers, git status and every language server's save handler (rust-analyzer's `cargo check`) on each pause.
+
 ### Context menu
 
 Right-clicking the editor opens WebStorm's editor menu, with the Flint actions that exist: Show Context Actions; Cut, Copy, Paste; Copy / Paste Special (Copy and Trim, Copy Permalink to Line); Find in Files; Find Usages; Go To (Declaration or Usages, Implementation(s), Type Declaration); Folding (Expand, Expand Recursively, Expand All, Collapse, Collapse Recursively, Collapse All); Rename…; Open In (Finder, Terminal); Git (Annotate with Git Blame, Show History, Open Permalink to Line, Copy Permalink to Line); Compare with Clipboard. Open In needs a file on disk and Git a git repository. Zed's Go to Declaration, Format Buffer and Format Selections entries were removed from the menu; their actions and key bindings stay.

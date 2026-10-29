@@ -1105,16 +1105,24 @@
   //
   // 1. Never automatically save:
   //     "autosave": "off",
-  // 2. Save when changing focus away from the Zed window:
+  // 2. Save all edited buffers when switching to another application or to
+  //    the built-in terminal, like IntelliJ (default):
   //     "autosave": "on_window_change",
-  // 3. Save when changing focus away from a specific buffer:
+  // 3. Like 2, and also save a buffer when focus leaves it:
   //     "autosave": "on_focus_change",
-  // 4. Save when idle for a certain amount of time:
+  // 4. Save each buffer a fixed time after its last edit, without formatting it:
   //     "autosave": { "after_delay": {"milliseconds": 500} },
-  "autosave": {
-    "after_delay": {
-      "milliseconds": 500,
-    },
+  "autosave": "on_window_change",
+  // Save all edited buffers once nothing has been typed or clicked for a while,
+  // like IntelliJ's "Save files if the IDE is idle". Key presses, mouse clicks,
+  // focus and window changes count as input; moving or scrolling the mouse
+  // doesn't. Works independently of `autosave`, also when it is "off". Buffers
+  // showing a completion menu are saved in the next idle period.
+  "autosave_when_idle": {
+    // Whether to save edited buffers when idle.
+    "enabled": true,
+    // How many seconds without input count as idle, from 1 to 300.
+    "seconds": 15,
   },
   // Maximum number of tabs per pane. Unset for unlimited.
   "max_tabs": null,
@@ -1279,7 +1287,7 @@
   //     when no git diff is available or the language server lacks range formatting
   //   "modifications_if_available" — same, but falls back to formatting the whole
   //     buffer when range formatting cannot be used
-  // Keep in mind, if the autosave with delay is enabled, format_on_save will be ignored
+  // Autosaves format too, except the ones of `"autosave": {"after_delay": ...}`.
   "format_on_save": "on",
   // How to perform a buffer format. This setting can take multiple values:
   //

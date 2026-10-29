@@ -49,8 +49,8 @@ use ui::{
 };
 use util::ResultExt;
 use workspace::{
-    CloseActiveItem, DraggedSelection, DraggedTab, NewCenterTerminal, NewTerminal, Pane,
-    ToolbarItemLocation, Workspace, WorkspaceId, delete_unloaded_items,
+    AutosaveTrigger, CloseActiveItem, DraggedSelection, DraggedTab, NewCenterTerminal, NewTerminal,
+    Pane, ToolbarItemLocation, Workspace, WorkspaceId, delete_unloaded_items,
     item::{
         HighlightedText, Item, ItemEvent, SerializableItem, TabContentParams, TabTooltipContent,
     },
@@ -1185,6 +1185,20 @@ impl TerminalView {
             self.blink_manager.update(cx, BlinkManager::enable);
         }
 
+        // Like IntelliJ, switching to the built-in terminal saves the modified files, so that
+        // the commands run there see them. Deferred, because collecting the files reads every
+        // item of the workspace, this terminal included, which is being updated right now.
+        let workspace = self.workspace.clone();
+        window.defer(cx, move |window, cx| {
+            if let Some(workspace) = workspace.upgrade() {
+                workspace.update(cx, |workspace, cx| {
+                    workspace
+                        .autosave_dirty_items(AutosaveTrigger::SwitchAway, window, cx)
+                        .detach();
+                });
+            }
+        });
+
         window.invalidate_character_coordinates();
         cx.notify();
     }
@@ -2249,6 +2263,73 @@ mod tests {
                 .update(&mut cx, |terminal, _| terminal.take_pty_write_log())
                 .is_empty()
         );
+    }
+
+    fn set_autosave(autosave: settings::AutosaveSetting, cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            SettingsStore::update_global(cx, |store, cx| {
+                store.update_user_settings(cx, |settings| {
+                    settings.workspace.autosave = Some(autosave);
+                });
+            });
+        });
+    }
+
+    fn add_modified_item(
+        workspace: &Entity<Workspace>,
+        window_handle: gpui::WindowHandle<MultiWorkspace>,
+        cx: &mut TestAppContext,
+    ) -> Entity<TestItem> {
+        window_handle
+            .update(cx, |_, window, cx| {
+                let item = cx.new(|cx| {
+                    TestItem::new(cx)
+                        .with_dirty(true)
+                        .with_project_items(&[TestProjectItem::new_dirty(1, "1.txt", cx)])
+                });
+                workspace.update(cx, |workspace, cx| {
+                    workspace.add_item_to_active_pane(
+                        Box::new(item.clone()),
+                        None,
+                        true,
+                        window,
+                        cx,
+                    );
+                });
+                item
+            })
+            .unwrap()
+    }
+
+    #[gpui::test]
+    async fn focusing_the_terminal_saves_modified_files(cx: &mut TestAppContext) {
+        let (project, workspace, window_handle) = init_test_with_window(cx).await;
+        set_autosave(settings::AutosaveSetting::OnWindowChange, cx);
+        let item = add_modified_item(&workspace, window_handle, cx);
+        cx.run_until_parked();
+        item.read_with(cx, |item, _| assert_eq!(item.save_count, 0));
+
+        add_display_only_terminal(&project, window_handle, true, false, cx);
+        cx.run_until_parked();
+        item.read_with(cx, |item, _| {
+            assert_eq!(
+                item.save_count, 1,
+                "switching to the built-in terminal saves modified files, like IntelliJ"
+            );
+        });
+    }
+
+    #[gpui::test]
+    async fn focusing_the_terminal_keeps_modified_files_when_autosave_is_off(
+        cx: &mut TestAppContext,
+    ) {
+        let (project, workspace, window_handle) = init_test_with_window(cx).await;
+        set_autosave(settings::AutosaveSetting::Off, cx);
+        let item = add_modified_item(&workspace, window_handle, cx);
+
+        add_display_only_terminal(&project, window_handle, true, false, cx);
+        cx.run_until_parked();
+        item.read_with(cx, |item, _| assert_eq!(item.save_count, 0));
     }
 
     #[gpui::test]

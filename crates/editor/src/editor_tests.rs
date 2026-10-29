@@ -20089,6 +20089,73 @@ async fn test_autosave_with_dirty_buffers(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+async fn test_idle_autosave_waits_for_the_completion_menu_to_close(cx: &mut TestAppContext) {
+    init_test(cx, |language_settings| {
+        language_settings.defaults.completions = Some(CompletionSettingsContent {
+            words: Some(WordsCompletionMode::Disabled),
+            words_min_length: Some(0),
+            lsp_insert_mode: Some(LspInsertMode::Insert),
+            ..Default::default()
+        });
+    });
+    let mut cx = EditorLspTestContext::new_rust(
+        lsp::ServerCapabilities {
+            completion_provider: Some(lsp::CompletionOptions::default()),
+            ..lsp::ServerCapabilities::default()
+        },
+        cx,
+    )
+    .await;
+    cx.update(|_, cx| {
+        SettingsStore::update_global(cx, |store, cx| {
+            store.update_user_settings(cx, |settings| {
+                settings.workspace.autosave_when_idle = Some(settings::AutosaveWhenIdleContent {
+                    enabled: Some(true),
+                    seconds: Some(15),
+                });
+            });
+        });
+    });
+    let buffer_is_dirty = |cx: &mut EditorLspTestContext| {
+        cx.update_editor(|editor, _, cx| editor.buffer().read(cx).read(cx).is_dirty())
+    };
+
+    cx.set_state(indoc! {"ˇ
+        first
+        second
+    "});
+    cx.update_editor(|editor, window, cx| {
+        editor.show_word_completions(&ShowWordCompletions, window, cx);
+    });
+    cx.executor().run_until_parked();
+    assert!(cx.update_editor(|editor, _, _| editor.context_menu_visible()));
+    assert!(buffer_is_dirty(&mut cx));
+
+    cx.update_workspace(|workspace, window, cx| {
+        workspace.autosave_dirty_items(workspace::AutosaveTrigger::Idle, window, cx)
+    })
+    .await;
+    cx.executor().run_until_parked();
+    assert!(
+        buffer_is_dirty(&mut cx),
+        "the idle autosave leaves a buffer alone while it shows completions"
+    );
+
+    cx.update_editor(|editor, window, cx| {
+        editor.hide_context_menu(window, cx);
+    });
+    cx.update_workspace(|workspace, window, cx| {
+        workspace.autosave_dirty_items(workspace::AutosaveTrigger::Idle, window, cx)
+    })
+    .await;
+    cx.executor().run_until_parked();
+    assert!(
+        !buffer_is_dirty(&mut cx),
+        "the next idle autosave after the completion menu closed saves the buffer"
+    );
+}
+
+#[gpui::test]
 async fn test_format_selections_action_available_when_range_formatting_is_supported(
     cx: &mut TestAppContext,
 ) {

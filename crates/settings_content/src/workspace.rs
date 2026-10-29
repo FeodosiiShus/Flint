@@ -39,8 +39,12 @@ pub struct WorkspaceSettingsContent {
     pub confirm_quit: Option<bool>,
     /// When to automatically save edited buffers.
     ///
-    /// Default: off
+    /// Default: on_window_change
     pub autosave: Option<AutosaveSetting>,
+    /// Whether to save edited buffers after a while without input, independently of `autosave`.
+    ///
+    /// Default: enabled, after 15 seconds
+    pub autosave_when_idle: Option<AutosaveWhenIdleContent>,
     /// Controls previous session restoration in freshly launched Zed instance.
     /// Values: empty_tab, last_workspace, last_session, launchpad
     /// Default: last_session
@@ -626,11 +630,12 @@ pub struct ToolWindowHeadersSettingsContent {
 pub enum AutosaveSetting {
     /// Disable autosave.
     Off,
-    /// Save after inactivity period of `milliseconds`.
+    /// Save each buffer `milliseconds` after its last edit, without formatting it.
     AfterDelay { milliseconds: DelayMs },
-    /// Autosave when focus changes.
+    /// Autosave when focus leaves a buffer, and when switching to another application or to
+    /// the built-in terminal.
     OnFocusChange,
-    /// Autosave when the active window changes.
+    /// Autosave when switching to another application or to the built-in terminal.
     OnWindowChange,
 }
 
@@ -643,6 +648,24 @@ impl AutosaveSetting {
                 | AutosaveSetting::AfterDelay { .. }
         )
     }
+}
+
+/// Saving edited buffers once nothing has been typed or clicked for a while, like IntelliJ's
+/// "Save files if the IDE is idle for N seconds".
+#[with_fallible_options]
+#[derive(
+    Clone, Copy, Default, Serialize, Deserialize, JsonSchema, MergeFrom, Debug, PartialEq, Eq,
+)]
+pub struct AutosaveWhenIdleContent {
+    /// Whether to save edited buffers when idle.
+    ///
+    /// Default: true
+    pub enabled: Option<bool>,
+    /// How many seconds without a key press, mouse click, focus or window change count as idle,
+    /// from 1 to 300.
+    ///
+    /// Default: 15
+    pub seconds: Option<u32>,
 }
 
 #[derive(

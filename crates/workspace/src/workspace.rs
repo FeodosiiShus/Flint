@@ -1,3 +1,4 @@
+mod autosave;
 mod background_image;
 mod background_tasks;
 pub mod dock;
@@ -29,6 +30,8 @@ pub mod welcome;
 pub mod workspace_error;
 mod workspace_settings;
 
+pub use autosave::AutosaveTrigger;
+use autosave::IdleAutosave;
 pub use background_image::{
     ClearBackgroundImage, SelectBackgroundImage, SelectEmptyFrameBackgroundImage,
 };
@@ -1602,6 +1605,7 @@ pub struct Workspace {
     active_workspace_id: Option<Rc<Cell<EntityId>>>,
     active_worktree_creation: ActiveWorktreeCreation,
     deferred_save_items: Vec<Box<dyn WeakItemHandle>>,
+    idle_autosave: IdleAutosave,
     persisted_recent_navigation_history: Vec<PathBuf>,
     last_active_project_path: Option<ProjectPath>,
     restoring_workspace: bool,
@@ -2069,6 +2073,7 @@ impl Workspace {
             active_workspace_id: None,
             active_worktree_creation: ActiveWorktreeCreation::default(),
             deferred_save_items: Vec::new(),
+            idle_autosave: IdleAutosave::new(cx.background_executor().now()),
             persisted_recent_navigation_history: Vec::new(),
             last_active_project_path: None,
             restoring_workspace: false,
@@ -5679,6 +5684,7 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         self.flush_deferred_saves(window, cx);
+        self.reset_idle_autosave_timer(window, cx);
 
         if self.active_pane != pane {
             self.set_active_pane(&pane, window, cx);
@@ -5739,6 +5745,7 @@ impl Workspace {
 
     fn handle_panel_focused(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.flush_deferred_saves(window, cx);
+        self.reset_idle_autosave_timer(window, cx);
     }
 
     fn flush_deferred_saves(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -6614,25 +6621,20 @@ impl Workspace {
                     .detach();
             }
         } else {
-            // When window is deactivated, flush any deferred saves since focus has left the window
-            self.flush_deferred_saves(window, cx);
             for pane in &self.panes {
                 pane.update(cx, |pane, cx| {
                     if let Some(item) = pane.active_item() {
                         item.workspace_deactivated(window, cx);
                     }
-                    for item in pane.items() {
-                        if matches!(
-                            item.workspace_settings(cx).autosave,
-                            AutosaveSetting::OnWindowChange | AutosaveSetting::OnFocusChange
-                        ) {
-                            Pane::autosave_item(item.as_ref(), self.project.clone(), window, cx)
-                                .detach_and_log_err(cx);
-                        }
-                    }
                 });
             }
+            // The deferred saves are `on_focus_change` items, which saving everything below
+            // covers, so flushing them as well would write their files twice.
+            self.deferred_save_items.clear();
+            self.autosave_dirty_items(AutosaveTrigger::SwitchAway, window, cx)
+                .detach();
         }
+        self.reset_idle_autosave_timer(window, cx);
     }
 
     pub fn database_id(&self) -> Option<WorkspaceId> {
@@ -8696,6 +8698,21 @@ impl Render for Workspace {
                     cx.notify(id);
                 }
             })
+            .capture_key_down(
+                cx.listener(|workspace, _: &gpui::KeyDownEvent, window, cx| {
+                    workspace.reset_idle_autosave_timer(window, cx);
+                }),
+            )
+            .capture_any_mouse_down(cx.listener(
+                |workspace, _: &gpui::MouseDownEvent, window, cx| {
+                    workspace.reset_idle_autosave_timer(window, cx);
+                },
+            ))
+            .capture_any_mouse_up(
+                cx.listener(|workspace, _: &gpui::MouseUpEvent, window, cx| {
+                    workspace.reset_idle_autosave_timer(window, cx);
+                }),
+            )
             .child(
                 div()
                     .size_full()
@@ -12540,6 +12557,273 @@ mod tests {
             assert_eq!(
                 item.save_count, 1,
                 "Switching to another item should trigger deferred save of the previous item"
+            );
+        });
+    }
+
+    #[gpui::test]
+    async fn test_window_deactivation_autosaves_items_in_dock_panes(cx: &mut gpui::TestAppContext) {
+        init_test(cx);
+        let fs = FakeFs::new(cx.executor());
+        let project = Project::test(fs, [], cx).await;
+        let (workspace, cx) =
+            cx.add_window_view(|window, cx| Workspace::test_new(project, window, cx));
+        cx.update(|_, cx| {
+            SettingsStore::update_global(cx, |settings, cx| {
+                settings.update_user_settings(cx, |settings| {
+                    settings.workspace.autosave = Some(AutosaveSetting::OnWindowChange);
+                })
+            });
+        });
+
+        let center_item = cx.new(|cx| {
+            TestItem::new(cx)
+                .with_dirty(true)
+                .with_project_items(&[TestProjectItem::new_dirty(1, "1.txt", cx)])
+        });
+        let dock_item = cx.new(|cx| {
+            TestItem::new(cx)
+                .with_dirty(true)
+                .with_project_items(&[TestProjectItem::new_dirty(2, "2.txt", cx)])
+        });
+        workspace.update_in(cx, |workspace, window, cx| {
+            workspace.add_item_to_active_pane(
+                Box::new(center_item.clone()),
+                None,
+                true,
+                window,
+                cx,
+            );
+            let dock_pane = cx.new(|cx| {
+                Pane::new(
+                    workspace.weak_handle(),
+                    workspace.project().clone(),
+                    workspace.pane_history_timestamp.clone(),
+                    None,
+                    NewFile.boxed_clone(),
+                    true,
+                    window,
+                    cx,
+                )
+            });
+            dock_pane.update(cx, |pane, cx| {
+                pane.add_item(Box::new(dock_item.clone()), true, false, None, window, cx);
+            });
+            // A panel hosting its own pane registers that pane's items with the workspace, as
+            // the terminal panel does.
+            dock_item.added_to_pane(workspace, dock_pane.clone(), window, cx);
+            let panel = cx.new(|cx| {
+                let mut panel = TestPanel::new(DockPosition::Bottom, 100, cx);
+                panel.pane = Some(dock_pane);
+                panel
+            });
+            workspace.add_panel(panel, window, cx);
+        });
+        cx.run_until_parked();
+
+        cx.deactivate_window();
+        cx.run_until_parked();
+        center_item.read_with(cx, |item, _| assert_eq!(item.save_count, 1));
+        dock_item.read_with(cx, |item, _| {
+            assert_eq!(
+                item.save_count, 1,
+                "switching to another application saves the files open in a dock too"
+            );
+        });
+    }
+
+    fn enable_idle_autosave(seconds: u32, cx: &mut VisualTestContext) {
+        cx.update(|_, cx| {
+            SettingsStore::update_global(cx, |store, cx| {
+                store.update_user_settings(cx, |settings| {
+                    settings.workspace.autosave_when_idle =
+                        Some(settings::AutosaveWhenIdleContent {
+                            enabled: Some(true),
+                            seconds: Some(seconds),
+                        });
+                })
+            });
+        });
+    }
+
+    fn add_modified_item(
+        workspace: &Entity<Workspace>,
+        id: u64,
+        cx: &mut VisualTestContext,
+        build: impl FnOnce(&mut Context<TestItem>) -> TestItem,
+    ) -> Entity<TestItem> {
+        let item = cx.new(|cx| {
+            let project_item = TestProjectItem::new_dirty(id, &format!("{id}.txt"), cx);
+            build(cx)
+                .with_dirty(true)
+                .with_project_items(&[project_item])
+        });
+        workspace.update_in(cx, |workspace, window, cx| {
+            workspace.add_item_to_active_pane(Box::new(item.clone()), None, true, window, cx);
+        });
+        item.update(cx, |_, cx| cx.emit(ItemEvent::Edit));
+        item
+    }
+
+    fn advance_clock_by_seconds(seconds: u64, cx: &mut VisualTestContext) {
+        cx.executor().advance_clock(Duration::from_secs(seconds));
+        cx.run_until_parked();
+    }
+
+    #[gpui::test]
+    async fn test_idle_autosave_saves_once_nothing_was_typed_or_clicked_for_the_delay(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        init_test(cx);
+        let fs = FakeFs::new(cx.executor());
+        let project = Project::test(fs, [], cx).await;
+        let (workspace, cx) =
+            cx.add_window_view(|window, cx| Workspace::test_new(project, window, cx));
+        enable_idle_autosave(15, cx);
+        let item = add_modified_item(&workspace, 1, cx, TestItem::new);
+        cx.run_until_parked();
+
+        advance_clock_by_seconds(10, cx);
+        item.read_with(cx, |item, _| assert_eq!(item.save_count, 0));
+
+        cx.simulate_keystrokes("x");
+        advance_clock_by_seconds(10, cx);
+        item.read_with(cx, |item, _| {
+            assert_eq!(
+                item.save_count, 0,
+                "a key press restarts the idle countdown"
+            );
+        });
+
+        let center = gpui::point(px(200.), px(200.));
+        cx.simulate_mouse_move(center, None, gpui::Modifiers::none());
+        advance_clock_by_seconds(5, cx);
+        item.read_with(cx, |item, _| {
+            assert_eq!(
+                item.save_count, 1,
+                "15 seconds after the last key press the file is saved, as moving the mouse isn't input"
+            );
+        });
+
+        item.update(cx, |item, cx| {
+            item.is_dirty = true;
+            cx.emit(ItemEvent::Edit);
+        });
+        advance_clock_by_seconds(10, cx);
+        cx.simulate_mouse_down(center, gpui::MouseButton::Left, gpui::Modifiers::none());
+        cx.simulate_mouse_up(center, gpui::MouseButton::Left, gpui::Modifiers::none());
+        advance_clock_by_seconds(10, cx);
+        item.read_with(cx, |item, _| {
+            assert_eq!(
+                item.save_count, 1,
+                "a mouse click restarts the idle countdown"
+            );
+        });
+        advance_clock_by_seconds(5, cx);
+        item.read_with(cx, |item, _| assert_eq!(item.save_count, 2));
+    }
+
+    #[gpui::test]
+    async fn test_idle_autosave_is_off_when_disabled(cx: &mut gpui::TestAppContext) {
+        init_test(cx);
+        let fs = FakeFs::new(cx.executor());
+        let project = Project::test(fs, [], cx).await;
+        let (workspace, cx) =
+            cx.add_window_view(|window, cx| Workspace::test_new(project, window, cx));
+        let item = add_modified_item(&workspace, 1, cx, TestItem::new);
+
+        advance_clock_by_seconds(300, cx);
+        item.read_with(cx, |item, _| assert_eq!(item.save_count, 0));
+    }
+
+    #[gpui::test]
+    async fn test_idle_autosave_skips_items_that_veto_implicit_saves(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        init_test(cx);
+        let fs = FakeFs::new(cx.executor());
+        let project = Project::test(fs, [], cx).await;
+        let (workspace, cx) =
+            cx.add_window_view(|window, cx| Workspace::test_new(project, window, cx));
+        enable_idle_autosave(15, cx);
+        cx.update(|_, cx| {
+            SettingsStore::update_global(cx, |store, cx| {
+                store.update_user_settings(cx, |settings| {
+                    settings.workspace.autosave = Some(AutosaveSetting::OnWindowChange);
+                })
+            });
+        });
+        let vetoing_item = add_modified_item(&workspace, 1, cx, TestItem::new);
+        vetoing_item.update(cx, |item, _| item.vetoes_implicit_save = true);
+        let other_item = add_modified_item(&workspace, 2, cx, TestItem::new);
+
+        advance_clock_by_seconds(15, cx);
+        vetoing_item.read_with(cx, |item, _| {
+            assert_eq!(
+                item.save_count, 0,
+                "an item that vetoes implicit saves, like an editor showing completions, stays unsaved when idle"
+            );
+        });
+        other_item.read_with(cx, |item, _| assert_eq!(item.save_count, 1));
+
+        cx.deactivate_window();
+        cx.run_until_parked();
+        vetoing_item.read_with(cx, |item, _| {
+            assert_eq!(
+                item.save_count, 1,
+                "switching to another application saves it anyway"
+            );
+        });
+    }
+
+    #[gpui::test]
+    async fn test_idle_autosave_waits_while_a_modal_is_open(cx: &mut gpui::TestAppContext) {
+        init_test(cx);
+        let fs = FakeFs::new(cx.executor());
+        let project = Project::test(fs, [], cx).await;
+        let (workspace, cx) =
+            cx.add_window_view(|window, cx| Workspace::test_new(project, window, cx));
+        enable_idle_autosave(15, cx);
+        let item = add_modified_item(&workspace, 1, cx, TestItem::new);
+        workspace.update_in(cx, |workspace, window, cx| {
+            workspace.toggle_modal(window, cx, TestModal::new);
+        });
+
+        advance_clock_by_seconds(30, cx);
+        item.read_with(cx, |item, _| assert_eq!(item.save_count, 0));
+
+        workspace.update_in(cx, |workspace, window, cx| {
+            workspace
+                .modal_layer
+                .update(cx, |modal, cx| modal.hide_modal(window, cx));
+        });
+        cx.simulate_keystrokes("x");
+        advance_clock_by_seconds(15, cx);
+        item.read_with(cx, |item, _| {
+            assert_eq!(
+                item.save_count, 1,
+                "the next idle period after the modal closes saves the file"
+            );
+        });
+    }
+
+    #[gpui::test]
+    async fn test_idle_autosave_reports_failed_saves(cx: &mut gpui::TestAppContext) {
+        init_test(cx);
+        let fs = FakeFs::new(cx.executor());
+        let project = Project::test(fs, [], cx).await;
+        let (workspace, cx) =
+            cx.add_window_view(|window, cx| Workspace::test_new(project, window, cx));
+        enable_idle_autosave(15, cx);
+        add_modified_item(&workspace, 1, cx, |cx| {
+            TestItem::new(cx).with_save_error("disk is full")
+        });
+
+        advance_clock_by_seconds(15, cx);
+        workspace.read_with(cx, |workspace, _| {
+            assert!(
+                workspace.has_notification(&NotificationId::unique::<autosave::AutosaveError>()),
+                "a failed autosave is shown to the user, not only logged"
             );
         });
     }
@@ -19898,6 +20182,10 @@ mod tests {
         cx.update_global::<SettingsStore, _>(|store, cx| {
             store.update_user_settings(cx, |settings| {
                 settings.workspace.autosave = Some(AutosaveSetting::Off);
+                settings.workspace.autosave_when_idle = Some(settings::AutosaveWhenIdleContent {
+                    enabled: Some(false),
+                    seconds: None,
+                });
             });
         });
     }

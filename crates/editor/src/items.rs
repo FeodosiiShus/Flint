@@ -929,6 +929,17 @@ impl Item for Editor {
         }
     }
 
+    fn vetoes_implicit_save(&self, _: &App) -> bool {
+        // Formatting on save would rewrite the text that the open completion menu or the snippet
+        // tabstops are anchored to, so like IntelliJ's `LookupDocumentSavingVetoer` the idle save
+        // waits for them to close.
+        let showing_completions = matches!(
+            self.context_menu.borrow().as_ref(),
+            Some(crate::code_context_menus::CodeContextMenu::Completions(menu)) if menu.visible()
+        );
+        showing_completions || !self.snippet_stack.is_empty()
+    }
+
     fn save(
         &mut self,
         options: SaveOptions,

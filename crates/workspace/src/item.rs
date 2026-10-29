@@ -296,6 +296,11 @@ pub trait Item: Focusable + EventEmitter<Self::Event> + Render + Sized {
     fn can_save_as(&self, _: &App) -> bool {
         false
     }
+    /// Whether a save the user didn't ask for, such as the idle autosave, has to leave this item
+    /// alone for now, like IntelliJ's `FileDocumentSynchronizationVetoer`.
+    fn vetoes_implicit_save(&self, _: &App) -> bool {
+        false
+    }
 
     fn save(
         &mut self,
@@ -538,6 +543,7 @@ pub trait ItemHandle: 'static + Send {
     fn has_conflict(&self, cx: &App) -> bool;
     fn can_save(&self, cx: &App) -> bool;
     fn can_save_as(&self, cx: &App) -> bool;
+    fn vetoes_implicit_save(&self, cx: &App) -> bool;
     fn save(
         &self,
         options: SaveOptions,
@@ -874,6 +880,7 @@ impl<T: Item> ItemHandle for Entity<T> {
                         }
 
                         ItemEvent::Edit => {
+                            workspace.reset_idle_autosave_timer(window, cx);
                             let autosave = item.workspace_settings(cx).autosave;
 
                             if let AutosaveSetting::AfterDelay { milliseconds } = autosave {
@@ -1002,6 +1009,10 @@ impl<T: Item> ItemHandle for Entity<T> {
 
     fn can_save_as(&self, cx: &App) -> bool {
         self.read(cx).can_save_as(cx)
+    }
+
+    fn vetoes_implicit_save(&self, cx: &App) -> bool {
+        self.read(cx).vetoes_implicit_save(cx)
     }
 
     fn save(
@@ -1398,6 +1409,7 @@ pub mod test {
         pub reload_count: usize,
         pub is_dirty: bool,
         pub save_error: Option<String>,
+        pub vetoes_implicit_save: bool,
         pub buffer_kind: ItemBufferKind,
         pub has_conflict: bool,
         pub has_deleted_file: bool,
@@ -1491,6 +1503,7 @@ pub mod test {
                 reload_count: 0,
                 is_dirty: false,
                 save_error: None,
+                vetoes_implicit_save: false,
                 has_conflict: false,
                 has_deleted_file: false,
                 capability: Capability::ReadWrite,
@@ -1687,6 +1700,7 @@ pub mod test {
                     reload_count: self.reload_count,
                     is_dirty: self.is_dirty,
                     save_error: self.save_error.clone(),
+                    vetoes_implicit_save: self.vetoes_implicit_save,
                     buffer_kind: self.buffer_kind,
                     has_conflict: self.has_conflict,
                     has_deleted_file: self.has_deleted_file,
@@ -1729,6 +1743,10 @@ pub mod test {
 
         fn can_save_as(&self, _cx: &App) -> bool {
             self.buffer_kind == ItemBufferKind::Singleton
+        }
+
+        fn vetoes_implicit_save(&self, _: &App) -> bool {
+            self.vetoes_implicit_save
         }
 
         fn capability(&self, _: &App) -> Capability {

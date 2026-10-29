@@ -19,6 +19,9 @@ pub struct WorkspaceSettings {
     pub centered_layout: settings::CenteredLayoutSettings,
     pub confirm_quit: bool,
     pub autosave: AutosaveSetting,
+    /// How long without input counts as idle for saving edited buffers, or `None` when idle
+    /// saving is turned off.
+    pub autosave_when_idle: Option<Duration>,
     pub restore_on_startup: settings::RestoreOnStartupBehavior,
     pub cli_default_open_behavior: settings::CliDefaultOpenBehavior,
     pub default_open_behavior: settings::DefaultOpenBehavior,
@@ -175,6 +178,25 @@ fn clamped_pixels(value: Option<u32>, default: u32, (min, max): (u32, u32)) -> P
     Pixels::from(value.unwrap_or(default).clamp(min, max))
 }
 
+/// IntelliJ's range and default for "Save files if the IDE is idle for N seconds".
+const AUTOSAVE_WHEN_IDLE_SECONDS_RANGE: (u32, u32) = (1, 300);
+const DEFAULT_AUTOSAVE_WHEN_IDLE_SECONDS: u32 = 15;
+
+fn autosave_when_idle_delay(
+    content: Option<&settings::AutosaveWhenIdleContent>,
+) -> Option<Duration> {
+    let content = content.copied().unwrap_or_default();
+    if !content.enabled.unwrap_or(true) {
+        return None;
+    }
+    let (min, max) = AUTOSAVE_WHEN_IDLE_SECONDS_RANGE;
+    let seconds = content
+        .seconds
+        .unwrap_or(DEFAULT_AUTOSAVE_WHEN_IDLE_SECONDS)
+        .clamp(min, max);
+    Some(Duration::from_secs(u64::from(seconds)))
+}
+
 #[cfg(target_os = "macos")]
 pub fn closing_last_window_quits_app(cx: &App) -> bool {
     WorkspaceSettings::get_global(cx)
@@ -247,6 +269,7 @@ impl Settings for WorkspaceSettings {
             centered_layout: workspace.centered_layout.unwrap(),
             confirm_quit: workspace.confirm_quit.unwrap(),
             autosave: workspace.autosave.unwrap(),
+            autosave_when_idle: autosave_when_idle_delay(workspace.autosave_when_idle.as_ref()),
             restore_on_startup: workspace.restore_on_startup.unwrap(),
             cli_default_open_behavior: workspace.cli_default_open_behavior.unwrap(),
             default_open_behavior: workspace.default_open_behavior.unwrap(),
@@ -598,6 +621,66 @@ mod tests {
         assert!(islands.enabled);
         assert_eq!(islands.frame_content_opacity(false), 1.0);
         assert_eq!(islands.frame_content_opacity(true), 1.0);
+    }
+
+    #[gpui::test]
+    fn autosave_defaults_save_like_intellij(cx: &mut App) {
+        let store = SettingsStore::test(cx);
+        let settings = store.get::<WorkspaceSettings>(None);
+        assert_eq!(
+            settings.autosave,
+            AutosaveSetting::OnWindowChange,
+            "files are saved when switching to another application or the built-in terminal"
+        );
+        assert_eq!(
+            settings.autosave_when_idle,
+            Some(Duration::from_secs(15)),
+            "files are saved after 15 seconds without input"
+        );
+    }
+
+    #[gpui::test]
+    fn after_delay_autosave_configs_keep_working(cx: &mut App) {
+        let mut store = SettingsStore::test(cx);
+        let result = store.set_user_settings(
+            r#"{ "autosave": { "after_delay": { "milliseconds": 1000 } } }"#,
+            cx,
+        );
+        assert!(result.result().is_ok());
+        let settings = store.get::<WorkspaceSettings>(None);
+        assert_eq!(
+            settings.autosave,
+            AutosaveSetting::AfterDelay {
+                milliseconds: settings::DelayMs(1000)
+            }
+        );
+        assert_eq!(settings.autosave_when_idle, Some(Duration::from_secs(15)));
+
+        let result = store.set_user_settings(
+            r#"{ "autosave": "off", "autosave_when_idle": { "enabled": false } }"#,
+            cx,
+        );
+        assert!(result.result().is_ok());
+        let settings = store.get::<WorkspaceSettings>(None);
+        assert_eq!(settings.autosave, AutosaveSetting::Off);
+        assert_eq!(settings.autosave_when_idle, None);
+    }
+
+    #[test]
+    fn autosave_when_idle_seconds_are_clamped_like_intellij() {
+        let idle_for = |seconds| {
+            autosave_when_idle_delay(Some(&settings::AutosaveWhenIdleContent {
+                enabled: Some(true),
+                seconds: Some(seconds),
+            }))
+        };
+        assert_eq!(idle_for(0), Some(Duration::from_secs(1)));
+        assert_eq!(idle_for(42), Some(Duration::from_secs(42)));
+        assert_eq!(idle_for(301), Some(Duration::from_secs(300)));
+        assert_eq!(
+            autosave_when_idle_delay(None),
+            Some(Duration::from_secs(15))
+        );
     }
 
     #[test]

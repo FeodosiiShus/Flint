@@ -1793,7 +1793,7 @@ fn keymap_page() -> SettingsPage {
 }
 
 fn editor_page() -> SettingsPage {
-    fn auto_save_section() -> [SettingsPageItem; 2] {
+    fn auto_save_section() -> [SettingsPageItem; 4] {
         [
             SettingsPageItem::SectionHeader("Auto Save"),
             SettingsPageItem::DynamicItem(DynamicItem {
@@ -1888,6 +1888,52 @@ fn editor_page() -> SettingsPage {
                         settings::AutosaveSettingDiscriminants::OnWindowChange => vec![],
                     })
                     .collect(),
+            }),
+            SettingsPageItem::SettingItem(SettingItem {
+                title: "Save When Idle",
+                description: "Save edited buffers once nothing has been typed or clicked for the idle delay, whatever the auto save mode.",
+                field: Box::new(SettingField {
+                    json_path: Some("autosave_when_idle.enabled"),
+                    pick: |settings_content| {
+                        settings_content
+                            .workspace
+                            .autosave_when_idle
+                            .as_ref()
+                            .and_then(|idle| idle.enabled.as_ref())
+                    },
+                    write: |settings_content, value, _| {
+                        settings_content
+                            .workspace
+                            .autosave_when_idle
+                            .get_or_insert_default()
+                            .enabled = value;
+                    },
+                }),
+                metadata: None,
+                files: USER,
+            }),
+            SettingsPageItem::SettingItem(SettingItem {
+                title: "Idle Delay (seconds)",
+                description: "How many seconds without input count as idle, from 1 to 300.",
+                field: Box::new(SettingField {
+                    json_path: Some("autosave_when_idle.seconds"),
+                    pick: |settings_content| {
+                        settings_content
+                            .workspace
+                            .autosave_when_idle
+                            .as_ref()
+                            .and_then(|idle| idle.seconds.as_ref())
+                    },
+                    write: |settings_content, value, _| {
+                        settings_content
+                            .workspace
+                            .autosave_when_idle
+                            .get_or_insert_default()
+                            .seconds = value;
+                    },
+                }),
+                metadata: None,
+                files: USER,
             }),
         ]
     }
